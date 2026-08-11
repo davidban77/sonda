@@ -1,0 +1,149 @@
+name: Wasm bundle drift
+
+# The playground's wasm bundle is a committed BUILD OUTPUT. Nothing else stops
+# a change to sonda-core or sonda-wasm from being merged without the rebuilt
+# bundle, leaving the shipped engine silently behind its source.
+#
+# This job is deliberately NOT part of ci.yml: it needs a wasm target, a
+# version-pinned wasm-bindgen and a version-pinned binaryen, which is far too
+# much to install on every push. Path filters keep it to the changes that can
+# actually invalidate the bundle.
+on:
+  push:
+    paths:
+      - "sonda-wasm/**"
+      - "sonda-core/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "docs/site/docs/javascripts/sonda_wasm*"
+      - ".github/workflows/wasm-drift.yml"
+  pull_request:
+    paths:
+      - "sonda-wasm/**"
+      - "sonda-core/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "docs/site/docs/javascripts/sonda_wasm*"
+      - ".github/workflows/wasm-drift.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must match the wasm-bindgen version in Cargo.lock, or the generated JS glue
+  # and the wasm disagree at runtime.
+  WASM_BINDGEN_VERSION: "0.2.117"
+  # Binaryen 108 (the Debian/Ubuntu package) optimizes this bundle without
+  # complaint and produces a module that dies in the browser with
+  # "WebAssembly.Table.grow(): failed to grow table by 4". 119 is the version
+  # the committed bundle was produced with and the one verified working.
+  BINARYEN_VERSION: "119"
+
+jobs:
+  rebuild-and-compare:
+    name: Committed wasm bundle matches its source
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-wasm-drift-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wasm-drift-
+
+      - name: Install wasm-bindgen-cli (pinned to Cargo.lock)
+        run: |
+          if [ "$(wasm-bindgen --version 2>/dev/null | awk '{print $2}')" != "$WASM_BINDGEN_VERSION" ]; then
+            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+          fi
+          wasm-bindgen --version
+
+      - name: Install binaryen (pinned)
+        run: |
+          curl -sSL -o /tmp/binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          tar xzf /tmp/binaryen.tar.gz -C /tmp
+          echo "/tmp/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Verify binaryen version
+        run: wasm-opt --version
+
+      # Same recipe as `task site:wasm`, including the path remaps — without
+      # those the bundle embeds the builder's absolute paths and no two
+      # machines can ever agree.
+      - name: Rebuild the bundle
+        run: |
+          mkdir -p /tmp/rebuilt
+          RUSTFLAGS="--remap-path-prefix $HOME/.cargo=/cargo --remap-path-prefix $(pwd)=/sonda" \
+            cargo build -p sonda-wasm --profile wasm-release --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/wasm-release/sonda_wasm.wasm \
+            --target web --no-typescript --out-dir /tmp/rebuilt
+          wasm-opt -Oz /tmp/rebuilt/sonda_wasm_bg.wasm -o /tmp/rebuilt/opt.wasm
+          mv /tmp/rebuilt/opt.wasm /tmp/rebuilt/sonda_wasm_bg.wasm
+
+      # Three comparisons, and the PR that added this job was explicit about
+      # why they are not all hard failures.
+      #
+      # The JS glue and the size are hard gates: they catch the drift this job
+      # exists for — source changed, bundle did not — and neither depends on
+      # bit-for-bit reproducibility across machines.
+      #
+      # The byte-exact wasm comparison is REPORTED, not enforced. A same-host
+      # rebuild is byte-identical (verified when this landed), but whether that
+      # survives a different runner, linker and LLVM build was untestable at
+      # the time of writing. Rather than ship a gate that might block every
+      # sonda-core PR on day one, or silently drop the check, it runs and says
+      # what it found. Promote it to a hard failure once real runs show it
+      # holding — the evidence will be in this job's history.
+      - name: Compare against the committed bundle
+        run: |
+          committed=docs/site/docs/javascripts
+          rebuilt=/tmp/rebuilt
+          status=0
+
+          if cmp -s "$committed/sonda_wasm.js" "$rebuilt/sonda_wasm.js"; then
+            echo "JS glue: byte-identical"
+          else
+            echo "::error::sonda_wasm.js does not match a fresh build. The committed" \
+              "bundle is behind its source — run 'task site:wasm' and commit the result."
+            diff <(head -c 2000 "$committed/sonda_wasm.js") \
+                 <(head -c 2000 "$rebuilt/sonda_wasm.js") || true
+            status=1
+          fi
+
+          a=$(wc -c < "$committed/sonda_wasm_bg.wasm")
+          b=$(wc -c < "$rebuilt/sonda_wasm_bg.wasm")
+          delta=$(( a > b ? a - b : b - a ))
+          permille=$(( delta * 1000 / a ))
+          echo "wasm size: committed $a, rebuilt $b (delta $delta bytes, ${permille}‰)"
+          if [ "$permille" -gt 10 ]; then
+            echo "::error::the rebuilt wasm differs from the committed one by more than 1%." \
+              "The committed bundle is behind its source — run 'task site:wasm'."
+            status=1
+          fi
+
+          if cmp -s "$committed/sonda_wasm_bg.wasm" "$rebuilt/sonda_wasm_bg.wasm"; then
+            echo "wasm bytes: byte-identical — full reproducibility holds on this runner"
+          else
+            echo "::warning::the rebuilt wasm is the right size but not byte-identical." \
+              "Reported, not enforced: cross-host bit-for-bit reproducibility was never" \
+              "verified for this toolchain. See the comment above this step."
+          fi
+
+          exit $status
