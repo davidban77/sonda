@@ -118,38 +118,41 @@ tasks:
                                    gate cannot mean anything.
         * wasm-opt -Oz             binaryen's whole-module size pass. This is
                                    where the real reduction comes from: ~1.20 MB
-                                   -> ~772 KB, about 35%. Optional — if binaryen
-                                   is not installed the recipe warns and keeps
-                                   the unoptimized bundle rather than failing,
-                                   but the committed bundle IS optimized, so a
-                                   rebuild without it will look ~55% larger and
-                                   trip the size gate. Install it first:
-                                   apt-get install binaryen (or `brew install binaryen`).
+                                   -> ~772 KB, about 35%. Not optional: the
+                                   committed bundle IS optimized, so a rebuild
+                                   without it is ~55% larger and trips the size
+                                   gate. Install it first: apt-get install
+                                   binaryen (or `brew install binaryen`) — but
+                                   see the version note in the guard below,
+                                   the distro package is usually too old.
+
+      The whole build is staged in target/wasm-stage and moved into
+      docs/site/docs/javascripts/ as the final command. The committed bundle is
+      therefore never half-written: either the recipe completes and replaces it
+      wholesale, or it fails and leaves it untouched.
 
       wasm-bindgen-cli must match the wasm-bindgen version in Cargo.lock
       (0.2.117), or the generated JS glue and the wasm will disagree.
     cmds:
-      - rustup target add wasm32-unknown-unknown
+      # FIRST, before anything writes anything. The guard used to sit on the
+      # wasm-opt step, three commands in — by which point wasm-bindgen had
+      # already written into docs/site/docs/javascripts/, so a "refused" run
+      # left the committed bundle replaced by an unoptimized 1.2 MB one
+      # (review #540 W2, measured: 771,488 -> 1,197,736 bytes). A guard that
+      # fires after the damage is a diagnostic, not a guard.
       - |
-        RUSTFLAGS="--remap-path-prefix $HOME/.cargo=/cargo --remap-path-prefix $(pwd)=/sonda" \
-          cargo build -p sonda-wasm --profile wasm-release --target wasm32-unknown-unknown
-      - wasm-bindgen target/wasm32-unknown-unknown/wasm-release/sonda_wasm.wasm --target web --no-typescript --out-dir docs/site/docs/javascripts/
-      - |
-        bundle=docs/site/docs/javascripts/sonda_wasm_bg.wasm
-        if ! command -v wasm-opt >/dev/null 2>&1; then
-          echo "WARNING: wasm-opt not on PATH — the bundle is ~55% larger than the" >&2
-          echo "committed one and will fail scripts/check_wasm_size.py." >&2
-          echo "Install binaryen (>= 119) and re-run before committing." >&2
-          exit 0
-        fi
         # The committed bundle is compared BYTE-FOR-BYTE against a rebuild by
         # the wasm-drift workflow, and that comparison is only meaningful if
         # everyone rebuilds under the same conditions the gate uses. Two
-        # inputs turn out to change the output, both measured (review #540 W1):
+        # independent inputs change the output bytes (review #540 W1):
         #
-        #   binaryen version   119 -> 771,488   131 -> 770,922 bytes
-        #   host platform      linux x86_64 -> 771,488
-        #                      macOS arm64  -> 772,019   (differ at byte 532)
+        #   binaryen version   linux x86_64, 119   771,488 bytes  <- committed
+        #                      macOS arm64,  131   770,922 bytes
+        #   host platform      linux x86_64, 119   771,488 bytes  <- committed
+        #                      macOS arm64,  119   772,019 bytes  (differ at byte 532)
+        #
+        # Each pair varies one axis; no run has ever measured linux x86_64 with
+        # binaryen 131, so do not read a linux/131 figure out of the table.
         #
         # So this is an exact version match, not a floor, and the platform is
         # checked too. Getting either wrong produces a functionally correct
@@ -164,7 +167,7 @@ tasks:
         # 4". Too old for what wasm-bindgen 0.2.117 emits.)
         want_binaryen=119
         want_platform="Linux x86_64"
-        version=$(wasm-opt --version | grep -oE '[0-9]+' | head -1)
+        version=$(wasm-opt --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
         platform="$(uname -s) $(uname -m)"
         if [ "${version:-0}" != "$want_binaryen" ] || [ "$platform" != "$want_platform" ]; then
           echo "ERROR: this host cannot produce the committed bundle." >&2
@@ -176,17 +179,49 @@ tasks:
           echo "A bundle built here would be functionally fine and still be" >&2
           echo "rejected as drift." >&2
           echo >&2
+          echo "Nothing has been written — the committed bundle is untouched." >&2
+          echo >&2
           echo "Binaryen releases: https://github.com/WebAssembly/binaryen/releases" >&2
           echo "To build anyway for local testing (do NOT commit the result):" >&2
           echo "  SONDA_WASM_ALLOW_HOST=1 task site:wasm" >&2
           [ "${SONDA_WASM_ALLOW_HOST:-}" = "1" ] || exit 1
           echo "SONDA_WASM_ALLOW_HOST=1 set — continuing; do not commit this bundle." >&2
         fi
-        before=$(wc -c < "$bundle")
-        wasm-opt -Oz "$bundle" -o "$bundle.opt"
-        mv "$bundle.opt" "$bundle"
-        after=$(wc -c < "$bundle")
+      - rustup target add wasm32-unknown-unknown
+      - |
+        RUSTFLAGS="--remap-path-prefix $HOME/.cargo=/cargo --remap-path-prefix $(pwd)=/sonda" \
+          cargo build -p sonda-wasm --profile wasm-release --target wasm32-unknown-unknown
+      # Stage into target/, not into the docs tree. Mirrors what the drift
+      # workflow does with /tmp/rebuilt, for the same reason: a build that
+      # fails partway must not leave a broken bundle behind.
+      - |
+        rm -rf target/wasm-stage
+        mkdir -p target/wasm-stage
+        wasm-bindgen target/wasm32-unknown-unknown/wasm-release/sonda_wasm.wasm \
+          --target web --no-typescript --out-dir target/wasm-stage
+      - |
+        staged=target/wasm-stage/sonda_wasm_bg.wasm
+        if ! command -v wasm-opt >/dev/null 2>&1; then
+          # Only reachable with SONDA_WASM_ALLOW_HOST=1; the guard rejects a
+          # missing wasm-opt outright.
+          echo "WARNING: wasm-opt not on PATH — this bundle is ~55% larger than" >&2
+          echo "the committed one and will fail scripts/check_wasm_size.py." >&2
+          exit 0
+        fi
+        version=$(wasm-opt --version | grep -oE '[0-9]+' | head -1)
+        before=$(wc -c < "$staged")
+        wasm-opt -Oz "$staged" -o "$staged.opt"
+        mv "$staged.opt" "$staged"
+        after=$(wc -c < "$staged")
         echo "wasm-opt -Oz (binaryen $version): $before -> $after bytes ($(( (before - after) * 100 / before ))% smaller)"
+      # The only command that touches the committed bundle, and the last one
+      # that can fail before it does.
+      - |
+        for f in sonda_wasm.js sonda_wasm_bg.wasm; do
+          [ -f "target/wasm-stage/$f" ] || { echo "ERROR: staged $f missing; committed bundle left alone." >&2; exit 1; }
+        done
+        mv target/wasm-stage/sonda_wasm.js target/wasm-stage/sonda_wasm_bg.wasm docs/site/docs/javascripts/
+        rm -rf target/wasm-stage
       - python3 scripts/check_wasm_size.py
 
   site:editor:

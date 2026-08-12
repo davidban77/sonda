@@ -117,11 +117,18 @@ jobs:
       #
       # THE BYTE-EXACT WASM CHECK IS PLATFORM-SPECIFIC. It compares against a
       # bundle that must have been built on linux x86_64 with binaryen exactly
-      # 119. Both of those change the output (review #540 W1, measured):
+      # 119. Host and binaryen version are two independent axes, and each was
+      # measured by varying one of them (review #540 W1, then W1 round two):
       #
-      #     linux x86_64, binaryen 119     771,488 bytes   <- the committed one
-      #     macOS arm64,  binaryen 119     772,019 bytes   (differ at byte 532)
-      #     linux x86_64, binaryen 131     770,922 bytes
+      #     host platform      linux x86_64, binaryen 119   771,488 bytes  <- committed
+      #                        macOS arm64,  binaryen 119   772,019 bytes  (differ at byte 532)
+      #
+      #     binaryen version   macOS arm64,  binaryen 119   772,019 bytes
+      #                        macOS arm64,  binaryen 131   770,922 bytes
+      #
+      # Both 770,922 and 772,019 were measured on macOS arm64. The linux
+      # x86_64 + binaryen 131 combination has never been built, so there is no
+      # figure for it here — do not infer one by reading across the axes.
       #
       # This check first shipped report-only, then was promoted on two green
       # runs — but both ran on the same ubuntu-latest x86_64 image, so they
