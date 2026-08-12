@@ -1,0 +1,194 @@
+name: Wasm bundle drift
+
+# The playground's wasm bundle is a committed BUILD OUTPUT. Nothing else stops
+# a change to sonda-core or sonda-wasm from being merged without the rebuilt
+# bundle, leaving the shipped engine silently behind its source.
+#
+# This job is deliberately NOT part of ci.yml: it needs a wasm target, a
+# version-pinned wasm-bindgen and a version-pinned binaryen, which is far too
+# much to install on every push. Path filters keep it to the changes that can
+# actually invalidate the bundle.
+on:
+  push:
+    paths:
+      - "sonda-wasm/**"
+      - "sonda-core/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "docs/site/docs/javascripts/sonda_wasm*"
+      - ".github/workflows/wasm-drift.yml"
+  pull_request:
+    paths:
+      - "sonda-wasm/**"
+      - "sonda-core/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "docs/site/docs/javascripts/sonda_wasm*"
+      - ".github/workflows/wasm-drift.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must match the wasm-bindgen version in Cargo.lock, or the generated JS glue
+  # and the wasm disagree at runtime.
+  WASM_BINDGEN_VERSION: "0.2.117"
+  # Binaryen 108 (the Debian/Ubuntu package) optimizes this bundle without
+  # complaint and produces a module that dies in the browser with
+  # "WebAssembly.Table.grow(): failed to grow table by 4". 119 is the version
+  # the committed bundle was produced with and the one verified working.
+  BINARYEN_VERSION: "119"
+
+jobs:
+  rebuild-and-compare:
+    name: Committed wasm bundle matches its source
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the compiler (1.95.0) and cargo honours that
+      # override inside the repo, so this action's own toolchain is only ever
+      # the bootstrap. Its `targets:` input would add wasm32 to *stable* — the
+      # toolchain cargo then does not use — which fails with a bare
+      # "can't find crate for `std`". The target is added in its own step below,
+      # from the repo directory, so it lands on the pinned toolchain.
+      #
+      # Pinning is not incidental for a drift gate: rebuilding with a moving
+      # `stable` would compare the committed bundle against a different
+      # compiler than produced it, and report drift that is really just a
+      # toolchain bump.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add the wasm target to the pinned toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          echo "active toolchain: $(rustup show active-toolchain)"
+          rustup target list --installed
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-wasm-drift-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wasm-drift-
+
+      - name: Install wasm-bindgen-cli (pinned to Cargo.lock)
+        run: |
+          if [ "$(wasm-bindgen --version 2>/dev/null | awk '{print $2}')" != "$WASM_BINDGEN_VERSION" ]; then
+            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+          fi
+          wasm-bindgen --version
+
+      - name: Install binaryen (pinned)
+        run: |
+          curl -sSL -o /tmp/binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          tar xzf /tmp/binaryen.tar.gz -C /tmp
+          echo "/tmp/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Verify binaryen version
+        run: wasm-opt --version
+
+      # Same recipe as `task site:wasm`, including the path remaps — without
+      # those the bundle embeds the builder's absolute paths and no two
+      # machines can ever agree.
+      - name: Rebuild the bundle
+        run: |
+          mkdir -p /tmp/rebuilt
+          RUSTFLAGS="--remap-path-prefix $HOME/.cargo=/cargo --remap-path-prefix $(pwd)=/sonda" \
+            cargo build -p sonda-wasm --profile wasm-release --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/wasm-release/sonda_wasm.wasm \
+            --target web --no-typescript --out-dir /tmp/rebuilt
+          wasm-opt -Oz /tmp/rebuilt/sonda_wasm_bg.wasm -o /tmp/rebuilt/opt.wasm
+          mv /tmp/rebuilt/opt.wasm /tmp/rebuilt/sonda_wasm_bg.wasm
+
+      # Three comparisons, all hard gates — with a precondition stated plainly,
+      # because getting it wrong once already produced a wrong claim.
+      #
+      # THE BYTE-EXACT WASM CHECK IS PLATFORM-SPECIFIC. It compares against a
+      # bundle that must have been built on linux x86_64 with binaryen exactly
+      # 119. Host and binaryen version are two independent axes, and each was
+      # measured by varying one of them (review #540 W1, then W1 round two):
+      #
+      #     host platform      linux x86_64, binaryen 119   771,488 bytes  <- committed
+      #                        macOS arm64,  binaryen 119   772,019 bytes  (differ at byte 532)
+      #
+      #     binaryen version   macOS arm64,  binaryen 119   772,019 bytes
+      #                        macOS arm64,  binaryen 131   770,922 bytes
+      #
+      # Both 770,922 and 772,019 were measured on macOS arm64. The linux
+      # x86_64 + binaryen 131 combination has never been built, so there is no
+      # figure for it here — do not infer one by reading across the axes.
+      #
+      # This check first shipped report-only, then was promoted on two green
+      # runs — but both ran on the same ubuntu-latest x86_64 image, so they
+      # demonstrated DETERMINISM (same inputs, same output) and were mistaken
+      # for REPRODUCIBILITY (same source, any host). A reviewer rebuilding on
+      # macOS arm64 with the identical pinned toolchain disproved it. The
+      # remap flags removed the builder's absolute paths, which was necessary
+      # but not sufficient: codegen still differs by host.
+      #
+      # It stays enforced anyway, deliberately. Softening to glue-plus-size
+      # would buy back the false negative the byte check exists to close — a
+      # small source edit landing within the 1% size tolerance would pass. The
+      # usability problem is fixed where it belongs instead: `task site:wasm`
+      # refuses to run off the reference platform or with the wrong binaryen,
+      # so a contributor learns at rebuild time rather than from a confusing
+      # CI rejection of a functionally correct bundle.
+      #
+      # What would invalidate this: a rebuild on the reference platform, with
+      # binaryen 119 and the pinned toolchain, that still differs. That is the
+      # discriminating test — not a rebuild anywhere convenient.
+      #
+      # If this fails, the committed bundle is no longer what the pinned
+      # toolchain produces on the reference platform. Run `task site:wasm`
+      # there and commit the result.
+      - name: Compare against the committed bundle
+        run: |
+          committed=docs/site/docs/javascripts
+          rebuilt=/tmp/rebuilt
+          status=0
+
+          if cmp -s "$committed/sonda_wasm.js" "$rebuilt/sonda_wasm.js"; then
+            echo "JS glue: byte-identical"
+          else
+            echo "::error::sonda_wasm.js does not match a fresh build. The committed" \
+              "bundle is behind its source — run 'task site:wasm' and commit the result."
+            diff <(head -c 2000 "$committed/sonda_wasm.js") \
+                 <(head -c 2000 "$rebuilt/sonda_wasm.js") || true
+            status=1
+          fi
+
+          a=$(wc -c < "$committed/sonda_wasm_bg.wasm")
+          b=$(wc -c < "$rebuilt/sonda_wasm_bg.wasm")
+          delta=$(( a > b ? a - b : b - a ))
+          permille=$(( delta * 1000 / a ))
+          echo "wasm size: committed $a, rebuilt $b (delta $delta bytes, ${permille}‰)"
+          if [ "$permille" -gt 10 ]; then
+            echo "::error::the rebuilt wasm differs from the committed one by more than 1%." \
+              "The committed bundle is behind its source — run 'task site:wasm'."
+            status=1
+          fi
+
+          if cmp -s "$committed/sonda_wasm_bg.wasm" "$rebuilt/sonda_wasm_bg.wasm"; then
+            echo "wasm bytes: byte-identical"
+          else
+            echo "::error::the rebuilt wasm is the right size but not byte-identical." \
+              "Every input to this build is pinned and the builder's paths are remapped," \
+              "so the committed bundle should be reproducible exactly — run 'task site:wasm'" \
+              "and commit the result. See the comment above this step before weakening this."
+            cmp "$committed/sonda_wasm_bg.wasm" "$rebuilt/sonda_wasm_bg.wasm" || true
+            status=1
+          fi
+
+          exit $status

@@ -238,6 +238,37 @@ jobs:
       - name: No raw-markup assignment in hand-written docs JS
         run: bash scripts/check_no_raw_html.sh
 
+      # The wasm bundle downloads on every page carrying a live widget, so its
+      # size is a user-facing property. Ratchet, not a ceiling to grow into.
+      - name: Playground wasm bundle is within its size budget
+        run: python3 scripts/check_wasm_size.py
+
+      # sonda-editor.js is a committed BUILD OUTPUT. Nothing stops an edit to
+      # tools/editor/src from being merged without the rebuilt bundle, leaving
+      # the shipped editor silently behind its source — which is exactly the
+      # state this gate found main in when it was written. esbuild's output is
+      # deterministic from the lockfile, so a plain rebuild-and-diff is a
+      # sound check.
+      - name: Set up Node for the editor bundle check
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/site/tools/editor/package-lock.json
+
+      - name: Editor bundle matches its source
+        run: |
+          cd docs/site/tools/editor
+          npm ci
+          npm run build
+          cd - >/dev/null
+          if ! git diff --exit-code -- docs/site/docs/javascripts/sonda-editor.js; then
+            echo "::error::docs/site/docs/javascripts/sonda-editor.js does not match a" \
+              "fresh build of docs/site/tools/editor/src. Run 'task site:editor' and" \
+              "commit the result."
+            exit 1
+          fi
+
       # Zero-dependency node harness over the playground's pure JS helpers
       # (sonda-pure.js) — the only automated coverage the docs-site JS has.
       - name: Playground pure-helper tests
