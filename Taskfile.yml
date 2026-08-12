@@ -250,7 +250,11 @@ tasks:
     desc: Rebuild the vendored CodeMirror bundle for the playground editor
     dir: docs/site/tools/editor
     cmds:
-      - npm install
+      # `npm ci`, not `npm install`: the drift gate in ci.yml uses ci, and a
+      # local rebuild that resolved even one dependency differently would
+      # produce a bundle CI then rejects. The devDependencies are pinned
+      # exactly for the same reason.
+      - npm ci
       - npm run build
 
   site:jstest:

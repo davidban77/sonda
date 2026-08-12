@@ -267,6 +267,28 @@ jobs:
           cache: npm
           cache-dependency-path: docs/site/tools/editor/package-lock.json
 
+      # WHY THE BUILD IS NOT FULLY MINIFIED (and this gate can therefore mean
+      # something). With `--minify`, esbuild allocates short identifier names
+      # by frequency, and that allocation turned out not to be stable across
+      # whatever varies between CI runs: the same commit, lockfile and source
+      # passed this gate at 15:17 and failed it at 17:56 the same day, with
+      # 336 differing bytes out of 365,254 — every one an identifier, size
+      # identical, behaviour unchanged.
+      #
+      # Eliminated by measurement, none of them the cause: node (22.22.2,
+      # 22.23.1 and 22.23.2 all produce identical bytes), npm (10.9.8 in both
+      # runs), `npm ci` vs `npm install` (identical), fresh vs cached install
+      # (four clean installs, identical), and esbuild's own parallelism
+      # (GOMAXPROCS 1/2/4/8/16, identical). The culprit is still unnamed.
+      #
+      # So the fix does not pin a suspect — it removes the degree of freedom.
+      # `--minify-whitespace --minify-syntax` keeps identifiers from the
+      # source, so the only way these bytes can move is a real change to the
+      # source or the dependencies, which is exactly what this gate is for.
+      # The cost is 22 KB gzipped (120,166 -> 142,325) on the one page that
+      # already loads a 771 KB wasm engine, and the bundle becomes readable
+      # in devtools. The second incident on this gate bought that trade
+      # (#540 found the first).
       - name: Editor bundle matches its source
         run: |
           cd docs/site/tools/editor
