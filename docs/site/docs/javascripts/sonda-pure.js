@@ -433,12 +433,17 @@ export function galleryCardState(result) {
 
   const skipped = arrayOf(result.skipped);
   if (skipped.length) {
+    // The engine's sentence stands alone rather than being introduced. Every
+    // skip reason it emits already names the limitation and what to do about
+    // it ("metric csv_replay reads a file — no filesystem in the browser; run
+    // it locally with `sonda run`"), so a "Not sampled in the browser —"
+    // prefix only says "browser" a second time. The fallback below is for a
+    // reason the engine did not give, which is the one case a card has to
+    // speak for itself.
     const reason = nonEmptyString(skipped[0] && skipped[0].reason);
     return {
       mode: "skipped",
-      message: reason
-        ? `Not sampled in the browser — ${reason}`
-        : "Not sampled in the browser.",
+      message: reason || "Not sampled in the browser.",
     };
   }
 

@@ -596,11 +596,13 @@ test("ok with nothing at all is not a chart — a kind: composable pack", () => 
 });
 
 test("a skipped entry surfaces the engine's own reason verbatim", () => {
-  const state = galleryCardState(
-    okWith({ skipped: [{ id: "cpu_replay", reason: "csv_replay: no filesystem" }] })
-  );
+  // Verbatim means verbatim: no prefix, no rewording. The engine's skip
+  // messages are written for a reader and already name the limitation, and a
+  // card that introduces them says "browser" twice (review #541 B1).
+  const reason = "metric csv_replay reads a file — no filesystem in the browser";
+  const state = galleryCardState(okWith({ skipped: [{ id: "cpu_replay", reason }] }));
   assert.equal(state.mode, "skipped");
-  assert.match(state.message, /csv_replay: no filesystem/);
+  assert.equal(state.message, reason);
 });
 
 test("a skipped entry with no reason still says it was skipped", () => {

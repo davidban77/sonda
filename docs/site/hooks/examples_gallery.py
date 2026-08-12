@@ -23,8 +23,17 @@ every csv_replay example samples to ``ok: true`` with no entries at all.
 
 **It is deterministic.** Same sources, byte-identical page: rows are processed
 in document order, no timestamps, no set iteration, no filesystem ordering.
-``scripts/validate_docs_scenarios.py`` builds twice and diffs to prove it, and
-also compiles every file this hook cards so a card cannot outlive its example.
+Two builds are compared byte-for-byte by the ``docs-browser-smoke`` job in
+``.github/workflows/ci.yml`` and by ``task site:gallery-check`` — both need a
+real ``mkdocs build``, which is why the check lives there and not in
+``scripts/validate_docs_scenarios.py``. That script gates the other half:
+every file this hook cards still compiles, so a card cannot outlive its
+example.
+
+The self-test below has a ``test_output_is_deterministic``, and it is worth
+knowing what that one does NOT prove: it calls :func:`augment` twice on one
+string, which is function purity. A page that depended on filesystem ordering
+would pass it. The two-build diff is the check that would fail.
 
 Which rows get a card is decided by the same ``runnableScenario`` detector
 that decides which fences get a button: a row pointing at a vmalert rules
