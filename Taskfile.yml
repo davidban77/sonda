@@ -131,8 +131,13 @@ tasks:
       therefore never half-written: either the recipe completes and replaces it
       wholesale, or it fails and leaves it untouched.
 
-      wasm-bindgen-cli must match the wasm-bindgen version in Cargo.lock
-      (0.2.117), or the generated JS glue and the wasm will disagree.
+      wasm-bindgen-cli must match the wasm-bindgen version in Cargo.lock, or
+      the generated JS glue and the wasm will disagree. That version, the
+      binaryen version, the reference platform and the crate version the
+      committed bundle was built at all live in one file next to the bundle —
+      docs/site/docs/javascripts/sonda_wasm.build.json — which this recipe and
+      the drift workflow both read. `python3 scripts/wasm_pins.py check`
+      reports them.
     cmds:
       # FIRST, before anything writes anything. The guard used to sit on the
       # wasm-opt step, three commands in — by which point wasm-bindgen had
@@ -143,16 +148,28 @@ tasks:
       - |
         # The committed bundle is compared BYTE-FOR-BYTE against a rebuild by
         # the wasm-drift workflow, and that comparison is only meaningful if
-        # everyone rebuilds under the same conditions the gate uses. Two
-        # independent inputs change the output bytes (review #540 W1):
+        # everyone rebuilds under the same conditions the gate uses. THREE
+        # independent inputs change the output bytes, all measured:
         #
         #   binaryen version   linux x86_64, 119   771,488 bytes  <- committed
         #                      macOS arm64,  131   770,922 bytes
         #   host platform      linux x86_64, 119   771,488 bytes  <- committed
         #                      macOS arm64,  119   772,019 bytes  (differ at byte 532)
+        #   crate version      1.19.0              771,614 bytes  <- committed
+        #                      1.20.0              771,618 bytes  (differ at byte 532)
         #
         # Each pair varies one axis; no run has ever measured linux x86_64 with
         # binaryen 131, so do not read a linux/131 figure out of the table.
+        # (The first two pairs predate the crate-version bump, hence the two
+        # committed figures — 771,488 at 1.19.0 before the #541 engine change,
+        # 771,614 after. The axis each pair isolates is what matters.)
+        #
+        # The values live in docs/site/docs/javascripts/sonda_wasm.build.json,
+        # next to the bundle they describe, and this recipe and the drift
+        # workflow both read them from there. The crate version is handled
+        # differently from the other two: the gate rebuilds AT the recorded
+        # version rather than demanding the workspace match it, because a
+        # release bumps versions and cannot rebuild wasm.
         #
         # So this is an exact version match, not a floor, and the platform is
         # checked too. Getting either wrong produces a functionally correct
@@ -165,8 +182,9 @@ tasks:
         # trap: it optimizes without complaint and emits a module that dies in
         # the browser with "WebAssembly.Table.grow(): failed to grow table by
         # 4". Too old for what wasm-bindgen 0.2.117 emits.)
-        want_binaryen=119
-        want_platform="Linux x86_64"
+        python3 scripts/wasm_pins.py check || exit 1
+        want_binaryen=$(python3 scripts/wasm_pins.py get binaryen)
+        want_platform=$(python3 scripts/wasm_pins.py get platform)
         version=$(wasm-opt --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
         platform="$(uname -s) $(uname -m)"
         if [ "${version:-0}" != "$want_binaryen" ] || [ "$platform" != "$want_platform" ]; then
@@ -222,6 +240,10 @@ tasks:
         done
         mv target/wasm-stage/sonda_wasm.js target/wasm-stage/sonda_wasm_bg.wasm docs/site/docs/javascripts/
         rm -rf target/wasm-stage
+        # The record follows the bundle. Committing one without the other is
+        # what the drift gate would then report, correctly and confusingly.
+        python3 scripts/wasm_pins.py set-crate-version "$(python3 scripts/wasm_pins.py workspace-version)"
+        python3 scripts/wasm_pins.py check
       - python3 scripts/check_wasm_size.py
 
   site:editor:

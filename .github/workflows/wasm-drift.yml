@@ -8,6 +8,27 @@ name: Wasm bundle drift
 # version-pinned wasm-bindgen and a version-pinned binaryen, which is far too
 # much to install on every push. Path filters keep it to the changes that can
 # actually invalidate the bundle.
+#
+# THE FILTER IS PART OF THE GATE. An input that moves the bundle's bytes and is
+# missing from this list does not cause a failure — it delays one, onto the
+# next person to touch sonda-core, reported as their drift. `rust-toolchain.toml`
+# is here because the compiler moves the bytes further than anything else that
+# does (review #542 W1, measured twice: rustc 1.95.0 vs 1.93.1 on macOS arm64
+# +44,785 bytes; 1.95.0 vs 1.94.1 on linux x86_64 +21,687 bytes, both against a
+# control of two identical same-toolchain builds). `.cargo/config*` is here for
+# the same reason and was found the same way (review #542 M1): cargo reads it
+# before compiling, and the one key it currently holds is not inert —
+# `[build] incremental` flipped from false to true moves the bundle by +760
+# bytes, measured.
+#
+# One nuance that is not a reason to leave it out: the recipe sets RUSTFLAGS
+# explicitly, and an env RUSTFLAGS shadows this file's `rustflags` keys, so
+# THAT particular channel is currently inert (measured: identical bytes with
+# `[target.wasm32-unknown-unknown] rustflags` set, 959,780 bytes with the same
+# config and no env RUSTFLAGS — live, just shadowed). Gating on the file rather
+# than reasoning about which of its keys survive is the cheaper correctness.
+#
+# scripts/wasm_pins.py holds this list to the inputs it records.
 on:
   push:
     paths:
@@ -16,6 +37,8 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "docs/site/docs/javascripts/sonda_wasm*"
+      - "rust-toolchain.toml"
+      - ".cargo/config*"
       - ".github/workflows/wasm-drift.yml"
   pull_request:
     paths:
@@ -24,6 +47,8 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "docs/site/docs/javascripts/sonda_wasm*"
+      - "rust-toolchain.toml"
+      - ".cargo/config*"
       - ".github/workflows/wasm-drift.yml"
   workflow_dispatch:
 
@@ -31,15 +56,10 @@ concurrency:
   group: wasm-drift-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Must match the wasm-bindgen version in Cargo.lock, or the generated JS glue
-  # and the wasm disagree at runtime.
-  WASM_BINDGEN_VERSION: "0.2.117"
-  # Binaryen 108 (the Debian/Ubuntu package) optimizes this bundle without
-  # complaint and produces a module that dies in the browser with
-  # "WebAssembly.Table.grow(): failed to grow table by 4". 119 is the version
-  # the committed bundle was produced with and the one verified working.
-  BINARYEN_VERSION: "119"
+# The build inputs are not listed here any more. They live next to the bundle,
+# in docs/site/docs/javascripts/sonda_wasm.build.json, because `task site:wasm`
+# needs the same values and two copies of a pin is one copy too many. The step
+# below reads them into the environment.
 
 jobs:
   rebuild-and-compare:
@@ -49,6 +69,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      # Everything the committed bundle is a product of, from one file.
+      - name: Read the bundle's build pins
+        run: |
+          python3 scripts/wasm_pins.py check
+          {
+            echo "WASM_BINDGEN_VERSION=$(python3 scripts/wasm_pins.py get wasm_bindgen)"
+            echo "BINARYEN_VERSION=$(python3 scripts/wasm_pins.py get binaryen)"
+            echo "BUNDLE_CRATE_VERSION=$(python3 scripts/wasm_pins.py get crate_version)"
+          } >> "$GITHUB_ENV"
 
       # rust-toolchain.toml pins the compiler (1.95.0) and cargo honours that
       # override inside the repo, so this action's own toolchain is only ever
@@ -99,6 +129,43 @@ jobs:
       - name: Verify binaryen version
         run: wasm-opt --version
 
+      # THE THIRD AXIS. Host and binaryen were the two known ones; the crate
+      # version is the third, and it is the one that made this gate
+      # unsatisfiable in practice.
+      #
+      # rustc folds the crate version into the symbol/metadata hash, so a
+      # release that changes nothing but version numbers changes the bundle's
+      # bytes. Measured on release-please PR #537: committed 771,614 vs
+      # rebuilt 771,618, differing at byte 532 — four bytes of reordered
+      # function signatures in the wasm type section, no behavioural
+      # difference at all. Reverting ONLY the version in that same tree and
+      # rebuilding reproduced the committed bundle exactly.
+      #
+      # Release commits are machine-generated and cannot carry a wasm
+      # rebuild, so "the bundle matches the current source" is a promise
+      # nobody can keep. This step makes the gate ask the question that
+      # matters instead: does the bundle match the ENGINE, rebuilt as it was
+      # built? Skipping the gate on release branches would not do — main's
+      # bundle would then genuinely be a build of the previous version, and
+      # the next PR touching sonda-core would fail instead.
+      #
+      # The rewrite happens in this throwaway checkout and is never
+      # committed. wasm_pins.py refuses a recorded version newer than the
+      # workspace's, which is what editing the record to silence a red gate
+      # would look like.
+      - name: Rebuild as the bundle was built
+        run: |
+          current=$(python3 scripts/wasm_pins.py workspace-version)
+          if [ "$BUNDLE_CRATE_VERSION" = "$current" ]; then
+            echo "workspace is at $current, the version the bundle was built at — no rewrite"
+          else
+            echo "::notice::workspace is at $current; the committed bundle was built at" \
+              "$BUNDLE_CRATE_VERSION. Rebuilding at $BUNDLE_CRATE_VERSION so this" \
+              "compares engines rather than version strings."
+            python3 scripts/wasm_pins.py rewrite-workspace-version "$BUNDLE_CRATE_VERSION"
+            git --no-pager diff --stat
+          fi
+
       # Same recipe as `task site:wasm`, including the path remaps — without
       # those the bundle embeds the builder's absolute paths and no two
       # machines can ever agree.
@@ -117,8 +184,10 @@ jobs:
       #
       # THE BYTE-EXACT WASM CHECK IS PLATFORM-SPECIFIC. It compares against a
       # bundle that must have been built on linux x86_64 with binaryen exactly
-      # 119. Host and binaryen version are two independent axes, and each was
-      # measured by varying one of them (review #540 W1, then W1 round two):
+      # 119 — and at the crate version recorded in sonda_wasm.build.json,
+      # which the step above has already arranged. Host and binaryen version
+      # were measured by varying one of them (review #540 W1, then W1 round
+      # two); the version axis is measured above:
       #
       #     host platform      linux x86_64, binaryen 119   771,488 bytes  <- committed
       #                        macOS arm64,  binaryen 119   772,019 bytes  (differ at byte 532)
