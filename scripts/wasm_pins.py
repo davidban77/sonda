@@ -260,6 +260,79 @@ class _RepoStateTests(unittest.TestCase):
         self.assertEqual(load(self.repo_root)["wasm_bindgen"], match.group(1))
 
 
+class _DriftTriggerTests(unittest.TestCase):
+    """The workflow's path filter is part of the gate, so it gets a test.
+
+    A gate that fires on a curated list of inputs is only as good as the list:
+    an input that moves the bundle's bytes and is missing from the filter does
+    not cause a failure, it delays one onto the next person to touch
+    sonda-core, reported as their drift. That is not hypothetical — the filter
+    shipped in #540 without ``rust-toolchain.toml``, and the compiler moves the
+    bytes further than anything the sidecar records (review #542 W1: +21,687
+    bytes across one minor version on linux x86_64, +44,785 on macOS arm64).
+
+    So the list is asserted rather than trusted, from both trigger events. A
+    new input to the build belongs in three places — the filter, this list,
+    and the sidecar's prose — and forgetting the filter is the one that fails
+    silently.
+    """
+
+    WORKFLOW = Path(".github/workflows/wasm-drift.yml")
+
+    #: Every path whose change can invalidate the committed bundle.
+    REQUIRED_TRIGGERS = (
+        "sonda-wasm/**",  # the facade itself
+        "sonda-core/**",  # the engine it wraps
+        "Cargo.lock",  # dependency versions
+        "Cargo.toml",  # the wasm-release profile, and the crate version
+        "rust-toolchain.toml",  # the compiler — the largest effect of all
+        "docs/site/docs/javascripts/sonda_wasm*",  # the bundle and this record
+        ".github/workflows/wasm-drift.yml",  # the gate's own recipe
+    )
+
+    def setUp(self) -> None:
+        self.repo_root = find_repo_root(Path(__file__).parent)
+        self.text = (self.repo_root / self.WORKFLOW).read_text(encoding="utf-8")
+
+    def _paths_for(self, event: str) -> list[str]:
+        """The `paths:` list under one trigger, read without a YAML parser.
+
+        Deliberately no yaml import: this script is stdlib-only so it can run
+        in the docs job with no pip install, and PyYAML would also read the
+        bare `on:` key as the boolean True, which is its own small trap.
+        """
+        start = self.text.index(f"\n  {event}:")
+        after = self.text[start + 1 :]
+        end = len(after)
+        for candidate in ("\n  push:", "\n  pull_request:", "\n  workflow_dispatch:", "\nconcurrency:"):
+            found = after.find(candidate, 1)
+            if found != -1:
+                end = min(end, found)
+        return re.findall(r'^\s*- "([^"]+)"', after[:end], re.MULTILINE)
+
+    def test_every_required_trigger_is_present_in_both_events(self) -> None:
+        for event in ("push", "pull_request"):
+            paths = self._paths_for(event)
+            self.assertTrue(paths, f"no paths parsed for {event}")
+            for required in self.REQUIRED_TRIGGERS:
+                with self.subTest(event=event, path=required):
+                    self.assertIn(
+                        required,
+                        paths,
+                        f"{required} can change the bundle but does not trigger "
+                        f"the drift gate on {event}",
+                    )
+
+    def test_both_events_filter_identically(self) -> None:
+        """A path in one list and not the other passes on push and fails on the PR."""
+        self.assertEqual(self._paths_for("push"), self._paths_for("pull_request"))
+
+    def test_the_compiler_pin_exists_where_the_record_says_it_does(self) -> None:
+        """The sidecar defers to rust-toolchain.toml; that file must own a channel."""
+        toolchain = (self.repo_root / "rust-toolchain.toml").read_text(encoding="utf-8")
+        self.assertRegex(toolchain, r'channel\s*=\s*"[^"]+"')
+
+
 class _RewriteTests(unittest.TestCase):
     """Rewriting runs against copies; the real manifests are never touched."""
 

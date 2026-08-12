@@ -10,6 +10,8 @@
   "binaryen": "119",
   "_binaryen": "An exact match, not a floor. 131 produces a different (working) bundle; 108 — the Debian/Ubuntu package — optimizes without complaint and emits a module that dies in the browser with 'WebAssembly.Table.grow(): failed to grow table by 4'.",
 
+  "_compiler": "NOT RECORDED HERE, DELIBERATELY, and it is the input that moves the bytes furthest: rustc 1.95.0 vs 1.94.1 on this platform differs by +21,687 bytes (2.81%), and 1.95.0 vs 1.93.1 on macOS arm64 by +44,785 (review #542 W1, both against a control of two identical same-toolchain builds). The compiler is pinned in rust-toolchain.toml, which owns that value; copying it here would recreate exactly the duplication this file exists to remove. What DID have to change is the drift workflow's path filter — rust-toolchain.toml was missing from it, so a compiler bump would have merged green and surfaced as the next author's drift. scripts/wasm_pins.py --self-test holds the filter to this list.",
+
   "platform": "Linux x86_64",
   "_platform": "`uname -s` and `uname -m` of the reference host. Codegen differs by host even with paths remapped: the same source and toolchain on macOS arm64 gives 772,019 bytes against this platform's 771,488, differing at byte 532 (review #540 W1)."
 }

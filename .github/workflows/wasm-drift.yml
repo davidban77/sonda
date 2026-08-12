@@ -8,6 +8,15 @@ name: Wasm bundle drift
 # version-pinned wasm-bindgen and a version-pinned binaryen, which is far too
 # much to install on every push. Path filters keep it to the changes that can
 # actually invalidate the bundle.
+#
+# THE FILTER IS PART OF THE GATE. An input that moves the bundle's bytes and is
+# missing from this list does not cause a failure — it delays one, onto the
+# next person to touch sonda-core, reported as their drift. `rust-toolchain.toml`
+# is here because the compiler moves the bytes further than anything else that
+# does (review #542 W1, measured twice: rustc 1.95.0 vs 1.93.1 on macOS arm64
+# +44,785 bytes; 1.95.0 vs 1.94.1 on linux x86_64 +21,687 bytes, both against a
+# control of two identical same-toolchain builds). scripts/wasm_pins.py holds
+# this list to the inputs it records.
 on:
   push:
     paths:
@@ -16,6 +25,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "docs/site/docs/javascripts/sonda_wasm*"
+      - "rust-toolchain.toml"
       - ".github/workflows/wasm-drift.yml"
   pull_request:
     paths:
@@ -24,6 +34,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "docs/site/docs/javascripts/sonda_wasm*"
+      - "rust-toolchain.toml"
       - ".github/workflows/wasm-drift.yml"
   workflow_dispatch:
 
