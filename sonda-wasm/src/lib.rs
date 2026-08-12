@@ -32,7 +32,8 @@ use sonda_core::encoder::create_encoder;
 use sonda_core::generator::histogram::HistogramGenerator;
 use sonda_core::generator::summary::SummaryGenerator;
 use sonda_core::generator::{
-    create_generator, create_log_generator, JitterWrapper, LogGeneratorConfig, ValueGenerator,
+    create_generator, create_log_generator, GeneratorConfig, JitterWrapper, LogGeneratorConfig,
+    ValueGenerator,
 };
 use sonda_core::model::log::Severity;
 use sonda_core::model::metric::{Labels, MetricEvent, ValidatedMetricName};
@@ -427,6 +428,23 @@ fn sample_metrics(
     compiled: Option<&CompiledEntry>,
     max_ticks: u32,
 ) -> Result<EntrySample, String> {
+    // Refused here, before `create_generator`, for the same reason as the log
+    // path below — and the message is written to the same audience.
+    //
+    // Without this the browser still fails, but it fails deeper: with
+    // `columns:` set, the generator reports "call expand_scenario before
+    // create_generator when 'columns' is set" (generator/mod.rs), an internal
+    // call-ordering invariant; without it, "cannot read file
+    // examples/....csv". The docs gallery publishes whatever the engine says
+    // under a correct, working example, so those strings read to a reader as
+    // a bug in sonda rather than as the one thing a browser genuinely cannot
+    // do. Review #541 B1 measured four cards showing exactly that.
+    if matches!(config.generator, GeneratorConfig::CsvReplay { .. }) {
+        return Err(
+            "metric csv_replay reads a file — no filesystem in the browser; run it locally with `sonda run`"
+                .into(),
+        );
+    }
     let rate = config.base.rate;
     let generator = create_generator(&config.generator, rate).map_err(|e| e.to_string())?;
     let generator: Box<dyn ValueGenerator> = match config.base.jitter {
@@ -694,6 +712,60 @@ scenarios:
             reason.contains("filesystem"),
             "reason explains the skip: {reason}"
         );
+    }
+
+    /// The metric twin of the log test above, and the reason it exists is the
+    /// difference between the two messages rather than the skip itself.
+    ///
+    /// Both shapes are refused, but WITHOUT the guard the metric path still
+    /// "works": it reaches the generator and comes back with an internal
+    /// invariant ("call expand_scenario before create_generator when
+    /// 'columns' is set") or a filesystem path. Those are true and useless —
+    /// and the docs gallery publishes them verbatim under a working example.
+    /// So this asserts the audience of the message, not just its existence:
+    /// it must name the browser, and it must not leak the engine's internal
+    /// call-ordering rule. Both `columns:` and the single-column form are
+    /// covered because they failed differently before the guard.
+    #[test]
+    fn metric_csv_replay_is_skipped_with_a_reader_facing_reason() {
+        for generator in [
+            "{ type: csv_replay, file: values.csv }",
+            "{ type: csv_replay, file: values.csv, \
+              columns: [{ index: 1, name: cpu }, { index: 2, name: mem }] }",
+        ] {
+            let yaml = format!(
+                "\
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 10s
+  encoder: {{ type: prometheus_text }}
+  sink: {{ type: stdout }}
+scenarios:
+  - id: replay
+    signal_type: metrics
+    name: replayed
+    generator: {generator}
+"
+            );
+            let json = sample_scenario(&yaml, 240);
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed["ok"], true, "{generator}: {json}");
+            assert!(
+                parsed["entries"].as_array().unwrap().is_empty(),
+                "{generator}: nothing may be sampled from a file that is not there"
+            );
+            let reason = parsed["skipped"][0]["reason"].as_str().unwrap();
+            assert!(
+                reason.contains("no filesystem in the browser"),
+                "{generator}: the reason must name the browser limitation: {reason}"
+            );
+            assert!(
+                !reason.contains("expand_scenario"),
+                "{generator}: engine internals must not reach a docs reader: {reason}"
+            );
+        }
     }
 
     const SINE_SCENARIO: &str = "\

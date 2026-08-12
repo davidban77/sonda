@@ -21,3 +21,12 @@ node_modules/
 # Playwright's browser downloads, when it manages them itself rather than
 # using a preinstalled Chromium via CHROMIUM_PATH.
 docs/site/tools/browser/.playwright/
+
+# CPython bytecode. The examples-gallery mkdocs hook is imported by
+# `mkdocs build` and by scripts/validate_docs_scenarios.py, so anyone who
+# builds the docs or runs that gate writes one of these — a committed .pyc
+# then shows up as a modification nobody made, and blocks a branch switch
+# (review #541 M1). It is also useless: the file that was committed was 3.11
+# bytecode and the docs jobs run 3.12, so CI could never have loaded it.
+__pycache__/
+*.py[cod]

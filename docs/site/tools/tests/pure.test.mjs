@@ -17,6 +17,7 @@ import {
   evaluate,
   exportFilename,
   fromBase64Url,
+  galleryCardState,
   hashPayloadTooLarge,
   niceDeadlineSecs,
   normalizeFence,
@@ -548,6 +549,114 @@ test("exportFilename takes the extension as given, dotted or bare", () => {
 
 test("exportFilename names the file after the FIRST entry", () => {
   assert.equal(exportFilename([{ name: "first" }, { name: "second" }], "yaml"), "first.yaml");
+});
+
+// --- galleryCardState --------------------------------------------------
+//
+// The examples gallery mounts one widget per example file, and "the engine
+// said ok" is NOT the same claim as "there is something to draw". Every case
+// below is a shape a real file in examples/ produces — measured through the
+// committed wasm bundle, not imagined:
+//
+//   50 of the 62 cards       entries, a line chart
+//    6 cards                 skipped with a reason (all csv_replay + otlp)
+//    6 cards                 logs, histograms or summaries — nothing linear
+//
+// A card that showed a blank canvas for the last twelve would look broken and
+// be, technically, a success. That is the failure this function exists to
+// stop, so the tests below lean on the boundary between ok-with-nothing and
+// ok-with-a-chart rather than on the happy path.
+
+const okWith = (extra) => ({
+  ok: true,
+  error: null,
+  entries: [],
+  histograms: [],
+  summaries: [],
+  logs: [],
+  skipped: [],
+  ...extra,
+});
+
+test("a metrics entry is a chart", () => {
+  const state = galleryCardState(okWith({ entries: [{ name: "cpu", values: [1, 2] }] }));
+  assert.equal(state.mode, "chart");
+  assert.equal(state.extraSeries, 0);
+});
+
+test("extra series are counted, not drawn", () => {
+  const entries = [{ name: "a" }, { name: "b" }, { name: "c" }];
+  assert.equal(galleryCardState(okWith({ entries })).extraSeries, 2);
+});
+
+test("ok with nothing at all is not a chart — a kind: composable pack", () => {
+  const state = galleryCardState(okWith({}));
+  assert.equal(state.mode, "empty");
+  assert.match(state.message, /Nothing to sample/);
+});
+
+test("a skipped entry surfaces the engine's own reason verbatim", () => {
+  // Verbatim means verbatim: no prefix, no rewording. The engine's skip
+  // messages are written for a reader and already name the limitation, and a
+  // card that introduces them says "browser" twice (review #541 B1).
+  const reason = "metric csv_replay reads a file — no filesystem in the browser";
+  const state = galleryCardState(okWith({ skipped: [{ id: "cpu_replay", reason }] }));
+  assert.equal(state.mode, "skipped");
+  assert.equal(state.message, reason);
+});
+
+test("a skipped entry with no reason still says it was skipped", () => {
+  const state = galleryCardState(okWith({ skipped: [{ id: "x" }] }));
+  assert.equal(state.mode, "skipped");
+  assert.match(state.message, /Not sampled in the browser/);
+});
+
+test("logs, histograms and summaries each get their own note", () => {
+  assert.match(galleryCardState(okWith({ logs: [{ lines: [] }] })).message, /Log stream/);
+  assert.match(galleryCardState(okWith({ histograms: [{}] })).message, /Histogram/);
+  assert.match(galleryCardState(okWith({ summaries: [{}] })).message, /Summary/);
+});
+
+test("entries win over logs — a mixed scenario shows its chart", () => {
+  const state = galleryCardState(okWith({ entries: [{ name: "cpu" }], logs: [{ lines: [] }] }));
+  assert.equal(state.mode, "chart");
+});
+
+test("a specific skip reason wins over the generic empty message", () => {
+  const state = galleryCardState(okWith({ skipped: [{ reason: "because" }] }));
+  assert.equal(state.mode, "skipped");
+});
+
+test("ok: false is an error carrying the engine's message", () => {
+  const state = galleryCardState({ ok: false, error: "compile_after error" });
+  assert.equal(state.mode, "error");
+  assert.equal(state.message, "compile_after error");
+});
+
+test("ok: false with no message still names the failure", () => {
+  for (const bad of [null, "", "   ", 42]) {
+    const state = galleryCardState({ ok: false, error: bad });
+    assert.equal(state.mode, "error");
+    assert.equal(state.message, "compile error");
+  }
+});
+
+test("hostile and malformed results degrade to an error, never throw", () => {
+  for (const bad of [null, undefined, 0, "", "ok", [], { ok: "true" }, { ok: 1 }]) {
+    const state = galleryCardState(bad);
+    assert.equal(state.mode, "error", `for ${JSON.stringify(bad)}`);
+    assert.ok(state.message.length > 0);
+  }
+});
+
+test("non-array output fields are treated as absent, not iterated", () => {
+  const state = galleryCardState({
+    ok: true,
+    entries: "not an array",
+    skipped: { reason: "not an array either" },
+    logs: null,
+  });
+  assert.equal(state.mode, "empty");
 });
 
 console.log(`${passed} pure-helper tests passed`);
