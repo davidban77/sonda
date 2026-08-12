@@ -1,0 +1,17 @@
+{
+  "_comment": "Build inputs the committed playground bundle (sonda_wasm_bg.wasm) is a product of. Every one of these has been MEASURED to change the output bytes, and the wasm-drift workflow compares the committed bundle byte-for-byte against a rebuild, so a rebuild that does not match these does not match the bundle. This file is the single home for them: `task site:wasm` reads it to refuse an unsuitable host, and .github/workflows/wasm-drift.yml reads it to reproduce the build. Edit it only by rebuilding the bundle, never to make a red gate go green.",
+
+  "crate_version": "1.19.0",
+  "_crate_version": "The workspace version the bundle was built at. rustc folds the crate version into the symbol/metadata hash, which perturbs LTO ordering: the same source at 1.19.0 and at 1.20.0 produces bundles differing by 4 bytes in the wasm type section — reordered function signatures, no behavioural difference. That made the drift gate unsatisfiable for release commits, which bump versions and cannot rebuild wasm (measured: release-please PR #537, committed 771,614 vs rebuilt 771,618, differing at byte 532; reverting only the version in that same tree reproduced the committed bundle exactly). So the gate rebuilds AT THIS VERSION rather than at the workspace's current one, and the bundle is rebuilt when the engine changes rather than when a release happens. Bump this only alongside a real rebuild.",
+
+  "wasm_bindgen": "0.2.117",
+  "_wasm_bindgen": "Must match the wasm-bindgen version in Cargo.lock, or the generated JS glue and the wasm disagree at runtime.",
+
+  "binaryen": "119",
+  "_binaryen": "An exact match, not a floor. 131 produces a different (working) bundle; 108 — the Debian/Ubuntu package — optimizes without complaint and emits a module that dies in the browser with 'WebAssembly.Table.grow(): failed to grow table by 4'.",
+
+  "_compiler": "NOT RECORDED HERE, DELIBERATELY, and it is the input that moves the bytes furthest: rustc 1.95.0 vs 1.94.1 on this platform differs by +21,687 bytes (2.81%), and 1.95.0 vs 1.93.1 on macOS arm64 by +44,785 (review #542 W1, both against a control of two identical same-toolchain builds). The compiler is pinned in rust-toolchain.toml, which owns that value; copying it here would recreate exactly the duplication this file exists to remove. What DID have to change is the drift workflow's path filter — rust-toolchain.toml was missing from it, so a compiler bump would have merged green and surfaced as the next author's drift. scripts/wasm_pins.py --self-test holds the filter to this list.",
+
+  "platform": "Linux x86_64",
+  "_platform": "`uname -s` and `uname -m` of the reference host. Codegen differs by host even with paths remapped: the same source and toolchain on macOS arm64 gives 772,019 bytes against this platform's 771,488, differing at byte 532 (review #540 W1)."
+}
