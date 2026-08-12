@@ -235,6 +235,14 @@ jobs:
       - name: Examples-gallery hook self-tests
         run: python3 docs/site/hooks/examples_gallery.py --self-test
 
+      # The drift workflow is path-filtered, so a record that has gone wrong
+      # can sit unnoticed until the next change to sonda-core. This is cheap
+      # and runs on every push.
+      - name: Wasm bundle build pins are coherent
+        run: |
+          python3 scripts/wasm_pins.py --self-test
+          python3 scripts/wasm_pins.py check
+
       # No backend, no accounts — text-to-HTML injection is the one classic
       # web risk left, and the codebase answer is a blanket rule. This is the
       # gate that keeps it a rule rather than a convention.
