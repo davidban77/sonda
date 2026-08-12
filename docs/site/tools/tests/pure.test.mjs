@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import {
   MAX_HASH_PAYLOAD,
   buildTestExport,
+  burstEmission,
   defaultThreshold,
   deriveAlertName,
   escapeQuoted,
@@ -773,6 +774,102 @@ test("a pathological cycle count is capped rather than drawn", () => {
     3600
   );
   assert.equal(windows.length, MAX_SCHEDULE_WINDOWS);
+});
+
+// The four shapes below all HUNG before review #543 W1, and none of them was
+// caught by the cap above, because that cap counted emitted windows and these
+// emit none. Each one is written to fail by timing out rather than by
+// asserting, which is why they are worth naming individually: a test that can
+// only fail by never finishing needs to be pointed at the exact input.
+//
+// Verified against the pre-fix implementation with a subprocess timeout — see
+// the note in `scheduleWindows`'s comment. All four spun; the two `posInf`
+// and `NaN` spellings, which look equally hostile, did not.
+
+test("a non-finite offset yields nothing instead of looping forever", () => {
+  // `-Infinity` is truthy, so `Number(x) || 0` passes it straight through and
+  // every cycle then starts at -Infinity, forever short of the end. The
+  // string spelling arrives from YAML; `-1e309` is the spelling that looks
+  // finite in source and overflows on the way in.
+  for (const offset of [-Infinity, "-Infinity", -1e309]) {
+    assert.deepEqual(
+      scheduleWindows({ offset_secs: offset, burst: { every_secs: 10, for_secs: 4 } }, 60),
+      [],
+      `offset=${String(offset)}`
+    );
+  }
+});
+
+test("a cycle too small to advance a large offset terminates", () => {
+  // Entirely finite, entirely positive, no guard rejects it: 1e6 + 1e-13 is
+  // 1e6 in double precision, so the cycle start never moves and no window is
+  // ever wide enough to emit. Bounding the loop is what ends this; bounding
+  // the output cannot.
+  assert.deepEqual(
+    scheduleWindows({ offset_secs: 1e6, gap: { every_secs: 1e-13, for_secs: 1e-13 } }, 1e6 + 60),
+    []
+  );
+});
+
+// --- burstEmission -----------------------------------------------------
+//
+// The burst multiplier's only channel (review #543 B1). Before this, dragging
+// `multiplier` from 1 to 10 left the mini-chart byte-identical: the trace is
+// the metric's VALUE and a burst does not change the value, so there was
+// nothing for the eye to catch. The label is what the multiplier does —
+// `rate * multiplier` events per second while the band is open, which is the
+// engine's `interval = base_interval / multiplier` read the other way round.
+//
+// What these cases have to pin is that the label is a function of BOTH engine
+// numbers. A label that only tracked the multiplier would be the slider's own
+// value spelled differently, which is the decoration this finding was about.
+
+const burstEntry = (rate, multiplier) => ({
+  rate,
+  burst: { every_secs: 15, for_secs: 4, multiplier },
+});
+
+test("the burst label reports the rate outside the band and inside it", () => {
+  assert.deepEqual(burstEmission(burstEntry(4, 3)), {
+    base: 4,
+    during: 12,
+    multiplier: 3,
+    label: "4/s → 12/s",
+  });
+});
+
+test("the burst label moves with the rate, not only with the multiplier", () => {
+  // Same multiplier, different rate: if these two agreed, the label would be
+  // reporting the slider rather than the emission rate.
+  assert.notEqual(burstEmission(burstEntry(4, 3)).label, burstEmission(burstEntry(2, 3)).label);
+  // Same rate, different multiplier — the case the finding was actually about.
+  assert.notEqual(burstEmission(burstEntry(4, 3)).label, burstEmission(burstEntry(4, 4)).label);
+});
+
+test("a multiplier of 1 says so rather than going blank", () => {
+  // "What does x1 do?" is a question the widget should answer, and the answer
+  // is "nothing" — stated, not implied by an absent label.
+  assert.equal(burstEmission(burstEntry(4, 1)).label, "4/s → 4/s");
+});
+
+test("fractional rates and multipliers stay readable", () => {
+  assert.equal(burstEmission(burstEntry(4, 3.5)).label, "4/s → 14/s");
+  assert.equal(burstEmission(burstEntry(0.5, 3)).label, "0.5/s → 1.5/s");
+  // Float dust from rate * multiplier must not reach the canvas.
+  assert.equal(burstEmission(burstEntry(0.1, 3)).label, "0.1/s → 0.3/s");
+});
+
+test("no burst, or a rate the label would lie about, yields no label", () => {
+  assert.equal(burstEmission({ rate: 4 }), null, "no burst window");
+  assert.equal(burstEmission({ rate: 4, gap: { every_secs: 5, for_secs: 1 } }), null, "gap only");
+  assert.equal(burstEmission({ rate: 4, burst: "soon" }), null, "burst not an object");
+  for (const bad of [null, undefined, 0, "entry", []]) {
+    assert.equal(burstEmission(bad), null, `entry=${JSON.stringify(bad)}`);
+  }
+  for (const bad of [0, -4, NaN, Infinity, undefined, null, "fast"]) {
+    assert.equal(burstEmission(burstEntry(bad, 3)), null, `rate=${String(bad)}`);
+    assert.equal(burstEmission(burstEntry(4, bad)), null, `multiplier=${String(bad)}`);
+  }
 });
 
 test("every <select> option reaches the compile gate", () => {

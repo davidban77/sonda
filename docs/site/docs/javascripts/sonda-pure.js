@@ -468,12 +468,21 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-/* Ceiling on how many schedule windows one entry can contribute to a chart.
+/* Ceiling on how many CYCLES one entry's schedule may be walked.
  *
- * A 30-second scenario with `every: 1s` is 30 windows; anything approaching
- * this is already unreadable as shading. The cap exists so a hostile or
- * mistyped scenario cannot turn a redraw into a hang — the windows are
- * recomputed on every theme flip and every resize.
+ * A 30-second scenario with `every: 1s` is 30 cycles; anything approaching
+ * this is already unreadable as shading. The bound is on the loop, not on
+ * the output, and that distinction is the whole point (review #543 W1): an
+ * earlier version capped `windows.length`, which cannot fire when the loop
+ * pushes nothing — and a loop that pushes nothing is exactly the shape that
+ * hangs. `offset 1e6, every 1e-13, for 1e-13` is entirely finite and
+ * positive, but floating point makes `start + for === start`, so no window
+ * is ever produced and the counter never advances.
+ *
+ * Bounding the loop is total over every input shape, including ones nobody
+ * has thought of yet; bounding the output only covers the degenerate values
+ * someone remembered. This is recomputed on every theme flip and every
+ * resize, so a hang here is a wedged tab.
  */
 export const MAX_SCHEDULE_WINDOWS = 512;
 
@@ -495,24 +504,30 @@ export const MAX_SCHEDULE_WINDOWS = 512;
  * the call sites:
  *
  *   every <= 0 or non-finite   no windows. A cycle that never advances is not
- *                              a schedule, and both loops below would spin
- *                              forever on it — the one hazard in this
- *                              function that is worse than a wrong pixel.
+ *                              a schedule.
  *   for <= 0                   no windows: a zero-length window shades
  *                              nothing.
  *   for >= every               windows would run into each other; each is
  *                              clipped to its own cycle so the shading stays
  *                              a cycle-by-cycle statement rather than one
  *                              undifferentiated block.
+ *   offset non-finite          no windows. `-Infinity` is TRUTHY, so the
+ *                              `|| 0` fallback lets it through and every
+ *                              cycle then starts at -Infinity, never
+ *                              reaching the end. `-1e309` is the nastier
+ *                              spelling: nothing about that literal looks
+ *                              non-finite, and it overflows on the way in.
  *   offset >= endSecs          no windows — the series ends before it starts.
  *
- * The result is capped at MAX_SCHEDULE_WINDOWS.
+ * None of those guards is the backstop, though. The loop itself is bounded
+ * by MAX_SCHEDULE_WINDOWS cycles, which is what makes this function total
+ * for inputs no guard anticipates.
  */
 export function scheduleWindows(entry, endSecs) {
   if (!entry || typeof entry !== "object") return [];
   const end = Number(endSecs);
   const offset = Number(entry.offset_secs) || 0;
-  if (!Number.isFinite(end) || end <= offset) return [];
+  if (!Number.isFinite(end) || !Number.isFinite(offset) || end <= offset) return [];
 
   const windows = [];
   for (const [kind, window] of [
@@ -525,7 +540,9 @@ export function scheduleWindows(entry, endSecs) {
     if (!Number.isFinite(every) || every <= 0) continue;
     if (!Number.isFinite(forSecs) || forSecs <= 0) continue;
 
-    for (let cycle = 0; ; cycle++) {
+    // Bounded by CYCLES. See MAX_SCHEDULE_WINDOWS above for why the count of
+    // emitted windows is the wrong thing to bound.
+    for (let cycle = 0; cycle < MAX_SCHEDULE_WINDOWS; cycle++) {
       const cycleStart = offset + cycle * every;
       if (cycleStart >= end) break;
       // A burst opens its cycle; a gap closes it.
@@ -535,8 +552,47 @@ export function scheduleWindows(entry, endSecs) {
       // `every` otherwise paints one continuous band and hides the period.
       const windowEnd = Math.min(start + forSecs, cycleStart + every, end);
       if (windowEnd > start) windows.push({ kind, start, end: windowEnd });
-      if (windows.length >= MAX_SCHEDULE_WINDOWS) return windows;
     }
   }
   return windows;
+}
+
+/* What a burst does to the emission rate, as a label for the shaded band.
+ *
+ * A burst is the one schedule setting the trace cannot show (review #543 B1).
+ * `every` and `for` move the shading; `multiplier` moves nothing, because the
+ * chart plots the metric's VALUE and a burst does not change the value — it
+ * changes how often that value is emitted. The engine's rule is
+ * `interval = base_interval / multiplier` (sonda-core/src/schedule/core_loop.rs),
+ * so the burst emits `rate * multiplier` events per second while the band is
+ * open.
+ *
+ * Both numbers come back from the compiler, not from the slider: `rate` is the
+ * entry's resolved rate and `multiplier` is the parsed burst window, so a
+ * value the engine rejected never reaches this label — the widget shows the
+ * compile error instead. That is the distinction between a readout and a
+ * decoration that echoes the input.
+ *
+ * Returns `null` when there is no burst, or when either number is one the
+ * label would be a lie about: a non-positive or non-finite rate or multiplier
+ * means the band has no emission rate to report.
+ */
+export function burstEmission(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const burst = entry.burst;
+  if (!burst || typeof burst !== "object") return null;
+  const base = Number(entry.rate);
+  const multiplier = Number(burst.multiplier);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  if (!Number.isFinite(multiplier) || multiplier <= 0) return null;
+  const during = base * multiplier;
+  if (!Number.isFinite(during)) return null;
+  return {
+    base,
+    during,
+    multiplier,
+    // Both ends, so the label carries its own comparison: at multiplier 1 it
+    // reads "4/s → 4/s", which is the honest answer to "what does ×1 do?".
+    label: `${tidyNumber(base)}/s → ${tidyNumber(during)}/s`,
+  };
 }

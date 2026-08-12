@@ -25,12 +25,30 @@ const SWEEPS = [
   ["saturation", "time_to_saturate"],
 ];
 
+// The corner grid is a product: adding one slider doubles it, and adding one
+// `choices` entry multiplies it by the option count. That is fine at today's
+// scale and quietly fatal at some larger one — a gate that takes an hour gets
+// deleted, and the deletion is how the coverage is lost. The ceiling is well
+// above the current count so it is not a tripwire on ordinary growth; it fires
+// when someone has multiplied rather than added, and the fix is to say which
+// corners matter rather than to raise this number.
+const MAX_CASES = 2000;
+
 const cases = [];
 for (const [gen, widget] of Object.entries(WIDGETS)) {
   for (const params of cornerParams(widget)) cases.push([gen, widget, params]);
 }
 for (const [gen, key] of SWEEPS) {
   for (const params of sweepParams(WIDGETS[gen], key)) cases.push([gen, WIDGETS[gen], params]);
+}
+
+if (cases.length > MAX_CASES) {
+  console.error(
+    `${cases.length} slider combinations exceeds the ${MAX_CASES}-case ceiling.\n` +
+      `  A widget was added whose corners multiply the grid rather than extend it.\n` +
+      `  Narrow the corners for that widget instead of raising this ceiling.`
+  );
+  process.exit(1);
 }
 
 const dir = mkdtempSync(join(tmpdir(), "livegen-"));

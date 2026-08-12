@@ -14,6 +14,7 @@ import {
   hashPayloadTooLarge,
   exportFilename,
   scheduleWindows,
+  burstEmission,
 } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
@@ -807,6 +808,9 @@ function palette() {
     text: dark ? "#94a3b8" : "#64748b",
     gap: dark ? "rgba(148, 163, 184, 0.14)" : "rgba(100, 116, 139, 0.12)",
     burst: dark ? "rgba(253, 186, 116, 0.14)" : "rgba(249, 115, 22, 0.10)",
+    // Backing plate for the burst label, which is drawn INSIDE the plot
+    // and would otherwise be read through whatever trace passes behind it.
+    plate: dark ? "rgba(15, 23, 42, 0.82)" : "rgba(255, 255, 255, 0.82)",
   };
 }
 
@@ -859,12 +863,36 @@ function drawChart(canvas, entries) {
   // shade with, so a gap means the same thing on both charts, and the slider
   // extremes that used to spin this loop forever (`every: 0`) are answered
   // once, under test, instead of here.
-  for (const entry of entries) {
+  //
+  // A burst band also carries what it does to the emission rate, because that
+  // is the one schedule setting the traces cannot show: the chart plots each
+  // metric's VALUE, and a burst does not change the value — it changes how
+  // often the value is emitted. One label per entry, on that entry's first
+  // band, in that entry's series color and stacked by index so two bursting
+  // entries do not print over each other.
+  entries.forEach((entry, index) => {
+    let firstBurst = null;
     for (const window of scheduleWindows(entry, entry._end_secs)) {
       ctx.fillStyle = window.kind === "burst" ? colors.burst : colors.gap;
       ctx.fillRect(x(window.start), pad.top, x(window.end) - x(window.start), plotH);
+      if (window.kind === "burst" && !firstBurst) firstBurst = window;
     }
-  }
+    const emission = firstBurst && burstEmission(entry);
+    if (!emission) return;
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.textAlign = "left";
+    const width = ctx.measureText(emission.label).width;
+    const left = Math.max(
+      pad.left + 3,
+      Math.min(x(firstBurst.start) + 4, cssWidth - pad.right - width)
+    );
+    const baseline = pad.top + 13 + index * 14;
+    // Plate first: the label sits inside the plot, over traces.
+    ctx.fillStyle = colors.plate;
+    ctx.fillRect(left - 3, baseline - 10, width + 6, 13);
+    ctx.fillStyle = SERIES_COLORS[index % SERIES_COLORS.length];
+    ctx.fillText(emission.label, left, baseline);
+  });
 
   ctx.strokeStyle = colors.grid;
   ctx.fillStyle = colors.text;

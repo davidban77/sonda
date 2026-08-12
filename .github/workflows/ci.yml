@@ -293,6 +293,14 @@ jobs:
         run: |
           cd docs/site/tools/editor
           npm ci
+          # The last suspect the elimination pass above could not reach: the
+          # esbuild binary itself. `@esbuild/*` ships a prebuilt executable per
+          # platform, and npm resolves which one at install time, so a lockfile
+          # match does not prove a binary match. Printed rather than asserted —
+          # if this gate ever flakes again, the first question is whether these
+          # digests differ between the green run and the red one, and that
+          # question is only answerable if both runs recorded them.
+          sha256sum node_modules/@esbuild/*/bin/esbuild || true
           npm run build
           cd - >/dev/null
           if ! git diff --exit-code -- docs/site/docs/javascripts/sonda-editor.js; then

@@ -558,6 +558,47 @@ try {
     shadingMoved
   );
 
+  // The canvas-difference check above proves SOMETHING moved; it cannot say
+  // what. `drawMini` stamps the two things the shading is claiming onto the
+  // canvas, so they can be asserted exactly (review #543). Sliders were left
+  // at `for: max` by the check above, so this reads the widget as it now
+  // stands: `every: 15s`, `for: 15s`, gaps therefore filling every cycle of a
+  // 60-second sample — four windows, at 0s, 15s, 30s and 45s.
+  const gapWindows = await widgets2.evaluate(
+    () => document.querySelector('[data-gen="gaps"] canvas').dataset.windows
+  );
+  check("the gap widget shades one window per cycle", gapWindows === "4", `windows=${gapWindows}`);
+
+  // The burst multiplier. It changes the emission rate, not the value, so the
+  // trace cannot show it and neither can a canvas diff — before #543 B1 this
+  // slider moved nothing but its own readout. The band now reports the rate
+  // outside it and inside it, computed from what the engine returned, and
+  // that is a string a test can pin: the widget's rate is 4/s, so the three
+  // multiplier positions below have exactly one answer each.
+  await widgets2.evaluate(() => document.querySelector('[data-gen="bursts"]')?.scrollIntoView());
+  for (const [multiplier, expected] of [["3", "4/s → 12/s"], ["10", "4/s → 40/s"], ["1", "4/s → 4/s"]]) {
+    await widgets2.evaluate((value) => {
+      // The third slider is `multiplier`; `every` and `for` stay at default.
+      const input = document.querySelectorAll('[data-gen="bursts"] input[type="range"]')[2];
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, multiplier);
+    let labelled = true;
+    await widgets2
+      .waitForFunction(
+        (want) => document.querySelector('[data-gen="bursts"] canvas').dataset.burstRate === want,
+        expected,
+        { timeout: 30000 }
+      )
+      .catch(() => {
+        labelled = false;
+      });
+    const seen = await widgets2.evaluate(
+      () => document.querySelector('[data-gen="bursts"] canvas').dataset.burstRate
+    );
+    check(`multiplier ${multiplier} reports "${expected}" on the band`, labelled, `saw "${seen}"`);
+  }
+
   await widgets2.goto(`${BASE}/build/encoders/`, { waitUntil: "domcontentloaded" });
   await widgets2.evaluate(() => document.querySelector('[data-gen="encoders"]')?.scrollIntoView());
   await widgets2.waitForFunction(

@@ -23,6 +23,7 @@ import {
   fromBase64Url,
   galleryCardState,
   scheduleWindows,
+  burstEmission,
 } from "./sonda-pure.js";
 import { playgroundHref } from "./playground-link.js";
 import { WIDGETS, defaultParams } from "./livegen-presets.js";
@@ -308,6 +309,9 @@ function palette() {
     // learn it again on the other.
     gap: dark ? "rgba(148, 163, 184, 0.14)" : "rgba(100, 116, 139, 0.12)",
     burst: dark ? "rgba(253, 186, 116, 0.14)" : "rgba(249, 115, 22, 0.10)",
+    // Backing plate for the burst label, which is drawn INSIDE the plot
+    // and would otherwise be read through whatever trace passes behind it.
+    plate: dark ? "rgba(15, 23, 42, 0.82)" : "rgba(255, 255, 255, 0.82)",
   };
 }
 
@@ -378,7 +382,9 @@ function drawMini(canvas, entry) {
   const seriesEnd = offsetSecs + (values.length - 1) * entry.tick_secs;
   const secsToX = (secs) =>
     pad.left + ((secs - offsetSecs) / (seriesEnd - offsetSecs || 1)) * plotW;
-  for (const window of scheduleWindows(entry, seriesEnd)) {
+  const windows = scheduleWindows(entry, seriesEnd);
+  let firstBurst = null;
+  for (const window of windows) {
     ctx.fillStyle = window.kind === "burst" ? colors.burst : colors.gap;
     ctx.fillRect(
       secsToX(window.start),
@@ -386,7 +392,40 @@ function drawMini(canvas, entry) {
       secsToX(window.end) - secsToX(window.start),
       plotH
     );
+    if (window.kind === "burst" && !firstBurst) firstBurst = window;
   }
+
+  // The burst multiplier's channel. `every` and `for` are visible in the
+  // shading above; the multiplier is not, and cannot be — the trace is the
+  // metric's value and a burst does not change the value, it changes how
+  // often the value is emitted. So the band says what it does: the emission
+  // rate outside it and inside it, computed by `burstEmission` from what the
+  // compiler returned. Drawn on the FIRST band only; repeating it on all four
+  // would be four copies of one fact.
+  const emission = firstBurst && burstEmission(entry);
+  if (emission) {
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textAlign = "left";
+    const width = ctx.measureText(emission.label).width;
+    // Anchored to the band, then clamped into the plot so a burst near the
+    // right edge labels itself rather than running off the canvas.
+    const left = Math.max(
+      pad.left + 2,
+      Math.min(secsToX(firstBurst.start) + 3, cssWidth - pad.right - width)
+    );
+    // Plate first: the label sits inside the plot, and a trace crossing it
+    // would otherwise make the one number the multiplier moves unreadable.
+    ctx.fillStyle = colors.plate;
+    ctx.fillRect(left - 2, pad.top + 3, width + 4, 12);
+    ctx.fillStyle = colors.text;
+    ctx.fillText(emission.label, left, pad.top + 12);
+  }
+
+  // Stamped for the browser smoke suite, which cannot read a canvas: these
+  // are the two things the shading is claiming, in a form a test can assert
+  // exactly instead of diffing pixels.
+  canvas.dataset.windows = String(windows.length);
+  canvas.dataset.burstRate = emission ? emission.label : "";
 
   ctx.textAlign = "center";
   for (let step = 0; step <= 3; step++) {
