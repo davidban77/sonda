@@ -54,6 +54,12 @@ theme:
     - content.tooltips
     - toc.follow
 
+# Build-time page augmentation. `hooks:` takes plain python files — no plugin
+# to install, and `mkdocs build --strict` runs them like any other stage, so a
+# broken hook fails the build rather than silently emitting a lesser page.
+hooks:
+  - hooks/examples_gallery.py
+
 extra_css:
   - stylesheets/sonda.css
 

@@ -248,6 +248,38 @@ tasks:
     cmds:
       - python3 scripts/validate_docs_scenarios.py
 
+  site:gallery-check:
+    desc: Self-test the examples-gallery hook and prove the page it builds is deterministic
+    summary: |
+      test/examples.md is rewritten at build time by docs/site/hooks/
+      examples_gallery.py, which reads every file named in the page's tables
+      and emits a live card for each runnable one.
+
+      Two things this checks that a normal build does not:
+
+        * the hook's own unit tests, including the shared runnable-scenario
+          case table it answers alongside sonda-pure.js and
+          validate_docs_scenarios.py — three implementations of one rule, held
+          together by one table;
+        * determinism. The page is a build output; if two builds of unchanged
+          sources differ, the hook has picked up something it should not have
+          (directory order, a clock) and the next real diff is unreadable.
+
+      The compile side — every carded example still compiling — lives in
+      `task site:scenario-check`, because it needs the release binary.
+    cmds:
+      - python3 docs/site/hooks/examples_gallery.py --self-test
+      - |
+        mkdocs build --strict -f docs/site/mkdocs.yml
+        cp docs/site/site/test/examples/index.html /tmp/sonda-gallery-1.html
+        mkdocs build --strict -f docs/site/mkdocs.yml
+        if cmp -s /tmp/sonda-gallery-1.html docs/site/site/test/examples/index.html; then
+          echo "examples gallery: two builds byte-identical"
+        else
+          echo "ERROR: two builds of test/examples.md differ — the hook is not deterministic." >&2
+          exit 1
+        fi
+
   site:no-raw-html:
     desc: "Fail if any hand-written docs JS assigns raw markup (XSS floor)"
     cmds:

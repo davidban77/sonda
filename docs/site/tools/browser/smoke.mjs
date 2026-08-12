@@ -402,6 +402,93 @@ try {
   );
   check("the fence's scenario arrives in the editor", true);
   await fences.close();
+
+  // --- 10. The examples gallery ------------------------------------------
+  //
+  // 62 cards built at build time by docs/site/hooks/examples_gallery.py, each
+  // carrying one file from examples/. Two things are worth a check and one is
+  // easy to get wrong: the cards render (measured through the ENGINE, per the
+  // #539 lesson — canvas bytes alone cannot tell a drawn chart from drawn
+  // axes), and the cards that CANNOT chart say why instead of showing a blank
+  // canvas. Every csv_replay example samples to ok:true with no entries, so
+  // the second is the failure mode this whole feature turns on.
+  section("[10] the examples gallery mounts and reports honestly");
+  const gallery = watch(await context.newPage());
+  gallery.setDefaultTimeout(30000);
+  await gallery.goto(`${BASE}/test/examples/`, { waitUntil: "domcontentloaded" });
+
+  await gallery.waitForSelector(".sonda-gallery[data-live]", { timeout: 30000 });
+  const tables = await gallery.evaluate(
+    () => document.querySelectorAll(".md-content table").length
+  );
+  check("the markdown tables survive — the no-JS floor is untouched", tables > 10, `${tables} tables`);
+
+  // Scroll the page so every lazily-observed card mounts.
+  await gallery.evaluate(async () => {
+    for (let y = 0; y < document.body.scrollHeight; y += 600) {
+      window.scrollTo(0, y);
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+
+  await gallery.waitForFunction(
+    () => {
+      const cards = [...document.querySelectorAll(".sonda-gallery__live")];
+      if (!cards.length) return false;
+      return cards.every((card) => {
+        const canvas = card.querySelector("canvas");
+        const note = card.querySelector(".sonda-livegen__note");
+        return (canvas && !canvas.hidden) || (note && !note.hidden);
+      });
+    },
+    null,
+    { timeout: 120000 }
+  );
+
+  const tally = await gallery.evaluate(() => {
+    const out = { cards: 0, charts: 0, skipped: 0, notes: 0, errors: 0, linkless: 0, reason: "" };
+    for (const card of document.querySelectorAll(".sonda-gallery__live")) {
+      out.cards += 1;
+      if (!card.querySelector(".sonda-livegen__open")) out.linkless += 1;
+      const canvas = card.querySelector("canvas");
+      const note = card.querySelector(".sonda-livegen__note");
+      if (canvas && !canvas.hidden) {
+        out.charts += 1;
+        continue;
+      }
+      const kind = note ? note.dataset.kind : "";
+      if (kind === "skipped") {
+        out.skipped += 1;
+        if (!out.reason) out.reason = note.textContent.trim();
+      } else if (kind === "error") out.errors += 1;
+      else out.notes += 1;
+    }
+    return out;
+  });
+
+  check("every table row with a scenario got a card", tally.cards > 40, `${tally.cards} cards`);
+  check("most cards chart their scenario", tally.charts > 30, `${tally.charts} charts`);
+  check("no card failed to compile", tally.errors === 0, `${tally.errors} errors`);
+  check("every card offers the playground", tally.linkless === 0, `${tally.linkless} without a link`);
+  check(
+    "cards the browser cannot sample say why, rather than showing a blank chart",
+    tally.skipped > 0 && /csv_replay|feature|file/.test(tally.reason),
+    `${tally.skipped} skipped — ${tally.reason.slice(0, 70)}`
+  );
+
+  const galleryLink = await gallery.getAttribute(
+    ".sonda-gallery__live .sonda-livegen__open",
+    "href"
+  );
+  await gallery.goto(galleryLink, { waitUntil: "domcontentloaded" });
+  await gallery.waitForFunction(
+    () => document.querySelector("#sp-output")?.textContent.trim().length > 0,
+    null,
+    { timeout: 60000 }
+  );
+  check("a card's link carries its example into the playground", true);
+  await gallery.close();
 } catch (err) {
   failures.push(`threw: ${err && err.message ? err.message : err}`);
   console.log(`\n  FAIL threw: ${err && err.stack ? err.stack.split("\n")[0] : err}`);

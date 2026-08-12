@@ -78,8 +78,22 @@ export function normalizeFence(text) {
  * A fence qualifies when it declares `version: 2` (the engine rejects a
  * scenario file without it — see ParseError::InvalidVersion, so this is the
  * honest complete-vs-fragment line) AND carries a `scenarios:` list or the
- * `kind:` shorthand header. Fragments — a bare `generator:` block quoted to
- * explain one field — fail naturally and are never offered.
+ * `kind: runnable` shorthand header. Fragments — a bare `generator:` block
+ * quoted to explain one field — fail naturally and are never offered.
+ *
+ * The `kind:` match is pinned to `runnable` rather than accepting any value,
+ * because the other value the engine takes is `composable`: a metric pack,
+ * which declares `version: 2` and `kind:` and looks complete to a looser
+ * rule. A pack is a library of metric definitions, not something to run.
+ *
+ * This is not hypothetical and the compile gate could not have caught it:
+ * `sonda --dry-run run` ACCEPTS a pack file and emits nothing, so the pack
+ * fence on catalogs-and-packs.md shipped with a "Run in playground →" button
+ * that led to an empty chart. Measured through the same engine the button
+ * hands the reader to: a pack samples to `ok: true` with every output array
+ * empty — no entries, no histograms, no summaries, no logs, nothing skipped.
+ * A green gate and a broken promise at the same time, which is the whole
+ * reason the detector has to carry this rule rather than lean on the gate.
  *
  * A `pack:` reference disqualifies a fence no matter how complete it looks.
  * Packs resolve against a catalog directory, and there is no catalog in the
@@ -106,7 +120,7 @@ export function runnableScenario(text) {
   if (/^#[ \t]*sonda:static\b/m.test(body)) return false;
   if (!/^version:[ \t]*2[ \t]*$/m.test(body)) return false;
   if (/^[ \t]*(?:-[ \t]+)?pack:/m.test(body)) return false;
-  return /^scenarios:/m.test(body) || /^kind:/m.test(body);
+  return /^scenarios:/m.test(body) || /^kind:[ \t]*runnable[ \t]*$/m.test(body);
 }
 
 /* Build a download filename from a sampled scenario.
@@ -371,4 +385,80 @@ export function buildTestExport({ yaml, entry, rule, evaled }) {
     `#    sonda test lab-scenario.yaml --prometheus-url http://localhost:8428\n` +
     `\n${body}`
   );
+}
+
+/* Decide what a gallery card should show for one sampled scenario.
+ *
+ * The examples gallery (test/examples.md) mounts a widget per example file,
+ * and "it charts" is only one of several honest outcomes. The engine reports
+ * the rest itself, in the sample result, and this function is the single
+ * place that reads it — so a card never has to guess and never shows an empty
+ * chart in place of an explanation.
+ *
+ * The five outcomes, all measured against real files in `examples/`:
+ *
+ *   chart      `entries` is non-empty — a metrics series to draw. 45 of the
+ *              carded examples land here.
+ *   note       the scenario samples cleanly but has nothing line-chartable:
+ *              logs (`logs`), histograms (`histograms`), summaries
+ *              (`summaries`). The playground renders all three; a 150px
+ *              sparkline cannot, so the card says which it is and links on.
+ *   skipped    the engine could not build an entry and SAID WHY — every
+ *              csv_replay example reaches this, because a browser has no
+ *              file to replay. `ok` is still true, so a naive card would
+ *              show a blank chart and call it success. The engine's own
+ *              reason is surfaced verbatim.
+ *   empty      `ok` with nothing at all in any output array. A `kind:
+ *              composable` pack does this (see runnableScenario above), and
+ *              so would a future shape nobody anticipated.
+ *   error      `ok` is false, or the result is not the shape we expect.
+ *
+ * Order is load-bearing: `entries` is checked before everything, because a
+ * mixed metrics+logs scenario has both and the chart is the better card. And
+ * `skipped` is checked before the empty fallback so the specific reason wins
+ * over the generic one.
+ */
+export function galleryCardState(result) {
+  if (!result || typeof result !== "object") {
+    return { mode: "error", message: "no result from the engine" };
+  }
+  if (result.ok !== true) {
+    return { mode: "error", message: nonEmptyString(result.error) || "compile error" };
+  }
+
+  const entries = arrayOf(result.entries);
+  if (entries.length) {
+    return { mode: "chart", extraSeries: entries.length - 1 };
+  }
+
+  const skipped = arrayOf(result.skipped);
+  if (skipped.length) {
+    const reason = nonEmptyString(skipped[0] && skipped[0].reason);
+    return {
+      mode: "skipped",
+      message: reason
+        ? `Not sampled in the browser — ${reason}`
+        : "Not sampled in the browser.",
+    };
+  }
+
+  if (arrayOf(result.logs).length) {
+    return { mode: "note", message: "Log stream — open it in the playground to read the lines." };
+  }
+  if (arrayOf(result.histograms).length) {
+    return { mode: "note", message: "Histogram — open it in the playground for the bucket heatmap." };
+  }
+  if (arrayOf(result.summaries).length) {
+    return { mode: "note", message: "Summary — open it in the playground for the quantile bands." };
+  }
+
+  return { mode: "empty", message: "Nothing to sample — this file defines metrics for other scenarios to use." };
+}
+
+function arrayOf(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

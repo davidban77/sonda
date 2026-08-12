@@ -21,27 +21,9 @@
  *    readable prose, which is the whole no-JS floor.
  */
 import { runnableScenario, toBase64Url } from "./sonda-pure.js";
+import { playgroundHref } from "./playground-link.js";
 
 const LINK_CLASS = "sonda-runnable";
-
-/* Resolve the playground's URL from the nav rather than hardcoding a path.
- *
- * The site is published under a project prefix (/sonda/), and these buttons
- * appear at every depth of the tree, so neither a root-absolute path nor a
- * fixed number of `../` hops is correct everywhere. The nav is rendered on
- * every page and its hrefs are already correct relative to the current one;
- * reading `.href` yields the resolved absolute URL.
- *
- * The `$=` match pins the playground index and excludes `playground/alert-lab/`,
- * which a `*=` match would also hit — and which, being second in the nav,
- * would otherwise win on some pages but not others.
- */
-function playgroundHref() {
-  const exact = document.querySelector('.md-nav a[href$="playground/"]');
-  if (exact) return exact.href;
-  const loose = document.querySelector('.md-nav a[href*="playground/"]');
-  return loose ? loose.href : null;
-}
 
 function buildLink(href, yaml) {
   const link = document.createElement("a");

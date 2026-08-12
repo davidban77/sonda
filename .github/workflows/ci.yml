@@ -232,6 +232,9 @@ jobs:
       - name: Runnable-fence detector self-tests
         run: python3 scripts/validate_docs_scenarios.py --self-test
 
+      - name: Examples-gallery hook self-tests
+        run: python3 docs/site/hooks/examples_gallery.py --self-test
+
       # No backend, no accounts — text-to-HTML injection is the one classic
       # web risk left, and the codebase answer is a blanket rule. This is the
       # gate that keeps it a rule rather than a convention.
@@ -342,6 +345,25 @@ jobs:
 
       - name: Build the site
         run: mkdocs build --strict -f docs/site/mkdocs.yml
+
+      # test/examples.md is generated at build time by a hook that reads 60
+      # files off disk. A hook that depends on directory order, a dict's
+      # iteration or a timestamp would produce a page that changes without
+      # its sources changing — invisible in one build, and a diff nobody can
+      # explain in the next. Two builds, byte-compared, is the cheapest way to
+      # keep that honest, and it costs one extra mkdocs run on a job that is
+      # already installing mkdocs.
+      - name: The generated examples gallery is deterministic
+        run: |
+          cp docs/site/site/test/examples/index.html /tmp/gallery-1.html
+          mkdocs build --strict -f docs/site/mkdocs.yml
+          if ! cmp -s /tmp/gallery-1.html docs/site/site/test/examples/index.html; then
+            echo "::error::two builds of test/examples.md differ — the gallery hook is not deterministic."
+            diff <(head -c 4000 /tmp/gallery-1.html) \
+                 <(head -c 4000 docs/site/site/test/examples/index.html) || true
+            exit 1
+          fi
+          echo "two builds byte-identical"
 
       # Served as static files, exactly as GitHub Pages serves it — the wasm
       # needs a real HTTP origin, so file:// is not an option.

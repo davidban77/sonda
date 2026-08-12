@@ -125,6 +125,26 @@
       "name": "a metric named like a pack does not trip the pack rule",
       "expected": true,
       "text": "version: 2\nscenarios:\n  - signal_type: metrics\n    name: pack_queue_depth\n    generator:\n      type: constant\n      value: 3\n"
+    },
+    {
+      "name": "kind: composable metric pack — declares version 2 and kind:, but is a library, not a scenario",
+      "expected": false,
+      "text": "version: 2\nkind: composable\nname: telegraf_snmp_interface\nmetrics:\n  - name: ifHCInOctets\n    generator:\n      type: counter\n      rate_per_sec: 5000\n"
+    },
+    {
+      "name": "kind: runnable with trailing whitespace still qualifies",
+      "expected": true,
+      "text": "version: 2\nkind: runnable  \nname: cpu_usage\ngenerator:\n  type: constant\n  value: 1\n"
+    },
+    {
+      "name": "kind: runnable_extra is not kind: runnable",
+      "expected": false,
+      "text": "version: 2\nkind: runnable_extra\nname: cpu_usage\ngenerator:\n  type: constant\n  value: 1\n"
+    },
+    {
+      "name": "kind: composable WITH a scenarios: list still qualifies — the detector is a shape test, not a compiler; the engine rejects this combination ('composable files are pack definitions') and the compile gate is what reports it",
+      "expected": true,
+      "text": "version: 2\nkind: composable\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n    generator:\n      type: constant\n      value: 1\n"
     }
   ]
 }

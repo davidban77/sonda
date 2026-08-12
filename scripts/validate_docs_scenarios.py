@@ -136,10 +136,15 @@ def is_runnable_scenario(text: str) -> bool:
     """Mirror of ``runnableScenario`` in sonda-pure.js — see that docstring.
 
     Complete iff it declares ``version: 2`` (the engine rejects a scenario
-    file without one) AND carries a ``scenarios:`` list or the ``kind:``
-    shorthand header, is not opted out with ``# sonda:static``, and makes no
-    ``pack:`` reference (packs need a ``--catalog`` directory that neither a
-    fence nor the browser can supply).
+    file without one) AND carries a ``scenarios:`` list or the ``kind:
+    runnable`` shorthand header, is not opted out with ``# sonda:static``, and
+    makes no ``pack:`` reference (packs need a ``--catalog`` directory that
+    neither a fence nor the browser can supply).
+
+    ``kind:`` is pinned to ``runnable`` because the engine's other value is
+    ``composable`` — a metric pack, which declares ``version: 2`` and
+    ``kind:`` and passes ``sonda --dry-run run`` while emitting nothing. A
+    compile gate cannot catch that, so the detector has to.
 
     Anchors are line-local and use ``[ \\t]`` rather than ``\\s``: in the JS
     twin ``\\s`` spans newlines, which would read ``version:`` on one line and
@@ -156,7 +161,7 @@ def is_runnable_scenario(text: str) -> bool:
         return False
     return bool(
         re.search(r"^scenarios:", body, re.MULTILINE)
-        or re.search(r"^kind:", body, re.MULTILINE)
+        or re.search(r"^kind:[ \t]*runnable[ \t]*$", body, re.MULTILINE)
     )
 
 
@@ -290,6 +295,111 @@ def _first_lines(text: str, limit: int = 6) -> str:
     if len(lines) <= limit:
         return "\n    ".join(lines)
     return "\n    ".join(lines[:limit] + [f"... ({len(lines) - limit} more lines)"])
+
+
+# --- The examples gallery ----------------------------------------------------
+#
+# test/examples.md is augmented at build time by docs/site/hooks/
+# examples_gallery.py, which reads each file named in the page's tables and
+# emits a card carrying that file's YAML for the browser to run. Two things
+# can rot underneath that page and neither would fail a normal build:
+#
+#   * a table row naming an example that has been renamed or deleted — the row
+#     silently loses its card and the reader is told to run a file that is not
+#     there;
+#   * an example whose YAML stops compiling — the card ships and the reader
+#     finds out in the browser.
+#
+# So the gate below asks the compiler about every file the hook cards, the
+# same way the fence gate asks about every fence it buttons. It is the same
+# argument as WP1's: the page makes a promise, and CI is where the promise is
+# checked.
+
+GALLERY_PAGE = Path("docs/site/docs/test/examples.md")
+GALLERY_HOOK = Path("docs/site/hooks/examples_gallery.py")
+
+
+def load_gallery_hook(repo_root: Path):
+    """Import the mkdocs hook as a module, by path.
+
+    It is not on ``sys.path`` and must not be — mkdocs loads it by file, and
+    adding a `docs/site/hooks` entry to the path for this one import would
+    invite the two to disagree about which copy is running.
+    """
+    import importlib.util
+
+    path = repo_root / GALLERY_HOOK
+    spec = importlib.util.spec_from_file_location("sonda_examples_gallery", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load the gallery hook at {path}")
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec: the hook uses `from __future__ import
+    # annotations` with a dataclass, and dataclasses resolve string
+    # annotations through `sys.modules[cls.__module__]`. A module that is not
+    # there yet fails with a bare AttributeError on NoneType.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def gallery_rows(repo_root: Path) -> list[tuple[str, bool]]:
+    """Every example file named by a table row on the gallery page.
+
+    Returns ``(path, exists)`` in document order, including rows the hook does
+    not card — a missing file is worth reporting whether or not it would have
+    become a widget.
+    """
+    hook = load_gallery_hook(repo_root)
+    examples_dir = repo_root / "examples"
+    rows: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for line in (repo_root / GALLERY_PAGE).read_text(encoding="utf-8").split("\n"):
+        match = hook.ROW_RE.match(line)
+        if not match:
+            continue
+        name = match.group(1)
+        if name in seen:
+            continue  # a file listed in two tables is one file to check
+        seen.add(name)
+        rows.append((name, hook.read_example(examples_dir, name) is not None))
+    return rows
+
+
+def validate_gallery(
+    repo_root: Path,
+    sonda_bin: Path | None,
+    subprocess_timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_S,
+) -> list[str]:
+    """Check every example named on the gallery page. Returns failure lines."""
+    hook = load_gallery_hook(repo_root)
+    examples_dir = repo_root / "examples"
+    failures: list[str] = []
+    carded = 0
+
+    for name, exists in gallery_rows(repo_root):
+        if not exists:
+            failures.append(
+                f"FAIL {GALLERY_PAGE}: table row names `{name}`, which is not in examples/"
+            )
+            continue
+        text = hook.read_example(examples_dir, name)
+        if not hook.is_runnable_scenario(text):
+            continue  # not carded: a rules file, a config, a pack
+        carded += 1
+        scenario = ExtractedScenario(
+            file=examples_dir / name, line=1, body=text, info="yaml"
+        )
+        result = validate_scenario(
+            scenario,
+            repo_root=repo_root,
+            sonda_bin=sonda_bin,
+            subprocess_timeout=subprocess_timeout,
+        )
+        if not result.ok:
+            failures.append(f"FAIL examples/{name} is carded in the gallery: {result.message}")
+
+    print(f"gallery: {carded} carded examples checked, {len(failures)} failed")
+    return failures
 
 
 # --- Orchestration -----------------------------------------------------------
@@ -443,7 +553,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{skipped} skipped, {len(failures)} failed",
         file=sys.stderr,
     )
-    return 0 if not failures else 1
+
+    gallery_failures = validate_gallery(
+        repo_root=repo_root, sonda_bin=sonda_bin, subprocess_timeout=args.timeout
+    )
+    for line in gallery_failures:
+        print(line, file=sys.stderr)
+
+    return 0 if not failures and not gallery_failures else 1
 
 
 # --- Self-tests --------------------------------------------------------------
@@ -567,6 +684,63 @@ class _MissingInputFilesTests(unittest.TestCase):
         repo_root = find_repo_root(Path(__file__).parent)
         body = "sink:\n  type: file\n  path: /tmp/out.txt\n"
         self.assertEqual(missing_input_files(body, repo_root), [])
+
+
+class _GalleryTests(unittest.TestCase):
+    """The examples gallery's build-time claims, checked without a build.
+
+    Compiling the carded examples needs the sonda binary and happens in the
+    main run; what belongs here is everything that does not: that the page
+    still has rows, that every row names a file that exists, and that the
+    hook's detector — the THIRD implementation of the runnable rule, after
+    sonda-pure.js and this file — answers the same shared case table as the
+    other two. Three copies of a rule are two too many to hold in anyone's
+    head; the table is what holds them.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = find_repo_root(Path(__file__).parent)
+        self.hook = load_gallery_hook(self.repo_root)
+
+    def test_gallery_page_still_has_rows(self) -> None:
+        rows = gallery_rows(self.repo_root)
+        self.assertGreater(len(rows), 40, "the examples page lists dozens of files")
+
+    def test_every_row_names_a_file_that_exists(self) -> None:
+        missing = [name for name, exists in gallery_rows(self.repo_root) if not exists]
+        self.assertEqual(missing, [], "table rows naming files not in examples/")
+
+    def test_hook_detector_answers_the_shared_case_table(self) -> None:
+        table = json.loads((self.repo_root / SHARED_CASE_TABLE).read_text(encoding="utf-8"))
+        for case in table["cases"]:
+            with self.subTest(case=case["name"]):
+                self.assertEqual(
+                    self.hook.is_runnable_scenario(case["text"]), case["expected"]
+                )
+
+    def test_hook_and_validator_agree_on_every_example_file(self) -> None:
+        """Not just the table — the real corpus, which is where drift shows."""
+        examples = sorted((self.repo_root / "examples").rglob("*.y*ml"))
+        self.assertGreater(len(examples), 50)
+        for path in examples:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertEqual(
+                    self.hook.is_runnable_scenario(text), is_runnable_scenario(text)
+                )
+
+    def test_base64_encoders_agree(self) -> None:
+        """The hook encodes what sonda-pure.js decodes; one shared shape."""
+        for text in ("version: 2\n", "東京 ☃\n", "a" * 300, "?/+=\n"):
+            with self.subTest(text=text[:12]):
+                encoded = self.hook.to_base64url(text)
+                self.assertNotIn("=", encoded)
+                self.assertNotIn("+", encoded)
+                self.assertNotIn("/", encoded)
+                padded = encoded + "=" * (-len(encoded) % 4)
+                import base64 as _b64
+
+                self.assertEqual(_b64.urlsafe_b64decode(padded).decode("utf-8"), text)
 
 
 def _run_self_tests() -> int:
