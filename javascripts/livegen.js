@@ -1,16 +1,25 @@
 /* Sonda docs — live generator widgets.
  *
- * Progressive enhancement for generators.md: each `.sonda-livegen` placeholder
- * becomes a mini-chart with parameter sliders, sampled by the same wasm engine
- * that powers the playground (sonda_wasm.js). The static SVG above each widget
- * is the no-JS fallback and is hidden once the live chart first renders.
+ * Progressive enhancement, in two placeholder forms sharing one engine, one
+ * observer and one renderer:
  *
- * The wasm binary is fetched lazily — only when the first widget scrolls near
- * the viewport — so pages without widgets (and readers who never scroll) pay
- * nothing.
+ *   data-gen="sine"        generators.md — a preset with parameter sliders.
+ *                          The static SVG above it is the no-JS fallback and
+ *                          is hidden once the live chart first renders.
+ *   data-yaml-b64="…"      the examples gallery on test/examples.md — an
+ *                          arbitrary scenario file, no sliders, carrying its
+ *                          own YAML. The markdown table above it is the no-JS
+ *                          fallback and is never touched.
+ *
+ * Both are sampled by the same wasm engine that powers the playground
+ * (sonda_wasm.js), and the wasm binary is fetched lazily — only when the
+ * first widget scrolls near the viewport — so pages without widgets, and
+ * readers who never scroll, pay nothing. That laziness is what makes a page
+ * carrying 45 gallery widgets cost the same on load as one carrying none.
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
-import { toBase64Url } from "./sonda-pure.js";
+import { toBase64Url, fromBase64Url, galleryCardState } from "./sonda-pure.js";
+import { playgroundHref } from "./playground-link.js";
 import { WIDGETS, defaultParams } from "./livegen-presets.js";
 
 const MAX_TICKS = 240;
@@ -30,12 +39,23 @@ function boot() {
   const placeholders = document.querySelectorAll(".sonda-livegen:not([data-ready])");
   if (!placeholders.length) return;
 
+  // The gallery is `display: none` in CSS until this line runs. Its cards are
+  // empty frames the engine fills, so a reader without JavaScript should see
+  // the markdown table and nothing else — the table is the content, the
+  // gallery is the enhancement. Claiming it here, before any mounting, means
+  // the cards appear together rather than popping in one intersection at a
+  // time.
+  document.querySelectorAll(".sonda-gallery:not([data-live])").forEach((gallery) => {
+    gallery.dataset.live = "1";
+  });
+
   const observer = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         observer.unobserve(entry.target);
-        mount(entry.target);
+        if (entry.target.dataset.yamlB64) mountScenario(entry.target);
+        else mount(entry.target);
       }
     },
     { rootMargin: "250px" }
@@ -126,6 +146,93 @@ async function mount(root) {
   };
 
   render();
+}
+
+/* Mount a gallery widget: one example file, sampled and shown as whatever it
+ * actually is.
+ *
+ * The card always ends up with a working "Open in playground →" link, whether
+ * or not there is anything to draw — a scenario the sparkline cannot render
+ * is exactly the one a reader most wants to open. The link is built from the
+ * SAME base64 string the placeholder carries rather than re-encoding the
+ * decoded text, so the reader lands on the file's bytes, not on a round trip
+ * through our own encoder.
+ *
+ * What to show is decided by `galleryCardState` (sonda-pure.js), not here:
+ * "ok" from the engine does not mean "there is a chart", and the difference
+ * is a rule with a case table rather than a chain of ifs in a DOM function.
+ */
+async function mountScenario(root) {
+  const encoded = root.dataset.yamlB64;
+  const canvas = document.createElement("canvas");
+  canvas.className = "sonda-livegen__chart";
+  canvas.hidden = true;
+  const note = document.createElement("p");
+  note.className = "sonda-livegen__note";
+  note.hidden = true;
+  const foot = document.createElement("div");
+  foot.className = "sonda-livegen__controls";
+  root.append(canvas, note, foot);
+
+  const href = playgroundHref();
+  if (href) {
+    const link = document.createElement("a");
+    link.className = "sonda-livegen__open";
+    link.href = `${href}#yaml=${encoded}`;
+    link.textContent = "Open in playground →";
+    const label = root.dataset.title;
+    link.setAttribute(
+      "aria-label",
+      label ? `Open ${label} in the Sonda playground` : "Open this scenario in the Sonda playground"
+    );
+    foot.appendChild(link);
+  }
+
+  const say = (text, kind) => {
+    note.hidden = false;
+    note.textContent = text;
+    note.dataset.kind = kind;
+  };
+
+  let yaml;
+  try {
+    yaml = fromBase64Url(encoded);
+  } catch {
+    // A corrupt payload is a build-time bug, not a reader's problem: the card
+    // keeps its heading and its link and says so once, rather than throwing
+    // and taking the rest of the gallery's mounts down with it.
+    say("This example could not be decoded.", "error");
+    return;
+  }
+
+  let state;
+  let result = null;
+  try {
+    await ensureWasm();
+    result = JSON.parse(sample_scenario(yaml, MAX_TICKS));
+    state = galleryCardState(result);
+  } catch (err) {
+    state = { mode: "error", message: String(err) };
+  }
+
+  if (state.mode !== "chart") {
+    say(state.message, state.mode);
+    return;
+  }
+
+  const entry = result.entries[0];
+  canvas.hidden = false;
+  canvas.setAttribute(
+    "aria-label",
+    `Live chart of ${entry.name || root.dataset.title || "this scenario"}`
+  );
+  root._draw = () => drawMini(canvas, entry);
+  root._draw();
+  live.add(root);
+  if (state.extraSeries > 0) {
+    const n = state.extraSeries;
+    say(`Showing ${entry.name} — ${n} more ${n === 1 ? "series" : "series"} here.`, "more");
+  }
 }
 
 /* The paragraph holding the static SVG sits directly above the widget; once
