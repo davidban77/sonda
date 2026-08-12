@@ -8,7 +8,13 @@
  * fetched only when the playground container exists.
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
-import { toBase64Url, fromBase64Url, hashPayloadTooLarge, exportFilename } from "./sonda-pure.js";
+import {
+  toBase64Url,
+  fromBase64Url,
+  hashPayloadTooLarge,
+  exportFilename,
+  scheduleWindows,
+} from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 500;
@@ -848,27 +854,15 @@ function drawChart(canvas, entries) {
   const x = (secs) => pad.left + (secs / spanSecs) * plotW;
   const y = (value) => pad.top + (1 - (value - min) / (max - min)) * plotH;
 
-  // Schedule windows first, underneath the traces. Windows are relative to
-  // each scenario's own start, so shift them by the entry's offset. Bursts
-  // occupy the head of each cycle, gaps the tail — matching the engine.
+  // Schedule windows first, underneath the traces. Where the windows fall is
+  // `scheduleWindows` in sonda-pure.js — the same function the docs widgets
+  // shade with, so a gap means the same thing on both charts, and the slider
+  // extremes that used to spin this loop forever (`every: 0`) are answered
+  // once, under test, instead of here.
   for (const entry of entries) {
-    const offset = entry.offset_secs || 0;
-    if (entry.burst) {
-      ctx.fillStyle = colors.burst;
-      for (let start = offset; start < entry._end_secs; start += entry.burst.every_secs) {
-        const end = Math.min(start + entry.burst.for_secs, entry._end_secs);
-        ctx.fillRect(x(start), pad.top, x(end) - x(start), plotH);
-      }
-    }
-    if (entry.gap) {
-      ctx.fillStyle = colors.gap;
-      const { every_secs, for_secs } = entry.gap;
-      for (let cycle = 0; offset + cycle * every_secs < entry._end_secs; cycle++) {
-        const start = offset + cycle * every_secs + (every_secs - for_secs);
-        const end = Math.min(start + for_secs, entry._end_secs);
-        if (start >= entry._end_secs) break;
-        ctx.fillRect(x(start), pad.top, x(end) - x(start), plotH);
-      }
+    for (const window of scheduleWindows(entry, entry._end_secs)) {
+      ctx.fillStyle = window.kind === "burst" ? colors.burst : colors.gap;
+      ctx.fillRect(x(window.start), pad.top, x(window.end) - x(window.start), plotH);
     }
   }
 

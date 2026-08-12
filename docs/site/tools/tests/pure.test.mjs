@@ -19,10 +19,12 @@ import {
   fromBase64Url,
   galleryCardState,
   hashPayloadTooLarge,
+  MAX_SCHEDULE_WINDOWS,
   niceDeadlineSecs,
   normalizeFence,
   numberSpanAt,
   runnableScenario,
+  scheduleWindows,
   scrubNumber,
   toBase64Url,
 } from "../../docs/javascripts/sonda-pure.js";
@@ -347,9 +349,13 @@ test("exports stay well-formed for every hostile label value (review #532 table)
 
 // --- live-widget presets (review #534 W1/M1) ----------------------------
 
-test("widget sliders are well-formed and defaults sit inside their range", () => {
+test("widget controls are well-formed and defaults sit inside their range", () => {
   for (const [gen, widget] of Object.entries(WIDGETS)) {
-    assert.ok(widget.sliders.length >= 2 && widget.sliders.length <= 3, `${gen}: 2-3 sliders`);
+    // Counted as CONTROLS, not sliders: the encoders widget carries one
+    // slider and one <select>, and the invariant being defended is "enough
+    // to play with, few enough to take in", not the input element used.
+    const controls = widget.sliders.length + (widget.choices || []).length;
+    assert.ok(controls >= 2 && controls <= 3, `${gen}: 2-3 controls, got ${controls}`);
     for (const s of widget.sliders) {
       assert.ok(s.step > 0, `${gen}.${s.key}: positive step`);
       assert.ok(s.min < s.max, `${gen}.${s.key}: min < max`);
@@ -395,9 +401,9 @@ test("preset sampling stays within the playground tick budget", () => {
 test("corner and sweep enumeration cover what the compile gate feeds the engine", () => {
   for (const [gen, widget] of Object.entries(WIDGETS)) {
     const corners = cornerParams(widget);
-    const expected = widget.sliders.reduce(
-      (n, s) => n * new Set([s.min, s.value, s.max]).size,
-      1
+    const expected = (widget.choices || []).reduce(
+      (n, c) => n * c.options.length,
+      widget.sliders.reduce((n, s) => n * new Set([s.min, s.value, s.max]).size, 1)
     );
     assert.equal(corners.length, expected, `${gen}: {min,default,max} grid`);
     for (const corner of corners) {
@@ -657,6 +663,147 @@ test("non-array output fields are treated as absent, not iterated", () => {
     logs: null,
   });
   assert.equal(state.mode, "empty");
+});
+
+// --- scheduleWindows ---------------------------------------------------
+//
+// The shading under both charts. It is worth a case table because every
+// input reaching it comes from a slider or from user YAML, and two of the
+// shapes a slider can produce used to hang the browser: the loops advance by
+// `every`, so `every: 0` spins forever, and it is recomputed on every theme
+// flip and every resize.
+//
+// Engine semantics being pinned here: a burst opens its cycle, a gap closes
+// it. Drawing either in the other's place would misreport when the signal
+// actually stops.
+
+const withSchedule = (extra) => ({ offset_secs: 0, ...extra });
+
+test("bursts open their cycle, gaps close it", () => {
+  const windows = scheduleWindows(
+    withSchedule({ burst: { every_secs: 20, for_secs: 5 }, gap: { every_secs: 10, for_secs: 3 } }),
+    30
+  );
+  const bursts = windows.filter((w) => w.kind === "burst");
+  const gaps = windows.filter((w) => w.kind === "gap");
+  assert.deepEqual(bursts, [
+    { kind: "burst", start: 0, end: 5 },
+    { kind: "burst", start: 20, end: 25 },
+  ]);
+  assert.deepEqual(gaps, [
+    { kind: "gap", start: 7, end: 10 },
+    { kind: "gap", start: 17, end: 20 },
+    { kind: "gap", start: 27, end: 30 },
+  ]);
+});
+
+test("windows shift by the entry's offset", () => {
+  const windows = scheduleWindows(
+    { offset_secs: 12, burst: { every_secs: 10, for_secs: 2 } },
+    32
+  );
+  assert.deepEqual(windows.map((w) => w.start), [12, 22]);
+});
+
+test("every <= 0 yields nothing instead of spinning forever", () => {
+  for (const every of [0, -5, NaN, Infinity, undefined, null, "soon"]) {
+    const windows = scheduleWindows(withSchedule({ gap: { every_secs: every, for_secs: 3 } }), 60);
+    assert.deepEqual(windows, [], `every=${String(every)}`);
+  }
+});
+
+test("a zero or negative for: shades nothing", () => {
+  for (const forSecs of [0, -1, NaN, undefined]) {
+    assert.deepEqual(
+      scheduleWindows(withSchedule({ burst: { every_secs: 10, for_secs: forSecs } }), 30),
+      [],
+      `for=${String(forSecs)}`
+    );
+  }
+});
+
+test("for longer than the cycle is clipped per cycle, not run together", () => {
+  // every 10s, for 25s: without clipping this is one 25s band that hides the
+  // period entirely, and consecutive windows would overlap.
+  const windows = scheduleWindows(withSchedule({ burst: { every_secs: 10, for_secs: 25 } }), 30);
+  assert.deepEqual(windows, [
+    { kind: "burst", start: 0, end: 10 },
+    { kind: "burst", start: 10, end: 20 },
+    { kind: "burst", start: 20, end: 30 },
+  ]);
+  for (let i = 1; i < windows.length; i++) {
+    assert.ok(windows[i].start >= windows[i - 1].end, "windows must not overlap");
+  }
+});
+
+test("a gap as long as its cycle starts at the cycle, never before it", () => {
+  const windows = scheduleWindows(withSchedule({ gap: { every_secs: 10, for_secs: 30 } }), 20);
+  assert.deepEqual(windows.map((w) => w.start), [0, 10]);
+  for (const w of windows) assert.ok(w.start >= 0, "no window may precede the series");
+});
+
+test("the last window is clipped to the end of the series", () => {
+  const windows = scheduleWindows(withSchedule({ burst: { every_secs: 10, for_secs: 8 } }), 25);
+  assert.equal(windows.at(-1).end, 25);
+  for (const w of windows) assert.ok(w.end <= 25);
+});
+
+test("a series that ends before it starts has no windows", () => {
+  assert.deepEqual(
+    scheduleWindows({ offset_secs: 40, gap: { every_secs: 5, for_secs: 2 } }, 30),
+    []
+  );
+  assert.deepEqual(
+    scheduleWindows({ offset_secs: 0, gap: { every_secs: 5, for_secs: 2 } }, 0),
+    []
+  );
+});
+
+test("an entry with no schedule, or no entry at all, yields nothing", () => {
+  assert.deepEqual(scheduleWindows({ offset_secs: 0 }, 30), []);
+  for (const bad of [null, undefined, 0, "entry", []]) {
+    assert.deepEqual(scheduleWindows(bad, 30), [], `entry=${JSON.stringify(bad)}`);
+  }
+  assert.deepEqual(scheduleWindows(withSchedule({ gap: { every_secs: 5, for_secs: 1 } }), NaN), []);
+});
+
+test("a pathological cycle count is capped rather than drawn", () => {
+  const windows = scheduleWindows(
+    withSchedule({ gap: { every_secs: 0.001, for_secs: 0.0005 } }),
+    3600
+  );
+  assert.equal(windows.length, MAX_SCHEDULE_WINDOWS);
+});
+
+test("every <select> option reaches the compile gate", () => {
+  // A choice the widget offers and the gate never compiles is a control that
+  // only fails when a reader uses it. The encoders widget is the case that
+  // matters: sonda-wasm links sonda-core without the feature-gated encoders,
+  // so naming one would produce "requires the 'otlp' feature" in the browser
+  // while the CLI-backed gate stayed green.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    for (const choice of widget.choices || []) {
+      assert.ok(choice.options.length >= 2, `${gen}.${choice.key}: a select needs options`);
+      assert.ok(
+        choice.options.includes(choice.value),
+        `${gen}.${choice.key}: the default must be one of the options`
+      );
+      const covered = new Set(cornerParams(widget).map((c) => c[choice.key]));
+      for (const option of choice.options) {
+        assert.ok(covered.has(option), `${gen}.${choice.key}: ${option} missing from the grid`);
+      }
+    }
+  }
+});
+
+test("a preview widget carries no chart-only assumptions", () => {
+  // `preview` widgets render encoded_preview instead of a canvas, so the
+  // shading and the tick budget still have to hold, but nothing may depend
+  // on there being a line.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    if (!widget.preview) continue;
+    assert.match(widget.yaml(defaultParams(widget)), /encoder: \{ type: /, `${gen}: names an encoder`);
+  }
 });
 
 console.log(`${passed} pure-helper tests passed`);

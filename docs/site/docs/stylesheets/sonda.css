@@ -1204,3 +1204,30 @@
   font-family: "JetBrains Mono", ui-monospace, monospace;
   color: #dc2626;
 }
+
+/* Encoded-output preview, for the widget on encoders.md that shows bytes
+ * rather than a chart. Scrolls on its own rather than widening the page:
+ * influx line protocol and JSON lines are both long single lines. */
+.md-typeset .sonda-livegen__preview {
+  margin: 0;
+  padding: 0.6rem 0.7rem;
+  overflow-x: auto;
+  border-radius: 4px;
+  background: var(--md-code-bg-color);
+  color: var(--md-code-fg-color);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  line-height: 1.55;
+  white-space: pre;
+  min-height: 7.5rem;
+}
+
+.sonda-livegen__select {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 4px;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}

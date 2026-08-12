@@ -18,7 +18,12 @@
  * carrying 45 gallery widgets cost the same on load as one carrying none.
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
-import { toBase64Url, fromBase64Url, galleryCardState } from "./sonda-pure.js";
+import {
+  toBase64Url,
+  fromBase64Url,
+  galleryCardState,
+  scheduleWindows,
+} from "./sonda-pure.js";
 import { playgroundHref } from "./playground-link.js";
 import { WIDGETS, defaultParams } from "./livegen-presets.js";
 
@@ -71,15 +76,25 @@ async function mount(root) {
   if (!preset) return;
 
   const params = defaultParams(preset);
-  const canvas = document.createElement("canvas");
-  canvas.className = "sonda-livegen__chart";
-  canvas.setAttribute("aria-label", `Live chart of the ${root.dataset.gen} generator`);
+  // A preset either draws a chart or shows the encoded bytes. The encoders
+  // widget is the second kind: the same sine encodes three ways and the line
+  // is identical in all of them, so a chart there would answer a question
+  // nobody asked.
+  const output = preset.preview ? document.createElement("pre") : document.createElement("canvas");
+  output.className = preset.preview ? "sonda-livegen__preview" : "sonda-livegen__chart";
+  output.setAttribute(
+    "aria-label",
+    preset.preview
+      ? `Encoded output of the ${root.dataset.gen} example`
+      : `Live chart of the ${root.dataset.gen} generator`
+  );
+  const canvas = preset.preview ? null : output;
   const controls = document.createElement("div");
   controls.className = "sonda-livegen__controls";
   const error = document.createElement("p");
   error.className = "sonda-livegen__error";
   error.hidden = true;
-  root.append(canvas, controls, error);
+  root.append(output, controls, error);
 
   let currentYaml = "";
   const link = document.createElement("a");
@@ -110,6 +125,28 @@ async function mount(root) {
     row.append(name, input, readout);
     controls.appendChild(row);
   }
+  for (const choice of preset.choices || []) {
+    const row = document.createElement("label");
+    row.className = "sonda-livegen__row";
+    const name = document.createElement("span");
+    name.className = "sonda-livegen__key";
+    name.textContent = choice.label || choice.key;
+    const select = document.createElement("select");
+    select.className = "sonda-livegen__select";
+    for (const option of choice.options) {
+      const el = document.createElement("option");
+      el.value = option;
+      el.textContent = option;
+      if (option === choice.value) el.selected = true;
+      select.appendChild(el);
+    }
+    select.addEventListener("change", () => {
+      params[choice.key] = select.value;
+      schedule();
+    });
+    row.append(name, select);
+    controls.appendChild(row);
+  }
   controls.appendChild(link);
 
   let firstRender = true;
@@ -117,7 +154,10 @@ async function mount(root) {
     try {
       await ensureWasm();
       currentYaml = preset.yaml(params);
-      link.href = "../../playground/#yaml=" + toBase64Url(currentYaml);
+      // Resolved from the nav where possible: these widgets now appear on
+      // pages at more than one depth, and the relative path below is only
+      // correct for the one-directory-deep ones.
+      link.href = `${playgroundHref() || "../../playground/"}#yaml=${toBase64Url(currentYaml)}`;
       const result = JSON.parse(sample_scenario(currentYaml, MAX_TICKS));
       if (!result.ok) {
         error.hidden = false;
@@ -126,9 +166,16 @@ async function mount(root) {
       }
       error.hidden = true;
       const entry = result.entries[0];
-      root._draw = () => drawMini(canvas, entry);
-      root._draw();
-      live.add(root);
+      if (preset.preview) {
+        // The engine's own encoded bytes, verbatim and as text — never as
+        // markup. Trailing newline trimmed so the block does not carry an
+        // empty last line.
+        output.textContent = (entry.encoded_preview || "").replace(/\n+$/, "");
+      } else {
+        root._draw = () => drawMini(canvas, entry);
+        root._draw();
+        live.add(root);
+      }
       if (firstRender) {
         firstRender = false;
         hideStaticImage(root);
@@ -256,6 +303,11 @@ function palette() {
     grid: dark ? "rgba(148, 163, 184, 0.25)" : "rgba(100, 116, 139, 0.25)",
     text: dark ? "#94a3b8" : "#64748b",
     line: "#f97316",
+    // Same two washes as the playground chart, for the same reason: a reader
+    // who learns what the grey band means on one page should not have to
+    // learn it again on the other.
+    gap: dark ? "rgba(148, 163, 184, 0.14)" : "rgba(100, 116, 139, 0.12)",
+    burst: dark ? "rgba(253, 186, 116, 0.14)" : "rgba(249, 115, 22, 0.10)",
   };
 }
 
@@ -314,6 +366,28 @@ function drawMini(canvas, entry) {
   ctx.setLineDash([]);
 
   const spanSecs = (entry.offset_secs || 0) + values.length * entry.tick_secs;
+
+  // Gap and burst shading, from the same helper the playground's full chart
+  // uses. A widget whose sliders change `every`/`for` is showing the reader
+  // WHEN the signal stops, so the shading is the point of it, not decoration.
+  //
+  // Mapped through the SAMPLE domain rather than the axis labels: the trace
+  // below runs from the first sample to the last, so the shading has to use
+  // the same two ends or a window drifts away from the dip it explains.
+  const offsetSecs = entry.offset_secs || 0;
+  const seriesEnd = offsetSecs + (values.length - 1) * entry.tick_secs;
+  const secsToX = (secs) =>
+    pad.left + ((secs - offsetSecs) / (seriesEnd - offsetSecs || 1)) * plotW;
+  for (const window of scheduleWindows(entry, seriesEnd)) {
+    ctx.fillStyle = window.kind === "burst" ? colors.burst : colors.gap;
+    ctx.fillRect(
+      secsToX(window.start),
+      pad.top,
+      secsToX(window.end) - secsToX(window.start),
+      plotH
+    );
+  }
+
   ctx.textAlign = "center";
   for (let step = 0; step <= 3; step++) {
     const secs = (spanSecs * step) / 3;

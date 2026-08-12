@@ -467,3 +467,76 @@ function arrayOf(value) {
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
+
+/* Ceiling on how many schedule windows one entry can contribute to a chart.
+ *
+ * A 30-second scenario with `every: 1s` is 30 windows; anything approaching
+ * this is already unreadable as shading. The cap exists so a hostile or
+ * mistyped scenario cannot turn a redraw into a hang — the windows are
+ * recomputed on every theme flip and every resize.
+ */
+export const MAX_SCHEDULE_WINDOWS = 512;
+
+/* The gap and burst windows of one sampled entry, in seconds.
+ *
+ * Shared by the playground's full chart and the docs widgets' mini-chart, so
+ * the shading means the same thing in both places. Returns
+ * `[{ kind: "gap" | "burst", start, end }]` in draw order, already clipped to
+ * `[offset, endSecs]` — a caller only has to map seconds to pixels.
+ *
+ * The engine's semantics, which this mirrors: windows are relative to each
+ * scenario's own start, so they shift by the entry's offset; BURSTS occupy the
+ * head of each cycle and GAPS the tail. That asymmetry is not cosmetic — a
+ * burst begins when the cycle begins, while a gap is the silence at the end of
+ * one, and drawing either in the other's place would misreport when the
+ * signal actually stops.
+ *
+ * Every degenerate input a slider can reach is answered here rather than at
+ * the call sites:
+ *
+ *   every <= 0 or non-finite   no windows. A cycle that never advances is not
+ *                              a schedule, and both loops below would spin
+ *                              forever on it — the one hazard in this
+ *                              function that is worse than a wrong pixel.
+ *   for <= 0                   no windows: a zero-length window shades
+ *                              nothing.
+ *   for >= every               windows would run into each other; each is
+ *                              clipped to its own cycle so the shading stays
+ *                              a cycle-by-cycle statement rather than one
+ *                              undifferentiated block.
+ *   offset >= endSecs          no windows — the series ends before it starts.
+ *
+ * The result is capped at MAX_SCHEDULE_WINDOWS.
+ */
+export function scheduleWindows(entry, endSecs) {
+  if (!entry || typeof entry !== "object") return [];
+  const end = Number(endSecs);
+  const offset = Number(entry.offset_secs) || 0;
+  if (!Number.isFinite(end) || end <= offset) return [];
+
+  const windows = [];
+  for (const [kind, window] of [
+    ["burst", entry.burst],
+    ["gap", entry.gap],
+  ]) {
+    if (!window) continue;
+    const every = Number(window.every_secs);
+    const forSecs = Number(window.for_secs);
+    if (!Number.isFinite(every) || every <= 0) continue;
+    if (!Number.isFinite(forSecs) || forSecs <= 0) continue;
+
+    for (let cycle = 0; ; cycle++) {
+      const cycleStart = offset + cycle * every;
+      if (cycleStart >= end) break;
+      // A burst opens its cycle; a gap closes it.
+      const start = kind === "burst" ? cycleStart : cycleStart + Math.max(0, every - forSecs);
+      if (start >= end) break;
+      // Clipped to the cycle as well as to the series: `for` longer than
+      // `every` otherwise paints one continuous band and hides the period.
+      const windowEnd = Math.min(start + forSecs, cycleStart + every, end);
+      if (windowEnd > start) windows.push({ kind, start, end: windowEnd });
+      if (windows.length >= MAX_SCHEDULE_WINDOWS) return windows;
+    }
+  }
+  return windows;
+}
