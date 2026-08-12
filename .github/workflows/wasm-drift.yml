@@ -15,8 +15,20 @@ name: Wasm bundle drift
 # is here because the compiler moves the bytes further than anything else that
 # does (review #542 W1, measured twice: rustc 1.95.0 vs 1.93.1 on macOS arm64
 # +44,785 bytes; 1.95.0 vs 1.94.1 on linux x86_64 +21,687 bytes, both against a
-# control of two identical same-toolchain builds). scripts/wasm_pins.py holds
-# this list to the inputs it records.
+# control of two identical same-toolchain builds). `.cargo/config*` is here for
+# the same reason and was found the same way (review #542 M1): cargo reads it
+# before compiling, and the one key it currently holds is not inert —
+# `[build] incremental` flipped from false to true moves the bundle by +760
+# bytes, measured.
+#
+# One nuance that is not a reason to leave it out: the recipe sets RUSTFLAGS
+# explicitly, and an env RUSTFLAGS shadows this file's `rustflags` keys, so
+# THAT particular channel is currently inert (measured: identical bytes with
+# `[target.wasm32-unknown-unknown] rustflags` set, 959,780 bytes with the same
+# config and no env RUSTFLAGS — live, just shadowed). Gating on the file rather
+# than reasoning about which of its keys survive is the cheaper correctness.
+#
+# scripts/wasm_pins.py holds this list to the inputs it records.
 on:
   push:
     paths:
@@ -26,6 +38,7 @@ on:
       - "Cargo.toml"
       - "docs/site/docs/javascripts/sonda_wasm*"
       - "rust-toolchain.toml"
+      - ".cargo/config*"
       - ".github/workflows/wasm-drift.yml"
   pull_request:
     paths:
@@ -35,6 +48,7 @@ on:
       - "Cargo.toml"
       - "docs/site/docs/javascripts/sonda_wasm*"
       - "rust-toolchain.toml"
+      - ".cargo/config*"
       - ".github/workflows/wasm-drift.yml"
   workflow_dispatch:
 

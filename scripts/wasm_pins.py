@@ -270,6 +270,9 @@ class _DriftTriggerTests(unittest.TestCase):
     shipped in #540 without ``rust-toolchain.toml``, and the compiler moves the
     bytes further than anything the sidecar records (review #542 W1: +21,687
     bytes across one minor version on linux x86_64, +44,785 on macOS arm64).
+    ``.cargo/config*`` was missing for the same reason one round later (#542
+    M1) — and it is not a theoretical channel: flipping the one key that file
+    holds today, ``[build] incremental``, moves the bundle by 760 bytes.
 
     So the list is asserted rather than trusted, from both trigger events. A
     new input to the build belongs in three places — the filter, this list,
@@ -286,6 +289,7 @@ class _DriftTriggerTests(unittest.TestCase):
         "Cargo.lock",  # dependency versions
         "Cargo.toml",  # the wasm-release profile, and the crate version
         "rust-toolchain.toml",  # the compiler — the largest effect of all
+        ".cargo/config*",  # cargo's own build settings; `incremental` alone is +760 bytes
         "docs/site/docs/javascripts/sonda_wasm*",  # the bundle and this record
         ".github/workflows/wasm-drift.yml",  # the gate's own recipe
     )
