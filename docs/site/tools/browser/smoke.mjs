@@ -943,6 +943,180 @@ try {
     `scrollY ${scrollBefore} -> ${correlated.scrollY}`
   );
   await cursorPage.close();
+
+  // --- 13. The alert lab's rule pair and rule import ---------------------
+  //
+  // WP12. `draw` stamps how many rules it drew and at what thresholds, so
+  // these read the chart's own claim rather than diffing pixels — the lesson
+  // review #543 taught about the burst label.
+  section("[13] alert lab: warning/critical pair and rule import");
+  const alPage = watch(await context.newPage());
+  alPage.setDefaultTimeout(30000);
+  await alPage.goto(`${BASE}/playground/alert-lab/`, { waitUntil: "domcontentloaded" });
+  await alPage.waitForFunction(
+    () => document.querySelector("#al-chart") && document.querySelector("#al-chart").dataset.rules,
+    null,
+    { timeout: 90000 }
+  );
+  check(
+    "the lab starts as one rule, exactly as before the pair existed",
+    (await alPage.evaluate(() => document.querySelector("#al-chart").dataset.rules)) === "1"
+  );
+  check(
+    "and the second rule's chip is hidden rather than reporting on nothing",
+    await alPage.evaluate(() => document.querySelector("#al-state2").hidden)
+  );
+
+  await alPage.check("#al-second");
+  let alPaired = true;
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-chart").dataset.rules === "2",
+      null,
+      { timeout: 20000 }
+    )
+    .catch(() => {
+      alPaired = false;
+    });
+  const alPair = await alPage.evaluate(() => ({
+    thresholds: document.querySelector("#al-chart").dataset.thresholds,
+    chipHidden: document.querySelector("#al-state2").hidden,
+    seeded: document.querySelector("#al-threshold2").value,
+  }));
+  check("enabling the second rule draws two thresholds", alPaired, alPair.thresholds);
+  check(
+    "the second rule is seeded with a threshold rather than left empty",
+    alPair.seeded !== "" && Number.isFinite(Number(alPair.seeded)),
+    `seeded ${alPair.seeded}`
+  );
+  check("and its state chip appears", !alPair.chipHidden);
+
+  // Review #546 B1: `Number("") === 0`, so a blank threshold used to become a
+  // rule at 0 that fired on everything AND exported a warning rule the reader
+  // never wrote. The reviewer reached it by racing the checkbox against the
+  // wasm load; clearing the box reaches the same place with no timing at all,
+  // which is why this is the version that belongs in a suite.
+  await alPage.fill("#al-threshold2", "");
+  let alCleared = true;
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-chart").dataset.rules === "1",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {
+      alCleared = false;
+    });
+  const alBlank = await alPage.evaluate(() => ({
+    rules: document.querySelector("#al-chart").dataset.rules,
+    thresholds: document.querySelector("#al-chart").dataset.thresholds,
+    value: document.querySelector("#al-threshold2").value,
+  }));
+  check(
+    "a blank threshold is not a rule at zero",
+    alCleared && !/warning:0\b/.test(alBlank.thresholds),
+    `rules=${alBlank.rules} thresholds=${alBlank.thresholds}`
+  );
+  // And the box stays empty: seeding is an intention, not a reflex on every
+  // keystroke, or a reader could never clear the field to type a new number.
+  check("and clearing it is not undone by the seeding", alBlank.value === "", `value="${alBlank.value}"`);
+  await alPage.fill("#al-threshold2", "0.4");
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-chart").dataset.rules === "2",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {});
+
+  // Import. The lab evaluates against the LOADED scenario, so a rule about a
+  // different metric produces a working demo of the wrong thing — saying so
+  // is the assertion worth making.
+  await alPage.fill("#al-import", 'expr: some_other_metric{host="web-01"} >= 72\nfor: 15s');
+  await alPage.click("#al-import-btn");
+  let alImported = true;
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-import-note").dataset.kind === "warn",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {
+      alImported = false;
+    });
+  const alNote = await alPage.evaluate(
+    () => document.querySelector("#al-import-note").textContent
+  );
+  // The THRESHOLD, not the note. Review #546 W3: this check waited on the
+  // note turning "warn", which happens because of the different-metric
+  // notice — computed from the parsed metric name and independent of the
+  // threshold ever reaching a control. Removing the assignment line left the
+  // whole suite green. The check's name promised this assertion; now it
+  // makes it. The import lands in the SECOND row because it is enabled above.
+  const alThreshold = await alPage.evaluate(
+    () => document.querySelector("#al-threshold2").value
+  );
+  check(
+    "a pasted rule imports its threshold",
+    alImported && Number(alThreshold) === 72,
+    `note kind ok=${alImported}, threshold control reads "${alThreshold}"`
+  );
+  check(
+    "and says when the rule is about a different series than the chart",
+    /but the chart is showing/.test(alNote),
+    alNote.slice(0, 120)
+  );
+  check(
+    "and says when a strict comparison was substituted",
+    /`>=` shown as `>`/.test(alNote),
+    alNote.slice(0, 80)
+  );
+
+  // A rule the lab cannot represent must be refused BY NAME, not half-read.
+  await alPage.fill("#al-import", "rate(http_errors_total[5m]) > 10");
+  await alPage.click("#al-import-btn");
+  let alRefused = true;
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-import-note").dataset.kind === "error",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {
+      alRefused = false;
+    });
+  const alRefusal = await alPage.evaluate(
+    () => document.querySelector("#al-import-note").textContent
+  );
+  check(
+    "a rule the lab cannot represent is refused, naming what it saw",
+    alRefused && /function call/.test(alRefusal),
+    alRefusal.slice(0, 90)
+  );
+
+  await alPage.click("#al-export");
+  await alPage.waitForFunction(
+    () => !document.querySelector("#al-export-out").hidden,
+    null,
+    { timeout: 15000 }
+  );
+  const alExport = await alPage.evaluate(
+    () => document.querySelector("#al-export-out").textContent
+  );
+  const alNames = (alExport.match(/-\s*alert:\s*(\S+)/g) || []).map((line) =>
+    line.replace(/-\s*alert:\s*/, "")
+  );
+  check(
+    "the export carries both rules under distinct alert names",
+    new Set(alNames).size === 2,
+    [...new Set(alNames)].join(", ")
+  );
+  check(
+    "and one expectation per severity",
+    /severity: warning/.test(alExport) && /severity: critical/.test(alExport),
+    `${(alExport.match(/severity:/g) || []).length} severity lines`
+  );
+  await alPage.close();
 } catch (err) {
   failures.push(`threw: ${err && err.message ? err.message : err}`);
   console.log(`\n  FAIL threw: ${err && err.stack ? err.stack.split("\n")[0] : err}`);
