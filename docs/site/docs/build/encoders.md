@@ -7,6 +7,12 @@ description: Reference for every Sonda encoder — wire formats like prometheus_
 
 An encoder serializes events into a wire format before a sink writes them. Set the format with the `encoder.type` field. Metric scenarios default to `prometheus_text`; log scenarios default to `json_lines`.
 
+Switch the encoder below to see the same scenario — one sine metric with two labels — come out in each format. The bytes are produced by the real engine, in your browser, not pasted in.
+
+<div class="sonda-livegen" data-gen="encoders" markdown="0"></div>
+
+The three formats offered here are the ones compiled into the browser build. `remote_write` and `otlp` are feature-gated and are documented below with static examples for that reason; the sections that follow cover every encoder, including those.
+
 ## prometheus_text
 
 Prometheus text exposition format (v0.0.4). Each event becomes one line:

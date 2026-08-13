@@ -489,6 +489,157 @@ try {
   );
   check("a card's link carries its example into the playground", true);
   await gallery.close();
+
+  // --- 11. Scheduling and encoder widgets --------------------------------
+  //
+  // The gap/burst widgets exist to show WHERE the signal stops, which is the
+  // shading and not the trace. That gives an assertion with no ambiguity in
+  // it: the sampled values are byte-identical for `for: 1s` and `for: 15s`
+  // (measured through the engine — gaps suppress emission at runtime and do
+  // not touch the sampled generator), so if the canvas changes when `for`
+  // moves, the shading is what changed. Remove the shading and this check
+  // goes red while a "chart is non-blank" check would stay green.
+  section("[11] scheduling and encoder widgets");
+  const widgets2 = watch(await context.newPage());
+  widgets2.setDefaultTimeout(30000);
+  await widgets2.goto(`${BASE}/build/scheduling/`, { waitUntil: "domcontentloaded" });
+
+  for (const gen of ["gaps", "bursts"]) {
+    await widgets2.evaluate((g) => document.querySelector(`[data-gen="${g}"]`)?.scrollIntoView(), gen);
+    // The floor is passed in, not closed over: this function body runs in the
+    // page, where the module's constants do not exist. A bare reference would
+    // throw a ReferenceError that the catch below would swallow, leaving the
+    // wait to look like a timeout.
+    await widgets2
+      .waitForFunction(
+        ([g, floor]) => {
+          const c = document.querySelector(`[data-gen="${g}"] canvas`);
+          return c && c.toDataURL().length > floor;
+        },
+        [gen, WIDGET_CHART_WITH_DATA],
+        { timeout: 90000 }
+      )
+      .catch(() => {}); // the check below reports what it actually saw
+    const drawn = await widgets2.evaluate((g) => {
+      const c = document.querySelector(`[data-gen="${g}"] canvas`);
+      const err = document.querySelector(`[data-gen="${g}"] .sonda-livegen__error`);
+      return {
+        chars: c ? c.toDataURL().length : 0,
+        controls: document.querySelectorAll(`[data-gen="${g}"] .sonda-livegen__key`).length,
+        error: err && !err.hidden ? err.textContent : "",
+      };
+    }, gen);
+    check(`the ${gen} widget renders a chart`, drawn.chars > WIDGET_CHART_WITH_DATA, `dataURL ${drawn.chars}`);
+    check(`the ${gen} widget reports no engine error`, drawn.error === "", drawn.error);
+    check(`the ${gen} widget offers its controls`, drawn.controls >= 2, `${drawn.controls} controls`);
+  }
+
+  const beforeShading = await widgets2.evaluate(
+    () => document.querySelector('[data-gen="gaps"] canvas').toDataURL()
+  );
+  await widgets2.evaluate(() => {
+    // The second slider is `for` — the one the values do not depend on.
+    const input = document.querySelectorAll('[data-gen="gaps"] input[type="range"]')[1];
+    input.value = input.max;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  let shadingMoved = true;
+  await widgets2
+    .waitForFunction(
+      (prev) => document.querySelector('[data-gen="gaps"] canvas').toDataURL() !== prev,
+      beforeShading,
+      { timeout: 30000 }
+    )
+    .catch(() => {
+      shadingMoved = false;
+    });
+  check(
+    "widening the gap redraws the chart — the trace is identical, so this is the shading",
+    shadingMoved
+  );
+
+  // The canvas-difference check above proves SOMETHING moved; it cannot say
+  // what. `drawMini` stamps the two things the shading is claiming onto the
+  // canvas, so they can be asserted exactly (review #543). Sliders were left
+  // at `for: max` by the check above, so this reads the widget as it now
+  // stands: `every: 15s`, `for: 15s`, gaps therefore filling every cycle of a
+  // 60-second sample — four windows, at 0s, 15s, 30s and 45s.
+  const gapWindows = await widgets2.evaluate(
+    () => document.querySelector('[data-gen="gaps"] canvas').dataset.windows
+  );
+  check("the gap widget shades one window per cycle", gapWindows === "4", `windows=${gapWindows}`);
+
+  // The burst multiplier. It changes the emission rate, not the value, so the
+  // trace cannot show it and neither can a canvas diff — before #543 B1 this
+  // slider moved nothing but its own readout. The band now reports the rate
+  // outside it and inside it, computed from what the engine returned, and
+  // that is a string a test can pin: the widget's rate is 4/s, so the three
+  // multiplier positions below have exactly one answer each.
+  await widgets2.evaluate(() => document.querySelector('[data-gen="bursts"]')?.scrollIntoView());
+  for (const [multiplier, expected] of [["3", "4/s → 12/s"], ["10", "4/s → 40/s"], ["1", "4/s → 4/s"]]) {
+    await widgets2.evaluate((value) => {
+      // The third slider is `multiplier`; `every` and `for` stay at default.
+      const input = document.querySelectorAll('[data-gen="bursts"] input[type="range"]')[2];
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, multiplier);
+    let labelled = true;
+    await widgets2
+      .waitForFunction(
+        (want) => document.querySelector('[data-gen="bursts"] canvas').dataset.burstRate === want,
+        expected,
+        { timeout: 30000 }
+      )
+      .catch(() => {
+        labelled = false;
+      });
+    const seen = await widgets2.evaluate(
+      () => document.querySelector('[data-gen="bursts"] canvas').dataset.burstRate
+    );
+    check(`multiplier ${multiplier} reports "${expected}" on the band`, labelled, `saw "${seen}"`);
+  }
+
+  await widgets2.goto(`${BASE}/build/encoders/`, { waitUntil: "domcontentloaded" });
+  await widgets2.evaluate(() => document.querySelector('[data-gen="encoders"]')?.scrollIntoView());
+  await widgets2.waitForFunction(
+    () => document.querySelector('[data-gen="encoders"] pre')?.textContent.trim().length > 0,
+    null,
+    { timeout: 90000 }
+  );
+  // Each option must produce output SHAPED like the format it names. A
+  // widget that offered an encoder the wasm build lacks would show the
+  // engine's "requires the 'otlp' feature" here instead.
+  const SHAPES = [
+    ["prometheus_text", /^cpu_usage\{/],
+    ["influx_lp", /^cpu_usage,/],
+    ["json_lines", /^\{/],
+  ];
+  for (const [encoder, shape] of SHAPES) {
+    await widgets2.selectOption('[data-gen="encoders"] select', encoder);
+    let matched = true;
+    await widgets2
+      .waitForFunction(
+        (source) => {
+          const text = document.querySelector('[data-gen="encoders"] pre').textContent.trim();
+          return text.length > 0 && new RegExp(source).test(text);
+        },
+        shape.source,
+        { timeout: 30000 }
+      )
+      .catch(() => {
+        matched = false;
+      });
+    const state = await widgets2.evaluate(() => {
+      const err = document.querySelector('[data-gen="encoders"] .sonda-livegen__error');
+      return {
+        first: document.querySelector('[data-gen="encoders"] pre').textContent.trim().split("\n")[0],
+        error: err && !err.hidden ? err.textContent : "",
+      };
+    });
+    check(`${encoder} encodes in its own format`, matched, state.first.slice(0, 60));
+    check(`${encoder} reports no engine error`, state.error === "", state.error);
+  }
+  await widgets2.close();
 } catch (err) {
   failures.push(`threw: ${err && err.message ? err.message : err}`);
   console.log(`\n  FAIL threw: ${err && err.stack ? err.stack.split("\n")[0] : err}`);

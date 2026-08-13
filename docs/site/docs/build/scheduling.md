@@ -36,6 +36,10 @@ Time:  0s          40s         60s         100s        120s
 
 Gaps occupy the **tail** of each cycle. With `every: 60s` and `for: 20s`, the gap runs from second 40 to second 60 of each cycle.
 
+Drag the sliders to see where the silence lands. The shaded bands are the gap windows; the trace underneath is held still on purpose, so the schedule is the only thing changing.
+
+<div class="sonda-livegen" data-gen="gaps" markdown="0"></div>
+
 Bursts work the same way but in reverse. During the burst window the runner emits at a higher rate, which simulates a traffic spike:
 
 ```yaml
@@ -49,8 +53,14 @@ scenarios:
     bursts:
       every: 5m
       for: 30s
-      rate_multiplier: 10
+      multiplier: 10
 ```
+
+Bursts occupy the **head** of each cycle, where gaps occupy the tail — the orange bands below start when the cycle starts. `multiplier` raises the event rate inside the window rather than the value, so the trace keeps its shape while the emission rate changes underneath it.
+
+That last sentence is also why `multiplier` is the one slider whose effect you will not find in the trace: the chart plots the metric's value, and a burst does not change the value. So the first band reports it instead — `4/s → 12/s` is the emission rate outside the band and inside it. Drag `multiplier` to 1 and the band reads `4/s → 4/s`, which is what a burst with no multiplier does.
+
+<div class="sonda-livegen" data-gen="bursts" markdown="0"></div>
 
 For the full field reference (every option on `gaps:` and `bursts:`, including jitter and offset), see [Scenario fields — Gap window](../reference/scenario-fields.md#gap-window) and [Burst window](../reference/scenario-fields.md#burst-window). To test alert resolution behavior with gaps, see the [Resolution and recovery tab](../test/alert-testing.md#resolution-and-recovery) on Alert testing.
 
@@ -423,6 +433,8 @@ scenarios:
 ```
 
 During the 10-second spike window, each tick injects a `pod_name` label drawn from a pool of up to 500 unique values. Outside the window the label is absent and only one series is emitted. This on/off pattern is what you need to test cardinality-guardrail alerts.
+
+There is deliberately no live widget here. A cardinality spike changes the *number of series*, not the shape of one — the line chart above would look identical with the spike on and off, so a widget would show a reader nothing while implying it showed them something. Visualizing it properly means a series-count chart, which is a different instrument; it is on the list rather than faked. The burst `multiplier` above ran into the same wall and took the other exit: what it changes is real and countable, so the band states it as a number instead of drawing a line that would not move.
 
 For the full field reference, see [Scenario fields — Cardinality spike window](../reference/scenario-fields.md#cardinality-spike-window). For the testing pattern in context, see the [Cardinality explosion tab](../test/alert-testing.md#cardinality-explosion) on Alert testing.
 

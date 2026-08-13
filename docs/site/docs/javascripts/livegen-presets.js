@@ -151,6 +151,99 @@ export const WIDGETS = {
 `;
     },
   },
+  /* The two SCHEDULING widgets (scheduling.md). Unlike every preset above,
+   * what these change is not the generator's shape but WHEN it is allowed to
+   * emit — so the thing to look at is the shading, not the trace. Both keep
+   * the same sine underneath for exactly that reason: hold the signal still
+   * and the schedule becomes the only variable.
+   *
+   * `for` reaches past `every` on purpose. The engine accepts that (verified:
+   * `sonda --dry-run run` compiles gaps and bursts at every corner of these
+   * ranges, including for=15s against every=5s), and the compile gate proves
+   * it on every CI run; the shading stays legible because scheduleWindows
+   * clips each window to its own cycle rather than painting one long band.
+   * Ranges chosen so the default shows three or four whole cycles in the
+   * 60-second sample — a period the eye can count.
+   */
+  gaps: {
+    rate: 4,
+    durationSecs: 60,
+    sliders: [
+      { key: "every", min: 5, max: 30, step: 1, value: 15, unit: "s" },
+      { key: "for", min: 1, max: 15, step: 1, value: 5, unit: "s" },
+    ],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: cpu_usage
+    generator: { type: sine, amplitude: 20, offset: 55, period_secs: 20 }
+    gaps: { every: ${p.every}s, for: ${p["for"]}s }
+`;
+    },
+  },
+  bursts: {
+    rate: 4,
+    durationSecs: 60,
+    sliders: [
+      { key: "every", min: 5, max: 30, step: 1, value: 15, unit: "s" },
+      { key: "for", min: 1, max: 15, step: 1, value: 4, unit: "s" },
+      { key: "multiplier", min: 1, max: 10, step: 0.5, value: 3, unit: "x" },
+    ],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: request_rate
+    generator: { type: sine, amplitude: 20, offset: 55, period_secs: 20 }
+    bursts: { every: ${p.every}s, for: ${p["for"]}s, multiplier: ${p.multiplier} }
+`;
+    },
+  },
+  /* The ENCODER widget (encoders.md). The odd one out in two ways, both
+   * deliberate.
+   *
+   * It has no sliders — it has a `choices` list, rendered as a <select> — and
+   * it shows `encoded_preview` instead of a chart. The question the page
+   * answers is "what does this actually look like on the wire", and a line
+   * chart cannot answer it: the same sine encodes three ways and the picture
+   * is identical in all three.
+   *
+   * Only encoders present in the WASM build may be listed. sonda-wasm links
+   * sonda-core with `default-features = false, features = ["config"]`, so the
+   * feature-gated ones (otlp, remote_write) are absent, and a scenario naming
+   * one comes back "encoder type 'otlp' requires the 'otlp' feature" — a real
+   * message a real gallery card shows today. These three are unconditional in
+   * EncoderConfig, and cornerParams crosses every choice so the compile gate
+   * proves each one on every CI run rather than trusting this paragraph.
+   *
+   * The rate and duration are small on purpose: the preview is the first few
+   * events, so a 20-second scenario at 1/s is all the signal it needs.
+   */
+  encoders: {
+    rate: 1,
+    durationSecs: 20,
+    preview: true,
+    sliders: [{ key: "precision", min: 0, max: 6, step: 1, value: 2 }],
+    choices: [
+      {
+        key: "encoder",
+        label: "encoder",
+        options: ["prometheus_text", "influx_lp", "json_lines"],
+        value: "prometheus_text",
+      },
+    ],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: cpu_usage
+    generator: { type: sine, amplitude: 20, offset: 55, period_secs: 10 }
+    labels: { host: web-01, region: eu-west-1 }
+    encoder: { type: ${p.encoder}, precision: ${p.precision} }
+`;
+    },
+  },
   spike_event: {
     rate: 2,
     durationSecs: 120,
@@ -174,6 +267,7 @@ export const WIDGETS = {
 export function defaultParams(widget) {
   const params = {};
   for (const slider of widget.sliders) params[slider.key] = slider.value;
+  for (const choice of widget.choices || []) params[choice.key] = choice.value;
   return params;
 }
 
@@ -187,6 +281,14 @@ export function cornerParams(widget) {
   for (const slider of widget.sliders) {
     const points = [...new Set([slider.min, slider.value, slider.max])];
     corners = corners.flatMap((corner) => points.map((v) => ({ ...corner, [slider.key]: v })));
+  }
+  // A <select> has no min/max to take corners of: every option IS a corner,
+  // and the compile gate has to see all of them. An encoder the widget offers
+  // and the engine rejects is a control that only fails once someone uses it.
+  for (const choice of widget.choices || []) {
+    corners = corners.flatMap((corner) =>
+      choice.options.map((option) => ({ ...corner, [choice.key]: option }))
+    );
   }
   return corners;
 }
