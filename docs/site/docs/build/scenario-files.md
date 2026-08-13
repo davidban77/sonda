@@ -1029,6 +1029,7 @@ The `pack:` field replaces the `name:` + `generator:` combo. Any fields you set 
 Scenarios with the same `clock_group` share a start-time reference, which keeps multi-signal scenarios phase-aligned. You can set `clock_group:` explicitly:
 
 ```yaml
+# sonda:static — an excerpt: `...` stands in for the rest of each entry.
 scenarios:
   - id: a
     clock_group: incident-1
