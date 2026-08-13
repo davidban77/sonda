@@ -41,9 +41,45 @@ shows the alert state the way Prometheus would walk it:
       <option value="20">20s</option>
       <option value="30">30s</option>
     </select>
+    <select id="al-severity" class="sonda-playground__select" aria-label="Severity of the first rule">
+      <option value="critical">critical</option>
+      <option value="warning">warning</option>
+    </select>
     <button id="al-play" type="button" class="md-button md-button--primary sonda-playground__run">Play</button>
     <button id="al-export" type="button" class="md-button sonda-playground__share">Copy sonda test setup</button>
     <span id="al-state" class="sonda-lab-chip sonda-lab-chip--inactive" role="status" aria-live="polite">inactive</span>
+  </div>
+  <div class="sonda-playground__controls">
+    <label class="sonda-playground__label sonda-lab-second" for="al-second">
+      <input id="al-second" type="checkbox"> Second rule
+    </label>
+    <select id="al-op2" class="sonda-playground__select" aria-label="Comparison operator, second rule" disabled>
+      <option value="&gt;">value &gt;</option>
+      <option value="&lt;">value &lt;</option>
+    </select>
+    <input id="al-threshold2" class="sonda-playground__select sonda-lab-number" type="number"
+      step="1" aria-label="Threshold value, second rule" disabled>
+    <label class="sonda-playground__label" for="al-for2">for:</label>
+    <select id="al-for2" class="sonda-playground__select" aria-label="For duration, second rule" disabled>
+      <option value="0">0s</option>
+      <option value="6">6s</option>
+      <option value="12">12s</option>
+      <option value="20">20s</option>
+      <option value="30">30s</option>
+    </select>
+    <select id="al-severity2" class="sonda-playground__select" aria-label="Severity of the second rule" disabled>
+      <option value="warning">warning</option>
+      <option value="critical">critical</option>
+    </select>
+    <span id="al-state2" class="sonda-lab-chip sonda-lab-chip--inactive" role="status" aria-live="polite" hidden>inactive</span>
+  </div>
+  <div class="sonda-playground__controls sonda-lab-import">
+    <label class="sonda-playground__label" for="al-import">Import a rule</label>
+    <textarea id="al-import" class="sonda-lab-importbox" rows="2" spellcheck="false"
+      aria-label="Paste a Prometheus alerting rule"
+      placeholder="Paste a Prometheus rule — alert:/expr:/for:, or just  cpu_usage{host=&quot;web-01&quot;} > 90"></textarea>
+    <button id="al-import-btn" type="button" class="md-button sonda-playground__share">Import</button>
+    <span id="al-import-note" class="sonda-lab-importnote" role="status" aria-live="polite"></span>
   </div>
   <div id="al-error" class="sonda-playground__error" hidden></div>
   <canvas id="al-chart" class="sonda-playground__chart" height="380"

@@ -13,11 +13,14 @@ import {
   evaluate,
   fromBase64Url,
   hashPayloadTooLarge,
+  parsePromQLRule,
+  tidyNumber,
   toBase64Url,
 } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
-const SWEEP_SECONDS = 11; // wall-clock length of one full playback sweep
+const SWEEP_SECONDS = 11;
+const LANE_STACK_GAP = 18; // vertical space between two rules' state lanes // wall-clock length of one full playback sweep
 
 const STATE_COLORS = {
   inactive: { light: "rgba(100, 116, 139, 0.25)", dark: "rgba(148, 163, 184, 0.25)" },
@@ -151,6 +154,16 @@ async function boot() {
     op: document.getElementById("al-op"),
     threshold: document.getElementById("al-threshold"),
     forSel: document.getElementById("al-for"),
+    severity: document.getElementById("al-severity"),
+    second: document.getElementById("al-second"),
+    op2: document.getElementById("al-op2"),
+    threshold2: document.getElementById("al-threshold2"),
+    forSel2: document.getElementById("al-for2"),
+    severity2: document.getElementById("al-severity2"),
+    state2: document.getElementById("al-state2"),
+    importBox: document.getElementById("al-import"),
+    importBtn: document.getElementById("al-import-btn"),
+    importNote: document.getElementById("al-import-note"),
     play: document.getElementById("al-play"),
     state: document.getElementById("al-state"),
     chart: document.getElementById("al-chart"),
@@ -181,24 +194,61 @@ async function boot() {
 
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let entry = null; // sampled series from the engine
-  let evaled = null;
+  let evaled = null; // the FIRST rule's evaluation, for the sweep's pacing
+  let rules = []; // every enabled rule, each carrying its own evaluation
   let animation = 0;
   let currentYaml = null; // the scenario source behind `entry`
 
-  const currentRule = () => ({
-    op: el.op.value,
-    threshold: Number(el.threshold.value),
-    forSecs: Number(el.forSel.value),
-  });
+  /* The rules the lab is currently showing, in row order.
+   *
+   * A list since WP12. The second row is opt-in and starts disabled, so a
+   * reader who never touches it sees exactly the single-rule lab that was
+   * here before — the pair is available, not imposed. */
+  const currentRules = () => {
+    const rules = [
+      {
+        severity: el.severity.value,
+        op: el.op.value,
+        threshold: Number(el.threshold.value),
+        forSecs: Number(el.forSel.value),
+      },
+    ];
+    if (el.second && el.second.checked) {
+      rules.push({
+        severity: el.severity2.value,
+        op: el.op2.value,
+        threshold: Number(el.threshold2.value),
+        forSecs: Number(el.forSel2.value),
+      });
+    }
+    return rules.filter((rule) => Number.isFinite(rule.threshold));
+  };
 
   const reevaluate = () => {
     if (!entry) return;
-    const rule = currentRule();
-    evaled = evaluate(entry.values, entry.tick_secs, rule.op, rule.threshold, rule.forSecs);
+    rules = currentRules().map((rule) => ({
+      ...rule,
+      evaled: evaluate(entry.values, entry.tick_secs, rule.op, rule.threshold, rule.forSecs),
+    }));
+    evaled = rules.length ? rules[0].evaled : null;
     stopSweep();
-    draw(el, entry, evaled, rule, entry.values.length);
-    setStateChip(el.state, finalStateSummary(evaled));
+    draw(el, entry, rules, entry.values.length);
+    syncChips(entry.values.length);
     el.play.textContent = "Play";
+  };
+
+  /* One chip per rule. The second is hidden rather than emptied when the row
+   * is off, so an unused control does not sit there reading "inactive" as
+   * though it were reporting on something. */
+  const syncChips = (upTo) => {
+    const at = (rule) =>
+      upTo >= rule.evaled.states.length
+        ? finalStateSummary(rule.evaled)
+        : rule.evaled.states[Math.max(0, upTo - 1)];
+    if (rules[0]) setStateChip(el.state, at(rules[0]));
+    if (!el.state2) return;
+    el.state2.hidden = rules.length < 2;
+    if (rules[1]) setStateChip(el.state2, at(rules[1]));
   };
 
   const loadPreset = async () => {
@@ -263,43 +313,120 @@ async function boot() {
   }
 
   function startSweep() {
-    if (!entry || !evaled) return;
+    if (!entry || !rules.length) return;
     stopSweep();
-    const rule = currentRule();
     const total = entry.values.length;
     const start = performance.now();
     el.play.textContent = "Replay";
     const frame = (now) => {
       const progress = Math.min(1, (now - start) / (SWEEP_SECONDS * 1000));
       const upTo = Math.max(2, Math.round(progress * total));
-      draw(el, entry, evaled, rule, upTo);
-      setStateChip(el.state, evaled.states[upTo - 1]);
+      draw(el, entry, rules, upTo);
+      syncChips(upTo);
       if (progress < 1) {
         animation = window.requestAnimationFrame(frame);
       } else {
         animation = 0;
-        setStateChip(el.state, finalStateSummary(evaled));
+        syncChips(total);
       }
     };
     animation = window.requestAnimationFrame(frame);
   }
 
   el.preset.addEventListener("change", loadPreset);
-  el.op.addEventListener("change", reevaluate);
-  el.threshold.addEventListener("input", reevaluate);
-  el.forSel.addEventListener("change", reevaluate);
+  for (const control of [el.op, el.threshold, el.forSel, el.severity, el.op2, el.threshold2, el.forSel2, el.severity2]) {
+    if (!control) continue;
+    control.addEventListener(control.tagName === "INPUT" ? "input" : "change", reevaluate);
+  }
+  if (el.second) {
+    el.second.addEventListener("change", () => {
+      const on = el.second.checked;
+      for (const control of [el.op2, el.threshold2, el.forSel2, el.severity2]) {
+        if (control) control.disabled = !on;
+      }
+      // A second rule with no threshold is not a rule. Seed it below the
+      // first so the pair reads as warning-then-critical on first sight
+      // rather than as two lines on top of each other.
+      if (on && el.threshold2 && !el.threshold2.value && entry) {
+        const first = Number(el.threshold.value);
+        const span = Math.max(...entry.values) - Math.min(...entry.values);
+        el.threshold2.value = String(
+          tidyNumber(el.op.value === ">" ? first - span * 0.25 : first + span * 0.25)
+        );
+      }
+      reevaluate();
+    });
+  }
   el.play.addEventListener("click", () => {
     if (reducedMotion) reevaluate();
     else startSweep();
   });
+  /* Import a Prometheus rule into the controls.
+   *
+   * The parse is `parsePromQLRule` in sonda-pure.js, which accepts only
+   * `metric{labels} OP number` and refuses everything richer BY NAME. What
+   * happens here is the other half: the rule's op/threshold/for become the
+   * lab's, and the reader is told when the rule they pasted was written about
+   * a different series than the one on screen.
+   *
+   * That last part matters more than it looks. The lab always evaluates
+   * against the loaded scenario, so importing a rule for `http_errors_total`
+   * while `cpu_usage` is on the chart produces a perfectly working demo of
+   * the wrong thing — and nothing in the numbers would say so.
+   */
+  const importRule = () => {
+    if (!el.importBox || !el.importNote) return;
+    const result = parsePromQLRule(el.importBox.value);
+    const note = el.importNote;
+    if (!result.ok) {
+      note.dataset.kind = "error";
+      note.textContent = result.reason;
+      return;
+    }
+    // Into the SECOND row when it is already in use, so an import does not
+    // silently discard a pair the reader has been tuning.
+    const second = el.second && el.second.checked;
+    const target = second
+      ? { op: el.op2, threshold: el.threshold2, forSel: el.forSel2 }
+      : { op: el.op, threshold: el.threshold, forSel: el.forSel };
+    target.op.value = result.op === ">=" ? ">" : result.op === "<=" ? "<" : result.op;
+    target.threshold.value = String(result.threshold);
+    // `for:` is a fixed menu; land on the nearest option rather than adding
+    // one, and say so if the rule's duration is not on it.
+    const options = Array.from(target.forSel.options).map((option) => Number(option.value));
+    const nearest = options.reduce((best, value) =>
+      Math.abs(value - result.forSecs) < Math.abs(best - result.forSecs) ? value : best
+    );
+    target.forSel.value = String(nearest);
+
+    const notes = [];
+    if (result.op !== target.op.value) {
+      notes.push(`\`${result.op}\` shown as \`${target.op.value}\` — the lab evaluates strict comparisons`);
+    }
+    if (nearest !== result.forSecs) {
+      notes.push(`for: ${result.forSecs}s rounded to ${nearest}s`);
+    }
+    if (entry && result.metric !== entry.name) {
+      notes.push(
+        `this rule is about \`${result.metric}\`, but the chart is showing \`${entry.name}\` — ` +
+          `the lab evaluates against the loaded scenario`
+      );
+    }
+    note.dataset.kind = notes.length ? "warn" : "ok";
+    note.textContent = notes.length
+      ? `Imported${result.name ? ` ${result.name}` : ""} — ${notes.join("; ")}`
+      : `Imported${result.name ? ` ${result.name}` : ""}.`;
+    reevaluate();
+  };
+  if (el.importBtn) el.importBtn.addEventListener("click", importRule);
+
   if (el.exportBtn) {
     el.exportBtn.addEventListener("click", () => {
-      if (!entry || !evaled || currentYaml === null) return;
+      if (!entry || !rules.length || currentYaml === null) return;
       const text = buildTestExport({
         yaml: currentYaml,
         entry,
-        rule: currentRule(),
-        evaled,
+        rules,
       });
       el.exportOut.textContent = text;
       el.exportOut.hidden = false;
@@ -316,16 +443,18 @@ async function boot() {
     });
   }
 
-  new ResizeObserver(() => {
-    if (entry && evaled && !animation) {
-      draw(el, entry, evaled, currentRule(), entry.values.length);
-    }
-  }).observe(el.chart.parentElement);
-  new MutationObserver(() => {
-    if (entry && evaled && !animation) {
-      draw(el, entry, evaled, currentRule(), entry.values.length);
-    }
-  }).observe(document.body, { attributes: true, attributeFilter: ["data-md-color-scheme"] });
+  // Redraw from the CACHED rules on resize and theme flip. Re-reading the
+  // controls here would be a second source of truth for what is on screen,
+  // and these fire while a sweep is paused mid-way — `rules` is what was
+  // drawn, which is what has to be redrawn.
+  const redraw = () => {
+    if (entry && rules.length && !animation) draw(el, entry, rules, entry.values.length);
+  };
+  new ResizeObserver(redraw).observe(el.chart.parentElement);
+  new MutationObserver(redraw).observe(document.body, {
+    attributes: true,
+    attributeFilter: ["data-md-color-scheme"],
+  });
 
   // Awaited so a refused hash explains itself after the first preset has
   // drawn, rather than being overwritten by it. The notice goes on the story
@@ -398,12 +527,24 @@ function palette() {
   };
 }
 
-function draw(el, entry, evaled, rule, upTo) {
+/* Severity decides a rule's colour, so a reader can tell the pair apart on
+ * the chart without reading the numbers. Critical keeps the red the lab has
+ * always used; warning takes amber, which is also the `pending` colour in the
+ * state lane — deliberate, since a warning threshold IS the earlier, softer
+ * line. */
+const SEVERITY_COLORS = {
+  critical: { light: "#dc2626", dark: "#f87171" },
+  warning: { light: "#b45309", dark: "#fbbf24" },
+};
+
+function draw(el, entry, rules, upTo) {
   const colors = palette();
   const canvas = el.chart;
   const dpr = window.devicePixelRatio || 1;
   const cssWidth = canvas.parentElement.clientWidth;
-  const cssHeight = 380;
+  const laneH = 26;
+  const extraLanes = Math.max(0, rules.length - 1);
+  const cssHeight = 380 + extraLanes * (laneH + LANE_STACK_GAP);
   canvas.width = cssWidth * dpr;
   canvas.height = cssHeight * dpr;
   canvas.style.width = cssWidth + "px";
@@ -412,17 +553,25 @@ function draw(el, entry, evaled, rule, upTo) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-  const laneH = 26;
   const laneGap = 34;
-  const pad = { left: 48, right: 12, top: 12, bottom: 26 + laneH + laneGap };
+  // Every lane past the first extends the canvas rather than squeezing the
+  // plot: the trace is what the reader is reading, and a second rule must
+  // not shrink it.
+  const pad = {
+    left: 48,
+    right: 12,
+    top: 12,
+    bottom: 26 + laneH + laneGap + extraLanes * (laneH + LANE_STACK_GAP),
+  };
   const plotW = cssWidth - pad.left - pad.right;
   const plotH = cssHeight - pad.top - pad.bottom;
   const laneY = pad.top + plotH + laneGap;
 
   const values = entry.values;
   const spanSecs = (values.length - 1) * entry.tick_secs;
-  let min = Math.min(...values, rule.threshold);
-  let max = Math.max(...values, rule.threshold);
+  const thresholds = rules.map((rule) => rule.threshold).filter(Number.isFinite);
+  let min = Math.min(...values, ...thresholds);
+  let max = Math.max(...values, ...thresholds);
   if (max - min < 1e-9) {
     min -= 1;
     max += 1;
@@ -436,10 +585,15 @@ function draw(el, entry, evaled, rule, upTo) {
 
   // Firing bands behind the trace, only up to the sweep cursor. Consecutive
   // ticks are merged into one rect so bands render seamlessly at any DPR.
+  // Shaded for the FIRST rule only. Two overlapping washes would make the
+  // area where both fire a third colour that means nothing, and the second
+  // rule's firing is already legible in its own lane below.
   ctx.fillStyle = colors.firingBand;
-  for (const run of stateRuns(evaled.states, upTo)) {
-    if (run.state === "firing") {
-      ctx.fillRect(x(run.start), pad.top, x(run.end) - x(run.start), plotH);
+  if (rules[0]) {
+    for (const run of stateRuns(rules[0].evaled.states, upTo)) {
+      if (run.state === "firing") {
+        ctx.fillRect(x(run.start), pad.top, x(run.end) - x(run.start), plotH);
+      }
     }
   }
 
@@ -467,18 +621,28 @@ function draw(el, entry, evaled, rule, upTo) {
     ctx.fillText(formatSeconds(secs), pad.left + (secs / spanSecs) * plotW, pad.top + plotH + 16);
   }
 
-  // Threshold line.
-  ctx.strokeStyle = colors.thresholdLine;
-  ctx.setLineDash([6, 4]);
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(pad.left, y(rule.threshold));
-  ctx.lineTo(cssWidth - pad.right, y(rule.threshold));
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.textAlign = "left";
-  ctx.fillStyle = colors.thresholdLine;
-  ctx.fillText(`${rule.op} ${rule.threshold}`, pad.left + 4, y(rule.threshold) - 5);
+  // One threshold line per rule, coloured by severity and labelled with its
+  // own severity so the pair is readable without counting lines.
+  for (const rule of rules) {
+    const stroke = (SEVERITY_COLORS[rule.severity] || SEVERITY_COLORS.critical)[
+      colors.dark ? "dark" : "light"
+    ];
+    ctx.strokeStyle = stroke;
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y(rule.threshold));
+    ctx.lineTo(cssWidth - pad.right, y(rule.threshold));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.textAlign = "left";
+    ctx.fillStyle = stroke;
+    const label =
+      rules.length > 1
+        ? `${rule.severity} ${rule.op} ${rule.threshold}`
+        : `${rule.op} ${rule.threshold}`;
+    ctx.fillText(label, pad.left + 4, y(rule.threshold) - 5);
+  }
 
   // Signal trace up to the sweep cursor.
   ctx.strokeStyle = colors.trace;
@@ -493,26 +657,41 @@ function draw(el, entry, evaled, rule, upTo) {
   }
   ctx.stroke();
 
-  // Alert-state lane, drawn as merged runs for seamless segments.
-  ctx.fillStyle = colors.text;
-  ctx.textAlign = "left";
+  // One alert-state lane per rule, drawn as merged runs for seamless
+  // segments. Stacked rather than overlaid: the whole point of a
+  // warning/critical pair is that the two fire at different times, and a
+  // single lane could only ever show one of them.
+  const stateColor = (state) => STATE_COLORS[state][colors.dark ? "dark" : "light"];
   ctx.font = "10px ui-monospace, monospace";
-  ctx.fillText("ALERT STATE", pad.left, laneY - 7);
-  const stateColor = (s) => STATE_COLORS[s][colors.dark ? "dark" : "light"];
-  for (const run of stateRuns(evaled.states, upTo)) {
-    ctx.fillStyle = stateColor(run.state);
-    ctx.fillRect(x(run.start), laneY, Math.max(1, x(run.end) - x(run.start)), laneH);
-  }
-  // Resolve markers.
-  ctx.strokeStyle = colors.resolve;
-  ctx.lineWidth = 2;
-  for (const idx of evaled.resolves) {
-    if (idx >= upTo) continue;
-    ctx.beginPath();
-    ctx.moveTo(x(idx), laneY - 4);
-    ctx.lineTo(x(idx), laneY + laneH + 4);
-    ctx.stroke();
-  }
+  rules.forEach((rule, index) => {
+    const top = laneY + index * (laneH + LANE_STACK_GAP);
+    ctx.fillStyle = colors.text;
+    ctx.textAlign = "left";
+    ctx.fillText(
+      rules.length > 1 ? `${rule.severity.toUpperCase()} STATE` : "ALERT STATE",
+      pad.left,
+      top - 7
+    );
+    for (const run of stateRuns(rule.evaled.states, upTo)) {
+      ctx.fillStyle = stateColor(run.state);
+      ctx.fillRect(x(run.start), top, Math.max(1, x(run.end) - x(run.start)), laneH);
+    }
+    ctx.strokeStyle = colors.resolve;
+    ctx.lineWidth = 2;
+    for (const idx of rule.evaled.resolves) {
+      if (idx >= upTo) continue;
+      ctx.beginPath();
+      ctx.moveTo(x(idx), top - 4);
+      ctx.lineTo(x(idx), top + laneH + 4);
+      ctx.stroke();
+    }
+  });
+
+  // What the chart is claiming, for the browser smoke suite — the lesson
+  // from review #543, which is that a canvas diff can say something moved
+  // but never what.
+  canvas.dataset.rules = String(rules.length);
+  canvas.dataset.thresholds = rules.map((rule) => `${rule.severity}:${rule.threshold}`).join(",");
 }
 
 /* Group consecutive same-state ticks into runs [start, end) for seamless

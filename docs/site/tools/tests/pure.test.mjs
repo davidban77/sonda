@@ -26,6 +26,7 @@ import {
   MAX_SCHEDULE_CYCLES,
   niceDeadlineSecs,
   normalizeFence,
+  parsePromQLRule,
   numberSpanAt,
   runnableScenario,
   scheduleWindows,
@@ -154,8 +155,7 @@ test("export carries a label-scoped rule and expect block with derived deadlines
   const out = buildTestExport({
     yaml: YAML,
     entry: ENTRY,
-    rule: { op: ">", threshold: 64, forSecs: 12 },
-    evaled: { states, resolves: [200] },
+    rules: [{ severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled: { states, resolves: [200] } }],
   });
   assert.match(out, /alert: CpuUsageHigh/);
   assert.match(out, /expr: 'cpu_usage\{host="web-01",service="api"\} > 64'/);
@@ -173,8 +173,7 @@ test("export omits resolution when still firing at the end", () => {
   const out = buildTestExport({
     yaml: YAML,
     entry: ENTRY,
-    rule: { op: ">", threshold: 64, forSecs: 12 },
-    evaled: { states, resolves: [] },
+    rules: [{ severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled: { states, resolves: [] } }],
   });
   assert.doesNotMatch(out, /resolves_within:/);
   assert.match(out, /resolution not asserted/);
@@ -184,18 +183,69 @@ test("export flags a rule that never fired instead of inventing a deadline", () 
   const out = buildTestExport({
     yaml: YAML,
     entry: ENTRY,
-    rule: { op: ">", threshold: 9999, forSecs: 12 },
-    evaled: { states: Array(80).fill("inactive"), resolves: [] },
+    rules: [{ severity: "critical", op: ">", threshold: 9999, forSecs: 12, evaled: { states: Array(80).fill("inactive"), resolves: [] } }],
   });
   assert.match(out, /never fired in the sampled preview/);
+});
+
+test("a warning/critical pair exports two rules with distinct names", () => {
+  // Two alerts sharing one name in one group is a rules file that does not
+  // mean what it looks like — Prometheus keys alerts by name plus labels, so
+  // the pair would collapse in ways that depend on the labels rather than on
+  // anything the reader wrote.
+  const early = Array(240).fill("inactive");
+  for (let i = 40; i < 240; i++) early[i] = "firing";
+  const late = Array(240).fill("inactive");
+  for (let i = 120; i < 200; i++) late[i] = "firing";
+  const out = buildTestExport({
+    yaml: YAML,
+    entry: ENTRY,
+    rules: [
+      { severity: "warning", op: ">", threshold: 60, forSecs: 6, evaled: { states: early, resolves: [] } },
+      { severity: "critical", op: ">", threshold: 90, forSecs: 12, evaled: { states: late, resolves: [200] } },
+    ],
+  });
+  assert.match(out, /alert: CpuUsageHighWarning/);
+  assert.match(out, /alert: CpuUsageHighCritical/);
+  assert.match(out, /severity: warning/);
+  assert.match(out, /severity: critical/);
+  assert.match(out, /> 60/);
+  assert.match(out, /> 90/);
+  assert.match(out, /for: 6s/);
+  assert.match(out, /for: 12s/);
+  // Deadlines are PER RULE. tick_secs is 0.25, so the warning crosses at
+  // tick 40 (10s -> a 30s deadline) and the critical at tick 120 (30s -> 60s);
+  // asserting one against the other's states would produce an expectation
+  // that passes for the wrong reason.
+  assert.match(out, /firing_within: 30s/);
+  assert.match(out, /firing_within: 60s/);
+  // And only the critical recovers, so only it asserts resolution.
+  assert.equal((out.match(/resolves_within: 2m/g) || []).length, 1);
+  assert.equal((out.match(/resolution not asserted/g) || []).length, 1);
+});
+
+test("a single rule exports exactly what it always did", () => {
+  // The pair must not make the common case noisier: no severity suffix on
+  // the alert name, and one rule in the group.
+  const out = buildTestExport({
+    yaml: YAML,
+    entry: ENTRY,
+    rules: [
+      { severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled: { states: Array(40).fill("firing"), resolves: [] } },
+    ],
+  });
+  assert.match(out, /alert: CpuUsageHigh$/m);
+  assert.doesNotMatch(out, /CpuUsageHighCritical/);
+  assert.equal((out.match(/^#\s+- alert:/gm) || []).length, 1, "one rule in the group");
+  assert.equal((out.match(/^    - alert:/gm) || []).length, 1, "one expectation");
+  assert.match(out, /# 1\) Alert rule \(vmalert/);
 });
 
 test("export comments the expect block when the scenario already has one", () => {
   const out = buildTestExport({
     yaml: "version: 2\nexpect:\n  alerts: []\n",
     entry: ENTRY,
-    rule: { op: ">", threshold: 64, forSecs: 12 },
-    evaled: { states: Array(40).fill("firing"), resolves: [] },
+    rules: [{ severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled: { states: Array(40).fill("firing"), resolves: [] } }],
   });
   assert.match(out, /merge the one below by hand/);
   assert.match(out, /^# expect:/m); // our block arrives commented
@@ -330,8 +380,7 @@ test("exports stay well-formed for every hostile label value (review #532 table)
   const out = buildTestExport({
     yaml: YAML,
     entry: { ...ENTRY, labels: nasty },
-    rule: { op: ">", threshold: 64, forSecs: 12 },
-    evaled: { states, resolves: [] },
+    rules: [{ severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled: { states, resolves: [] } }],
   });
   // Every YAML label line is a double-quoted scalar…
   for (const key of Object.keys(nasty)) {
@@ -1064,6 +1113,216 @@ test("a log stream with nothing to correlate yields no highlight", () => {
     assert.deepEqual(logLinesNear(bad, 1), [], `log=${JSON.stringify(bad)}`);
   }
   assert.deepEqual(logLinesNear(logEntry(), NaN), []);
+});
+// --- parsePromQLRule (WP12) --------------------------------------------
+//
+// An import feature's whole risk is accepting more than it can represent.
+// The lab evaluates one threshold against one sampled series, so the grammar
+// is one selector and one scalar — and every richer rule below is valid
+// PromQL that must be REFUSED BY NAME rather than half-read.
+//
+// Law 4: the selector value is the hostile surface. It is a PromQL string
+// literal nested inside a YAML scalar, and review #532 caught a `: ` in one
+// breaking the layer nobody was looking at.
+
+const ok = (text) => {
+  const result = parsePromQLRule(text);
+  assert.ok(result.ok, `expected accept, got: ${result.reason}`);
+  return result;
+};
+const no = (text) => {
+  const result = parsePromQLRule(text);
+  assert.ok(!result.ok, `expected reject, got ${JSON.stringify(result)}`);
+  return result.reason;
+};
+
+test("a bare threshold expression imports", () => {
+  const rule = ok("cpu_usage > 90");
+  assert.equal(rule.metric, "cpu_usage");
+  assert.equal(rule.op, ">");
+  assert.equal(rule.threshold, 90);
+  assert.equal(rule.forSecs, 0);
+  assert.deepEqual(rule.selectors, {});
+});
+
+test("a rules-file snippet imports its name, threshold and for:", () => {
+  const rule = ok(`
+groups:
+  - name: sonda-lab
+    rules:
+      - alert: CpuUsageHigh
+        expr: 'cpu_usage{host="web-01"} > 64'
+        for: 12s
+`);
+  assert.equal(rule.name, "CpuUsageHigh");
+  assert.equal(rule.metric, "cpu_usage");
+  assert.equal(rule.threshold, 64);
+  assert.equal(rule.forSecs, 12);
+  assert.deepEqual(rule.selectors, { host: { op: "=", value: "web-01" } });
+});
+
+test("the lab's own export round-trips back in", () => {
+  // The strongest case available: feed buildTestExport's output to the
+  // importer. If these two ever disagree the lab cannot read what it wrote.
+  const out = buildTestExport({
+    yaml: YAML,
+    entry: ENTRY,
+    rules: [{ severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled: { states: Array(40).fill("firing"), resolves: [] } }],
+  });
+  const rule = ok(out);
+  assert.equal(rule.metric, "cpu_usage");
+  assert.equal(rule.op, ">");
+  assert.equal(rule.threshold, 64);
+  assert.equal(rule.forSecs, 12);
+  assert.deepEqual(rule.selectors, {
+    host: { op: "=", value: "web-01" },
+    service: { op: "=", value: "api" },
+  });
+});
+
+test("durations import in every unit Prometheus writes", () => {
+  const forOf = (text) => ok(`expr: cpu > 1\nfor: ${text}`).forSecs;
+  assert.equal(forOf("30s"), 30);
+  assert.equal(forOf("5m"), 300);
+  assert.equal(forOf("2h"), 7200);
+  assert.equal(forOf("1h30m"), 5400);
+  assert.equal(forOf("1d"), 86400);
+  assert.equal(forOf("500ms"), 0.5);
+  assert.equal(forOf("90"), 90, "a bare number is seconds");
+});
+
+test("scientific and signed thresholds import as written", () => {
+  assert.equal(ok("errors > 1e3").threshold, 1000);
+  assert.equal(ok("errors > 1.5e-2").threshold, 0.015);
+  assert.equal(ok("temp < -40").threshold, -40);
+  assert.equal(ok("ratio > .5").threshold, 0.5);
+  assert.equal(ok("ratio > +0.5").threshold, 0.5);
+});
+
+test("whitespace anywhere is not a syntax error", () => {
+  const rule = ok('   cpu_usage  {  host = "web-01" , az != "b"  }   >=   90.5   ');
+  assert.equal(rule.op, ">=");
+  assert.equal(rule.threshold, 90.5);
+  assert.deepEqual(rule.selectors, {
+    host: { op: "=", value: "web-01" },
+    az: { op: "!=", value: "b" },
+  });
+});
+
+test("hostile selector values survive intact", () => {
+  // Each of these is a legal PromQL string literal, and each has broken a
+  // layer of this stack before or is one comma away from doing so.
+  const cases = [
+    ['{msg="a: b"}', "a: b"], //         colon-space — the #532 shape
+    ['{msg="a,b"}', "a,b"], //           a comma inside a value, not a separator
+    ['{msg="say \\"hi\\""}', 'say "hi"'], // escaped quotes
+    ['{msg="C:\\\\tmp"}', "C:\\tmp"], // escaped backslash
+    ['{msg="{braces}"}', "{braces}"], //  braces inside the value
+    ['{msg="東京"}', "東京"], //           non-ASCII
+    ['{msg=""}', ""], //                  empty value
+    ['{msg="  "}', "  "], //              whitespace-only value
+    // The case that forces the splitter to track escapes. Without it the
+    // `\\"` reads as the end of the string, the comma after it looks like a
+    // separator, and the matcher is torn in half. Every other value above
+    // survives a broken splitter because none of them pairs an escaped quote
+    // with a comma — found by mutation, not by inspection.
+    ['{msg="a \\" , b"}', 'a " , b'],
+  ];
+  for (const [selector, expected] of cases) {
+    const rule = ok(`cpu${selector} > 1`);
+    assert.equal(rule.selectors.msg.value, expected, selector);
+  }
+});
+
+test("a backslash in one value does not swallow the next matcher", () => {
+  // The case that forces the splitter's escape tracking, and the second one
+  // mutation testing had to find: `{msg="a \\" , b"}` above does NOT
+  // discriminate, because a splitter that stops resetting its escape flag
+  // simply never splits — which still yields one correct selector there.
+  // Here the comma is a REAL separator sitting after a backslash, so a
+  // broken splitter loses the second matcher entirely.
+  const rule = ok('cpu{a="x\\\\",b="y"} > 1');
+  assert.deepEqual(rule.selectors, {
+    a: { op: "=", value: "x\\" },
+    b: { op: "=", value: "y" },
+  });
+});
+
+test("regex matchers are read, not mistaken for equality", () => {
+  const rule = ok('cpu{host=~"web-.*",az!~"eu-.*"} > 1');
+  assert.deepEqual(rule.selectors, {
+    host: { op: "=~", value: "web-.*" },
+    az: { op: "!~", value: "eu-.*" },
+  });
+});
+
+test("rules the lab cannot represent are refused BY NAME", () => {
+  // Every one of these is valid PromQL. Half-reading them would put a reader
+  // in front of a chart answering a different question than the rule they
+  // pasted, which is worse than refusing.
+  assert.match(no("rate(http_errors_total[5m]) > 10"), /function call/);
+  assert.match(no("sum by (host) (cpu_usage) > 90"), /aggregation/);
+  assert.match(no("histogram_quantile(0.99, foo) > 1"), /function call/);
+  assert.match(no("up == 1 unless cpu > 90"), /set operator/);
+  assert.match(no("cpu > 90 and mem > 90"), /set operator/);
+  assert.match(no("cpu_usage[5m] > 90"), /range selector/);
+  assert.match(no("cpu_usage offset 5m > 90"), /offset/);
+});
+
+test("a threshold the lab cannot evaluate is refused, not silently coerced", () => {
+  assert.match(no("cpu_usage == 90"), /`>`.*`==`/);
+  assert.match(no("cpu_usage != 90"), /`>`.*`!=`/);
+});
+
+test("a comparison against anything but a number is refused", () => {
+  // The tail-matching trap: a lenient parser reads `> 90` and ignores the
+  // left side entirely.
+  no("cpu_usage > other_metric");
+  no("cpu_usage > 90 * 2");
+  no("cpu_usage + 1 > 90");
+  no("cpu_usage");
+  no("cpu_usage >");
+  no("> 90");
+});
+
+test("the expression is read whole, not found inside a larger one", () => {
+  // This is the case that forces the leading anchor, and mutation testing is
+  // how it got written: unanchoring the regex left every other case in this
+  // file green. `100 * cpu_usage > 90` contains a substring that parses
+  // perfectly — a parser that scans for one would import a rule about a
+  // scaled metric as though it were about the raw one, and the threshold
+  // would be wrong by a factor of a hundred with nothing to show for it.
+  no("100 * cpu_usage > 90");
+  no("(cpu_usage / 2) > 90");
+  no("some junk then cpu_usage > 90");
+});
+
+test("empty and malformed input says what is wrong", () => {
+  assert.match(no(""), /nothing to import/);
+  assert.match(no("   \n  "), /nothing to import/);
+  assert.match(no(null), /nothing to import/);
+  assert.match(no(undefined), /nothing to import/);
+  assert.match(no("alert: NoExpr\n  for: 5m"), /no `expr:` line/);
+  assert.match(no("expr: cpu > 1\nfor: soon"), /could not read the duration/);
+  assert.match(no('cpu{host "web"} > 1'), /label matcher/);
+  assert.match(no("cpu{host=web} > 1"), /label matcher/);
+});
+
+test("a double-quoted expr is unescaped like YAML, not like PromQL", () => {
+  const rule = ok('expr: "cpu_usage{msg=\\"a: b\\"} > 5"');
+  assert.equal(rule.selectors.msg.value, "a: b");
+  assert.equal(rule.threshold, 5);
+});
+
+test("a # inside an expression is not treated as a comment", () => {
+  // Guessing wrong here silently truncates the rule to something that still
+  // parses, which is the worst available outcome.
+  assert.equal(parsePromQLRule('cpu{path="/a#b"} > 1').selectors.path.value, "/a#b");
+  // And through the YAML-scalar path, which is where the temptation to strip
+  // a trailing comment actually lives. The bare-expression case above does
+  // not reach `_unquoteScalar` at all, so it left that behaviour unpinned.
+  assert.equal(parsePromQLRule('expr: cpu{path="/a#b"} > 1').selectors.path.value, "/a#b");
+  assert.equal(parsePromQLRule("expr: cpu > 1 # a real trailing comment").ok, false);
 });
 
 console.log(`${passed} pure-helper tests passed`);

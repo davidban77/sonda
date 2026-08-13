@@ -1063,6 +1063,58 @@
 
 /* ---------- Playground synthetic log stream ----------------------------- */
 
+/* The alert lab's second rule row and import box (WP12). */
+.sonda-lab-second {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.sonda-lab-import {
+  align-items: flex-start;
+}
+
+.sonda-lab-importbox {
+  flex: 1 1 22rem;
+  min-width: 12rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 6px;
+  background: var(--md-code-bg-color);
+  color: var(--md-default-fg-color);
+  resize: vertical;
+}
+
+.sonda-lab-importnote {
+  flex: 1 1 100%;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.sonda-lab-importnote[data-kind="error"] {
+  color: #b8241f;
+}
+
+[data-md-color-scheme="slate"] .sonda-lab-importnote[data-kind="error"] {
+  color: #ff8079;
+}
+
+.sonda-lab-importnote[data-kind="warn"] {
+  color: #8a5600;
+}
+
+[data-md-color-scheme="slate"] .sonda-lab-importnote[data-kind="warn"] {
+  color: #e0a445;
+}
+
+.sonda-lab-importnote[data-kind="ok"] {
+  opacity: 0.7;
+}
+
 /* The time cursor's readout (WP9): one strip under the chart, one chip per
    series. Wraps rather than scrolls — a scenario with six series on a narrow
    screen should grow downwards, not hide readings off the right edge. */

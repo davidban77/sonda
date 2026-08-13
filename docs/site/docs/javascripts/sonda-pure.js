@@ -315,58 +315,83 @@ export function niceDeadlineSecs(secs) {
   return Math.ceil(padded / 60) * 60;
 }
 
-/* Build the "run this for real" export: one clipboard-ready file — the
- * scenario YAML with an appended, label-scoped `expect:` block, headed by a
- * comment carrying the matching vmalert/Prometheus rule. Deadlines come
- * from the evaluated preview timeline, so the exported expectation is one
- * the tuned rule demonstrably meets. */
-export function buildTestExport({ yaml, entry, rule, evaled }) {
-  const alertName = deriveAlertName(entry.name, rule.op);
+/* The `sonda test` setup for one or more lab rules, as a copyable document.
+ *
+ * `rules` is an array of `{ severity, op, threshold, forSecs, evaled }` —
+ * plural since WP12, because a warning/critical pair is how these are written
+ * in practice and exporting only one of them would hand a reader half their
+ * alerting policy. A single-rule export is byte-identical to what this
+ * produced before the pair existed, so the common case did not get noisier to
+ * make room for the uncommon one.
+ *
+ * Each rule carries its OWN `evaled`, because the deadlines are per-rule: a
+ * warning at 60 fires earlier than a critical at 90 on the same series, and
+ * asserting the critical's timing against the warning's states would produce
+ * an expectation that passes for the wrong reason.
+ */
+export function buildTestExport({ yaml, entry, rules }) {
   const labels = entry.labels || {};
   const labelKeys = Object.keys(labels).sort();
   const selector = labelKeys.length
     ? `{${labelKeys.map((k) => `${k}="${escapeQuoted(labels[k])}"`).join(",")}}`
     : "";
-  const forSecs = rule.forSecs;
-
-  const firstFiring = evaled.states.indexOf("firing");
-  const fired = firstFiring >= 0;
   const offset = entry.offset_secs || 0;
-  const firingWithin = fired
-    ? niceDeadlineSecs(offset + firstFiring * entry.tick_secs)
-    : null;
-  const endsResolved = fired && evaled.states[evaled.states.length - 1] !== "firing";
+  const multiple = rules.length > 1;
 
-  // The expr is a YAML scalar containing PromQL: single-quote it at the
-  // YAML layer (apostrophes doubled, backslashes untouched) so PromQL's
-  // own escapes survive and label values with `: ` cannot break the rules
-  // file. escapeQuoted already handled the PromQL string-literal layer.
-  const expr = `${entry.name}${selector} ${rule.op} ${rule.threshold}`;
-  const ruleLines = [
-    "groups:",
-    "  - name: sonda-lab",
-    "    interval: 5s",
-    "    rules:",
-    `      - alert: ${alertName}`,
-    `        expr: '${expr.replace(/'/g, "''")}'`,
-    `        for: ${forSecs}s`,
-    "        labels:",
-    "          severity: critical",
-  ];
+  const prepared = rules.map((rule) => {
+    const severity = rule.severity || "critical";
+    // The severity suffix only appears when it has to. With one rule the
+    // name is what it always was; with two, two alerts sharing a name in one
+    // group is a rules file that does not mean what it looks like.
+    const alertName = deriveAlertName(entry.name, rule.op) +
+      (multiple ? severity.charAt(0).toUpperCase() + severity.slice(1) : "");
+    const states = (rule.evaled && rule.evaled.states) || [];
+    const firstFiring = states.indexOf("firing");
+    const fired = firstFiring >= 0;
+    return {
+      severity,
+      alertName,
+      op: rule.op,
+      threshold: rule.threshold,
+      forSecs: rule.forSecs,
+      fired,
+      firingWithin: fired ? niceDeadlineSecs(offset + firstFiring * entry.tick_secs) : null,
+      endsResolved: fired && states[states.length - 1] !== "firing",
+      expr: `${entry.name}${selector} ${rule.op} ${rule.threshold}`,
+    };
+  });
 
-  const expectLines = ["expect:", "  alerts:", `    - alert: ${alertName}`, "      labels:", "        severity: critical"];
-  for (const key of labelKeys) {
-    // Always double-quoted: a bare numeric, boolean, `{`, `*`, colon-space
-    // or empty value is invalid (or worse, retyped) YAML.
-    expectLines.push(`        ${key}: "${escapeQuoted(labels[key])}"`);
+  const ruleLines = ["groups:", "  - name: sonda-lab", "    interval: 5s", "    rules:"];
+  for (const rule of prepared) {
+    ruleLines.push(
+      `      - alert: ${rule.alertName}`,
+      // The expr is a YAML scalar containing PromQL: single-quote it at the
+      // YAML layer (apostrophes doubled, backslashes untouched) so PromQL's
+      // own escapes survive and label values with `: ` cannot break the
+      // rules file. escapeQuoted already handled the PromQL literal layer.
+      `        expr: '${rule.expr.replace(/'/g, "''")}'`,
+      `        for: ${rule.forSecs}s`,
+      "        labels:",
+      `          severity: ${rule.severity}`
+    );
   }
-  expectLines.push(
-    `      firing_within: ${firingWithin !== null ? `${firingWithin}s` : "60s # the rule never fired in the sampled preview — tune it in the lab first"}`
-  );
-  if (endsResolved) {
-    expectLines.push("      resolves_within: 2m");
-  } else if (fired) {
-    expectLines.push("      # still firing when the scenario ends — resolution not asserted");
+
+  const expectLines = ["expect:", "  alerts:"];
+  for (const rule of prepared) {
+    expectLines.push(`    - alert: ${rule.alertName}`, "      labels:", `        severity: ${rule.severity}`);
+    for (const key of labelKeys) {
+      // Always double-quoted: a bare numeric, boolean, `{`, `*`, colon-space
+      // or empty value is invalid (or worse, retyped) YAML.
+      expectLines.push(`        ${key}: "${escapeQuoted(labels[key])}"`);
+    }
+    expectLines.push(
+      `      firing_within: ${rule.firingWithin !== null ? `${rule.firingWithin}s` : "60s # the rule never fired in the sampled preview — tune it in the lab first"}`
+    );
+    if (rule.endsResolved) {
+      expectLines.push("      resolves_within: 2m");
+    } else if (rule.fired) {
+      expectLines.push("      # still firing when the scenario ends — resolution not asserted");
+    }
   }
 
   const hasExpect = /^expect:/m.test(yaml);
@@ -374,10 +399,14 @@ export function buildTestExport({ yaml, entry, rule, evaled }) {
     ? `${yaml.trimEnd()}\n\n# NOTE: this scenario already has an expect: block — merge the one below by hand.\n${expectLines.map((l) => `# ${l}`).join("\n")}\n`
     : `${yaml.trimEnd()}\n\n# Scope note: expect.labels pins this scenario's own labels — ALERTS is\n# global, and an unscoped expectation can match alerts other series caused.\n${expectLines.join("\n")}\n`;
 
+  const headline = prepared
+    .map((r) => `${entry.name}${selector} ${r.op} ${r.threshold} for ${r.forSecs}s (${r.severity})`)
+    .join("\n#   ");
+
   return (
-    `# Generated by the Sonda alert lab — ${entry.name}${selector} ${rule.op} ${rule.threshold} for ${forSecs}s\n` +
+    `# Generated by the Sonda alert lab — ${headline}\n` +
     `#\n` +
-    `# 1) Alert rule (vmalert / Prometheus) — add to your rules file:\n` +
+    `# 1) Alert rule${multiple ? "s" : ""} (vmalert / Prometheus) — add to your rules file:\n` +
     ruleLines.map((l) => `#    ${l}`).join("\n") +
     `\n#\n` +
     `# 2) This file — save as lab-scenario.yaml and run:\n` +
@@ -710,4 +739,226 @@ export function logLinesNear(log, cursorSecs) {
     if (Math.abs(secs - at) <= window) hits.push(i);
   }
   return hits;
+}
+
+/* ---- importing a Prometheus rule (WP12) ------------------------------- */
+
+/* The operators the lab can evaluate. `evaluate` implements `>` and `<`;
+ * the rest are accepted here and normalized, because a rule written with
+ * `>=` is a rule about the same threshold and refusing it would send a
+ * reader away to edit text by hand for no reason. */
+const _IMPORTABLE_OPS = new Set([">", ">=", "<", "<="]);
+
+/* A PromQL instant-vector selector and a scalar comparison, and nothing else:
+ *
+ *   metric_name{label="value",other!="x"} >= 12.5e3
+ *
+ * Anchored end to end on purpose. A partial match is how a parser accepts
+ * `rate(cpu[5m]) > 90` by reading only the tail — the class of leniency that
+ * makes an import feature lie about what it imported.
+ */
+const _PROMQL_RULE_RE = new RegExp(
+  "^\\s*(?<metric>[a-zA-Z_:][a-zA-Z0-9_:]*)\\s*" +
+    // The selector block: anything but a brace or quote, OR a complete
+    // string literal — which MAY contain braces. `[^{}]*` is the obvious
+    // version and it rejects `{msg="{braces}"}`, a legal matcher, because a
+    // brace inside a value is indistinguishable from the closing one to a
+    // rule that cannot see quoting.
+    '(?:\\{(?<selectors>(?:[^{}"]|"(?:[^"\\\\]|\\\\.)*")*)\\})?\\s*' +
+    "(?<op>>=|<=|==|!=|>|<)\\s*" +
+    "(?<value>[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?)\\s*$"
+);
+
+/* One label matcher inside the braces. The value is a double-quoted PromQL
+ * string literal, so it may contain escaped quotes and backslashes — and
+ * `: ` , which is what broke the YAML layer in review #532. */
+const _SELECTOR_RE = new RegExp(
+  '^\\s*(?<label>[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?<match>=~|!~|!=|=)\\s*"(?<value>(?:[^"\\\\]|\\\\.)*)"\\s*$'
+);
+
+/* Duration suffixes Prometheus accepts on `for:`, in seconds. */
+const _DURATION_UNITS = { ms: 0.001, s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+
+/* Parse a Prometheus duration (`5m`, `1h30m`, `90s`) into seconds, or null. */
+function _durationSecs(text) {
+  const raw = String(text).trim();
+  if (!raw) return null;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return Number(raw); // bare number = seconds
+  const parts = raw.match(/\d+(?:\.\d+)?(?:ms|[smhdwy])/g);
+  if (!parts || parts.join("") !== raw) return null;
+  let total = 0;
+  for (const part of parts) {
+    const match = part.match(/^(\d+(?:\.\d+)?)(ms|[smhdwy])$/);
+    if (!match) return null;
+    total += Number(match[1]) * _DURATION_UNITS[match[2]];
+  }
+  return total;
+}
+
+/* Split the inside of `{...}` on commas that are not inside a string. */
+function _splitSelectors(text) {
+  const out = [];
+  let current = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of text) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') inString = !inString;
+    if (char === "," && !inString) {
+      out.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  out.push(current);
+  return out;
+}
+
+/* Import one Prometheus alerting rule into the lab's controls.
+ *
+ * Accepts either a rules-file snippet — `alert:` / `expr:` / `for:`, with or
+ * without the `groups:` scaffolding around it — or a bare expression. Returns
+ * `{ ok: true, name, metric, selectors, op, threshold, forSecs }`, or
+ * `{ ok: false, reason }` where the reason names what was actually seen.
+ *
+ * THE GRAMMAR IS DELIBERATELY TINY: one instant-vector selector compared
+ * against one scalar. The lab evaluates a threshold against a single sampled
+ * series, so that is the whole of what it can honestly represent. A rule
+ * carrying `rate(...)`, `sum by (...)`, `unless`, an arithmetic expression or
+ * a comparison between two series is not a rule this lab could show — and
+ * importing "most of it" would put a reader in front of a chart that answers
+ * a different question than the rule they pasted. Those are refused by name.
+ *
+ * Selectors are parsed but do NOT drive evaluation: the lab always evaluates
+ * against the scenario currently loaded. They are validated so a well-formed
+ * rule is not rejected for having them, and returned so the caller can say
+ * which series the rule was written about.
+ */
+export function parsePromQLRule(text) {
+  const source = String(text == null ? "" : text);
+  if (!source.trim()) return { ok: false, reason: "nothing to import — paste a rule first" };
+
+  // Pull the fields out of a rules-file snippet if that is what this is.
+  // A bare expression has no `expr:` key and is used whole.
+  //
+  // The line prefix allows `#` as well as indentation and the list dash,
+  // because THIS LAB'S OWN EXPORT writes its rule inside a comment block —
+  // a reader who copies what the lab gave them and pastes it back would
+  // otherwise be told there is no `expr:` line. Found by round-tripping
+  // `buildTestExport` through this parser, which is now a test: if the two
+  // ever disagree again, the lab cannot read what it wrote.
+  let expr = source;
+  let name = null;
+  let forText = null;
+  const exprLine = source.match(/^[ \t#-]*expr:[ \t]*(?<value>.+?)[ \t]*$/m);
+  if (exprLine) {
+    expr = _unquoteScalar(exprLine.groups.value);
+    const nameLine = source.match(/^[ \t#-]*alert:[ \t]*(?<value>.+?)[ \t]*$/m);
+    if (nameLine) name = _unquoteScalar(nameLine.groups.value);
+    const forLine = source.match(/^[ \t#-]*for:[ \t]*(?<value>.+?)[ \t]*$/m);
+    if (forLine) forText = _unquoteScalar(forLine.groups.value);
+  } else if (/^[ \t#-]*(?:record|alert):/m.test(source)) {
+    // A rule block with no expr: is a rules file we failed to read, not a
+    // bare expression — saying so beats reporting a PromQL syntax error
+    // about YAML.
+    return { ok: false, reason: "found a rule block but no `expr:` line" };
+  }
+
+  expr = expr.trim();
+  if (!expr) return { ok: false, reason: "the rule has an empty `expr:`" };
+
+  // Name the unsupported constructs before the regex does, because
+  // "does not match" is a useless thing to tell someone holding a rule that
+  // is perfectly valid PromQL.
+  const unsupported = [
+    [/\b(?:rate|irate|increase|avg_over_time|max_over_time|min_over_time|sum_over_time|histogram_quantile|absent|delta|deriv|predict_linear)\s*\(/, "a function call"],
+    [/\b(?:sum|avg|min|max|count|topk|bottomk|quantile|stddev|group)\s*(?:by|without)?\s*[({]/, "an aggregation"],
+    [/\b(?:unless|and|or)\b/, "a set operator"],
+    [/\[[^\]]*\]/, "a range selector"],
+    [/\boffset\b|@/, "an offset or @ modifier"],
+  ];
+  for (const [pattern, what] of unsupported) {
+    if (pattern.test(expr)) {
+      return {
+        ok: false,
+        reason: `only simple threshold rules import; this one uses ${what}. Edit it by hand.`,
+      };
+    }
+  }
+
+  const match = _PROMQL_RULE_RE.exec(expr);
+  if (!match) {
+    return {
+      ok: false,
+      reason:
+        "only simple threshold rules import — expected `metric{labels} > number`. Edit it by hand.",
+    };
+  }
+  const { metric, selectors: selectorText, op, value } = match.groups;
+
+  if (!_IMPORTABLE_OPS.has(op)) {
+    return {
+      ok: false,
+      reason: `the lab evaluates \`>\`, \`>=\`, \`<\` and \`<=\`; this rule uses \`${op}\``,
+    };
+  }
+
+  const threshold = Number(value);
+  if (!Number.isFinite(threshold)) {
+    return { ok: false, reason: `\`${value}\` is not a finite number` };
+  }
+
+  const selectors = {};
+  if (selectorText !== undefined && selectorText.trim()) {
+    for (const part of _splitSelectors(selectorText)) {
+      const selector = _SELECTOR_RE.exec(part);
+      if (!selector) {
+        return { ok: false, reason: `could not read the label matcher \`${part.trim()}\`` };
+      }
+      const { label, match: matcher, value: raw } = selector.groups;
+      // Unescape the PromQL string literal so the value round-trips through
+      // `escapeQuoted` on the way back out to a rules file.
+      selectors[label] = { op: matcher, value: raw.replace(/\\(.)/g, "$1") };
+    }
+  }
+
+  let forSecs = 0;
+  if (forText !== null) {
+    const parsed = _durationSecs(forText);
+    if (parsed === null) {
+      return { ok: false, reason: `could not read the duration \`${forText}\`` };
+    }
+    forSecs = parsed;
+  }
+
+  return { ok: true, name, metric, selectors, op, threshold, forSecs };
+}
+
+/* Strip one layer of YAML scalar quoting from a value read off a line.
+ *
+ * `expr: 'cpu > 90'` and `expr: "cpu > 90"` are the same expression; the
+ * single-quoted form doubles its own apostrophes, which is how
+ * `buildTestExport` writes them. Trailing `#` comments are NOT stripped: a
+ * `#` inside an unquoted PromQL expression is not a comment, and guessing
+ * wrong would silently truncate the rule.
+ */
+function _unquoteScalar(value) {
+  const text = String(value).trim();
+  if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) {
+    return text.slice(1, -1).replace(/''/g, "'");
+  }
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+    return text.slice(1, -1).replace(/\\(.)/g, "$1");
+  }
+  return text;
 }
