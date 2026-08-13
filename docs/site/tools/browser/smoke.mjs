@@ -393,15 +393,32 @@ try {
   check("fence buttons are present", buttonCount > 0, `${buttonCount} buttons`);
   await fences.click("a.sonda-runnable");
   await fences.waitForSelector("#sonda-playground", { timeout: 30000 });
-  await fences.waitForFunction(
-    () =>
-      document
-        .querySelector("#sonda-playground .cm-content")
-        ?.textContent.includes("version: 2"),
-    null,
-    { timeout: 60000 }
+  // The waited-for condition is asserted here rather than relied on
+  // implicitly (review #544 M2). A `check(..., true)` after a wait is not
+  // vacuous today — the wait throws and fails the run — but it READS as an
+  // assertion while depending entirely on a line above it, so loosening that
+  // wait later would turn it decorative with nothing noticing.
+  let fenceArrived = true;
+  await fences
+    .waitForFunction(
+      () =>
+        document
+          .querySelector("#sonda-playground .cm-content")
+          ?.textContent.includes("version: 2"),
+      null,
+      { timeout: 60000 }
+    )
+    .catch(() => {
+      fenceArrived = false;
+    });
+  check(
+    "the fence's scenario arrives in the editor",
+    fenceArrived &&
+      (await fences.evaluate(() =>
+        document.querySelector("#sonda-playground .cm-content")?.textContent.includes("version: 2")
+      )),
+    `${(await fences.evaluate(() => document.querySelector("#sonda-playground .cm-content")?.textContent || "")).trim().slice(0, 40)}…`
   );
-  check("the fence's scenario arrives in the editor", true);
   await fences.close();
 
   // --- 10. The examples gallery ------------------------------------------
@@ -483,12 +500,21 @@ try {
     "href"
   );
   await gallery.goto(galleryLink, { waitUntil: "domcontentloaded" });
-  await gallery.waitForFunction(
-    () => document.querySelector("#sp-output")?.textContent.trim().length > 0,
-    null,
-    { timeout: 60000 }
+  await gallery
+    .waitForFunction(
+      () => document.querySelector("#sp-output")?.textContent.trim().length > 0,
+      null,
+      { timeout: 60000 }
+    )
+    .catch(() => {}); // the check below reports what it actually saw
+  const carried = await gallery.evaluate(
+    () => (document.querySelector("#sp-output")?.textContent || "").trim().length
   );
-  check("a card's link carries its example into the playground", true);
+  check(
+    "a card's link carries its example into the playground",
+    carried > 0,
+    `${carried} chars of encoded output`
+  );
   await gallery.close();
 
   // --- 11. Scheduling and encoder widgets --------------------------------
@@ -804,6 +830,70 @@ try {
   check(
     "switching preset drops the ghost rather than comparing two scenarios",
     (await cursorPage.evaluate(() => document.getElementById("sp-chart").dataset.ghosts)) === "0"
+  );
+
+  // Review #544 M1. The stamps are written inside drawChart, which a hidden
+  // chart never reaches — so a logs-only scenario used to keep advertising
+  // the cursor from whatever metrics scenario preceded it. The behaviour was
+  // already right; the stamp was not, and the stamp is what this suite reads.
+  // Hover first, so there is a cursor to go stale.
+  await cursorPage.locator("#sp-chart").scrollIntoViewIfNeeded();
+  const mixedBox = await cursorPage.locator("#sp-chart").boundingBox();
+  await cursorPage.mouse.move(
+    mixedBox.x + mixedBox.width * 0.5,
+    mixedBox.y + mixedBox.height * 0.5
+  );
+  await cursorPage
+    .waitForFunction(() => document.getElementById("sp-chart").dataset.cursor !== "", null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  const hadCursor = await cursorPage.evaluate(
+    () => document.getElementById("sp-chart").dataset.cursor
+  );
+  await cursorPage.selectOption("#sp-preset", { label: "Synthetic log stream" });
+  await cursorPage.waitForFunction(
+    () => document.getElementById("sp-chart").style.display === "none",
+    null,
+    { timeout: 60000 }
+  );
+  const hiddenState = await cursorPage.evaluate(() => ({
+    cursor: document.getElementById("sp-chart").dataset.cursor,
+    readoutHidden: document.getElementById("sp-readout").hidden,
+    highlighted: document.querySelectorAll(".sonda-playground__logline--at").length,
+  }));
+  check(
+    "a hidden chart stops advertising a cursor from the scenario before it",
+    hadCursor !== "" && hiddenState.cursor === "",
+    `was "${hadCursor}", now "${hiddenState.cursor}"`
+  );
+  check(
+    "and nothing is left highlighted or read out on a logs-only scenario",
+    hiddenState.readoutHidden && hiddenState.highlighted === 0,
+    `readoutHidden=${hiddenState.readoutHidden} highlighted=${hiddenState.highlighted}`
+  );
+  check(
+    "a logs-only scenario says why it has no cursor, rather than leaving a reader hunting",
+    (await cursorPage.evaluate(
+      () => document.querySelector("#sp-logs .sonda-playground__lognote")?.textContent || ""
+    )).includes("no metrics series"),
+    await cursorPage.evaluate(
+      () => document.querySelector("#sp-logs .sonda-playground__lognote")?.textContent || "(absent)"
+    )
+  );
+
+  // Back to the mixed preset for the correlation checks below. The block
+  // above deliberately leaves the page on a logs-only scenario, which has no
+  // visible chart to hover — restoring it here rather than reordering keeps
+  // each block reading as one idea.
+  await cursorPage.selectOption("#sp-preset", { label: "Latency spike + correlated logs" });
+  await cursorPage.waitForFunction(
+    () =>
+      document.getElementById("sp-chart").style.display !== "none" &&
+      document.querySelectorAll("#sp-logs .sonda-playground__logline").length > 0 &&
+      document.querySelector("#sp-chart")?._geom,
+    null,
+    { timeout: 60000 }
   );
 
   // Log correlation needs a scenario with BOTH signals — the reason this

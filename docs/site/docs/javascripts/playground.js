@@ -545,6 +545,18 @@ async function boot() {
       if (!lastResult || !lastResult.ok) return;
       if (el.chart.style.display !== "none") {
         drawChart(el.chart, lastResult.entries, view());
+      } else {
+        // The stamps live inside drawChart, which a hidden chart never
+        // reaches — so a logs-only scenario would keep advertising the cursor
+        // from the metrics scenario before it (review #544 M1). The BEHAVIOUR
+        // was already right, since the readout empties and no log line is
+        // spuriously highlighted; what went stale was the smoke suite's
+        // oracle for where the cursor is, which is worse than a wrong pixel
+        // because a future check would read it and believe it.
+        el.chart.dataset.cursor = "";
+        el.chart.dataset.ghosts = "0";
+        el.chart.dataset.ghostPeak = "";
+        el.chart.dataset.peak = "";
       }
       renderReadout(el, lastResult.entries, cursorSecs);
       highlightLogs(lastResult.logs || [], cursorSecs);
@@ -700,10 +712,19 @@ function render(el, result, view = {}) {
   const hasExtras = histograms.length || summaries.length || logs.length;
   el.chart.style.display = hasLines || !hasExtras ? "" : "none";
   if (hasLines || !hasExtras) drawChart(el.chart, result.entries, view);
+  // Same reason as the hidden branch of paintCursor: render() reaches here on
+  // a preset change too, and a hidden chart must not keep the last visible
+  // scenario's stamps.
+  else {
+    el.chart.dataset.cursor = "";
+    el.chart.dataset.ghosts = "0";
+    el.chart.dataset.ghostPeak = "";
+    el.chart.dataset.peak = "";
+  }
   syncPngButton(el);
 
   renderExtraCharts(el, histograms, summaries);
-  renderLogs(el, logs);
+  renderLogs(el, logs, el.chart.style.display !== "none");
   // The cursor's two readers, refreshed with the chart: a re-render on
   // resize or theme flip must not leave a readout describing the old scales
   // or a highlight on a log pane that was just rebuilt from scratch.
@@ -772,7 +793,7 @@ function renderExtraCharts(el, histograms, summaries) {
 /* Synthetic log stream pane: one scrollable block per log entry, each line
  * stamped with its offset on the scenario timeline and colored by severity.
  * Rebuilt per render, same lifecycle as the extra charts. */
-function renderLogs(el, logs) {
+function renderLogs(el, logs, correlatable) {
   let pane = document.getElementById("sp-logs");
   if (!logs.length) {
     if (pane) pane.remove();
@@ -784,6 +805,21 @@ function renderLogs(el, logs) {
     el.chart.parentElement.appendChild(pane);
   }
   pane.replaceChildren();
+
+  // Said here because here is where the question arises (review #544).
+  // Correlation hangs off the chart cursor, and a logs-only scenario has no
+  // chart — so the preset most about logs is the one place the log feature
+  // does nothing. That is a real consequence of the design rather than a bug,
+  // and the honest response is to name it rather than let a reader hunt for a
+  // control that was never there. A scrubber over the pane itself would be
+  // the other answer; that is a second instrument, not a sentence.
+  if (!correlatable) {
+    const note = document.createElement("p");
+    note.className = "sonda-playground__lognote";
+    note.textContent =
+      "Hovering a chart highlights the events at that moment — this scenario has no metrics series to hover.";
+    pane.appendChild(note);
+  }
 
   for (const log of logs) {
     const caption = document.createElement("p");

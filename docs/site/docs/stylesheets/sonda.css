@@ -1115,6 +1115,13 @@
   box-shadow: -0.35rem 0 0 rgba(253, 186, 116, 0.2), 0.35rem 0 0 rgba(253, 186, 116, 0.2);
 }
 
+/* Why the log pane has no cursor when the scenario has no chart. */
+.sonda-playground__lognote {
+  margin: 0.6rem 0 0;
+  font-size: 0.74rem;
+  opacity: 0.7;
+}
+
 .sonda-playground__logstream {
   max-height: 16rem;
   overflow-y: auto;
