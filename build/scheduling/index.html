@@ -2414,6 +2414,9 @@
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>       emit events   gap (20s)  emit events   gap (20s)
 </span></code></pre></div>
 <p>Gaps occupy the <strong>tail</strong> of each cycle. With <code>every: 60s</code> and <code>for: 20s</code>, the <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr> runs from second 40 to second 60 of each cycle.</p>
+<p>Drag the sliders to see where the silence lands. The shaded bands are the <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr> windows; the trace underneath is held still on purpose, so the schedule is the only thing changing.</p>
+<div class="sonda-livegen" data-gen="gaps" markdown="0"></div>
+
 <p>Bursts work the same way but in reverse. During the <abbr title="Recurring window during which a scenario emits at an elevated rate.">burst</abbr> window the runner emits at a higher rate, which simulates a traffic spike:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">scenarios</span><span class="p">:</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
@@ -2425,8 +2428,12 @@
 </span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">bursts</span><span class="p">:</span>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">      </span><span class="nt">every</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5m</span>
 </span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">      </span><span class="nt">for</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="nt">rate_multiplier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="nt">multiplier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
 </span></code></pre></div>
+<p>Bursts occupy the <strong>head</strong> of each cycle, where gaps occupy the tail — the orange bands below start when the cycle starts. <code>multiplier</code> raises the event rate inside the window rather than the value, so the trace keeps its shape while the emission rate changes underneath it.</p>
+<p>That last sentence is also why <code>multiplier</code> is the one slider whose effect you will not find in the trace: the chart plots the metric's value, and a <abbr title="Recurring window during which a scenario emits at an elevated rate.">burst</abbr> does not change the value. So the first band reports it instead — <code>4/s → 12/s</code> is the emission rate outside the band and inside it. Drag <code>multiplier</code> to 1 and the band reads <code>4/s → 4/s</code>, which is what a <abbr title="Recurring window during which a scenario emits at an elevated rate.">burst</abbr> with no multiplier does.</p>
+<div class="sonda-livegen" data-gen="bursts" markdown="0"></div>
+
 <p>For the full field reference (every option on <code>gaps:</code> and <code>bursts:</code>, including jitter and offset), see <a href="../../reference/scenario-fields/#gap-window">Scenario fields — Gap window</a> and <a href="../../reference/scenario-fields/#burst-window">Burst window</a>. To test alert resolution behavior with gaps, see the <a href="../../test/alert-testing/#resolution-and-recovery">Resolution and recovery tab</a> on Alert testing.</p>
 <h2 id="dynamic-labels">Dynamic labels<a class="headerlink" href="#dynamic-labels" title="Permanent link">&para;</a></h2>
 <p>Dynamic labels attach a rotating label value to every emitted event. Use them when the label you care about (<code>hostname</code>, <code>pod_name</code>, <code>region</code>) belongs on every data point, and you need the values to cycle through a bounded, predictable set.</p>
@@ -2771,6 +2778,7 @@ Returns a per-peer event count over the last 5 minutes. This is the shape you wo
 </span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a><span class="w">        </span><span class="nt">prefix</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pod-&quot;</span>
 </span></code></pre></div>
 <p>During the 10-second spike window, each tick injects a <code>pod_name</code> label drawn from a pool of up to 500 unique values. Outside the window the label is absent and only one series is emitted. This on/off pattern is what you need to test <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr>-guardrail alerts.</p>
+<p>There is deliberately no live widget here. A <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike changes the <em>number of series</em>, not the shape of one — the line chart above would look identical with the spike on and off, so a widget would show a reader nothing while implying it showed them something. Visualizing it properly means a series-count chart, which is a different instrument; it is on the list rather than faked. The <abbr title="Recurring window during which a scenario emits at an elevated rate.">burst</abbr> <code>multiplier</code> above ran into the same wall and took the other exit: what it changes is real and countable, so the band states it as a number instead of drawing a line that would not move.</p>
 <p>For the full field reference, see <a href="../../reference/scenario-fields/#cardinality-spike-window">Scenario fields — Cardinality spike window</a>. For the testing pattern in context, see the <a href="../../test/alert-testing/#cardinality-explosion">Cardinality explosion tab</a> on Alert testing.</p>
 <h2 id="where-to-next">Where to next<a class="headerlink" href="#where-to-next" title="Permanent link">&para;</a></h2>
 <ul>
@@ -2799,7 +2807,7 @@ Returns a per-peer event count over the last 5 minutes. This is the shape you wo
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 11, 2026 11:08:54 UTC">August 11, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 13, 2026 06:49:33 UTC">August 13, 2026</span>
   </span>
 
     

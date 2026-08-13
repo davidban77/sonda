@@ -467,3 +467,139 @@ function arrayOf(value) {
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
+
+/* Ceiling on how many CYCLES one entry's schedule may be walked.
+ *
+ * A 30-second scenario with `every: 1s` is 30 cycles; anything approaching
+ * this is already unreadable as shading. The bound is on the loop, not on
+ * the output, and that distinction is the whole point (review #543 W1): an
+ * earlier version capped `windows.length`, which cannot fire when the loop
+ * pushes nothing — and a loop that pushes nothing is exactly the shape that
+ * hangs. `offset 1e6, every 1e-13, for 1e-13` is entirely finite and
+ * positive, but floating point makes `start + for === start`, so no window
+ * is ever produced and the counter never advances.
+ *
+ * Bounding the loop is total over every input shape, including ones nobody
+ * has thought of yet; bounding the output only covers the degenerate values
+ * someone remembered. This is recomputed on every theme flip and every
+ * resize, so a hang here is a wedged tab.
+ *
+ * Named for CYCLES because that is what it counts, and the returned array is
+ * NOT bounded by it (review #543 N1): the loop runs once per kind, so an
+ * entry carrying both a burst and a gap can return up to twice this many
+ * windows. That needs sub-second periods on both, and 1024 rects is nothing
+ * to draw — the point of saying so is that the old name promised an output
+ * bound this deliberately does not provide.
+ */
+export const MAX_SCHEDULE_CYCLES = 512;
+
+/* The gap and burst windows of one sampled entry, in seconds.
+ *
+ * Shared by the playground's full chart and the docs widgets' mini-chart, so
+ * the shading means the same thing in both places. Returns
+ * `[{ kind: "gap" | "burst", start, end }]` in draw order, already clipped to
+ * `[offset, endSecs]` — a caller only has to map seconds to pixels.
+ *
+ * The engine's semantics, which this mirrors: windows are relative to each
+ * scenario's own start, so they shift by the entry's offset; BURSTS occupy the
+ * head of each cycle and GAPS the tail. That asymmetry is not cosmetic — a
+ * burst begins when the cycle begins, while a gap is the silence at the end of
+ * one, and drawing either in the other's place would misreport when the
+ * signal actually stops.
+ *
+ * Every degenerate input a slider can reach is answered here rather than at
+ * the call sites:
+ *
+ *   every <= 0 or non-finite   no windows. A cycle that never advances is not
+ *                              a schedule.
+ *   for <= 0                   no windows: a zero-length window shades
+ *                              nothing.
+ *   for >= every               windows would run into each other; each is
+ *                              clipped to its own cycle so the shading stays
+ *                              a cycle-by-cycle statement rather than one
+ *                              undifferentiated block.
+ *   offset non-finite          no windows. `-Infinity` is TRUTHY, so the
+ *                              `|| 0` fallback lets it through and every
+ *                              cycle then starts at -Infinity, never
+ *                              reaching the end. `-1e309` is the nastier
+ *                              spelling: nothing about that literal looks
+ *                              non-finite, and it overflows on the way in.
+ *   offset >= endSecs          no windows — the series ends before it starts.
+ *
+ * None of those guards is the backstop, though. The loop itself is bounded
+ * by MAX_SCHEDULE_CYCLES cycles, which is what makes this function total
+ * for inputs no guard anticipates.
+ */
+export function scheduleWindows(entry, endSecs) {
+  if (!entry || typeof entry !== "object") return [];
+  const end = Number(endSecs);
+  const offset = Number(entry.offset_secs) || 0;
+  if (!Number.isFinite(end) || !Number.isFinite(offset) || end <= offset) return [];
+
+  const windows = [];
+  for (const [kind, window] of [
+    ["burst", entry.burst],
+    ["gap", entry.gap],
+  ]) {
+    if (!window) continue;
+    const every = Number(window.every_secs);
+    const forSecs = Number(window.for_secs);
+    if (!Number.isFinite(every) || every <= 0) continue;
+    if (!Number.isFinite(forSecs) || forSecs <= 0) continue;
+
+    // Bounded by CYCLES. See MAX_SCHEDULE_CYCLES above for why the count of
+    // emitted windows is the wrong thing to bound.
+    for (let cycle = 0; cycle < MAX_SCHEDULE_CYCLES; cycle++) {
+      const cycleStart = offset + cycle * every;
+      if (cycleStart >= end) break;
+      // A burst opens its cycle; a gap closes it.
+      const start = kind === "burst" ? cycleStart : cycleStart + Math.max(0, every - forSecs);
+      if (start >= end) break;
+      // Clipped to the cycle as well as to the series: `for` longer than
+      // `every` otherwise paints one continuous band and hides the period.
+      const windowEnd = Math.min(start + forSecs, cycleStart + every, end);
+      if (windowEnd > start) windows.push({ kind, start, end: windowEnd });
+    }
+  }
+  return windows;
+}
+
+/* What a burst does to the emission rate, as a label for the shaded band.
+ *
+ * A burst is the one schedule setting the trace cannot show (review #543 B1).
+ * `every` and `for` move the shading; `multiplier` moves nothing, because the
+ * chart plots the metric's VALUE and a burst does not change the value — it
+ * changes how often that value is emitted. The engine's rule is
+ * `interval = base_interval / multiplier` (sonda-core/src/schedule/core_loop.rs),
+ * so the burst emits `rate * multiplier` events per second while the band is
+ * open.
+ *
+ * Both numbers come back from the compiler, not from the slider: `rate` is the
+ * entry's resolved rate and `multiplier` is the parsed burst window, so a
+ * value the engine rejected never reaches this label — the widget shows the
+ * compile error instead. That is the distinction between a readout and a
+ * decoration that echoes the input.
+ *
+ * Returns `null` when there is no burst, or when either number is one the
+ * label would be a lie about: a non-positive or non-finite rate or multiplier
+ * means the band has no emission rate to report.
+ */
+export function burstEmission(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const burst = entry.burst;
+  if (!burst || typeof burst !== "object") return null;
+  const base = Number(entry.rate);
+  const multiplier = Number(burst.multiplier);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  if (!Number.isFinite(multiplier) || multiplier <= 0) return null;
+  const during = base * multiplier;
+  if (!Number.isFinite(during)) return null;
+  return {
+    base,
+    during,
+    multiplier,
+    // Both ends, so the label carries its own comparison: at multiplier 1 it
+    // reads "4/s → 4/s", which is the honest answer to "what does ×1 do?".
+    label: `${tidyNumber(base)}/s → ${tidyNumber(during)}/s`,
+  };
+}
