@@ -96,6 +96,10 @@ class ExtractedScenario:
     line: int  # 1-based, first content line inside the fence
     body: str
     info: str  # the fence's info string, e.g. 'yaml title="hello.yaml"'
+    # True when `body` is not what the page shows: a fragment wrapped in a
+    # synthesized preamble. Reporting has to say so, or a reader chasing a
+    # failure looks for lines that are not in their file.
+    synthesized: bool = False
 
 
 @dataclasses.dataclass
@@ -165,6 +169,166 @@ def is_runnable_scenario(text: str) -> bool:
     )
 
 
+# --- Fragment synthesis ------------------------------------------------------
+#
+# The gate above only ever sees COMPLETE scenarios, because that is what a
+# "Run in playground" button needs. But three of the bugs this program has
+# found lived in fragments — `scenario_name` (PR #536), the pack fence (#541)
+# and `rate_multiplier` (#543) — and a fragment is invisible to a compile gate
+# precisely because it is a fragment.
+#
+# The insight is the reviewer's, from #543: a fragment is only a fragment
+# because it LACKS A PREAMBLE. The engine rejects unknown fields, so wrapping
+# a fragment in the minimal `version: 2 / kind: runnable / defaults /
+# scenarios:` shape and dry-running it catches exactly the class those three
+# bugs belong to — a misspelled or renamed field under `gaps:`, `bursts:`,
+# `generator:`, `while:`. It does not type-check values the way a schema would,
+# which is what leaves WP11 worth doing.
+#
+# The design constraint that shapes everything below: THE SYNTHESIZED PARTS
+# MUST NOT BE WHAT IS UNDER TEST. Every field this function invents is a field
+# whose errors would belong to the gate rather than to the docs, so it invents
+# as little as it can and only what the fragment has left out.
+#
+# Nothing is suppressed on the strength of that, though. Across today's corpus
+# no fragment fails for a field the scaffolding should have supplied, so
+# filtering out `missing field` errors would only hide real ones — the
+# `period_secs` bug this gate found on its first run is exactly that shape. If
+# a future fragment does fail because the scaffolding is too thin, the honest
+# fixes are to widen the scaffolding or mark the fence `# sonda:static`; both
+# are visible, where a suppressed error class is not.
+
+_FRAGMENT_PREAMBLE = """version: 2
+kind: runnable
+"""
+
+# Defaults, not content. Every key here is one the engine would otherwise
+# demand and that a prose fragment has no reason to carry.
+_FRAGMENT_DEFAULTS = """defaults:
+  rate: 1
+  duration: 10s
+  encoder: { type: json_lines }
+  sink: { type: stdout }
+"""
+
+
+def _scenarios_is_a_sequence(body: str) -> bool:
+    """True when a top-level ``scenarios:`` key introduces a LIST of entries.
+
+    The discriminator that keeps Helm values files out. ``deploy/kubernetes.md``
+    documents a chart whose ``scenarios:`` key maps FILENAMES to file contents:
+
+        scenarios:
+          cpu-metrics.yaml: |
+            name: cpu_usage
+
+    That is a valid document about Sonda which is not a Sonda scenario, and
+    wrapping it produces ``invalid type: map, expected a sequence`` — a failure
+    that says nothing about the docs. Reading whether the first non-blank line
+    under the key starts a sequence item separates the two exactly.
+    """
+    match = re.search(r"^scenarios:[ \t]*$", body, re.MULTILINE)
+    if not match:
+        return False
+    for line in body[match.end() :].splitlines():
+        if not line.strip():
+            continue
+        return line.lstrip().startswith("- ")
+    return False
+
+
+def _looks_like_a_scenario_entry(body: str) -> bool:
+    """True when a fragment is the body of one scenario entry.
+
+    Requires a key only a Sonda entry has. An earlier version accepted any
+    fence opening with ``name:``, which swept in three GITHUB ACTIONS
+    WORKFLOWS from ``test/end-to-end-pipelines.md`` — ``name: Alert Rule
+    Validation`` followed by ``on:`` — and reported ``unknown field `on` `` as
+    a docs bug. `name:` is the most common key in YAML; it discriminates
+    nothing.
+    """
+    if not re.match(
+        r"^(signal_type|name|id|generator|log_generator|distribution):",
+        body.strip().splitlines()[0] if body.strip() else "",
+    ):
+        return False
+    return bool(
+        re.search(r"^(signal_type|generator|log_generator|distribution):", body, re.MULTILINE)
+    )
+
+
+def synthesize_fragment(text: str) -> str | None:
+    """Wrap a docs fragment in the smallest preamble that makes it compilable.
+
+    Returns ``None`` for anything this gate cannot speak about honestly:
+    complete scenarios (the gate above already compiles those), ``sonda:static``
+    opt-outs, ``pack:`` references, Helm values maps, and any fence that is not
+    shaped like a scenario or a list of them.
+
+    Two shapes are handled, and the difference is how much has to be invented:
+
+    ``scenarios:`` already present
+        Only the version header is prepended — and ``defaults:`` too, unless
+        the fragment brought its own. Nothing structural is guessed, so a
+        failure here is the fragment's own.
+
+    a single entry's body
+        Wrapped under ``scenarios:`` at one indent, and ``signal_type:``/
+        ``name:`` are injected IF ABSENT, because a prose fragment showing a
+        `generator:` block has no reason to repeat them. `signal_type` is read
+        off the fragment: a `log_generator:` means logs. Those two injections
+        are the reason a caller must not report `missing field` errors from
+        this tier — see the module note above.
+    """
+    body = normalize_fence(text)
+    if is_runnable_scenario(body):
+        return None
+    if re.search(r"^#[ \t]*sonda:static\b", body, re.MULTILINE):
+        return None
+    if re.search(r"^[ \t]*(?:-[ \t]+)?pack:", body, re.MULTILINE):
+        return None
+    # A fence that already declares a version is either complete (handled
+    # above) or deliberately not v2; either way this gate has nothing to add.
+    if re.search(r"^version:", body, re.MULTILINE):
+        return None
+
+    if _scenarios_is_a_sequence(body):
+        head = _FRAGMENT_PREAMBLE
+        if not re.search(r"^defaults:", body, re.MULTILINE):
+            head += _FRAGMENT_DEFAULTS
+        return head + body if body.endswith("\n") else head + body + "\n"
+
+    if _looks_like_a_scenario_entry(body):
+        injected = []
+        if not re.search(r"^signal_type:", body, re.MULTILINE):
+            # Read off the fragment rather than defaulted, because the entry's
+            # required fields depend on it: a `distribution:` block belongs to
+            # a histogram (a metrics entry would then be asked for a
+            # `generator:` it never had), and a `log_generator:` to logs.
+            if re.search(r"^log_generator:", body, re.MULTILINE):
+                kind = "logs"
+            elif re.search(r"^distribution:", body, re.MULTILINE) and not re.search(
+                r"^generator:", body, re.MULTILINE
+            ):
+                kind = "histogram"
+            else:
+                kind = "metrics"
+            injected.append(f"signal_type: {kind}")
+        if not re.search(r"^name:", body, re.MULTILINE):
+            injected.append("name: doc_fragment")
+        entry = "\n".join(injected + [body.rstrip("\n")])
+        indented = "\n".join("    " + line if line.strip() else "" for line in entry.splitlines())
+        return (
+            _FRAGMENT_PREAMBLE
+            + _FRAGMENT_DEFAULTS
+            + "scenarios:\n"
+            + indented.replace("    ", "  - ", 1)
+            + "\n"
+        )
+
+    return None
+
+
 # --- Markdown extraction -----------------------------------------------------
 
 # 3+ backticks, optionally indented (admonition/tabbed nesting), info string
@@ -215,6 +379,27 @@ def extract_scenarios(md_path: Path, markdown_text: str) -> list[ExtractedScenar
         out.append(
             ExtractedScenario(
                 file=md_path, line=line, body=normalize_fence(body), info=info
+            )
+        )
+    return out
+
+
+def extract_fragments(md_path: Path, markdown_text: str) -> list[ExtractedScenario]:
+    """Return every FRAGMENT fence, wrapped so the engine can parse it.
+
+    The complement of :func:`extract_scenarios`: these fences carry no button
+    and no gate could previously reach them, which is where three of this
+    program's field-name bugs were found. See the module note above
+    :func:`synthesize_fragment` for why the wrapping is kept minimal.
+    """
+    out: list[ExtractedScenario] = []
+    for line, body, info in extract_yaml_fences(markdown_text):
+        document = synthesize_fragment(body)
+        if document is None:
+            continue
+        out.append(
+            ExtractedScenario(
+                file=md_path, line=line, body=document, info=info, synthesized=True
             )
         )
     return out
@@ -422,7 +607,9 @@ def run_validation(
         rel = str(md.relative_to(repo_root)) if md.is_absolute() else str(md)
         if rel in skip_set:
             continue
-        scenarios.extend(extract_scenarios(md, md.read_text(encoding="utf-8")))
+        text = md.read_text(encoding="utf-8")
+        scenarios.extend(extract_scenarios(md, text))
+        scenarios.extend(extract_fragments(md, text))
 
     results = [
         validate_scenario(
@@ -443,8 +630,18 @@ def format_failure(result: ScenarioResult, repo_root: Path) -> str:
     except ValueError:
         rel = result.scenario.file
     head = result.scenario.body.strip().splitlines()[:3]
+    # A synthesized body starts with lines that are not in the reader's file.
+    # Saying so is the difference between a diagnosable failure and a hunt for
+    # a `version: 2` that the page does not contain.
+    note = (
+        "    (fragment, compiled under a synthesized preamble — the lines below "
+        "are the wrapper, not the page)\n"
+        if result.scenario.synthesized
+        else ""
+    )
     return (
         f"FAIL {rel}:{result.scenario.line}\n"
+        + note
         + "".join(f"    | {line}\n" for line in head)
         + f"    {result.message}"
     )
@@ -547,8 +744,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(format_failure(failure, repo_root), file=sys.stderr)
 
     skipped = sum(1 for r in results if r.skipped_reason)
+    fragments = sum(1 for r in results if r.scenario.synthesized)
     print(
-        f"{len(results)} runnable scenario fences found, "
+        f"{len(results) - fragments} runnable scenario fences and {fragments} "
+        f"fragments found, "
         f"{len(results) - skipped - len(failures)} compiled, "
         f"{skipped} skipped, {len(failures)} failed",
         file=sys.stderr,
@@ -662,6 +861,94 @@ class _ExtractScenariosTests(unittest.TestCase):
     def test_static_marked_fence_is_not_extracted(self) -> None:
         md = "```yaml\n# sonda:static\nversion: 2\nkind: runnable\n```\n"
         self.assertEqual(extract_scenarios(Path("x.md"), md), [])
+
+
+class _SynthesizeFragmentTests(unittest.TestCase):
+    """The fragment wrapper, and every shape that must NOT be wrapped.
+
+    Each refusal below is a false positive this gate actually produced on the
+    first run against the real corpus. They are named rather than counted,
+    because "the gate reports 3 failures" is only useful if none of them is
+    the gate misreading a file about something else entirely.
+    """
+
+    def test_scenarios_sequence_only_gets_a_preamble(self) -> None:
+        out = synthesize_fragment(
+            "scenarios:\n  - signal_type: metrics\n    name: x\n"
+            "    generator: { type: constant, value: 1.0 }\n"
+        )
+        self.assertIsNotNone(out)
+        assert out is not None
+        self.assertTrue(out.startswith("version: 2\nkind: runnable\n"))
+        # Nothing structural invented: the fragment's own text survives whole.
+        self.assertIn("  - signal_type: metrics\n    name: x\n", out)
+
+    def test_a_fragments_own_defaults_are_not_duplicated(self) -> None:
+        out = synthesize_fragment(
+            "defaults:\n  rate: 9\nscenarios:\n  - signal_type: metrics\n"
+            "    name: x\n    generator: { type: constant, value: 1.0 }\n"
+        )
+        assert out is not None
+        self.assertEqual(out.count("defaults:"), 1, "a second defaults: is a YAML duplicate key")
+        self.assertIn("rate: 9", out)
+
+    def test_helm_values_map_is_refused(self) -> None:
+        # deploy/kubernetes.md documents a chart whose `scenarios:` maps
+        # FILENAMES to file bodies. Wrapping it yields "invalid type: map,
+        # expected a sequence" — a failure that says nothing about the docs.
+        self.assertIsNone(
+            synthesize_fragment("scenarios:\n  cpu-metrics.yaml: |\n    name: cpu_usage\n")
+        )
+
+    def test_github_actions_workflow_is_refused(self) -> None:
+        # Three of these live in test/end-to-end-pipelines.md. An earlier rule
+        # accepted any fence opening with `name:` and reported `unknown field
+        # 'on'` as a docs bug. `name:` is the most common key in YAML.
+        self.assertIsNone(
+            synthesize_fragment("name: Alert Rule Validation\non:\n  pull_request:\n")
+        )
+
+    def test_bare_encoder_block_is_refused(self) -> None:
+        # Not an entry: it carries no key that only a scenario entry has.
+        self.assertIsNone(synthesize_fragment("encoder:\n  type: prometheus_text\n"))
+
+    def test_static_and_pack_and_complete_are_refused(self) -> None:
+        self.assertIsNone(
+            synthesize_fragment("# sonda:static\nscenarios:\n  - signal_type: metrics\n")
+        )
+        self.assertIsNone(synthesize_fragment("scenarios:\n  - pack: node-exporter\n"))
+        self.assertIsNone(
+            synthesize_fragment("version: 2\nkind: runnable\nscenarios:\n  - id: a\n")
+        )
+
+    def test_signal_type_is_read_off_the_fragment(self) -> None:
+        # The entry's REQUIRED fields depend on this, so guessing `metrics`
+        # for everything makes the gate report its own wrapper's errors: a
+        # bare `distribution:` block would be asked for a `generator:`.
+        logs = synthesize_fragment("log_generator:\n  type: template\n")
+        assert logs is not None
+        self.assertIn("signal_type: logs", logs)
+        hist = synthesize_fragment("distribution:\n  type: exponential\n  rate: 10.0\n")
+        assert hist is not None
+        self.assertIn("signal_type: histogram", hist)
+        metric = synthesize_fragment("generator:\n  type: constant\n  value: 1.0\n")
+        assert metric is not None
+        self.assertIn("signal_type: metrics", metric)
+
+    def test_present_scaffolding_is_not_overwritten(self) -> None:
+        out = synthesize_fragment("signal_type: logs\nname: mine\nlog_generator:\n  type: template\n")
+        assert out is not None
+        self.assertEqual(out.count("signal_type:"), 1)
+        self.assertIn("name: mine", out)
+        self.assertNotIn("doc_fragment", out)
+
+    def test_the_entry_is_indented_under_a_sequence_item(self) -> None:
+        out = synthesize_fragment("generator:\n  type: constant\n  value: 1.0\n")
+        assert out is not None
+        self.assertIn("scenarios:\n  - signal_type: metrics", out)
+        # Continuation lines sit at the item's indent, not the item's dash.
+        self.assertIn("\n    generator:\n", out)
+        self.assertIn("\n      type: constant\n", out)
 
 
 class _MissingInputFilesTests(unittest.TestCase):

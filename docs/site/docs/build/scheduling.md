@@ -77,6 +77,7 @@ scenarios:
     generator:
       type: sine
       amplitude: 40.0
+      period_secs: 60
       offset: 50.0
     dynamic_labels:
       - key: hostname
@@ -403,7 +404,8 @@ scenarios:
     name: error_logs
     while:
       ref: cpu_usage
-      gt: 90.0
+      op: ">"
+      value: 90.0
     log_generator:
       type: template
       templates:
