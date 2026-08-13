@@ -20,7 +20,7 @@ import {
   fromBase64Url,
   galleryCardState,
   hashPayloadTooLarge,
-  MAX_SCHEDULE_WINDOWS,
+  MAX_SCHEDULE_CYCLES,
   niceDeadlineSecs,
   normalizeFence,
   numberSpanAt,
@@ -773,7 +773,25 @@ test("a pathological cycle count is capped rather than drawn", () => {
     withSchedule({ gap: { every_secs: 0.001, for_secs: 0.0005 } }),
     3600
   );
-  assert.equal(windows.length, MAX_SCHEDULE_WINDOWS);
+  assert.equal(windows.length, MAX_SCHEDULE_CYCLES);
+});
+
+test("the cap counts cycles per kind, so burst + gap can return twice it", () => {
+  // Review #543 N1. The cap is named for cycles because that is what it
+  // bounds; the loop runs once per kind, so the RETURNED array is not bounded
+  // by it. Pinned rather than fixed: 1024 rects is nothing to draw, and
+  // bounding the total would mean one kind silently eating the other's
+  // budget depending on which was walked first.
+  const windows = scheduleWindows(
+    withSchedule({
+      burst: { every_secs: 0.001, for_secs: 0.0005 },
+      gap: { every_secs: 0.001, for_secs: 0.0005 },
+    }),
+    3600
+  );
+  assert.equal(windows.length, 2 * MAX_SCHEDULE_CYCLES);
+  assert.equal(windows.filter((w) => w.kind === "burst").length, MAX_SCHEDULE_CYCLES);
+  assert.equal(windows.filter((w) => w.kind === "gap").length, MAX_SCHEDULE_CYCLES);
 });
 
 // The four shapes below all HUNG before review #543 W1, and none of them was

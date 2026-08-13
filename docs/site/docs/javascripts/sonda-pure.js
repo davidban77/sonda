@@ -483,8 +483,15 @@ function nonEmptyString(value) {
  * has thought of yet; bounding the output only covers the degenerate values
  * someone remembered. This is recomputed on every theme flip and every
  * resize, so a hang here is a wedged tab.
+ *
+ * Named for CYCLES because that is what it counts, and the returned array is
+ * NOT bounded by it (review #543 N1): the loop runs once per kind, so an
+ * entry carrying both a burst and a gap can return up to twice this many
+ * windows. That needs sub-second periods on both, and 1024 rects is nothing
+ * to draw — the point of saying so is that the old name promised an output
+ * bound this deliberately does not provide.
  */
-export const MAX_SCHEDULE_WINDOWS = 512;
+export const MAX_SCHEDULE_CYCLES = 512;
 
 /* The gap and burst windows of one sampled entry, in seconds.
  *
@@ -520,7 +527,7 @@ export const MAX_SCHEDULE_WINDOWS = 512;
  *   offset >= endSecs          no windows — the series ends before it starts.
  *
  * None of those guards is the backstop, though. The loop itself is bounded
- * by MAX_SCHEDULE_WINDOWS cycles, which is what makes this function total
+ * by MAX_SCHEDULE_CYCLES cycles, which is what makes this function total
  * for inputs no guard anticipates.
  */
 export function scheduleWindows(entry, endSecs) {
@@ -540,9 +547,9 @@ export function scheduleWindows(entry, endSecs) {
     if (!Number.isFinite(every) || every <= 0) continue;
     if (!Number.isFinite(forSecs) || forSecs <= 0) continue;
 
-    // Bounded by CYCLES. See MAX_SCHEDULE_WINDOWS above for why the count of
+    // Bounded by CYCLES. See MAX_SCHEDULE_CYCLES above for why the count of
     // emitted windows is the wrong thing to bound.
-    for (let cycle = 0; cycle < MAX_SCHEDULE_WINDOWS; cycle++) {
+    for (let cycle = 0; cycle < MAX_SCHEDULE_CYCLES; cycle++) {
       const cycleStart = offset + cycle * every;
       if (cycleStart >= end) break;
       // A burst opens its cycle; a gap closes it.
