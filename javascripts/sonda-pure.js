@@ -603,3 +603,111 @@ export function burstEmission(entry) {
     label: `${tidyNumber(base)}/s → ${tidyNumber(during)}/s`,
   };
 }
+
+/* ---- the time cursor (WP9) -------------------------------------------
+ *
+ * Three plain functions between a pointer position and what the page should
+ * say about it. The chart's own geometry stays in playground.js; what lives
+ * here is every decision that can be wrong: where the cursor lands in
+ * scenario seconds, which sample each series was actually emitting then, and
+ * which log lines belong to that instant.
+ */
+
+/* Where a pointer sits on the chart, in scenario seconds — or null.
+ *
+ * `geom` is the mapping drawChart already computed: `{ padLeft, plotW,
+ * spanSecs }`. The chart's forward map is
+ * `secs -> padLeft + (secs / spanSecs) * plotW`, so this is its inverse.
+ *
+ * Returns null rather than a clamped value when the pointer is outside the
+ * plot area — the axis gutter is not second zero, and a cursor pinned to the
+ * left edge whenever the pointer strays into the y-axis labels would report a
+ * reading the reader never asked for. Callers treat null as "no cursor",
+ * which is also what a pointer leaving the canvas produces, so the two paths
+ * agree by construction.
+ */
+export function cursorSecsAt(geom, offsetX) {
+  if (!geom || typeof geom !== "object") return null;
+  const padLeft = Number(geom.padLeft);
+  const plotW = Number(geom.plotW);
+  const spanSecs = Number(geom.spanSecs);
+  const x = Number(offsetX);
+  if (!Number.isFinite(padLeft) || !Number.isFinite(x)) return null;
+  if (!Number.isFinite(plotW) || plotW <= 0) return null;
+  if (!Number.isFinite(spanSecs) || spanSecs <= 0) return null;
+  const fraction = (x - padLeft) / plotW;
+  if (fraction < 0 || fraction > 1) return null;
+  return fraction * spanSecs;
+}
+
+/* What each series was emitting at the cursor, as readout rows.
+ *
+ * Snapped to the nearest TICK rather than interpolated, because the chart is
+ * a sampled signal and an interpolated reading would be a number the engine
+ * never produced. The row carries the snapped `secs` as well as the value, so
+ * the readout can show where it actually read from — at a coarse rate the
+ * difference between the pointer and the sample is visible, and hiding it
+ * would make the cursor look more precise than it is.
+ *
+ * An entry contributes NOTHING when the cursor falls outside its own window.
+ * Scenarios chain (`after:`), so a 30-second entry starting at second 60 has
+ * no value at second 10 — and reporting its first sample there would invent
+ * data for a scenario that had not started. That is the case worth the
+ * function existing: clamping the index, which is the obvious implementation,
+ * gets it exactly wrong.
+ */
+export function cursorSamples(entries, cursorSecs) {
+  const at = Number(cursorSecs);
+  if (!Array.isArray(entries) || !Number.isFinite(at)) return [];
+  const rows = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const values = entry.values;
+    if (!Array.isArray(values) || !values.length) continue;
+    const tick = Number(entry.tick_secs);
+    if (!Number.isFinite(tick) || tick <= 0) continue;
+    const offset = Number(entry.offset_secs) || 0;
+    if (!Number.isFinite(offset)) continue;
+    const index = Math.round((at - offset) / tick);
+    // Outside this entry's own window — not clamped. See above.
+    if (index < 0 || index >= values.length) continue;
+    const value = Number(values[index]);
+    if (!Number.isFinite(value)) continue;
+    rows.push({ id: entry.id, name: entry.name, value, secs: offset + index * tick });
+  }
+  return rows;
+}
+
+/* Indices of the log lines belonging to the cursor's instant.
+ *
+ * Half a tick either side, so every instant on the timeline belongs to
+ * exactly one emission — the same rule the chart's nearest-tick snap uses,
+ * which is what keeps the highlighted lines and the highlighted sample
+ * describing the same moment.
+ *
+ * `line.secs` is already on the shared timeline (sonda-wasm stamps it as
+ * `offset_secs + tick * tick_secs`), so there is deliberately no offset
+ * arithmetic here; adding it again would push the highlight off by the
+ * entry's start on any chained scenario.
+ *
+ * The bound is inclusive, so a cursor exactly between two lines highlights
+ * both. That is the honest answer at a boundary and it is stable — an
+ * exclusive bound would flicker between the two as the pointer moved by
+ * sub-pixel amounts.
+ */
+export function logLinesNear(log, cursorSecs) {
+  const at = Number(cursorSecs);
+  if (!log || typeof log !== "object" || !Number.isFinite(at)) return [];
+  const lines = log.lines;
+  if (!Array.isArray(lines) || !lines.length) return [];
+  const tick = Number(log.tick_secs);
+  if (!Number.isFinite(tick) || tick <= 0) return [];
+  const window = tick / 2;
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    const secs = Number(lines[i] && lines[i].secs);
+    if (!Number.isFinite(secs)) continue;
+    if (Math.abs(secs - at) <= window) hits.push(i);
+  }
+  return hits;
+}
