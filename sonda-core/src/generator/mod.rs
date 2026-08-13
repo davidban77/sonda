@@ -70,6 +70,7 @@ pub trait ValueGenerator: Send + Sync {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CsvColumnSpec {
     /// Zero-based column index in the CSV file.
     pub index: usize,
@@ -99,6 +100,7 @@ pub struct CsvColumnSpec {
     derive(serde::Serialize, serde::Deserialize),
     serde(rename_all = "snake_case")
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum FlapEnum {
     Boolean,
@@ -163,6 +165,7 @@ impl FlapEnum {
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 #[non_exhaustive]
 pub enum GeneratorConfig {
@@ -688,6 +691,7 @@ pub trait LogGenerator: Send + Sync {
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TemplateConfig {
     /// The message template. Use `{field_name}` for dynamic placeholders.
     pub message: String,
@@ -736,6 +740,7 @@ pub struct TemplateConfig {
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum LogGeneratorConfig {
     /// Generates events from message templates with randomized field pool values.

@@ -36,6 +36,7 @@ use crate::{ConfigError, SondaError};
 /// `constant { value: 0.0 }` default.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricSpec {
     /// The metric name (e.g. `"ifHCInOctets"`, `"node_cpu_seconds_total"`).
     pub name: String,
@@ -74,6 +75,7 @@ pub struct MetricSpec {
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricPackDef {
     /// Snake_case identifier for the pack (e.g. `"telegraf_snmp_interface"`).
     pub name: String,
@@ -113,6 +115,7 @@ pub struct MetricPackDef {
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PackScenarioConfig {
     /// Pack reference: a snake_case name resolved via the CLI search path,
     /// or a file path to a user-defined pack YAML (detected by containing
@@ -150,6 +153,7 @@ pub struct PackScenarioConfig {
 /// [`crate::compiler::expand`]).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricOverride {
     /// Replacement generator for this metric.
     #[cfg_attr(feature = "config", serde(default))]

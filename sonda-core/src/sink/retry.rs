@@ -36,6 +36,7 @@ use crate::{ConfigError, SondaError};
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RetryConfig {
     /// Number of retry attempts after the initial failure.
     ///

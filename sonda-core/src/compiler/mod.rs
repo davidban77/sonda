@@ -76,6 +76,7 @@ use crate::sink::SinkConfig;
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScenarioFile {
     /// Schema version. Must be `2`.
     pub version: u32,
@@ -125,6 +126,7 @@ pub struct ScenarioFile {
 /// are referenced from runnable files via `pack:`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
 pub enum Kind {
     Runnable,
@@ -142,6 +144,7 @@ pub enum Kind {
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Defaults {
     /// Default event rate in events per second.
     #[cfg_attr(feature = "config", serde(default))]
@@ -195,6 +198,7 @@ pub struct Defaults {
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Entry {
     /// Unique identifier for causal dependency references (`after.ref`).
     #[cfg_attr(feature = "config", serde(default))]
@@ -321,6 +325,7 @@ pub struct Entry {
 /// deserialization time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum AfterOp {
     /// The referenced signal's value must be less than the threshold.
     #[cfg_attr(feature = "config", serde(rename = "<"))]
@@ -351,6 +356,7 @@ pub enum AfterOp {
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AfterClause {
     /// Target signal id to observe.
     ///
@@ -372,8 +378,22 @@ pub struct AfterClause {
 /// `!=`) are rejected at deserialize time with a hint pointing to the
 /// strict alternatives — equality on `f64` over a continuous gate is
 /// numerically unsafe and forbidden by design.
+// The derive is correct here even though `Deserialize` below is hand-written,
+// and it is worth saying why, because the reasoning does NOT carry over to
+// `DelayClause`. schemars reads the `serde(...)` attributes, not the
+// `Deserialize` impl — so the two `rename` attributes give it the operator
+// glyphs, and the generated schema is `{"type": "string", "enum": ["<", ">"]}`.
+// Measured, not assumed.
+//
+// The renames therefore have a second job nothing else in this file depends
+// on: `Deserialize` ignores them (it matches the glyphs itself) and only
+// `Serialize` and the schema read them. Dropping them would leave the parser
+// working and quietly hand every editor the two VARIANT names as the accepted
+// values. `tests/schema_corpus.rs::the_schema_rejects_the_while_op_variant_name`
+// is what catches that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum WhileOp {
     #[cfg_attr(feature = "config", serde(rename = "<"))]
     LessThan,
@@ -403,6 +423,7 @@ impl<'de> serde::Deserialize<'de> for WhileOp {
 /// scenario start. Only meaningful when [`WhileClause::scenario_name`] is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
 #[non_exhaustive]
 pub enum UnresolvedBehavior {
@@ -429,6 +450,7 @@ pub enum UnresolvedBehavior {
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WhileClause {
     #[cfg_attr(feature = "config", serde(rename = "ref"))]
     pub ref_id: String,
@@ -492,6 +514,61 @@ pub struct DelayClause {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub close_snap_to: Option<f64>,
+}
+
+// NOT a derive, unlike `WhileOp` above. The trick that makes the derive work
+// there — schemars reading the `serde(...)` attributes — cannot work here,
+// because this type's accepted shape is expressed in Rust rather than in
+// attributes. The struct has four fields; the wire mapping accepts exactly
+// two, `open` and `close`, and rejects everything else
+// (`deny_unknown_fields` on `Raw` below). `close_snap_to` and
+// `close_stale_marker` are not wire keys at all — they are where the extended
+// `close:` mapping unpacks to. A derived schema would offer a reader four
+// keys, two of which the parser refuses; it also does not compile, because
+// schemars reads `serde(with = "delay_duration_opt")` as a type name.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DelayClause {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DelayClause".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        "sonda_core::compiler::DelayClause".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "description": "Open/close debounce windows applied to a `while:` transition. \
+                            Requires a `while:` clause on the same entry.",
+            "additionalProperties": false,
+            "properties": {
+                "open": {
+                    "type": "string",
+                    "description": "Debounce for the false \u{2192} true transition, e.g. \"250ms\", \"5s\".",
+                },
+                "close": {
+                    "description": "Debounce for the true \u{2192} false transition. \
+                                    Either a duration string or an extended mapping.",
+                    "oneOf": [
+                        {
+                            "type": "string",
+                            "description": "Duration shorthand, e.g. \"5s\".",
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "duration": { "type": "string" },
+                                "snap_to": { "type": "number" },
+                                "stale_marker": { "type": "boolean" },
+                            },
+                        },
+                    ],
+                },
+            },
+        })
+    }
 }
 
 #[cfg(feature = "config")]
@@ -607,6 +684,7 @@ mod delay_duration_opt {
 /// breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
 #[non_exhaustive]
 pub enum ClauseKind {

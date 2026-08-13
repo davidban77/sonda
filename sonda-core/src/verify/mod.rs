@@ -43,6 +43,7 @@ pub enum AlertState {
 /// Top-level `expect:` block of a scenario file.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 pub struct ExpectConfig {
     /// Alert expectations, checked in order. Must not be empty.
@@ -52,6 +53,7 @@ pub struct ExpectConfig {
 /// One alert the scenario is expected to trigger.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 pub struct AlertExpectation {
     /// Alert rule name — matched against the `alertname` label of the

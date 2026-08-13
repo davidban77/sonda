@@ -257,6 +257,38 @@ tasks:
       - npm ci
       - npm run build
 
+  schema:generate:
+    desc: Regenerate the committed JSON Schema for v2 scenario files
+    summary: |
+      docs/site/docs/schema/sonda-scenario.schema.json is a BUILD OUTPUT, derived from
+      the same Rust types the parser deserializes into. Run this after
+      changing any config type, and commit the result alongside the change.
+
+      `--all-features` is load-bearing, not a shortcut. The delivery features
+      add config SHAPE: with `kafka` off, the kafka sink variant keeps its
+      YAML tag but loses its `tls:` and `sasl:` fields. Generating from a
+      narrower build would ship a schema that underlines sink config the
+      released binary accepts (release.yml builds with `remote-write,kafka`;
+      the Docker image adds `otlp`).
+
+      The freshness check is not a separate task on purpose: it lives in
+      sonda-core/tests/schema_corpus.rs (`the_committed_schema_is_current`),
+      so `cargo test --all-features` catches a stale file. Adding a second
+      copy of the comparison would only create a third thing to keep in sync.
+    cmds:
+      - cargo run -p sonda-core --all-features --example scenario_schema -- docs/site/docs/schema/sonda-scenario.schema.json
+
+  schema:check:
+    desc: Prove the committed JSON Schema still matches the config types
+    summary: |
+      Runs the schema test suite: the freshness comparison, the corpus check
+      that every scenario in examples/ validates against the schema, and the
+      negative cases that keep the schema from degenerating into "accepts
+      anything".
+    cmds:
+      - cargo test -p sonda-core --all-features --lib schema::
+      - cargo test -p sonda-core --all-features --test schema_corpus
+
   site:jstest:
     desc: Run the playground pure-helper JS tests (node, zero dependencies)
     cmds:

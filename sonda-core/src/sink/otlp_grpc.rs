@@ -130,6 +130,7 @@ impl<T: Message + Default + 'static> Decoder for OtlpProstDecoder<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum OtlpSignalType {
     /// Metric signal — data is parsed as OTLP `Metric` messages and sent
     /// to the `MetricsService/Export` gRPC endpoint.

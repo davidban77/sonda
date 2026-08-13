@@ -63,6 +63,7 @@ pub trait Encoder: Send + Sync {
 /// "unknown variant" error from serde.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 #[non_exhaustive]
 pub enum EncoderConfig {
