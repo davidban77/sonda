@@ -1405,23 +1405,32 @@ test("a # inside an expression is not treated as a comment", () => {
 //
 // The general lesson, which is why this table is written this way: vary the
 // inputs the code interpolates AND the inputs the code scans.
-test("a legal rule is not refused for a token inside a label value", () => {
+test("a legal rule is not refused for a token the scan greps for", () => {
+  // The nine the round-2 reviewer wrote down, plus one of mine. Two of theirs
+  // are a shape my own first table missed entirely: `count{...}` and
+  // `sum{...}` put the scanned token in the METRIC NAME, not in a quoted
+  // value — and the aggregation pattern matches `count` followed by `{`, so
+  // scan-first refuses a metric legitimately named `count`. Varying only
+  // label values would never have reached that.
   const cases = [
-    ['cpu{job="rate(x)"} > 1', "job", "rate(x)", "a function call"],
-    ['cpu{job="sum by(x)"} > 1', "job", "sum by(x)", "an aggregation"],
-    ['cpu{msg="a or b"} > 1', "msg", "a or b", "a set operator"],
-    ['cpu{msg="[error] disk"} > 1', "msg", "[error] disk", "a range selector"],
-    ['cpu{user="alice@example.com"} > 1', "user", "alice@example.com", "an @ modifier"],
-    ['cpu{note="offset by hand"} > 1', "note", "offset by hand", "an offset"],
+    ['http_requests_total{user="alice@example.com"} > 100', 100, "an offset or @ modifier"],
+    ['log_events{msg="[error] disk"} > 5', 5, "a range selector"],
+    ['q{msg="a or b"} > 5', 5, "a set operator"],
+    ['q{path="/v1/offset"} > 5', 5, "an offset or @ modifier"],
+    ['q{q="rate(x)"} > 5', 5, "a function call"],
+    ['q{cmd="unless"} > 5', 5, "a set operator"],
+    ['q{msg="sum and count"} > 5', 5, "a set operator"],
+    ['count{x="1"} > 5', 5, "an aggregation — metric NAME, not a value"],
+    ['sum{x="1"} > 5', 5, "an aggregation — metric NAME, not a value"],
+    ['cpu{job="sum by(x)"} > 1', 1, "an aggregation"],
   ];
-  for (const [text, label, value, wouldClaim] of cases) {
+  for (const [text, threshold, wouldClaim] of cases) {
     const rule = parsePromQLRule(text);
     assert.ok(
       rule.ok,
       `${text} is a legal threshold rule, but it was refused as ${wouldClaim}: ${rule.reason}`
     );
-    assert.equal(rule.selectors[label].value, value);
-    assert.equal(rule.threshold, 1);
+    assert.equal(rule.threshold, threshold, text);
   }
 });
 
