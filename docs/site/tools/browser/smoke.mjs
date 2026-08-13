@@ -1020,6 +1020,55 @@ try {
   // And the box stays empty: seeding is an intention, not a reflex on every
   // keystroke, or a reader could never clear the field to type a new number.
   check("and clearing it is not undone by the seeding", alBlank.value === "", `value="${alBlank.value}"`);
+
+  // Review #546 round 2, W1. The check above runs on the ONE timeline where
+  // the seeding intention has already been consumed, so it passed while the
+  // recheck path was still broken. Toggling the pair off and back on with a
+  // number already in the box re-arms the intention; if enabling does not
+  // spend it, the next Backspace that empties the field hands it straight
+  // back. Three ordinary steps — compare, restore, retype — and the field
+  // used to snap back to its seeded value on the last keystroke.
+  await alPage.fill("#al-threshold2", "1.3");
+  await alPage.uncheck("#al-second");
+  await alPage.check("#al-second");
+  await alPage.fill("#al-threshold2", "");
+  let alRecleared = true;
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-chart").dataset.rules === "1",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {
+      alRecleared = false;
+    });
+  const alAfterRecheck = await alPage.evaluate(
+    () => document.querySelector("#al-threshold2").value
+  );
+  check(
+    "and clearing it still works after the pair is toggled off and back on",
+    alRecleared && alAfterRecheck === "",
+    `value="${alAfterRecheck}"`
+  );
+
+  // The other half of the same flag: spending the intention must not stop a
+  // genuinely empty row from being seeded when it is re-enabled.
+  await alPage.uncheck("#al-second");
+  await alPage.check("#al-second");
+  await alPage.waitForFunction(
+    () => document.querySelector("#al-threshold2").value !== "",
+    null,
+    { timeout: 15000 }
+  );
+  const alReseeded = await alPage.evaluate(
+    () => document.querySelector("#al-threshold2").value
+  );
+  check(
+    "and re-enabling an emptied row still seeds it",
+    Number.isFinite(Number(alReseeded)) && alReseeded !== "",
+    `reseeded ${alReseeded}`
+  );
+
   await alPage.fill("#al-threshold2", "0.4");
   await alPage
     .waitForFunction(

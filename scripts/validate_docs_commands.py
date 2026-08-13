@@ -37,6 +37,33 @@ DOCS_GLOB_EXCLUDE = (Path("docs/site/site"),)
 
 KNOWN_SUBCOMMANDS: frozenset[str] = frozenset({"run", "list", "show", "new", "test"})
 
+# Verbs that were real once and are not any more. Docs may still show them
+# when describing a migration, so they are dropped rather than failed.
+#
+# This list exists so that "unknown verb" can mean FAILURE for everything
+# else. It used to be that any unrecognised verb was silently dropped, which
+# covered the retired ones and also covered verbs that never existed — a
+# documented `sonda validate <file>` passed this gate while the CLI answered
+# `unrecognized subcommand 'validate'` (review #547 W2). An invented command
+# in the docs is exactly what a docs-command gate is for.
+#
+# Adding to this list is a claim that the verb was once real. A verb that
+# never shipped does not belong here; fix the doc instead.
+RETIRED_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        # The 1.8 per-signal verbs, replaced by v2 scenario files.
+        "metrics",
+        "logs",
+        "histogram",
+        "summary",
+        "init",
+        "import",
+        "scenarios",
+        "packs",
+        "catalog",
+    }
+)
+
 # ``--dry-run`` is declared as a global flag (``#[arg(long, global = true)]``)
 # and short-circuits before any network I/O on both ``run`` and ``test``
 # (``test --dry-run`` validates the scenario and its expect: block without
@@ -53,6 +80,11 @@ REPO_RELATIVE_PATH_ROOTS: frozenset[str] = frozenset(
 )
 
 DEFAULT_SUBPROCESS_TIMEOUT_S = 30.0
+
+# Fence languages this gate reads commands out of. Anything not listed here is
+# skipped silently, so a language missing from this set is a hole rather than
+# an omission — see `extract_bash_blocks`.
+SHELL_FENCE_LANGUAGES: frozenset[str] = frozenset({"bash", "sh", "shell", "console"})
 
 
 # --- Data model --------------------------------------------------------------
@@ -91,6 +123,29 @@ class ExtractedCommand:
                     skip_next_value = True
                 continue
             return token if token in KNOWN_SUBCOMMANDS else None
+        return None
+
+    @property
+    def verb(self) -> str | None:
+        """Return the first non-flag token, recognised as a subcommand or not.
+
+        :attr:`subcommand` answers "which known subcommand is this", and
+        returns ``None`` both for ``sonda --version`` (no verb at all) and for
+        ``sonda validate x.yaml`` (a verb that does not exist). Those two are
+        not the same thing, and collapsing them is what let a documented
+        ``sonda validate`` survive a gate whose entire job is checking
+        documented commands (review #547 W2).
+        """
+        skip_next_value = False
+        for token in self.argv[1:]:
+            if skip_next_value:
+                skip_next_value = False
+                continue
+            if token.startswith("-"):
+                if token in _GLOBAL_FLAGS_WITH_VALUE and "=" not in token:
+                    skip_next_value = True
+                continue
+            return token
         return None
 
 
@@ -153,10 +208,17 @@ def extract_tutorial_file_titles(markdown_text: str) -> set[str]:
 
 
 def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
-    """Return ``(line_number, block_body)`` tuples for ``bash`` fenced blocks.
+    """Return ``(line_number, block_body)`` tuples for shell fenced blocks.
 
-    Only ``bash`` fences (case-insensitive) match; ``text``/``yaml``/``json``
-    are ignored. ``bash title="..."`` is accepted.
+    Shell fences are ``bash``, ``sh``, ``shell`` and ``console``
+    (case-insensitive); ``text``/``yaml``/``json`` are ignored.
+    ``bash title="..."`` is accepted.
+
+    The language list is part of the gate. It was ``bash`` alone, which meant
+    a ``console`` fence — the idiomatic one for showing a prompt and its
+    output, and the one review #547 W2's fix first used — was invisible here.
+    A gate that silently ignores a whole fence language reads as "these
+    commands are checked" while checking none of them.
 
     The line number is 1-based and points at the first content line inside
     the fence so reporting aligns with what the reader sees.
@@ -171,7 +233,7 @@ def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
             i += 1
             continue
         info_raw = m.group("info") or ""
-        if info_raw.lower() != "bash":
+        if info_raw.lower() not in SHELL_FENCE_LANGUAGES:
             i += 1
             while i < len(lines):
                 if _FENCE_CLOSE_RE.match(lines[i]):
@@ -340,7 +402,13 @@ def extract_sonda_commands(
                     tutorial_titles=tutorial_titles,
                     block_is_tutorial=block_is_tutorial,
                 )
-                if cmd.subcommand is None:
+                # A command with no verb at all (`sonda --version`) is not
+                # this gate's business, and neither is a deliberately-shown
+                # retired verb. A verb that is neither known nor retired IS,
+                # and used to be dropped here alongside them.
+                if cmd.subcommand is None and (
+                    cmd.verb is None or cmd.verb in RETIRED_SUBCOMMANDS
+                ):
                     continue
                 commands.append(cmd)
     return commands
@@ -466,6 +534,20 @@ def validate_command(
     subprocess_timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_S,
 ) -> ValidationResult:
     """Run the file-exists + dry-run checks on a single extracted command."""
+    # Before anything else: does this subcommand exist? Nothing downstream
+    # would notice that it does not — the file-exists and dry-run checks are
+    # both keyed off a RECOGNISED subcommand, so an invented one sailed
+    # through as "nothing to check here".
+    if cmd.subcommand is None and cmd.verb is not None:
+        return ValidationResult(
+            command=cmd,
+            ok=False,
+            message=(
+                f"`sonda {cmd.verb}` is not a subcommand — "
+                f"expected one of {', '.join(sorted(KNOWN_SUBCOMMANDS))}"
+            ),
+        )
+
     run_target = extract_run_target(cmd.argv) if cmd.subcommand == "run" else None
     target_is_repo_path = (
         run_target is not None
@@ -951,11 +1033,24 @@ class _ExtractSondaCommandsTests(unittest.TestCase):
         md = "```bash\nsonda --version\n```\n"
         self.assertEqual(self._extract(md), [])
 
-    def test_ignores_unknown_subcommand(self) -> None:
-        # The retired 1.8 verbs must not be picked up as known subcommands.
-        for verb in ("metrics", "logs", "histogram", "summary", "init", "import", "scenarios", "packs", "catalog"):
+    def test_ignores_retired_subcommand(self) -> None:
+        # The retired 1.8 verbs must not be picked up as known subcommands,
+        # and must not fail the gate either: a migration guide may show one.
+        for verb in sorted(RETIRED_SUBCOMMANDS):
             md = f"```bash\nsonda {verb} foo\n```\n"
             self.assertEqual(self._extract(md), [], verb)
+
+    def test_extracts_a_verb_that_never_existed(self) -> None:
+        # The other half of the same rule, and the one that was missing: a
+        # verb that is neither known nor retired must reach validation so it
+        # can be failed there (review #547 W2). Dropping it here is how a
+        # documented `sonda validate <file>` passed a docs-command gate.
+        for verb in ("validate", "preview", "demo", "check"):
+            md = f"```bash\nsonda {verb} foo.yaml\n```\n"
+            extracted = self._extract(md)
+            self.assertEqual(len(extracted), 1, verb)
+            self.assertIsNone(extracted[0].subcommand, verb)
+            self.assertEqual(extracted[0].verb, verb)
 
     def test_line_continuation_joined(self) -> None:
         md = (
@@ -1079,6 +1174,40 @@ class _ExtractCatalogDirTests(unittest.TestCase):
     def test_absent(self) -> None:
         argv = ("sonda", "run", "foo.yaml")
         self.assertIsNone(extract_catalog_dir(argv))
+
+
+class _NonexistentSubcommandTests(unittest.TestCase):
+    """The verdict half of review #547 W2.
+
+    Extraction keeping the command is only useful if validation then fails
+    it, and validation's other checks are all keyed off a RECOGNISED
+    subcommand — so without this the command would be extracted and then pass
+    with nothing to check.
+    """
+
+    @staticmethod
+    def _cmd(raw: str) -> ExtractedCommand:
+        return ExtractedCommand(
+            file=Path("doc.md"), line=1, argv=tuple(raw.split()), raw=raw
+        )
+
+    def test_nonexistent_subcommand_fails(self) -> None:
+        result = validate_command(self._cmd("sonda validate foo.yaml"), Path("."), None)
+        self.assertFalse(result.ok)
+        self.assertIn("is not a subcommand", result.message)
+        self.assertIn("validate", result.message)
+
+    def test_nonexistent_subcommand_after_a_global_flag_fails(self) -> None:
+        result = validate_command(
+            self._cmd("sonda --dry-run validate foo.yaml"), Path("."), None
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("validate", result.message)
+
+    def test_flag_only_invocation_is_not_failed(self) -> None:
+        # `sonda --version` has no verb, so there is nothing to be wrong.
+        result = validate_command(self._cmd("sonda --version"), Path("."), None)
+        self.assertTrue(result.ok, result.message)
 
 
 class _RepoRelativePathTests(unittest.TestCase):

@@ -139,29 +139,43 @@ fn yaml_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Every file in `examples/` that the real parser accepts as a v2 scenario.
+/// Every file the real parser accepts as a v2 scenario, across both roots.
 ///
-/// The parser is the filter, deliberately. `examples/` also holds Compose
-/// files, alert rules and Alertmanager config — YAML that was never meant to
-/// be a scenario. Selecting by "does `parse` take it" means the corpus is
-/// exactly the set the schema is claiming to describe, and it grows on its
-/// own as scenarios are added.
+/// The parser is the filter, deliberately. These directories also hold Compose
+/// files, alert rules, Alertmanager config and deliberately-invalid fixtures —
+/// YAML that was never meant to validate. Selecting by "does `parse` take it"
+/// means the corpus is exactly the set the schema is claiming to describe, and
+/// it grows on its own as scenarios are added.
+///
+/// `tests/fixtures/v2-examples/` is here because `examples/` alone cannot
+/// cover the format. Every file in `examples/` is written in the canonical
+/// `scenarios:` form, so the shorthand branch of the root `anyOf` — the one
+/// that needed `flat_file_subschema` to describe at all — had no document
+/// exercising it. `the_corpus_covers_every_root_branch` is what holds that
+/// open now; this root is what lets it pass.
 fn parser_accepted_scenarios() -> Vec<(PathBuf, String)> {
-    let examples = repo_root().join("examples");
+    let roots = [
+        repo_root().join("examples"),
+        repo_root().join("sonda-core/tests/fixtures/v2-examples"),
+    ];
     let mut corpus = Vec::new();
 
-    for path in yaml_files(&examples) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if sonda_core::compiler::parse::detect_version(&text) != Some(2) {
-            continue;
-        }
-        // `parse` runs on the interpolated text in the CLI. Files using
-        // `${VAR}` would not parse here without the environment, so skip
-        // those rather than assert on them.
-        if sonda_core::compiler::parse::parse(&text).is_ok() {
-            corpus.push((path, text));
+    for root in roots {
+        for path in yaml_files(&root) {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if sonda_core::compiler::parse::detect_version(&text) != Some(2) {
+                continue;
+            }
+            // `parse` runs on the interpolated text in the CLI. Files using
+            // `${VAR}` would not parse here without the environment, so skip
+            // those rather than assert on them. The `invalid-*` fixtures that
+            // fail at a LATER compile phase do parse, and belong in the
+            // corpus: the schema must accept anything the parser takes.
+            if sonda_core::compiler::parse::parse(&text).is_ok() {
+                corpus.push((path, text));
+            }
         }
     }
 
@@ -176,8 +190,87 @@ fn the_corpus_is_not_empty() {
     let corpus = parser_accepted_scenarios();
     assert!(
         corpus.len() >= 20,
-        "expected the examples/ directory to yield a substantial scenario corpus, got {}",
+        "expected the corpus roots to yield a substantial scenario corpus, got {}",
         corpus.len()
+    );
+}
+
+/// Every branch of the root `anyOf` must be exercised by a real document.
+///
+/// Counting files is not enough, and that gap was live: with `examples/` as
+/// the only root, 0 of 65 documents matched the shorthand branch. A mutation
+/// that replaced that branch entirely — making the schema reject every
+/// single-signal shorthand file the parser accepts — left all nineteen tests
+/// green, because no corpus document could tell the difference and the
+/// freshness gate is cleared by regenerating, which is exactly what a
+/// developer changing the schema does.
+///
+/// So this asserts coverage per SHAPE rather than per file. It is deliberately
+/// a floor of one: the point is that no branch may go dark, not that the
+/// corpus stay balanced.
+#[test]
+fn the_corpus_covers_every_root_branch() {
+    let root = sonda_core::schema::scenario_file_schema().to_value();
+    let branches = root["anyOf"]
+        .as_array()
+        .expect("the root is an anyOf")
+        .clone();
+
+    // Each branch is a `$ref` into `$defs`. Validating against the branch
+    // alone would fail to resolve it, so each probe carries the whole `$defs`
+    // section with it.
+    let probes: Vec<(String, Validator)> = branches
+        .iter()
+        .map(|branch| {
+            let name = branch["$ref"]
+                .as_str()
+                .expect("each branch is a $ref")
+                .trim_start_matches("#/$defs/")
+                .to_string();
+            let mut doc = branch.clone();
+            doc.as_object_mut()
+                .expect("a $ref branch is an object")
+                .insert("$defs".to_string(), root["$defs"].clone());
+            let validator = jsonschema::options()
+                .build(&doc)
+                .expect("a single branch plus $defs is a valid schema");
+            (name, validator)
+        })
+        .collect();
+
+    let corpus = parser_accepted_scenarios();
+    let mut hits: Vec<usize> = vec![0; probes.len()];
+
+    for (_, text) in &corpus {
+        let Ok(yaml) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text) else {
+            continue;
+        };
+        let json = yaml_to_json(yaml);
+        for (index, (_, validator)) in probes.iter().enumerate() {
+            if validator.is_valid(&json) {
+                hits[index] += 1;
+            }
+        }
+    }
+
+    let dark: Vec<&str> = probes
+        .iter()
+        .zip(&hits)
+        .filter(|(_, &count)| count == 0)
+        .map(|((name, _), _)| name.as_str())
+        .collect();
+
+    assert!(
+        dark.is_empty(),
+        "these root branches are matched by no document in the corpus, so nothing \
+         would notice if they were wrong: {dark:?}. Coverage over {} documents was {}",
+        corpus.len(),
+        probes
+            .iter()
+            .zip(&hits)
+            .map(|((name, _), count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 }
 

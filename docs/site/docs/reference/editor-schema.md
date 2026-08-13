@@ -101,16 +101,28 @@ The schema is an authoring aid. `sonda` itself remains the validator, and it enf
 JSON Schema cannot express. A file your editor is happy with can still be rejected when you run
 it.
 
-| Checked by the schema | Checked only by `sonda` |
-| --- | --- |
-| Unknown or misspelled field names | `id` uniqueness across entries |
-| Unknown `kind:`, generator `type:`, encoder `type:`, sink `type:` | `after.ref` and `while.ref` pointing at an entry that exists |
-| Structural shape — `scenarios:` is a list, `labels:` is a mapping | `delay:` requiring a `while:` on the same entry |
-| The `while.op` operator being one of `<` or `>` | `generator:` and `pack:` being mutually exclusive |
-| Required fields being present | Value ranges (encoder `precision` is 0–17, `max_attempts` ≥ 1) |
-| The two shapes `delay.close:` accepts | Dependency cycles in `after:` chains |
+| Checked by the schema | Checked when you compile the scenario | Checked only when it runs |
+| --- | --- | --- |
+| Unknown or misspelled field names | `id` uniqueness across entries | Encoder `precision` being 0–17 |
+| Unknown `kind:`, generator `type:`, encoder `type:`, sink `type:` | `after.ref` and `while.ref` pointing at an entry that exists | |
+| Structural shape — `scenarios:` is a list, `labels:` is a mapping | `delay:` requiring a `while:` on the same entry | |
+| The `while.op` operator being one of `<` or `>` | `generator:` and `pack:` being mutually exclusive | |
+| Required fields being present | Dependency cycles in `after:` chains | |
+| The two shapes `delay.close:` accepts | Unresolvable `pack:` references | |
 
-Run `sonda validate <file>` for the full check.
+The middle column is what `sonda --dry-run run <file>` reports — it compiles the scenario and prints
+the resolved plan without emitting anything:
+
+```console
+$ sonda --dry-run run cpu.yaml
+Validation: OK (1 scenario)
+```
+
+!!! warning "`--dry-run` is not a full validator"
+    The third column is genuinely deferred to run time, and `--dry-run` will tell you a file is OK
+    when it is not. A scenario with `precision: 99` passes dry-run and then fails on `sonda run`
+    with `encoder precision must be 0..=17, got 99`. There is no single command that checks
+    everything short of running the scenario.
 
 ### Scalar types are deliberately loose
 

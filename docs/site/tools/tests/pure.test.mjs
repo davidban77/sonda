@@ -1390,4 +1390,50 @@ test("a # inside an expression is not treated as a comment", () => {
   assert.equal(parsePromQLRule("expr: cpu > 1 # a real trailing comment").ok, false);
 });
 
+// Review #546 round 2, W2. The grammar runs BEFORE the naming scan, and that
+// ordering is the largest behavioural change in #546 — it was documented in
+// capitals and pinned by nothing. Reverting it left the whole suite green,
+// because every case in the "refused BY NAME" table is genuinely unsupported
+// and so refused under either ordering.
+//
+// What discriminates is the opposite polarity: a rule the anchored grammar
+// ACCEPTS whose label value happens to contain a token the scan greps for.
+// Scan-first refuses these, and refuses them by asserting a specific false
+// fact about the reader's own rule — `{user="alice@example.com"}` reported as
+// "an offset or @ modifier". One case per row of the refusal table, so
+// removing any single row's protection shows up here.
+//
+// The general lesson, which is why this table is written this way: vary the
+// inputs the code interpolates AND the inputs the code scans.
+test("a legal rule is not refused for a token inside a label value", () => {
+  const cases = [
+    ['cpu{job="rate(x)"} > 1', "job", "rate(x)", "a function call"],
+    ['cpu{job="sum by(x)"} > 1', "job", "sum by(x)", "an aggregation"],
+    ['cpu{msg="a or b"} > 1', "msg", "a or b", "a set operator"],
+    ['cpu{msg="[error] disk"} > 1', "msg", "[error] disk", "a range selector"],
+    ['cpu{user="alice@example.com"} > 1', "user", "alice@example.com", "an @ modifier"],
+    ['cpu{note="offset by hand"} > 1', "note", "offset by hand", "an offset"],
+  ];
+  for (const [text, label, value, wouldClaim] of cases) {
+    const rule = parsePromQLRule(text);
+    assert.ok(
+      rule.ok,
+      `${text} is a legal threshold rule, but it was refused as ${wouldClaim}: ${rule.reason}`
+    );
+    assert.equal(rule.selectors[label].value, value);
+    assert.equal(rule.threshold, 1);
+  }
+});
+
+// And the other direction, so the pair cannot both be satisfied by a parser
+// that simply stopped refusing things: the same tokens OUTSIDE a quoted value
+// must still be refused, and still by name.
+test("the same tokens outside a label value are still refused by name", () => {
+  assert.match(no("rate(cpu[5m]) > 1"), /a function call/);
+  assert.match(no("sum by(job) (cpu) > 1"), /an aggregation/);
+  assert.match(no("cpu > 1 or mem > 1"), /a set operator/);
+  assert.match(no("cpu[5m] > 1"), /a range selector/);
+  assert.match(no("cpu offset 5m > 1"), /an offset or @ modifier/);
+});
+
 console.log(`${passed} pure-helper tests passed`);

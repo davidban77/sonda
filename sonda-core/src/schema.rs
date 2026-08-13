@@ -37,10 +37,39 @@
 //! the canonical form with a `scenarios:` list, the single-signal shorthand
 //! with entry fields at the top level, and a `kind: composable` pack
 //! definition. `oneOf` means *exactly one* branch may match, so any document
-//! matching two branches would be reported invalid. The pack-definition
-//! branch is permissive (`MetricPackDef` does not deny unknown fields), so
-//! overlap is not hypothetical. `anyOf` asks the question that matches the
-//! parser's behaviour: is this any of the shapes it takes?
+//! matching two branches would be reported invalid.
+//!
+//! The overlap is between the two CLOSED branches, which is the opposite of
+//! where it looks like it should be. Measured, pairwise:
+//!
+//! ```text
+//! ScenarioFileCanonical  required=[version, kind]  additionalProperties=false
+//! FlatFile               required=[version]        additionalProperties=false
+//! MetricPackDef          required=[name, description, category, metrics]
+//!                                                  additionalProperties=unset
+//!
+//! canonical vs pack       DISJOINT  canonical denies unknowns, has no `name`
+//! shorthand vs pack       DISJOINT  shorthand denies unknowns, has no `description`
+//! canonical vs shorthand  OVERLAP   {version: 2, kind: runnable} matches BOTH
+//! ```
+//!
+//! So the pack branch's permissiveness is irrelevant: its four required keys
+//! are ones the other two forbid, which makes it disjoint from both. What
+//! overlaps is canonical against shorthand — `FlatFile` requires only
+//! `version` while still carrying a `kind` property, so the header of any
+//! canonical file satisfies it too.
+//!
+//! That overlap is not reachable by a valid file today: `{version: 2, kind:
+//! runnable}` with no body is refused by the parser (`RunnableMissingBody`),
+//! and a canonical file with `scenarios:` fails `FlatFile`'s
+//! `deny_unknown_fields`. Switching to `oneOf` would therefore reject nothing
+//! in the corpus, and this is deliberately not claimed as a bug avoided.
+//! `anyOf` is chosen because the branches are not disjoint BY CONSTRUCTION —
+//! one new optional field on `FlatFile` that a canonical file also carries
+//! makes the overlap reachable — and because `oneOf` reports "matched more
+//! than one" for a document that is simply valid, which is a worse thing to
+//! put in front of a reader than the question `anyOf` asks: is this any of
+//! the shapes the parser takes?
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
@@ -50,6 +79,20 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 /// generator that moved it on every run would break both.
 pub const SCENARIO_SCHEMA_ID: &str =
     "https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json";
+
+// BEFORE SUBMITTING THIS TO SCHEMASTORE: the scalar widening below emits union
+// types (`"type": ["string", "number", "boolean"]`), and ajv refuses those
+// under strict mode without `allowUnionTypes` — measured with ajv 8.20 against
+// the 2020-12 meta-schema, which reports `strictTypes` at
+// `#/properties/category`. It compiles fine with strict mode off, and Python's
+// `jsonschema` 4.26 `check_schema` accepts it as-is; the documented consumer
+// (the YAML language server behind the VS Code extension, yamlls, Helix and
+// Zed) does not use ajv at all. But a registry may run one, so know the shape
+// of the objection before the submission rather than after it.
+//
+// The `format: uint8 / double / uint64` annotations schemars emits are
+// likewise non-standard and ignored by both validators — harmless, and
+// consistent with this schema not being the validator.
 
 /// Build the JSON Schema describing a v2 scenario file.
 ///
@@ -206,16 +249,18 @@ mod tests {
         );
     }
 
-    /// `anyOf`, not `oneOf` — see the module docs. A document matching two
-    /// branches is valid input to the parser, and `oneOf` would reject it.
+    /// `anyOf`, not `oneOf` — see the module docs for why, and for the
+    /// measurement that shows the overlap is between canonical and shorthand
+    /// rather than anywhere near the pack branch.
     #[test]
     fn root_offers_all_three_top_level_shapes_as_any_of() {
         let value = scenario_file_schema().to_value();
 
         assert!(
             value.get("oneOf").is_none(),
-            "oneOf means exactly-one-branch; the pack branch is permissive enough to \
-             overlap the others, so this must be anyOf"
+            "oneOf means exactly-one-branch, and these branches are not disjoint by \
+             construction — canonical and shorthand are both closed, but FlatFile \
+             requires only `version` while carrying a `kind` property"
         );
         let branches = value["anyOf"]
             .as_array()
@@ -227,6 +272,70 @@ mod tests {
                 "each branch should be a $ref into $defs, got {branch}"
             );
         }
+    }
+
+    /// The module docs justify `anyOf` with a pairwise-disjointness claim.
+    /// The first version of that claim named the wrong branch, and nothing
+    /// caught it because the corpus contains no document matching two
+    /// branches — so `oneOf` would have produced zero rejections and the
+    /// rationale could say anything. This pins the three structural facts the
+    /// argument actually rests on.
+    #[test]
+    fn the_branch_shapes_the_any_of_rationale_rests_on() {
+        let value = scenario_file_schema().to_value();
+        let defs = &value["$defs"];
+
+        let required = |name: &str| -> Vec<String> {
+            defs[name]["required"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // Both runnable branches are CLOSED. This is what makes the pack
+        // branch disjoint from them: its required keys are unknown fields here.
+        for closed in ["ScenarioFileCanonical", "FlatFile"] {
+            assert_eq!(
+                defs[closed]["additionalProperties"], false,
+                "{closed} must deny unknown fields"
+            );
+        }
+
+        // The pack branch is disjoint from each closed branch because it
+        // REQUIRES at least one key that branch does not declare — and a
+        // closed branch rejects any key it does not declare.
+        //
+        // Not "declares none of them": canonical carries `description` and
+        // `category` as catalog metadata, and shorthand carries `name` as an
+        // entry field. The overlap in vocabulary is real; the disjointness
+        // comes from what is left over. Writing this as "none of the four
+        // appear" is how the first version of this test failed.
+        let pack_required = required("MetricPackDef");
+        for closed in ["ScenarioFileCanonical", "FlatFile"] {
+            let declared = defs[closed]["properties"]
+                .as_object()
+                .expect("a closed branch is an object schema");
+            let unsatisfiable: Vec<&String> = pack_required
+                .iter()
+                .filter(|key| !declared.contains_key(*key))
+                .collect();
+            assert!(
+                !unsatisfiable.is_empty(),
+                "{closed} declares every key the pack branch requires, so a document \
+                 could satisfy both and the module docs' disjointness claim is stale"
+            );
+        }
+
+        // And the overlap that DOES exist: shorthand requires only `version`
+        // while carrying `kind`, so a canonical file's header satisfies it.
+        assert_eq!(required("FlatFile"), vec!["version".to_string()]);
+        assert!(defs["FlatFile"]["properties"]
+            .as_object()
+            .is_some_and(|p| p.contains_key("kind")));
     }
 
     /// The two hand-written `Deserialize` impls are the schema's known

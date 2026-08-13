@@ -406,7 +406,17 @@ async function boot() {
    * lines on top of each other. No-op unless the row is on and empty. */
   function seedSecondRule() {
     if (!el.second || !el.second.checked || !el.threshold2 || !entry) return;
-    if (el.threshold2.value) return; // a reader's own number is never overwritten
+    // A reader's own number is never overwritten — and the intention is spent
+    // here too, not just on the path that actually seeds. Leaving it armed
+    // meant uncheck-then-recheck with a number already in the box kept the
+    // flag set forever, so the next reevaluate that found the box empty
+    // consumed it — which is the very keystroke used to empty it. The row
+    // above (`!entry`) is the opposite case: that IS the deferral, and the
+    // flag has to survive it.
+    if (el.threshold2.value) {
+      secondNeedsSeed = false;
+      return;
+    }
     const first = Number(el.threshold.value);
     const span = Math.max(...entry.values) - Math.min(...entry.values);
     el.threshold2.value = String(
@@ -474,13 +484,23 @@ async function boot() {
       // which is the duration most rules files actually carry (review #546
       // M1). Naming the reason — the lab's timeline is seconds long — stops
       // a reader concluding their tuning transferred.
-      const ratio = result.forSecs / nearest;
+      //
+      // Which reason is TRUE depends on the direction, and the first version
+      // of this branched on `forSecs / nearest >= 2`, which got both ends
+      // wrong (review #546 round 2, M1). `nearest` can be 0, making the ratio
+      // Infinity, so `for: 1s` was told it "does not fit this lab's 60s
+      // timeline" — a 1-second duration fits a 60-second timeline perfectly
+      // well; what it does not fit is a five-step dropdown. And `for: 1m`
+      // against a 60s timeline hit the ratio at exactly 2.0 and produced a
+      // sentence that reads as self-contradictory to anyone doing the
+      // arithmetic. Comparing the duration against the timeline says the true
+      // thing in both directions.
+      const timelineSecs = Math.round(entry ? entry.values.length * entry.tick_secs : 60);
       notes.push(
-        ratio >= 2
-          ? `for: ${result.forSecs}s does not fit this lab's ${Math.round(
-              (entry ? entry.values.length * entry.tick_secs : 60)
-            )}s timeline — showing ${nearest}s instead, so the timing here is not your rule's`
-          : `for: ${result.forSecs}s rounded to ${nearest}s`
+        result.forSecs > timelineSecs
+          ? `for: ${result.forSecs}s does not fit this lab's ${timelineSecs}s timeline` +
+              ` — showing ${nearest}s instead, so the timing here is not your rule's`
+          : `for: ${result.forSecs}s is not a step on this lab's menu — showing ${nearest}s instead`
       );
     }
     if (entry && result.metric !== entry.name) {
