@@ -15,10 +15,16 @@ import {
   exportFilename,
   scheduleWindows,
   burstEmission,
+  cursorSecsAt,
+  cursorSamples,
+  logLinesNear,
 } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 500;
+// How long a burst of edits stays open once typing stops. Longer than the
+// debounce on purpose, so the run that ends a burst is still inside it.
+const GHOST_IDLE_MS = 1500;
 
 const SERIES_COLORS = ["#f97316", "#3b82f6", "#10b981", "#8b5cf6", "#ec4899", "#eab308"];
 
@@ -230,6 +236,56 @@ scenarios:
 `,
   },
   {
+    /* The one preset carrying metrics AND logs in the same scenario file.
+     *
+     * It exists because WP9's log correlation needs one: hovering the chart
+     * highlights the log lines from that instant, and with a logs-only
+     * scenario there is no chart to hover. Found in UAT — every other preset
+     * is one signal type or the other, so the feature shipped unreachable
+     * and untestable until this landed.
+     *
+     * The spike and the error-weighted templates are deliberately the same
+     * story: sweep the cursor into a latency spike and the log lines beside
+     * it are the timeouts that caused it. */
+    name: "Latency spike + correlated logs",
+    yaml: `version: 2
+kind: runnable
+defaults:
+  rate: 4
+  duration: 60s
+  encoder: { type: json_lines }
+  sink: { type: stdout }
+scenarios:
+  - id: latency
+    signal_type: metrics
+    name: request_latency_ms
+    generator:
+      type: spike_event
+      baseline: 120.0
+      spike_height: 520.0
+      spike_duration: 4s
+      spike_interval: 20s
+    labels: { service: checkout }
+  - id: checkout_logs
+    signal_type: logs
+    name: checkout_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "GET {endpoint} -> {status} in {latency}ms"
+          field_pools:
+            endpoint: ["/api/cart", "/api/checkout"]
+            status: ["200", "200", "503"]
+            latency: ["48", "121", "870"]
+        - message: "upstream payment-gw timed out after {timeout}s"
+          field_pools:
+            timeout: ["5", "10"]
+      severity_weights: { info: 0.7, warn: 0.15, error: 0.15 }
+      seed: 42
+    labels: { service: checkout }
+`,
+  },
+  {
     name: "Correlated pair (CPU + errors)",
     yaml: `version: 2
 kind: runnable
@@ -344,6 +400,32 @@ async function boot() {
   let debounceTimer = 0;
   let editor = null;
 
+  /* The cursor's position on the timeline, in scenario seconds, or null.
+   * Lives here rather than on the element because it survives a re-render:
+   * a resize or a theme flip should not drop the reading under the pointer. */
+  let cursorSecs = null;
+
+  /* The ghost baseline, and whether an edit burst is currently open.
+   *
+   * David's call, over the spec's "previous run": the ghost is the scenario
+   * as it was BEFORE the current burst of edits, not one debounce step back.
+   * With a 500 ms debounce, dragging a scrubbable number produces a run every
+   * half second, and a ghost of the previous run is a faint near-copy of the
+   * live trace — it carries no information exactly when you are looking for
+   * some. Pinned to the pre-burst state, dragging amplitude 30 -> 50 shows
+   * the 30 curve the whole way down.
+   *
+   * The burst closes after GHOST_IDLE_MS of no edits, which only re-arms the
+   * baseline for the NEXT burst — the ghost itself stays on screen until then,
+   * so nothing vanishes on a timer while the reader is looking at it. The
+   * idle window is deliberately longer than the debounce, so the run that
+   * ends a burst is still inside it. */
+  let ghostEntries = null;
+  let burstOpen = false;
+  let burstIdleTimer = 0;
+
+  const view = () => ({ cursorSecs, ghost: ghostEntries });
+
   const run = async () => {
     el.status.textContent = "compiling…";
     try {
@@ -351,7 +433,7 @@ async function boot() {
       const yaml = editor.getValue();
       const result = JSON.parse(sample_scenario(yaml, MAX_TICKS));
       lastResult = result;
-      render(el, result);
+      render(el, result, view());
       editor.setEngineError(result.ok ? null : result.error);
       el.status.textContent = result.ok ? "" : "compile error";
       // Bridge to the alert lab: carry the current scenario across so a
@@ -364,8 +446,28 @@ async function boot() {
   };
 
   const scheduleRun = () => {
+    // The first edit of a burst pins the ghost. `lastResult.entries` is safe
+    // to hold by reference: every run parses fresh JSON, so the previous
+    // run's entries are never mutated under us.
+    if (!burstOpen) {
+      burstOpen = true;
+      ghostEntries = lastResult && lastResult.ok ? lastResult.entries : null;
+    }
+    window.clearTimeout(burstIdleTimer);
+    burstIdleTimer = window.setTimeout(() => {
+      burstOpen = false;
+    }, GHOST_IDLE_MS);
     window.clearTimeout(debounceTimer);
     debounceTimer = window.setTimeout(run, DEBOUNCE_MS);
+  };
+
+  /* A different scenario has nothing to be compared with. Preset changes and
+   * shared links replace the whole document, so a ghost of the old one would
+   * be two unrelated curves on one pair of axes. */
+  const dropGhost = () => {
+    window.clearTimeout(burstIdleTimer);
+    burstOpen = false;
+    ghostEntries = null;
   };
 
   const shared = fromLocationHash();
@@ -375,6 +477,8 @@ async function boot() {
   el.run.addEventListener("click", run);
   el.preset.addEventListener("change", () => {
     editor.setValue(PRESETS[Number(el.preset.value)].yaml);
+    dropGhost();
+    clearCursor();
     run();
   });
   // Download YAML: one gesture leaves the reader with both halves of the
@@ -425,11 +529,66 @@ async function boot() {
     });
   });
 
+  /* The time cursor.
+   *
+   * Repaints through `paintCursor` rather than `render`, because moving a
+   * pointer must not rebuild the log pane, the legend and the extra charts
+   * sixty times a second — and rebuilding the log rows would throw away the
+   * highlight this is trying to set. rAF-coalesced, so a burst of pointer
+   * events costs one redraw per frame however fast the device reports them.
+   */
+  let cursorFrame = 0;
+  const paintCursor = () => {
+    if (cursorFrame) return;
+    cursorFrame = window.requestAnimationFrame(() => {
+      cursorFrame = 0;
+      if (!lastResult || !lastResult.ok) return;
+      if (el.chart.style.display !== "none") {
+        drawChart(el.chart, lastResult.entries, view());
+      }
+      renderReadout(el, lastResult.entries, cursorSecs);
+      highlightLogs(lastResult.logs || [], cursorSecs);
+    });
+  };
+
+  const clearCursor = () => {
+    if (cursorSecs === null) return;
+    cursorSecs = null;
+    paintCursor();
+  };
+
+  const moveCursor = (event) => {
+    const at = cursorSecsAt(el.chart._geom, event.offsetX);
+    if (at === cursorSecs) return;
+    cursorSecs = at;
+    paintCursor();
+  };
+
+  el.chart.addEventListener("pointermove", (event) => {
+    // Touch reaches here too, but a finger's "move" is a drag, and treating
+    // it as hover would make the cursor follow a scroll gesture. Touch is
+    // handled by pointerdown below, as tap-to-set / tap-again-to-clear.
+    if (event.pointerType === "touch") return;
+    moveCursor(event);
+  });
+  el.chart.addEventListener("pointerleave", clearCursor);
+  el.chart.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "touch") return;
+    // Second tap in the same place clears, so a reader on a phone can put the
+    // chart back the way they found it without a control to explain.
+    const at = cursorSecsAt(el.chart._geom, event.offsetX);
+    if (at === null || (cursorSecs !== null && Math.abs(at - cursorSecs) < 1e-9)) clearCursor();
+    else {
+      cursorSecs = at;
+      paintCursor();
+    }
+  });
+
   // Redraw on container resize; re-render chart and editor theme on
   // light/dark scheme change.
-  new ResizeObserver(() => lastResult && render(el, lastResult)).observe(el.chart.parentElement);
+  new ResizeObserver(() => lastResult && render(el, lastResult, view())).observe(el.chart.parentElement);
   new MutationObserver(() => {
-    if (lastResult) render(el, lastResult);
+    if (lastResult) render(el, lastResult, view());
     editor.setDark(document.body.getAttribute("data-md-color-scheme") === "slate");
   }).observe(document.body, {
     attributes: true,
@@ -524,7 +683,7 @@ function syncPngButton(el) {
     : "Download the chart as a PNG";
 }
 
-function render(el, result) {
+function render(el, result, view = {}) {
   if (!result.ok) {
     showError(el, result.error || "unknown compile error");
     return;
@@ -540,11 +699,17 @@ function render(el, result) {
   const hasLines = result.entries.length > 0;
   const hasExtras = histograms.length || summaries.length || logs.length;
   el.chart.style.display = hasLines || !hasExtras ? "" : "none";
-  if (hasLines || !hasExtras) drawChart(el.chart, result.entries);
+  if (hasLines || !hasExtras) drawChart(el.chart, result.entries, view);
   syncPngButton(el);
 
   renderExtraCharts(el, histograms, summaries);
   renderLogs(el, logs);
+  // The cursor's two readers, refreshed with the chart: a re-render on
+  // resize or theme flip must not leave a readout describing the old scales
+  // or a highlight on a log pane that was just rebuilt from scratch.
+  const cursorSecs = typeof view.cursorSecs === "number" ? view.cursorSecs : null;
+  renderReadout(el, result.entries, cursorSecs);
+  highlightLogs(logs, cursorSecs);
 
   el.legend.replaceChildren(
     ...result.entries.map((entry, index) => {
@@ -640,6 +805,110 @@ function renderLogs(el, logs) {
     }
     pane.append(caption, stream);
   }
+}
+
+/* The cursor's reading, as DOM rather than canvas text.
+ *
+ * Spec said a readout box; making it real elements rather than `fillText` is
+ * a deliberate delta and it buys three things: the numbers are selectable and
+ * copyable, a screen reader can announce them (`aria-live="polite"`), and the
+ * browser smoke suite can assert the exact strings instead of diffing pixels
+ * — the lesson review #543 taught about the burst label.
+ *
+ * It sits UNDER the chart rather than floating at the pointer: a tooltip
+ * would cover the trace it is describing, and at the moment you want to
+ * compare two series you want to see both.
+ */
+function renderReadout(el, entries, cursorSecs) {
+  let box = document.getElementById("sp-readout");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "sp-readout";
+    box.className = "sonda-playground__readout";
+    box.setAttribute("aria-live", "polite");
+    el.chart.insertAdjacentElement("afterend", box);
+  }
+  const rows = cursorSecs === null ? [] : cursorSamples(entries, cursorSecs);
+  // Hidden rather than removed: the element is rebuilt on every pointer move,
+  // and adding/removing a block on each one would reflow the page under the
+  // pointer.
+  box.hidden = !rows.length;
+  if (!rows.length) {
+    box.replaceChildren();
+    delete box.dataset.secs;
+    return;
+  }
+  box.dataset.secs = String(Math.round(cursorSecs * 100) / 100);
+
+  const at = document.createElement("span");
+  at.className = "sonda-playground__readat";
+  at.textContent = formatSeconds(cursorSecs);
+  const children = [at];
+  for (const row of rows) {
+    const index = entries.findIndex((entry) => entry.id === row.id);
+    const chip = document.createElement("span");
+    chip.className = "sonda-playground__readrow";
+    const swatch = document.createElement("i");
+    swatch.style.background = SERIES_COLORS[Math.max(0, index) % SERIES_COLORS.length];
+    const label = document.createElement("b");
+    label.textContent = row.name;
+    chip.append(swatch, label, document.createTextNode(formatNumber(row.value)));
+    children.push(chip);
+  }
+  box.replaceChildren(...children);
+}
+
+/* Highlight the log lines belonging to the cursor's instant.
+ *
+ * Which lines is `logLinesNear`; this walks the rendered rows and toggles a
+ * class. The rows are in the same order as `log.lines` because renderLogs
+ * appends them in order — stated because it is the assumption that makes the
+ * index lookup valid, and it would break silently if that loop ever filtered.
+ *
+ * The first hit is scrolled into view WITHIN ITS OWN PANE — a deliberate
+ * delta from the spec, which named `scrollIntoView({ block: "nearest" })`.
+ * That API walks every scrollable ancestor, so bringing a log line into view
+ * also scrolls the PAGE; the chart then slides out from under the pointer,
+ * the browser fires pointerleave, and the cursor that asked for the scroll
+ * is cleared. The highlight flashed and vanished on every hover. Adjusting
+ * only `stream.scrollTop` confines the movement to the pane, which is what
+ * the spec wanted the flag to mean.
+ *
+ * Nothing moves when the line is already visible: sweeping the cursor across
+ * a chart should not yank a pane that is already showing the right lines.
+ */
+function highlightLogs(logs, cursorSecs) {
+  const pane = document.getElementById("sp-logs");
+  if (!pane) return;
+  const streams = pane.querySelectorAll(".sonda-playground__logstream");
+  let scrolled = false;
+  streams.forEach((stream, streamIndex) => {
+    const log = logs[streamIndex];
+    const hits = cursorSecs === null || !log ? [] : logLinesNear(log, cursorSecs);
+    const wanted = new Set(hits);
+    const rows = stream.children;
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].classList.toggle("sonda-playground__logline--at", wanted.has(i));
+    }
+    if (!scrolled && hits.length && rows[hits[0]]) {
+      scrollRowIntoPane(stream, rows[hits[0]]);
+      scrolled = true;
+    }
+  });
+}
+
+/* Bring one row into view inside its scroll container and nowhere else.
+ *
+ * Rect arithmetic rather than `offsetTop`, because the row's offsetParent is
+ * not necessarily the stream — the pane is statically positioned, so the
+ * offsets would be measured against whichever ancestor happens to establish
+ * the containing block. Rects are always in the same coordinate space.
+ */
+function scrollRowIntoPane(stream, row) {
+  const pane = stream.getBoundingClientRect();
+  const rect = row.getBoundingClientRect();
+  if (rect.top < pane.top) stream.scrollTop -= pane.top - rect.top;
+  else if (rect.bottom > pane.bottom) stream.scrollTop += rect.bottom - pane.bottom;
 }
 
 function drawHistogramHeatmap(canvas, histogram) {
@@ -814,7 +1083,18 @@ function palette() {
   };
 }
 
-function drawChart(canvas, entries) {
+/* The line chart.
+ *
+ * `opts.cursorSecs` is a point on the timeline to read out (null for none)
+ * and `opts.ghost` is the previous shape of the same scenario, drawn faintly
+ * underneath. Both are pure decoration over the same scales — WP9 added them
+ * without an overlay canvas because a full redraw here is a few hundred
+ * lineTo calls, and one drawing path is easier to keep honest than two that
+ * must agree on geometry.
+ */
+function drawChart(canvas, entries, opts = {}) {
+  const cursorSecs = typeof opts.cursorSecs === "number" ? opts.cursorSecs : null;
+  const ghost = Array.isArray(opts.ghost) ? opts.ghost : null;
   const colors = palette();
   const dpr = window.devicePixelRatio || 1;
   const cssWidth = canvas.parentElement.clientWidth;
@@ -826,6 +1106,14 @@ function drawChart(canvas, entries) {
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssWidth, cssHeight);
+  // A stale geometry would let the pointer read a chart that is no longer
+  // drawn, so every early return clears it rather than leaving the last
+  // scenario's mapping in place.
+  canvas._geom = null;
+  canvas.dataset.ghosts = "0";
+  canvas.dataset.cursor = "";
+  canvas.dataset.ghostPeak = "";
+  canvas.dataset.peak = "";
   if (!entries.length) return;
 
   const pad = { left: 48, right: 12, top: 12, bottom: 26 };
@@ -835,6 +1123,28 @@ function drawChart(canvas, entries) {
   let min = Infinity;
   let max = -Infinity;
   let spanSecs = 0;
+  // The ghost is inside BOTH domains, not clipped against them. A comparison
+  // the reader cannot see both halves of is not a comparison, and clamping an
+  // off-scale ghost to the plot edge would draw a flat line that never
+  // existed. The cost is that the live trace re-scales when a ghost appears —
+  // which is honest, because the chart is answering a different question at
+  // that moment.
+  //
+  // The x-span matters as much as the y-domain, and it is the one that bites:
+  // an edit to `rate` or `duration` changes how much time the samples cover,
+  // so a ghost sized only by the live entries runs off the right edge and the
+  // feature looks broken rather than wrong. Found by driving a scrub drag in
+  // Chromium, not by reading the code.
+  for (const entry of ghost || []) {
+    if (!entry || !Array.isArray(entry.values) || !entry.values.length) continue;
+    for (const value of entry.values) {
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    const tick = Number(entry.tick_secs);
+    if (!Number.isFinite(tick) || tick <= 0) continue;
+    spanSecs = Math.max(spanSecs, (entry.offset_secs || 0) + (entry.values.length - 1) * tick);
+  }
   for (const entry of entries) {
     for (const value of entry.values) {
       if (value < min) min = value;
@@ -917,6 +1227,40 @@ function drawChart(canvas, entries) {
     ctx.fillText(formatSeconds(secs), x(secs), cssHeight - 8);
   }
 
+  // The ghost: the same scenario as it was before this burst of edits,
+  // underneath the live trace in its own colour at low alpha. Matched by
+  // ENTRY ID, not by position — adding a scenario above an existing one
+  // would otherwise re-pair every ghost with the wrong series and show a
+  // change nobody made. An id present only in the ghost is dropped: a
+  // scenario that no longer exists has no live trace to be compared with.
+  let ghostsDrawn = 0;
+  let ghostPeak = null;
+  for (const before of ghost || []) {
+    if (!before || !Array.isArray(before.values) || !before.values.length) continue;
+    const index = entries.findIndex((entry) => entry.id === before.id);
+    if (index < 0) continue;
+    ghostsDrawn += 1;
+    for (const value of before.values) {
+      if (Number.isFinite(value) && (ghostPeak === null || value > ghostPeak)) ghostPeak = value;
+    }
+    const offset = before.offset_secs || 0;
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = SERIES_COLORS[index % SERIES_COLORS.length];
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    before.values.forEach((value, tick) => {
+      const px = x(offset + tick * before.tick_secs);
+      const py = y(value);
+      if (tick === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
   entries.forEach((entry, index) => {
     const offset = entry.offset_secs || 0;
     ctx.strokeStyle = SERIES_COLORS[index % SERIES_COLORS.length];
@@ -974,6 +1318,62 @@ function drawChart(canvas, entries) {
       ctx.fillText(entry.while_label, x(offset) + 6, y(entry.values[0]) - 8);
     }
   });
+
+  // The time cursor, last so it sits over everything it is reading.
+  //
+  // The dots are drawn at the SNAPPED sample, not under the pointer: the
+  // chart is a sampled signal, and a dot that slid smoothly along the line
+  // would claim a resolution the engine never produced. At coarse rates the
+  // gap between the rule and the dot is visible, and that gap is the truth.
+  if (cursorSecs !== null) {
+    const rows = cursorSamples(entries, cursorSecs);
+    ctx.save();
+    ctx.strokeStyle = colors.text;
+    ctx.globalAlpha = 0.6;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x(cursorSecs), pad.top);
+    ctx.lineTo(x(cursorSecs), pad.top + plotH);
+    ctx.stroke();
+    ctx.restore();
+    for (const row of rows) {
+      const index = entries.findIndex((entry) => entry.id === row.id);
+      if (index < 0) continue;
+      ctx.fillStyle = SERIES_COLORS[index % SERIES_COLORS.length];
+      ctx.beginPath();
+      ctx.arc(x(row.secs), y(row.value), 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // The mapping the pointer handler inverts. Stashed rather than recomputed
+  // because a second copy of this arithmetic is a second place for it to be
+  // wrong: `pad.left` and the span both depend on the entries and the
+  // container width, and the cursor has to agree with the axis exactly.
+  canvas._geom = { padLeft: pad.left, plotW, spanSecs };
+
+  // What the chart is claiming, in a form a test can read exactly. The
+  // browser suite cannot see a dashed line or a 3.5px dot, and a canvas
+  // diff can only say that SOMETHING moved — the distinction review #543
+  // was about.
+  canvas.dataset.ghosts = String(ghostsDrawn);
+  canvas.dataset.cursor = cursorSecs === null ? "" : String(Math.round(cursorSecs * 100) / 100);
+  // The ghost's peak, which is what makes "pinned to the pre-edit state"
+  // testable at all: a count alone cannot tell that baseline apart from the
+  // spec's previous-run one, because both draw exactly one ghost. Under
+  // previous-run semantics this number creeps toward the live trace on every
+  // debounce; pinned, it does not move until the burst ends.
+  canvas.dataset.ghostPeak = ghostPeak === null ? "" : String(Math.round(ghostPeak * 100) / 100);
+  // The live peak, in the same units, so the two can be compared without the
+  // test needing a window global to reach the entries.
+  let peak = null;
+  for (const entry of entries) {
+    for (const value of entry.values) {
+      if (Number.isFinite(value) && (peak === null || value > peak)) peak = value;
+    }
+  }
+  canvas.dataset.peak = peak === null ? "" : String(Math.round(peak * 100) / 100);
 }
 
 /* Bucket bounds need more precision than axis ticks — 0.005 and 0.01 are

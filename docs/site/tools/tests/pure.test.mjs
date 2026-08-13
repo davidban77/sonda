@@ -12,6 +12,8 @@ import {
   MAX_HASH_PAYLOAD,
   buildTestExport,
   burstEmission,
+  cursorSamples,
+  cursorSecsAt,
   defaultThreshold,
   deriveAlertName,
   escapeQuoted,
@@ -20,6 +22,7 @@ import {
   fromBase64Url,
   galleryCardState,
   hashPayloadTooLarge,
+  logLinesNear,
   MAX_SCHEDULE_CYCLES,
   niceDeadlineSecs,
   normalizeFence,
@@ -919,6 +922,148 @@ test("a preview widget carries no chart-only assumptions", () => {
     if (!widget.preview) continue;
     assert.match(widget.yaml(defaultParams(widget)), /encoder: \{ type: /, `${gen}: names an encoder`);
   }
+});
+
+
+// --- the time cursor (WP9) ---------------------------------------------
+//
+// Three helpers between a pointer and a reading. The cases that matter are
+// the ones where the obvious implementation is wrong: the axis gutter is not
+// second zero, a chained scenario has no value before it starts, and a log
+// line's `secs` is already timeline-absolute.
+
+const GEOM = { padLeft: 48, plotW: 400, spanSecs: 60 };
+
+test("the cursor inverts the chart's own seconds-to-pixels map", () => {
+  assert.equal(cursorSecsAt(GEOM, 48), 0);
+  assert.equal(cursorSecsAt(GEOM, 448), 60);
+  assert.equal(cursorSecsAt(GEOM, 248), 30);
+});
+
+test("a pointer outside the plot has no reading, rather than a clamped one", () => {
+  // The y-axis gutter is the case this is about: pixels 0..47 are labels, and
+  // reporting second zero there would answer a question nobody asked.
+  assert.equal(cursorSecsAt(GEOM, 47.9), null);
+  assert.equal(cursorSecsAt(GEOM, 0), null);
+  assert.equal(cursorSecsAt(GEOM, 448.1), null);
+  assert.equal(cursorSecsAt(GEOM, 900), null);
+});
+
+test("a degenerate chart geometry yields no cursor instead of NaN seconds", () => {
+  for (const bad of [null, undefined, "geom", 42, []]) {
+    assert.equal(cursorSecsAt(bad, 100), null, `geom=${JSON.stringify(bad)}`);
+  }
+  assert.equal(cursorSecsAt({ ...GEOM, plotW: 0 }, 100), null, "zero-width plot");
+  assert.equal(cursorSecsAt({ ...GEOM, spanSecs: 0 }, 100), null, "zero-length span");
+  assert.equal(cursorSecsAt({ ...GEOM, spanSecs: Infinity }, 100), null);
+  assert.equal(cursorSecsAt(GEOM, NaN), null);
+  assert.equal(cursorSecsAt(GEOM, "left"), null);
+});
+
+const series = (extra) => ({
+  id: "cpu",
+  name: "cpu_usage",
+  tick_secs: 0.5,
+  offset_secs: 0,
+  values: [10, 20, 30, 40, 50],
+  ...extra,
+});
+
+test("a reading snaps to the nearest tick and says which tick it read", () => {
+  // tick 0.5s: 1.1s is nearer index 2 (1.0s) than index 3 (1.5s).
+  assert.deepEqual(cursorSamples([series()], 1.1), [
+    { id: "cpu", name: "cpu_usage", value: 30, secs: 1 },
+  ]);
+  // Exactly between two ticks — Math.round settles it upward, consistently.
+  assert.equal(cursorSamples([series()], 1.25)[0].value, 40);
+});
+
+test("an entry that has not started yet contributes nothing", () => {
+  // The case clamping gets wrong. A chained scenario (`after:`) starting at
+  // 60s has no value at 10s, and reporting its first sample would invent
+  // data for a scenario the engine had not begun.
+  const late = series({ offset_secs: 60 });
+  assert.deepEqual(cursorSamples([late], 10), []);
+  assert.deepEqual(cursorSamples([late], 59.7), [], "just before its start");
+  assert.equal(cursorSamples([late], 60)[0].value, 10, "its own first tick");
+  assert.equal(cursorSamples([late], 62)[0].value, 50, "its own last tick");
+  assert.deepEqual(cursorSamples([late], 62.3), [], "past its end");
+});
+
+test("a series shorter than the span drops out past its end", () => {
+  // Two entries on one chart: the short one stops at 2s, the long one runs on.
+  const short = series({ id: "short", values: [1, 2, 3] }); // ends at 1.0s
+  const long = series({ id: "long", tick_secs: 1, values: [5, 6, 7, 8, 9] });
+  assert.deepEqual(cursorSamples([short, long], 0.5).map((r) => r.id), ["short", "long"]);
+  assert.deepEqual(cursorSamples([short, long], 3).map((r) => r.id), ["long"]);
+  assert.deepEqual(cursorSamples([short, long], 30), []);
+});
+
+test("rows come back in entry order, so the readout matches the legend", () => {
+  const a = series({ id: "a", tick_secs: 1, values: [1, 1, 1] });
+  const b = series({ id: "b", tick_secs: 1, values: [2, 2, 2] });
+  assert.deepEqual(cursorSamples([a, b], 1).map((r) => r.id), ["a", "b"]);
+  assert.deepEqual(cursorSamples([b, a], 1).map((r) => r.id), ["b", "a"]);
+});
+
+test("entries the readout cannot describe are skipped, not guessed at", () => {
+  assert.deepEqual(cursorSamples([series({ values: [] })], 1), [], "no samples");
+  assert.deepEqual(cursorSamples([series({ values: "10,20" })], 1), [], "values not an array");
+  assert.deepEqual(cursorSamples([series({ tick_secs: 0 })], 1), [], "zero tick");
+  assert.deepEqual(cursorSamples([series({ tick_secs: -1 })], 1), [], "negative tick");
+  assert.deepEqual(cursorSamples([series({ tick_secs: NaN })], 1), [], "non-numeric tick");
+  assert.deepEqual(cursorSamples([series({ offset_secs: -Infinity })], 1), [], "infinite offset");
+  assert.deepEqual(cursorSamples([series({ values: [NaN, NaN, NaN] })], 1), [], "non-finite value");
+  for (const bad of [null, undefined, 0, "entry", []]) {
+    assert.deepEqual(cursorSamples([bad], 1), [], `entry=${JSON.stringify(bad)}`);
+  }
+  for (const bad of [null, undefined, "entries", 5]) {
+    assert.deepEqual(cursorSamples(bad, 1), [], `entries=${JSON.stringify(bad)}`);
+  }
+  assert.deepEqual(cursorSamples([series()], NaN), [], "no cursor");
+  assert.deepEqual(cursorSamples([series()], Infinity), []);
+});
+
+const logEntry = (extra) => ({
+  tick_secs: 1,
+  lines: [{ secs: 0 }, { secs: 1 }, { secs: 2 }, { secs: 3 }],
+  ...extra,
+});
+
+test("a log line is highlighted within half a tick of the cursor", () => {
+  assert.deepEqual(logLinesNear(logEntry(), 2), [2]);
+  assert.deepEqual(logLinesNear(logEntry(), 2.3), [2]);
+  assert.deepEqual(logLinesNear(logEntry(), 1.7), [2]);
+  assert.deepEqual(logLinesNear(logEntry(), 10), [], "past the stream");
+});
+
+test("a cursor exactly between two lines highlights both", () => {
+  // Inclusive on purpose: an exclusive bound flickers between the two as the
+  // pointer moves by sub-pixel amounts.
+  assert.deepEqual(logLinesNear(logEntry(), 1.5), [1, 2]);
+});
+
+test("log correlation reads the shared timeline, not the entry's own clock", () => {
+  // sonda-wasm stamps line.secs as offset_secs + tick * tick_secs, so a
+  // chained log entry's lines are already absolute. Subtracting the offset
+  // again would push the highlight off by the entry's start.
+  const chained = logEntry({
+    offset_secs: 60,
+    lines: [{ secs: 60 }, { secs: 61 }, { secs: 62 }],
+  });
+  assert.deepEqual(logLinesNear(chained, 61), [1]);
+  assert.deepEqual(logLinesNear(chained, 1), [], "no line at the un-offset time");
+});
+
+test("a log stream with nothing to correlate yields no highlight", () => {
+  assert.deepEqual(logLinesNear(logEntry({ lines: [] }), 1), []);
+  assert.deepEqual(logLinesNear(logEntry({ tick_secs: 0 }), 1), []);
+  assert.deepEqual(logLinesNear(logEntry({ tick_secs: NaN }), 1), []);
+  assert.deepEqual(logLinesNear(logEntry({ lines: [{ secs: "soon" }, { secs: 1 }] }), 1), [1]);
+  for (const bad of [null, undefined, 0, "log", []]) {
+    assert.deepEqual(logLinesNear(bad, 1), [], `log=${JSON.stringify(bad)}`);
+  }
+  assert.deepEqual(logLinesNear(logEntry(), NaN), []);
 });
 
 console.log(`${passed} pure-helper tests passed`);

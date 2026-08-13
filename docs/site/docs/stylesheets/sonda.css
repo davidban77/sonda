@@ -1063,6 +1063,58 @@
 
 /* ---------- Playground synthetic log stream ----------------------------- */
 
+/* The time cursor's readout (WP9): one strip under the chart, one chip per
+   series. Wraps rather than scrolls — a scenario with six series on a narrow
+   screen should grow downwards, not hide readings off the right edge. */
+.sonda-playground__readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.9rem;
+  margin-top: 0.4rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  min-height: 1.6em;
+}
+
+.sonda-playground__readat {
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+.sonda-playground__readrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.sonda-playground__readrow i {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.sonda-playground__readrow b {
+  font-weight: 400;
+  opacity: 0.72;
+}
+
+/* The log line under the cursor. Background rather than colour, so it stacks
+   with the severity colouring instead of overriding it — an error line at the
+   cursor must still read as an error. */
+.sonda-playground__logline--at {
+  background: rgba(249, 115, 22, 0.16);
+  box-shadow: -0.35rem 0 0 rgba(249, 115, 22, 0.16), 0.35rem 0 0 rgba(249, 115, 22, 0.16);
+  border-radius: 2px;
+}
+
+[data-md-color-scheme="slate"] .sonda-playground__logline--at {
+  background: rgba(253, 186, 116, 0.2);
+  box-shadow: -0.35rem 0 0 rgba(253, 186, 116, 0.2), 0.35rem 0 0 rgba(253, 186, 116, 0.2);
+}
+
 .sonda-playground__logstream {
   max-height: 16rem;
   overflow-y: auto;
