@@ -17,10 +17,11 @@
  *
  * Conventions that keep this from becoming a flaky tax:
  *
- *   - Every wait is condition-based (waitForFunction / waitForSelector).
- *     There is no bare waitForTimeout anywhere; the one place a debounce has
- *     to settle is expressed as "wait until the value CHANGES", not "wait
- *     500ms and hope".
+ *   - Every wait for STATE is condition-based (waitForFunction /
+ *     waitForSelector): "wait until the value CHANGES", never "wait 500ms and
+ *     hope". The single waitForTimeout in this file is not waiting for state
+ *     at all — it paces a synthetic drag across debounce windows, because
+ *     spanning several of them is the behaviour section 12 is testing.
  *   - Silence is not success. Every check asserts a terminal state, and any
  *     uncaught page error or same-origin request failure fails the run at the
  *     end even if every assertion passed.
@@ -392,15 +393,32 @@ try {
   check("fence buttons are present", buttonCount > 0, `${buttonCount} buttons`);
   await fences.click("a.sonda-runnable");
   await fences.waitForSelector("#sonda-playground", { timeout: 30000 });
-  await fences.waitForFunction(
-    () =>
-      document
-        .querySelector("#sonda-playground .cm-content")
-        ?.textContent.includes("version: 2"),
-    null,
-    { timeout: 60000 }
+  // The waited-for condition is asserted here rather than relied on
+  // implicitly (review #544 M2). A `check(..., true)` after a wait is not
+  // vacuous today — the wait throws and fails the run — but it READS as an
+  // assertion while depending entirely on a line above it, so loosening that
+  // wait later would turn it decorative with nothing noticing.
+  let fenceArrived = true;
+  await fences
+    .waitForFunction(
+      () =>
+        document
+          .querySelector("#sonda-playground .cm-content")
+          ?.textContent.includes("version: 2"),
+      null,
+      { timeout: 60000 }
+    )
+    .catch(() => {
+      fenceArrived = false;
+    });
+  check(
+    "the fence's scenario arrives in the editor",
+    fenceArrived &&
+      (await fences.evaluate(() =>
+        document.querySelector("#sonda-playground .cm-content")?.textContent.includes("version: 2")
+      )),
+    `${(await fences.evaluate(() => document.querySelector("#sonda-playground .cm-content")?.textContent || "")).trim().slice(0, 40)}…`
   );
-  check("the fence's scenario arrives in the editor", true);
   await fences.close();
 
   // --- 10. The examples gallery ------------------------------------------
@@ -482,12 +500,21 @@ try {
     "href"
   );
   await gallery.goto(galleryLink, { waitUntil: "domcontentloaded" });
-  await gallery.waitForFunction(
-    () => document.querySelector("#sp-output")?.textContent.trim().length > 0,
-    null,
-    { timeout: 60000 }
+  await gallery
+    .waitForFunction(
+      () => document.querySelector("#sp-output")?.textContent.trim().length > 0,
+      null,
+      { timeout: 60000 }
+    )
+    .catch(() => {}); // the check below reports what it actually saw
+  const carried = await gallery.evaluate(
+    () => (document.querySelector("#sp-output")?.textContent || "").trim().length
   );
-  check("a card's link carries its example into the playground", true);
+  check(
+    "a card's link carries its example into the playground",
+    carried > 0,
+    `${carried} chars of encoded output`
+  );
   await gallery.close();
 
   // --- 11. Scheduling and encoder widgets --------------------------------
@@ -640,6 +667,282 @@ try {
     check(`${encoder} reports no engine error`, state.error === "", state.error);
   }
   await widgets2.close();
+
+  // --- 12. The time cursor, log correlation and the ghost trace ----------
+  //
+  // WP9. Three things a canvas diff cannot distinguish, so `drawChart`
+  // stamps what it drew and these read the stamps: whether there is a
+  // cursor, how many ghost series were matched and drawn, and which log
+  // lines the cursor claims.
+  section("[12] time cursor, log correlation and ghost trace");
+  const cursorPage = watch(await context.newPage());
+  cursorPage.setDefaultTimeout(30000);
+  await cursorPage.goto(`${BASE}/playground/`, { waitUntil: "domcontentloaded" });
+  await waitForPlayground(cursorPage);
+
+  // Scrolled into view before measuring: this suite's viewport is 720 tall and
+  // the chart's centre sits below the fold, so a mouse.move to its bounding
+  // box would land outside the viewport and never reach the canvas. Measuring
+  // before scrolling is the mistake that looks like "the cursor is broken".
+  await cursorPage.locator("#sp-chart").scrollIntoViewIfNeeded();
+  const chartBox = await cursorPage.locator("#sp-chart").boundingBox();
+  // Condition-based like everything else here: the repaint is rAF-driven, so
+  // wait for the chart to STAMP a cursor rather than for a duration.
+  const hover = async (fraction) => {
+    await cursorPage.mouse.move(
+      chartBox.x + chartBox.width * fraction,
+      chartBox.y + chartBox.height * 0.5
+    );
+    await cursorPage.waitForFunction(
+      () => document.getElementById("sp-chart").dataset.cursor !== "",
+      null,
+      { timeout: 15000 }
+    );
+  };
+
+  await hover(0.5);
+  const reading = await cursorPage.evaluate(() => {
+    const box = document.getElementById("sp-readout");
+    return {
+      cursor: document.getElementById("sp-chart").dataset.cursor,
+      secs: box.dataset.secs,
+      rows: box.querySelectorAll(".sonda-playground__readrow").length,
+      hidden: box.hidden,
+    };
+  });
+  check(
+    "hovering the chart reads out a value at that instant",
+    !reading.hidden && reading.rows === 1 && Number(reading.secs) > 0,
+    `secs=${reading.secs} rows=${reading.rows}`
+  );
+  check(
+    "the chart and the readout agree on where the cursor is",
+    reading.cursor === reading.secs,
+    `chart=${reading.cursor} readout=${reading.secs}`
+  );
+
+  // The discriminating case. The y-axis gutter is not second zero, and an
+  // implementation that clamps the pointer into the plot — the obvious one —
+  // reports a reading here that nobody asked for.
+  await cursorPage.mouse.move(chartBox.x + 8, chartBox.y + chartBox.height * 0.5);
+  await cursorPage
+    .waitForFunction(() => document.getElementById("sp-chart").dataset.cursor === "", null, {
+      timeout: 15000,
+    })
+    .catch(() => {}); // the check below reports what it actually saw
+  const gutter = await cursorPage.evaluate(() => ({
+    cursor: document.getElementById("sp-chart").dataset.cursor,
+    hidden: document.getElementById("sp-readout").hidden,
+  }));
+  check(
+    "the axis gutter is not second zero — no reading there",
+    gutter.hidden && gutter.cursor === "",
+    `cursor="${gutter.cursor}" hidden=${gutter.hidden}`
+  );
+
+  await hover(0.5);
+  await cursorPage.mouse.move(chartBox.x + chartBox.width * 0.5, chartBox.y - 80);
+  let cleared = true;
+  await cursorPage
+    .waitForFunction(() => document.getElementById("sp-readout").hidden, null, { timeout: 15000 })
+    .catch(() => {
+      cleared = false;
+    });
+  check("leaving the chart clears the reading", cleared);
+
+  // The ghost. A scrub drag is what it was built for, so drive that rather
+  // than a synthetic edit: the drag spans several debounce windows, and the
+  // ghost must stay pinned to the pre-drag curve for all of them instead of
+  // following one step behind.
+  const beforeDrag = await cursorPage.evaluate(
+    () => document.getElementById("sp-chart").dataset.peak
+  );
+
+  const scrub = (await cursorPage.$$(".cm-scrub-number"))[2]; // amplitude on the sine preset
+  await scrub.scrollIntoViewIfNeeded();
+  const scrubBox = await scrub.boundingBox();
+  await cursorPage.mouse.move(scrubBox.x + scrubBox.width / 2, scrubBox.y + scrubBox.height / 2);
+  await cursorPage.mouse.down();
+  const peaksDuring = [];
+  for (let step = 1; step <= 5; step++) {
+    await cursorPage.mouse.move(
+      scrubBox.x + scrubBox.width / 2 + step * 14,
+      scrubBox.y + scrubBox.height / 2,
+      { steps: 4 }
+    );
+    // The ONE deliberate dwell in this suite, and it is the behaviour under
+    // test rather than a wait for state. The number is bounded on both sides
+    // by playground.js and neither bound is arbitrary:
+    //
+    //   > DEBOUNCE_MS (500)     or no run fires mid-drag at all — every move
+    //                           resets the debounce, the whole drag collapses
+    //                           into one run after mouse-up, and the two
+    //                           possible ghost baselines are indistinguishable
+    //                           because neither has anything to be one step
+    //                           behind. (This suite asserted exactly that by
+    //                           mistake first, and reported a ghost that was
+    //                           never drawn.)
+    //   < GHOST_IDLE_MS (1500)  or each step is its own burst, which re-pins
+    //                           the baseline every time and tests nothing.
+    //
+    // 700ms sits in that window, so the drag is one burst containing several
+    // runs — the only shape in which "pinned" and "one run behind" differ.
+    await cursorPage.waitForTimeout(700);
+    peaksDuring.push(
+      await cursorPage.evaluate(() => document.getElementById("sp-chart").dataset.ghostPeak)
+    );
+  }
+  await cursorPage.mouse.up();
+  let ghosted = true;
+  await cursorPage
+    .waitForFunction(() => document.getElementById("sp-chart").dataset.ghosts === "1", null, {
+      timeout: 20000,
+    })
+    .catch(() => {
+      ghosted = false;
+    });
+  check(
+    "a scrub drag leaves the pre-drag curve on the chart as a ghost",
+    ghosted,
+    `ghosts=${await cursorPage.evaluate(() => document.getElementById("sp-chart").dataset.ghosts)}`
+  );
+  // The finding this exists for. A count cannot distinguish the two possible
+  // baselines — both draw one ghost. The PEAK can: pinned to the pre-drag
+  // state it never moves, while a ghost of the previous run creeps toward the
+  // live trace on every debounce.
+  const settled = peaksDuring.filter((p) => p !== "");
+  check(
+    "the ghost stays pinned to the pre-drag curve for the whole drag",
+    settled.length >= 2 && new Set(settled).size === 1 && settled[0] === beforeDrag,
+    `pre-drag peak ${beforeDrag}, ghost peaks seen ${JSON.stringify(peaksDuring)}`
+  );
+
+  // Changing preset replaces the whole document, so the old curve is not a
+  // comparison — it is an unrelated scenario sharing a pair of axes.
+  await cursorPage.selectOption("#sp-preset", { label: "Latency spike + correlated logs" });
+  await cursorPage.waitForFunction(
+    () =>
+      document.querySelectorAll("#sp-logs .sonda-playground__logline").length > 0 &&
+      document.querySelector("#sp-chart")?._geom,
+    null,
+    { timeout: 60000 }
+  );
+  check(
+    "switching preset drops the ghost rather than comparing two scenarios",
+    (await cursorPage.evaluate(() => document.getElementById("sp-chart").dataset.ghosts)) === "0"
+  );
+
+  // Review #544 M1. The stamps are written inside drawChart, which a hidden
+  // chart never reaches — so a logs-only scenario used to keep advertising
+  // the cursor from whatever metrics scenario preceded it. The behaviour was
+  // already right; the stamp was not, and the stamp is what this suite reads.
+  // Hover first, so there is a cursor to go stale.
+  await cursorPage.locator("#sp-chart").scrollIntoViewIfNeeded();
+  const mixedBox = await cursorPage.locator("#sp-chart").boundingBox();
+  await cursorPage.mouse.move(
+    mixedBox.x + mixedBox.width * 0.5,
+    mixedBox.y + mixedBox.height * 0.5
+  );
+  await cursorPage
+    .waitForFunction(() => document.getElementById("sp-chart").dataset.cursor !== "", null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  const hadCursor = await cursorPage.evaluate(
+    () => document.getElementById("sp-chart").dataset.cursor
+  );
+  await cursorPage.selectOption("#sp-preset", { label: "Synthetic log stream" });
+  await cursorPage.waitForFunction(
+    () => document.getElementById("sp-chart").style.display === "none",
+    null,
+    { timeout: 60000 }
+  );
+  const hiddenState = await cursorPage.evaluate(() => ({
+    cursor: document.getElementById("sp-chart").dataset.cursor,
+    readoutHidden: document.getElementById("sp-readout").hidden,
+    highlighted: document.querySelectorAll(".sonda-playground__logline--at").length,
+  }));
+  check(
+    "a hidden chart stops advertising a cursor from the scenario before it",
+    hadCursor !== "" && hiddenState.cursor === "",
+    `was "${hadCursor}", now "${hiddenState.cursor}"`
+  );
+  check(
+    "and nothing is left highlighted or read out on a logs-only scenario",
+    hiddenState.readoutHidden && hiddenState.highlighted === 0,
+    `readoutHidden=${hiddenState.readoutHidden} highlighted=${hiddenState.highlighted}`
+  );
+  check(
+    "a logs-only scenario says why it has no cursor, rather than leaving a reader hunting",
+    (await cursorPage.evaluate(
+      () => document.querySelector("#sp-logs .sonda-playground__lognote")?.textContent || ""
+    )).includes("no metrics series"),
+    await cursorPage.evaluate(
+      () => document.querySelector("#sp-logs .sonda-playground__lognote")?.textContent || "(absent)"
+    )
+  );
+
+  // Back to the mixed preset for the correlation checks below. The block
+  // above deliberately leaves the page on a logs-only scenario, which has no
+  // visible chart to hover — restoring it here rather than reordering keeps
+  // each block reading as one idea.
+  await cursorPage.selectOption("#sp-preset", { label: "Latency spike + correlated logs" });
+  await cursorPage.waitForFunction(
+    () =>
+      document.getElementById("sp-chart").style.display !== "none" &&
+      document.querySelectorAll("#sp-logs .sonda-playground__logline").length > 0 &&
+      document.querySelector("#sp-chart")?._geom,
+    null,
+    { timeout: 60000 }
+  );
+
+  // Log correlation needs a scenario with BOTH signals — the reason this
+  // preset exists. Every other one is metrics or logs, never both, so the
+  // feature had nothing to run against.
+  await cursorPage.locator("#sp-chart").scrollIntoViewIfNeeded();
+  const logBox = await cursorPage.locator("#sp-chart").boundingBox();
+  // Sampled after the deliberate scroll above, so this measures what the
+  // CURSOR does to the page and not what the test itself did.
+  const scrollBefore = await cursorPage.evaluate(() => window.scrollY);
+  await cursorPage.mouse.move(logBox.x + logBox.width * 0.5, logBox.y + logBox.height * 0.5);
+  await cursorPage
+    .waitForFunction(
+      () => document.querySelectorAll(".sonda-playground__logline--at").length > 0,
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {}); // the checks below report what they actually saw
+  const correlated = await cursorPage.evaluate(() => {
+    const hit = document.querySelector(".sonda-playground__logline--at");
+    return {
+      hits: document.querySelectorAll(".sonda-playground__logline--at").length,
+      at: hit ? hit.querySelector(".sonda-playground__logat").textContent : null,
+      cursor: Number(document.getElementById("sp-chart").dataset.cursor),
+      scrollY: window.scrollY,
+    };
+  });
+  check(
+    "the cursor highlights the log lines from that instant",
+    correlated.hits >= 1 && correlated.at !== null,
+    `${correlated.hits} line(s), first at ${correlated.at}, cursor ${correlated.cursor}s`
+  );
+  // The highlighted line must be within half a tick of the cursor — the rule
+  // `logLinesNear` implements. A highlight on the wrong line would still be
+  // "a highlight", which is why this asserts the arithmetic and not presence.
+  const stampSecs = Number(String(correlated.at || "").replace(/[+s]/g, ""));
+  check(
+    "the highlighted line is the one at the cursor, within half a tick",
+    Math.abs(stampSecs - correlated.cursor) <= 0.125 + 1e-9,
+    `line +${stampSecs}s vs cursor ${correlated.cursor}s`
+  );
+  // scrollIntoView would have scrolled the page out from under the pointer,
+  // cancelling the very cursor that asked for it. It flashed and vanished.
+  check(
+    "correlating a log line scrolls its pane, never the page",
+    correlated.scrollY === scrollBefore,
+    `scrollY ${scrollBefore} -> ${correlated.scrollY}`
+  );
+  await cursorPage.close();
 } catch (err) {
   failures.push(`threw: ${err && err.message ? err.message : err}`);
   console.log(`\n  FAIL threw: ${err && err.stack ? err.stack.split("\n")[0] : err}`);
