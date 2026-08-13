@@ -19,8 +19,8 @@ import {
 } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
-const SWEEP_SECONDS = 11;
-const LANE_STACK_GAP = 18; // vertical space between two rules' state lanes // wall-clock length of one full playback sweep
+const SWEEP_SECONDS = 11; // wall-clock length of one full playback sweep
+const LANE_STACK_GAP = 18; // vertical space between two rules' state lanes
 
 const STATE_COLORS = {
   inactive: { light: "rgba(100, 116, 139, 0.25)", dark: "rgba(148, 163, 184, 0.25)" },
@@ -196,6 +196,16 @@ async function boot() {
   let entry = null; // sampled series from the engine
   let evaled = null; // the FIRST rule's evaluation, for the sweep's pacing
   let rules = []; // every enabled rule, each carrying its own evaluation
+  /* True when the second row is owed a seeded threshold.
+   *
+   * Seeding is an INTENTION, not a reflex on every keystroke. Set when the
+   * row is switched on or a preset replaces the scenario; consumed by the
+   * next reevaluate that has an `entry` to size it against. Without the
+   * flag, seeding from reevaluate refills the box the instant a reader
+   * empties it — so Backspace becomes impossible and clearing the row is a
+   * thing the UI will not let you do. Found while verifying the #546 B1 fix
+   * rather than by reading it. */
+  let secondNeedsSeed = false;
   let animation = 0;
   let currentYaml = null; // the scenario source behind `entry`
 
@@ -204,28 +214,44 @@ async function boot() {
    * A list since WP12. The second row is opt-in and starts disabled, so a
    * reader who never touches it sees exactly the single-rule lab that was
    * here before — the pair is available, not imposed. */
+  /* One row's controls as a rule, or null when the row has no threshold.
+   *
+   * The blank check is on the STRING, not on `Number.isFinite` (review #546
+   * B1). `Number("") === 0` and zero is perfectly finite, so a filter written
+   * as `Number.isFinite(rule.threshold)` says "a row with no threshold is not
+   * a rule" while doing the opposite: an empty box became a rule at 0 that
+   * fired on everything and — the part that made it a blocker — exported a
+   * warning rule the reader never wrote into their rules file and their
+   * expect: block.
+   *
+   * Reading the string also covers the route no load-timing fix reaches: a
+   * reader who clears the box by hand. */
+  const rowRule = (severitySel, opSel, thresholdInput, forSelect) => {
+    const raw = String(thresholdInput.value).trim();
+    if (raw === "") return null;
+    const threshold = Number(raw);
+    if (!Number.isFinite(threshold)) return null;
+    return {
+      severity: severitySel.value,
+      op: opSel.value,
+      threshold,
+      forSecs: Number(forSelect.value),
+    };
+  };
+
   const currentRules = () => {
-    const rules = [
-      {
-        severity: el.severity.value,
-        op: el.op.value,
-        threshold: Number(el.threshold.value),
-        forSecs: Number(el.forSel.value),
-      },
-    ];
+    const rules = [rowRule(el.severity, el.op, el.threshold, el.forSel)];
     if (el.second && el.second.checked) {
-      rules.push({
-        severity: el.severity2.value,
-        op: el.op2.value,
-        threshold: Number(el.threshold2.value),
-        forSecs: Number(el.forSel2.value),
-      });
+      rules.push(rowRule(el.severity2, el.op2, el.threshold2, el.forSel2));
     }
-    return rules.filter((rule) => Number.isFinite(rule.threshold));
+    return rules.filter(Boolean);
   };
 
   const reevaluate = () => {
     if (!entry) return;
+    // The second row may have been switched on while the engine was still
+    // loading, in which case this is the first moment it can be sized.
+    if (secondNeedsSeed) seedSecondRule();
     rules = currentRules().map((rule) => ({
       ...rule,
       evaled: evaluate(entry.values, entry.tick_secs, rule.op, rule.threshold, rule.forSecs),
@@ -251,11 +277,28 @@ async function boot() {
     if (rules[1]) setStateChip(el.state2, at(rules[1]));
   };
 
+  /* Re-seed the second row against the scenario now on screen.
+   *
+   * `loadPreset` reassigns the first rule's op/threshold/for on every preset
+   * change. Leaving the second row untouched left a warning line seeded a
+   * quarter-span below the OLD critical sitting on a completely different
+   * signal — 68 points below it in the case review #546 W5 measured, firing
+   * flat-out for the whole run, while still reading and exporting as a tuned
+   * policy. Clearing it lets the ordinary seeding path put it back in the
+   * relationship it was designed to have. */
+  const reseedSecondRule = () => {
+    if (el.second && el.second.checked && el.threshold2) {
+      el.threshold2.value = "";
+      secondNeedsSeed = true;
+    }
+  };
+
   const loadPreset = async () => {
     const isCustom = el.preset.value === "custom" && customYaml !== null;
     const preset = isCustom ? null : PRESETS[Number(el.preset.value)];
     const yaml = isCustom ? customYaml : preset.yaml;
     currentYaml = yaml;
+    reseedSecondRule();
     if (el.exportOut) el.exportOut.hidden = true;
     // Everything that doesn't need the sampled series is assigned BEFORE
     // sampling, so a scenario that fails to sample never shows rule fields
@@ -347,15 +390,29 @@ async function boot() {
       // A second rule with no threshold is not a rule. Seed it below the
       // first so the pair reads as warning-then-critical on first sight
       // rather than as two lines on top of each other.
-      if (on && el.threshold2 && !el.threshold2.value && entry) {
-        const first = Number(el.threshold.value);
-        const span = Math.max(...entry.values) - Math.min(...entry.values);
-        el.threshold2.value = String(
-          tidyNumber(el.op.value === ">" ? first - span * 0.25 : first + span * 0.25)
-        );
-      }
+      // `entry` may still be null: #al-second is the one second-row control
+      // the markup leaves enabled, so it is clickable from first paint while
+      // the wasm engine is still loading. `seedSecondRule` is therefore also
+      // called from reevaluate(), so the seed lands whichever order the two
+      // happen in rather than being silently skipped.
+      secondNeedsSeed = on;
+      if (on) seedSecondRule();
       reevaluate();
     });
+  }
+
+  /* Give the second row a threshold a quarter-span from the first, so the
+   * pair reads as warning-then-critical on first sight rather than as two
+   * lines on top of each other. No-op unless the row is on and empty. */
+  function seedSecondRule() {
+    if (!el.second || !el.second.checked || !el.threshold2 || !entry) return;
+    if (el.threshold2.value) return; // a reader's own number is never overwritten
+    const first = Number(el.threshold.value);
+    const span = Math.max(...entry.values) - Math.min(...entry.values);
+    el.threshold2.value = String(
+      tidyNumber(el.op.value === ">" ? first - span * 0.25 : first + span * 0.25)
+    );
+    secondNeedsSeed = false;
   }
   el.play.addEventListener("click", () => {
     if (reducedMotion) reevaluate();
@@ -401,10 +458,30 @@ async function boot() {
 
     const notes = [];
     if (result.op !== target.op.value) {
-      notes.push(`\`${result.op}\` shown as \`${target.op.value}\` — the lab evaluates strict comparisons`);
+      // Naming WHEN the two differ, not just that they were swapped (review
+      // #546 M2). At a plateau sitting exactly on the threshold — which step
+      // and constant generators produce — `>=` fires throughout and `>` never
+      // fires at all, so "they differ only where the signal lands exactly on
+      // the threshold" is the half-clause that makes this actionable rather
+      // than merely disclosed.
+      notes.push(
+        `\`${result.op}\` shown as \`${target.op.value}\` — the lab evaluates strict ` +
+          `comparisons, so they differ only where the signal lands exactly on the threshold`
+      );
     }
     if (nearest !== result.forSecs) {
-      notes.push(`for: ${result.forSecs}s rounded to ${nearest}s`);
+      // "Rounded" is honest for 15s -> 12s and badly understates 5m -> 30s,
+      // which is the duration most rules files actually carry (review #546
+      // M1). Naming the reason — the lab's timeline is seconds long — stops
+      // a reader concluding their tuning transferred.
+      const ratio = result.forSecs / nearest;
+      notes.push(
+        ratio >= 2
+          ? `for: ${result.forSecs}s does not fit this lab's ${Math.round(
+              (entry ? entry.values.length * entry.tick_secs : 60)
+            )}s timeline — showing ${nearest}s instead, so the timing here is not your rule's`
+          : `for: ${result.forSecs}s rounded to ${nearest}s`
+      );
     }
     if (entry && result.metric !== entry.name) {
       notes.push(

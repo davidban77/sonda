@@ -186,6 +186,11 @@ test("export flags a rule that never fired instead of inventing a deadline", () 
     rules: [{ severity: "critical", op: ">", threshold: 9999, forSecs: 12, evaled: { states: Array(80).fill("inactive"), resolves: [] } }],
   });
   assert.match(out, /never fired in the sampled preview/);
+  // Review #546 M3: dropping `fired &&` from `endsResolved` left all 146
+  // tests green, because this case checked the firing comment and never that
+  // a resolution deadline is absent. An export asserting that a rule which
+  // never fired nonetheless resolves is an expectation that cannot pass.
+  assert.doesNotMatch(out, /resolves_within/);
 });
 
 test("a warning/critical pair exports two rules with distinct names", () => {
@@ -222,6 +227,49 @@ test("a warning/critical pair exports two rules with distinct names", () => {
   // And only the critical recovers, so only it asserts resolution.
   assert.equal((out.match(/resolves_within: 2m/g) || []).length, 1);
   assert.equal((out.match(/resolution not asserted/g) || []).length, 1);
+});
+
+test("two rules of the SAME severity still get distinct names", () => {
+  // Review #546 W2. Both dropdowns offer both severities, so a critical pair
+  // at different `for:` durations is two clicks away — and suffixing by
+  // severity alone produced two identical names with identical labels in one
+  // group, which is precisely the rules file the suffix exists to prevent.
+  const evaled = { states: Array(40).fill("firing"), resolves: [] };
+  const out = buildTestExport({
+    yaml: YAML,
+    entry: ENTRY,
+    rules: [
+      { severity: "critical", op: ">", threshold: 70, forSecs: 6, evaled },
+      { severity: "critical", op: ">", threshold: 90, forSecs: 12, evaled },
+    ],
+  });
+  const names = [...out.matchAll(/alert: (\S+)/g)].map((m) => m[1]);
+  assert.ok(names.length >= 2, "expected at least two alert lines");
+  assert.equal(new Set(names).size, 2, `names collided: ${[...new Set(names)].join(", ")}`);
+});
+
+test("the headline names a severity only when there is more than one rule", () => {
+  // The docstring claims a single-rule export is byte-identical to what it
+  // was before pairs existed. Review #546 W4 measured that false on exactly
+  // this line — the one place the `multiple` gate had not been applied — and
+  // the test that was supposed to pin it read everything except the headline.
+  const evaled = { states: Array(40).fill("firing"), resolves: [] };
+  const one = buildTestExport({
+    yaml: YAML,
+    entry: ENTRY,
+    rules: [{ severity: "critical", op: ">", threshold: 64, forSecs: 12, evaled }],
+  });
+  assert.doesNotMatch(one.split("\n")[0], /\(critical\)/);
+  const two = buildTestExport({
+    yaml: YAML,
+    entry: ENTRY,
+    rules: [
+      { severity: "warning", op: ">", threshold: 60, forSecs: 6, evaled },
+      { severity: "critical", op: ">", threshold: 90, forSecs: 12, evaled },
+    ],
+  });
+  assert.match(two, /\(warning\)/);
+  assert.match(two, /\(critical\)/);
 });
 
 test("a single rule exports exactly what it always did", () => {
@@ -1189,6 +1237,23 @@ test("durations import in every unit Prometheus writes", () => {
   assert.equal(forOf("1d"), 86400);
   assert.equal(forOf("500ms"), 0.5);
   assert.equal(forOf("90"), 90, "a bare number is seconds");
+});
+
+test("a duration with trailing junk is refused, not read as its prefix", () => {
+  // Review #546 M3. `_durationSecs` rebuilds the string from the parts it
+  // matched and compares — without that, every one of these imports as 300s
+  // and the reader's `for:` is silently something they did not write.
+  // Deleting the guard left all 146 tests green; none of these was a case.
+  for (const bad of ["5m junk", "5mx", "5m5", "5 m", "m5", "5m,", "-5m"]) {
+    assert.match(
+      no(`expr: cpu > 1\nfor: ${bad}`),
+      /could not read the duration/,
+      `for: ${bad}`
+    );
+  }
+  // And the shapes that ARE complete still parse, so the guard is not simply
+  // refusing everything with more than one unit.
+  assert.equal(ok("expr: cpu > 1\nfor: 1h30m").forSecs, 5400);
 });
 
 test("scientific and signed thresholds import as written", () => {

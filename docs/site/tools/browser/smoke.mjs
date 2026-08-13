@@ -991,6 +991,44 @@ try {
   );
   check("and its state chip appears", !alPair.chipHidden);
 
+  // Review #546 B1: `Number("") === 0`, so a blank threshold used to become a
+  // rule at 0 that fired on everything AND exported a warning rule the reader
+  // never wrote. The reviewer reached it by racing the checkbox against the
+  // wasm load; clearing the box reaches the same place with no timing at all,
+  // which is why this is the version that belongs in a suite.
+  await alPage.fill("#al-threshold2", "");
+  let alCleared = true;
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-chart").dataset.rules === "1",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {
+      alCleared = false;
+    });
+  const alBlank = await alPage.evaluate(() => ({
+    rules: document.querySelector("#al-chart").dataset.rules,
+    thresholds: document.querySelector("#al-chart").dataset.thresholds,
+    value: document.querySelector("#al-threshold2").value,
+  }));
+  check(
+    "a blank threshold is not a rule at zero",
+    alCleared && !/warning:0\b/.test(alBlank.thresholds),
+    `rules=${alBlank.rules} thresholds=${alBlank.thresholds}`
+  );
+  // And the box stays empty: seeding is an intention, not a reflex on every
+  // keystroke, or a reader could never clear the field to type a new number.
+  check("and clearing it is not undone by the seeding", alBlank.value === "", `value="${alBlank.value}"`);
+  await alPage.fill("#al-threshold2", "0.4");
+  await alPage
+    .waitForFunction(
+      () => document.querySelector("#al-chart").dataset.rules === "2",
+      null,
+      { timeout: 15000 }
+    )
+    .catch(() => {});
+
   // Import. The lab evaluates against the LOADED scenario, so a rule about a
   // different metric produces a working demo of the wrong thing — saying so
   // is the assertion worth making.
@@ -1009,7 +1047,20 @@ try {
   const alNote = await alPage.evaluate(
     () => document.querySelector("#al-import-note").textContent
   );
-  check("a pasted rule imports its threshold", alImported, alNote.slice(0, 60));
+  // The THRESHOLD, not the note. Review #546 W3: this check waited on the
+  // note turning "warn", which happens because of the different-metric
+  // notice — computed from the parsed metric name and independent of the
+  // threshold ever reaching a control. Removing the assignment line left the
+  // whole suite green. The check's name promised this assertion; now it
+  // makes it. The import lands in the SECOND row because it is enabled above.
+  const alThreshold = await alPage.evaluate(
+    () => document.querySelector("#al-threshold2").value
+  );
+  check(
+    "a pasted rule imports its threshold",
+    alImported && Number(alThreshold) === 72,
+    `note kind ok=${alImported}, threshold control reads "${alThreshold}"`
+  );
   check(
     "and says when the rule is about a different series than the chart",
     /but the chart is showing/.test(alNote),

@@ -349,13 +349,26 @@ export function buildTestExport({ yaml, entry, rules }) {
   const offset = entry.offset_secs || 0;
   const multiple = rules.length > 1;
 
-  const prepared = rules.map((rule) => {
-    const severity = rule.severity || "critical";
-    // The severity suffix only appears when it has to. With one rule the
-    // name is what it always was; with two, two alerts sharing a name in one
-    // group is a rules file that does not mean what it looks like.
-    const alertName = deriveAlertName(entry.name, rule.op) +
-      (multiple ? severity.charAt(0).toUpperCase() + severity.slice(1) : "");
+  // Both severity dropdowns offer BOTH severities, so a pair can be two
+  // criticals at different `for:` durations — a real pattern, and two clicks
+  // away. Suffixing by severity alone then produces two identical names with
+  // identical labels in one group, which is exactly the rules file the suffix
+  // exists to prevent (review #546 W2). When the severities collide the
+  // suffix falls back to the row's position, which cannot.
+  const severities = rules.map((rule) => rule.severity || "critical");
+  const severityIsUnique = new Set(severities).size === severities.length;
+
+  const prepared = rules.map((rule, index) => {
+    const severity = severities[index];
+    // The suffix only appears when it has to. With one rule the name is what
+    // it always was; with two, two alerts sharing a name in one group is a
+    // rules file that does not mean what it looks like.
+    const suffix = !multiple
+      ? ""
+      : severityIsUnique
+        ? severity.charAt(0).toUpperCase() + severity.slice(1)
+        : `Rule${index + 1}`;
+    const alertName = deriveAlertName(entry.name, rule.op) + suffix;
     const states = (rule.evaled && rule.evaled.states) || [];
     const firstFiring = states.indexOf("firing");
     const fired = firstFiring >= 0;
@@ -410,8 +423,17 @@ export function buildTestExport({ yaml, entry, rules }) {
     ? `${yaml.trimEnd()}\n\n# NOTE: this scenario already has an expect: block — merge the one below by hand.\n${expectLines.map((l) => `# ${l}`).join("\n")}\n`
     : `${yaml.trimEnd()}\n\n# Scope note: expect.labels pins this scenario's own labels — ALERTS is\n# global, and an unscoped expectation can match alerts other series caused.\n${expectLines.join("\n")}\n`;
 
+  // The severity is named only when there is more than one rule, for the same
+  // reason the alert-name suffix is: a single-rule export has to stay
+  // byte-identical to what it was before pairs existed. The docstring claims
+  // that, and review #546 W4 measured the claim false on exactly this line —
+  // the one place `multiple` had not been applied.
   const headline = prepared
-    .map((r) => `${entry.name}${selector} ${r.op} ${r.threshold} for ${r.forSecs}s (${r.severity})`)
+    .map(
+      (r) =>
+        `${entry.name}${selector} ${r.op} ${r.threshold} for ${r.forSecs}s` +
+        (multiple ? ` (${r.severity})` : "")
+    )
     .join("\n#   ");
 
   return (
@@ -901,35 +923,23 @@ export function parsePromQLRule(text) {
   expr = expr.trim();
   if (!expr) return { ok: false, reason: "the rule has an empty `expr:`" };
 
-  // Name the unsupported constructs before the regex does, because
-  // "does not match" is a useless thing to tell someone holding a rule that
-  // is perfectly valid PromQL.
-  const unsupported = [
-    [/\b(?:rate|irate|increase|avg_over_time|max_over_time|min_over_time|sum_over_time|histogram_quantile|absent|delta|deriv|predict_linear)\s*\(/, "a function call"],
-    [/\b(?:sum|avg|min|max|count|topk|bottomk|quantile|stddev|group)\s*(?:by|without)?\s*[({]/, "an aggregation"],
-    [/\b(?:unless|and|or)\b/, "a set operator"],
-    [/\[[^\]]*\]/, "a range selector"],
-    [/\boffset\b|@/, "an offset or @ modifier"],
-  ];
-  for (const [pattern, what] of unsupported) {
-    if (pattern.test(expr)) {
-      return {
-        ok: false,
-        reason: `only simple threshold rules import; this one uses ${what}. Edit it by hand.`,
-      };
-    }
-  }
-
+  // THE GRAMMAR RUNS FIRST, and the naming scan only when it fails.
+  //
+  // The scan is a set of substring patterns over the raw expression, so it
+  // cannot tell a PromQL token from the inside of a string literal. Running
+  // it first refused rules this lab represents perfectly and, worse, refused
+  // them by asserting a specific false fact about the reader's own rule —
+  // `{user="alice@example.com"}` was "an offset or @ modifier",
+  // `{msg="[error] disk"}` was "a range selector", `{msg="a or b"}` was "a
+  // set operator" (review #546 W1, which measured nine such rules).
+  //
+  // Anything the anchored grammar accepts is representable by construction,
+  // so trying it first cannot let an unsupported rule through — the scan
+  // still names every construct it named before, just for expressions that
+  // failed the grammar rather than for every expression.
   const match = _PROMQL_RULE_RE.exec(expr);
-  if (!match) {
-    return {
-      ok: false,
-      reason:
-        "only simple threshold rules import — expected `metric{labels} > number`. Edit it by hand.",
-    };
-  }
+  if (!match) return { ok: false, reason: _whyUnsupported(expr) };
   const { metric, selectors: selectorText, op, value } = match.groups;
-
   if (!_IMPORTABLE_OPS.has(op)) {
     return {
       ok: false,
@@ -966,6 +976,29 @@ export function parsePromQLRule(text) {
   }
 
   return { ok: true, name, metric, selectors, op, threshold, forSecs };
+}
+
+/* Why an expression the grammar rejected could not be imported.
+ *
+ * Substring patterns, so this is only sound on expressions the anchored
+ * grammar has ALREADY refused — see the note at the call site. Naming the
+ * construct beats "does not match", which is a useless thing to tell someone
+ * holding a rule that is perfectly valid PromQL.
+ */
+function _whyUnsupported(expr) {
+  const unsupported = [
+    [/\b(?:rate|irate|increase|avg_over_time|max_over_time|min_over_time|sum_over_time|histogram_quantile|absent|delta|deriv|predict_linear)\s*\(/, "a function call"],
+    [/\b(?:sum|avg|min|max|count|topk|bottomk|quantile|stddev|group)\s*(?:by|without)?\s*[({]/, "an aggregation"],
+    [/\b(?:unless|and|or)\b/, "a set operator"],
+    [/\[[^\]]*\]/, "a range selector"],
+    [/\boffset\b|@/, "an offset or @ modifier"],
+  ];
+  for (const [pattern, what] of unsupported) {
+    if (pattern.test(expr)) {
+      return `only simple threshold rules import; this one uses ${what}. Edit it by hand.`;
+    }
+  }
+  return "only simple threshold rules import — expected `metric{labels} > number`. Edit it by hand.";
 }
 
 /* Strip one layer of YAML scalar quoting from a value read off a line.
