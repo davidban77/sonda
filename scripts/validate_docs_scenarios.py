@@ -172,10 +172,19 @@ def is_runnable_scenario(text: str) -> bool:
 # --- Fragment synthesis ------------------------------------------------------
 #
 # The gate above only ever sees COMPLETE scenarios, because that is what a
-# "Run in playground" button needs. But three of the bugs this program has
-# found lived in fragments — `scenario_name` (PR #536), the pack fence (#541)
-# and `rate_multiplier` (#543) — and a fragment is invisible to a compile gate
-# precisely because it is a fragment.
+# "Run in playground" button needs. TWO of the bugs this program has found
+# lived in fragments — `scenario_name` (PR #536) and `rate_multiplier` (#543)
+# — and a fragment is invisible to a compile gate precisely because it is a
+# fragment.
+#
+# The third bug of that family, the pack fence (#541), is NOT one of them, and
+# this gate cannot see it either (review #545 M1). A pack carries `version: 2`
+# and `kind: composable`, so it was never a fragment; it was invisible because
+# the ORACLE accepts it — `sonda --dry-run run` reports `OK (0 scenarios)` for
+# a pack and exits 0. Compiling one here would report green and prove nothing,
+# which is why `synthesize_fragment` refuses anything carrying `pack:`. The
+# scenario-count assertion in `validate_scenario` is the piece that would have
+# to grow for this gate to ever speak about packs.
 #
 # The insight is the reviewer's, from #543: a fragment is only a fragment
 # because it LACKS A PREAMBLE. The engine rejects unknown fields, so wrapping
@@ -276,9 +285,16 @@ def synthesize_fragment(text: str) -> str | None:
         Wrapped under ``scenarios:`` at one indent, and ``signal_type:``/
         ``name:`` are injected IF ABSENT, because a prose fragment showing a
         `generator:` block has no reason to repeat them. `signal_type` is read
-        off the fragment: a `log_generator:` means logs. Those two injections
-        are the reason a caller must not report `missing field` errors from
-        this tier — see the module note above.
+        off the fragment: a `log_generator:` means logs.
+
+    Those two injections are why suppressing `missing field` errors from this
+    tier is TEMPTING — and they are not a reason to do it. The filter was
+    considered and refused; see the module note above. An earlier draft of
+    this docstring said a caller "must not report" that class, which is the
+    opposite of what the code does and would have talked a future maintainer
+    into deleting the check that found the `period_secs` bug (review #545 W1,
+    which settled it by removing `period_secs` from a tier-2 fragment and
+    confirming the gate still reports it).
     """
     body = normalize_fence(text)
     if is_runnable_scenario(body):
@@ -466,12 +482,54 @@ def validate_scenario(
     finally:
         temp_path.unlink(missing_ok=True)
 
-    if proc.returncode == 0:
-        return ScenarioResult(scenario, ok=True)
     detail = (proc.stderr or proc.stdout or "").strip()
-    return ScenarioResult(
-        scenario, ok=False, message=f"exit {proc.returncode}: {_first_lines(detail)}"
+    if proc.returncode != 0:
+        return ScenarioResult(
+            scenario, ok=False, message=f"exit {proc.returncode}: {_first_lines(detail)}"
+        )
+    return _check_scenario_count(scenario, proc.stdout, proc.stderr)
+
+
+# `Validation: OK (2 scenarios)` — the CLI's own count, and the only part of a
+# successful run that says the file did anything.
+_VALIDATION_COUNT_RE = re.compile(r"Validation:\s*OK\s*\((?P<count>\d+)\s+scenarios?\)")
+
+
+def _check_scenario_count(
+    scenario: ExtractedScenario, stdout: str, stderr: str
+) -> ScenarioResult:
+    """Exit 0 is necessary but not sufficient: require at least one scenario.
+
+    Review #545 M2. Until this existed the oracle was the exit code alone, and
+    ``Validation: OK (0 scenarios)`` — a file the engine parses and then emits
+    nothing from — was indistinguishable from success.
+
+    That is not a hypothetical shape, it is the #541 bug exactly: a metric pack
+    compiles clean and produces no scenarios, which is how a "Run in
+    playground" button came to point at an empty chart while every gate stayed
+    green. Leaving the hole unguarded inside the gate built to answer that
+    family would have been the joke writing itself.
+
+    A missing count is not treated as a failure. The assertion is about what
+    the CLI reported, not about parsing its output successfully, and a future
+    change to that banner should not turn every fence red at once — the
+    self-tests pin the phrasing so such a change is visible instead.
+    """
+    match = _VALIDATION_COUNT_RE.search(stdout or "") or _VALIDATION_COUNT_RE.search(
+        stderr or ""
     )
+    if match is None:
+        return ScenarioResult(scenario, ok=True)
+    if int(match.group("count")) == 0:
+        return ScenarioResult(
+            scenario,
+            ok=False,
+            message=(
+                "compiled clean but produced 0 scenarios — the engine parsed this "
+                "file and would emit nothing from it"
+            ),
+        )
+    return ScenarioResult(scenario, ok=True)
 
 
 def _first_lines(text: str, limit: int = 6) -> str:
@@ -595,19 +653,29 @@ def run_validation(
     sonda_bin: Path | None,
     subprocess_timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_S,
     skip_files: Iterable[str] = (),
-) -> tuple[list[ScenarioResult], list[ScenarioResult]]:
-    """Validate every runnable fence. Returns ``(all_results, failures)``."""
+) -> tuple[list[ScenarioResult], list[ScenarioResult], int]:
+    """Validate every reachable fence.
+
+    Returns ``(all_results, failures, declined)``, where ``declined`` counts the
+    yaml fences neither tier could speak about — Helm values, workflow files,
+    Alertmanager and vmalert configs, bare ``encoder:`` blocks. Reported rather
+    than inferred (review #545 M3): "52 fragments compiled" invites the
+    question "out of how many?", and a reader of the run cannot tell 45
+    declines from 5 without a script of their own.
+    """
     docs_root = repo_root / DOCS_GLOB_ROOT
     if not docs_root.is_dir():
         raise RuntimeError(f"docs root not found: {docs_root}")
 
     skip_set = {str(s) for s in skip_files}
     scenarios: list[ExtractedScenario] = []
+    fences = 0  # every yaml fence seen, so declines can be counted rather than inferred
     for md in iter_markdown_files(docs_root):
         rel = str(md.relative_to(repo_root)) if md.is_absolute() else str(md)
         if rel in skip_set:
             continue
         text = md.read_text(encoding="utf-8")
+        fences += len(extract_yaml_fences(text))
         scenarios.extend(extract_scenarios(md, text))
         scenarios.extend(extract_fragments(md, text))
 
@@ -620,7 +688,7 @@ def run_validation(
         )
         for scenario in scenarios
     ]
-    return results, [r for r in results if not r.ok]
+    return results, [r for r in results if not r.ok], fences - len(scenarios)
 
 
 def format_failure(result: ScenarioResult, repo_root: Path) -> str:
@@ -724,7 +792,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         sonda_bin = raw_bin
 
-    results, failures = run_validation(
+    results, failures, declined = run_validation(
         repo_root=repo_root,
         sonda_bin=sonda_bin,
         subprocess_timeout=args.timeout,
@@ -749,7 +817,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{len(results) - fragments} runnable scenario fences and {fragments} "
         f"fragments found, "
         f"{len(results) - skipped - len(failures)} compiled, "
-        f"{skipped} skipped, {len(failures)} failed",
+        f"{skipped} skipped, {len(failures)} failed; "
+        f"{declined} yaml fences declined (not Sonda scenarios)",
         file=sys.stderr,
     )
 
@@ -949,6 +1018,39 @@ class _SynthesizeFragmentTests(unittest.TestCase):
         # Continuation lines sit at the item's indent, not the item's dash.
         self.assertIn("\n    generator:\n", out)
         self.assertIn("\n      type: constant\n", out)
+
+
+class _ScenarioCountTests(unittest.TestCase):
+    """The success oracle. Review #545 M2: exit 0 alone was the whole test.
+
+    These pin the CLI's banner phrasing on purpose. If it ever changes, a
+    parse miss degrades to "assume fine" rather than turning every fence red —
+    so the failing test here is the only thing that would say so.
+    """
+
+    def _result(self, stdout: str = "", stderr: str = "") -> ScenarioResult:
+        scenario = ExtractedScenario(file=Path("x.md"), line=1, body="", info="yaml")
+        return _check_scenario_count(scenario, stdout, stderr)
+
+    def test_zero_scenarios_is_a_failure(self) -> None:
+        # The #541 shape: a pack parses clean and emits nothing.
+        result = self._result("Validation: OK (0 scenarios)\n")
+        self.assertFalse(result.ok)
+        self.assertIn("0 scenarios", result.message)
+
+    def test_one_or_more_passes(self) -> None:
+        self.assertTrue(self._result("Validation: OK (1 scenario)\n").ok)
+        self.assertTrue(self._result("Validation: OK (2 scenarios)\n").ok)
+        self.assertTrue(self._result("Validation: OK (12 scenarios)\n").ok)
+
+    def test_the_count_is_read_from_either_stream(self) -> None:
+        self.assertFalse(self._result(stderr="Validation: OK (0 scenarios)\n").ok)
+
+    def test_an_unrecognised_banner_does_not_fail_every_fence(self) -> None:
+        # Deliberately permissive: this assertion is about what the CLI
+        # reported, not about parsing its output successfully.
+        self.assertTrue(self._result("something else entirely\n").ok)
+        self.assertTrue(self._result("").ok)
 
 
 class _MissingInputFilesTests(unittest.TestCase):
