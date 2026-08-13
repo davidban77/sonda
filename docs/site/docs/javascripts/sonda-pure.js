@@ -5,6 +5,17 @@
  * property — docs/site/tools/tests/pure.test.mjs imports this file in node
  * and exercises the case tables in CI, which is the only automated coverage
  * the playground JS has.
+ *
+ * ONE CONSTRAINT THAT IS NOT OBVIOUS FROM HERE: this module is bundled into
+ * the CodeMirror editor (docs/site/tools/editor/src imports `numberSpanAt`
+ * and `scrubNumber`), and that bundle is committed under a byte-exact drift
+ * gate. Exported function declarations tree-shake cleanly, so adding one
+ * costs the editor nothing — but a module-level `new RegExp(...)`, `new
+ * Set(...)` or any other constructor call does NOT, because esbuild cannot
+ * prove it is side-effect-free. Such a value is compiled into a 494 KB bundle
+ * that never runs it, and turns the editor's gate red on a change that has
+ * nothing to do with the editor. Mark them `/* @__PURE__ *\/` — see the
+ * PromQL parser at the end of this file, which is where this was learned.
  */
 
 /* URL-safe base64 for the #yaml= hash. Encodes through TextEncoder so
@@ -743,11 +754,24 @@ export function logLinesNear(log, cursorSecs) {
 
 /* ---- importing a Prometheus rule (WP12) ------------------------------- */
 
+/* Every module-level value below carries `/* @__PURE__ *\/` because
+ * sonda-pure.js is BUNDLED INTO THE EDITOR (docs/site/tools/editor/src imports
+ * `numberSpanAt` and `scrubNumber` from it), and esbuild cannot prove a
+ * constructor call is side-effect-free on its own. Without the annotation the
+ * alert lab's PromQL parser is compiled into a 494 KB CodeMirror bundle that
+ * never runs it — and, more to the point, the editor's byte-exact drift gate
+ * fails on a change that has nothing to do with the editor. That is how this
+ * was found: CI red on #546 with a diff full of CodeMirror internals.
+ *
+ * Plain function declarations tree-shake without help, which is why WP9's
+ * additions to this module never showed up in that bundle.
+ */
+
 /* The operators the lab can evaluate. `evaluate` implements `>` and `<`;
  * the rest are accepted here and normalized, because a rule written with
  * `>=` is a rule about the same threshold and refusing it would send a
  * reader away to edit text by hand for no reason. */
-const _IMPORTABLE_OPS = new Set([">", ">=", "<", "<="]);
+const _IMPORTABLE_OPS = /* @__PURE__ */ new Set([">", ">=", "<", "<="]);
 
 /* A PromQL instant-vector selector and a scalar comparison, and nothing else:
  *
@@ -757,7 +781,7 @@ const _IMPORTABLE_OPS = new Set([">", ">=", "<", "<="]);
  * `rate(cpu[5m]) > 90` by reading only the tail — the class of leniency that
  * makes an import feature lie about what it imported.
  */
-const _PROMQL_RULE_RE = new RegExp(
+const _PROMQL_RULE_RE = /* @__PURE__ */ new RegExp(
   "^\\s*(?<metric>[a-zA-Z_:][a-zA-Z0-9_:]*)\\s*" +
     // The selector block: anything but a brace or quote, OR a complete
     // string literal — which MAY contain braces. `[^{}]*` is the obvious
@@ -772,7 +796,7 @@ const _PROMQL_RULE_RE = new RegExp(
 /* One label matcher inside the braces. The value is a double-quoted PromQL
  * string literal, so it may contain escaped quotes and backslashes — and
  * `: ` , which is what broke the YAML layer in review #532. */
-const _SELECTOR_RE = new RegExp(
+const _SELECTOR_RE = /* @__PURE__ */ new RegExp(
   '^\\s*(?<label>[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?<match>=~|!~|!=|=)\\s*"(?<value>(?:[^"\\\\]|\\\\.)*)"\\s*$'
 );
 
