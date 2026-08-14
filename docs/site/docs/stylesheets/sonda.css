@@ -1200,6 +1200,15 @@
   white-space: nowrap;
 }
 
+/* How many events the pane is showing, and of how many. Sits above the
+   stream so it is true at rest rather than only after a scroll. */
+.md-typeset .sonda-livegen__logtally {
+  margin: 0 0 0.35rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+
 /* The "and N more" footer on a capped stream. Livegen-only by construction:
    the playground renders its stream entire, so this row never appears there. */
 .sonda-livegen__logmore {

@@ -258,7 +258,21 @@ async function mount(root) {
         // is restyled by CSS and a resize reflows it. Only canvases need to
         // be repainted, and adding this root to `live` would rebuild the
         // whole pane — losing the reader's scroll position — for nothing.
+        // The count goes ABOVE the pane, not only in its footer. The footer
+        // sat 911px down a 318px window, so the view at rest was 40 lines
+        // ending at +9.75s of a 60s scenario with nothing saying 200 were
+        // withheld — the exact state the cap's own rationale says must not
+        // exist (review #550 round 2 M1). The footer stays as the link; this
+        // is the part that has to be true without scrolling.
+        const total = sample.lines.length;
+        const tally = document.createElement("p");
+        tally.className = "sonda-livegen__logtally";
+        tally.textContent =
+          total > LOG_LINES_SHOWN
+            ? `Showing the first ${LOG_LINES_SHOWN} of ${total} events`
+            : `${total} events`;
         output.replaceChildren(
+          tally,
           logStream(sample, { prefix: "sonda-livegen", limit: LOG_LINES_SHOWN })
         );
       } else {

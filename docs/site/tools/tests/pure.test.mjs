@@ -628,11 +628,31 @@ test("a logs widget declares an encoder that can encode a log", () => {
   // that runs the sampler, and pinned here so the next logs widget cannot
   // inherit the metrics default silently.
   //
-  // The list is the set of encoders implementing `encode_log`, read from
-  // sonda-core/src/encoder/: json.rs, syslog.rs and otlp.rs override it;
-  // prometheus_text, influx_lp and remote_write take the trait's default,
-  // which is the NotSupported error above.
-  const LOG_CAPABLE = new Set(["json_lines", "syslog", "otlp"]);
+  // The list is an INTERSECTION, and the second half is the half that bites
+  // (review #550 round 2 W1). The first version listed the three encoders
+  // implementing `encode_log` — json.rs, syslog.rs, otlp.rs — and that is a
+  // true statement about sonda-core which is nevertheless the wrong list for
+  // a browser widget.
+  //
+  //   1. implements `encode_log`      json_lines, syslog, otlp
+  //   2. present in the wasm build    json_lines, syslog
+  //
+  // `sonda-wasm` depends on sonda-core with `default-features = false,
+  // features = ["config"]` (sonda-wasm/Cargo.toml), and `otlp` pulls in
+  // `runtime` plus four crates, so it is absent from the engine these widgets
+  // actually run on. `create_encoder` then returns "encoder type 'otlp'
+  // requires the 'otlp' feature" — at SAMPLING, exactly the failure this
+  // whole invariant exists to prevent.
+  //
+  // And the other two nets would not have caught it: this suite would pass
+  // because otlp was on the list, and the compile gate would pass because
+  // ci.yml builds the release binary with `-F otlp` even though the wasm has
+  // no such feature. An invariant written to close the compile-vs-sample gap
+  // that permits a value reopening it is worse than no invariant, because it
+  // is read as coverage.
+  //
+  // `syslog` is not feature-gated in sonda-core at all, so it stays.
+  const LOG_CAPABLE = new Set(["json_lines", "syslog"]);
   for (const [gen, widget] of Object.entries(WIDGETS)) {
     if (widget.signal !== "logs") continue;
     for (const corner of cornerParams(widget)) {

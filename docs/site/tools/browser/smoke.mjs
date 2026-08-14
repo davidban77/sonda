@@ -599,6 +599,29 @@ try {
     Number.isFinite(stream.withheld) && stream.withheld > 0,
     stream.withheld === null ? "no footer" : `${stream.withheld} withheld`);
 
+  // Review #550 round 2 M1. The footer sat 911px down a 318px window, so the
+  // view AT REST was 40 lines ending at +9.75s with nothing saying 200 were
+  // dropped — the state the cap's own rationale says must not exist. The
+  // count now sits above the pane; this asserts it is outside the scroll
+  // container rather than merely present in the DOM.
+  const logTally = await widgets.evaluate((s) => {
+    const el = document.querySelector(s);
+    const node = el?.querySelector(".sonda-livegen__logtally");
+    const pane = el?.querySelector(".sonda-livegen__logstream");
+    if (!node || !pane) return null;
+    return {
+      text: node.textContent.trim(),
+      aboveThePane: node.getBoundingClientRect().bottom <= pane.getBoundingClientRect().top + 1,
+      insidePane: pane.contains(node),
+    };
+  }, logSel);
+  check("the withheld count is readable without scrolling the pane",
+    logTally !== null &&
+      logTally.aboveThePane &&
+      !logTally.insidePane &&
+      /\b40\b.*\b240\b/.test(logTally.text),
+    logTally ? logTally.text : "no tally element");
+
   // The reviewer's other named corner: error weight at 0 is the ordinary
   // healthy service, and it must still render rather than producing an empty
   // pane or a division by zero in the engine's weighting.
@@ -629,6 +652,47 @@ try {
   check("all severity weights at minimum still produces a stream",
     atZero !== null && atZero.error === null && atZero.lines > 0,
     atZero ? atZero.error || `${atZero.lines} line(s)` : "never settled");
+
+  // Review #550 round 2 W1 named the structural hole: every check above
+  // enumerates widgets by NAME, so a widget added later is invisible to all
+  // of them — which is how an encoder that compiles and then fails to sample
+  // could have reached the page behind a green suite. This one enumerates
+  // whatever the PAGE actually carries, so a new placeholder is covered the
+  // day it lands rather than the day someone remembers to add it here.
+  const everyWidget = await widgets.evaluate(() =>
+    [...document.querySelectorAll(".sonda-livegen[data-gen]")].map((el) => el.dataset.gen)
+  );
+  // One at a time, each scrolled and then WAITED FOR before moving on. The
+  // first version scrolled all of them in a loop with no await, so only the
+  // last one ever intersected and the rest never mounted — the check timed
+  // out on its own harness rather than on the page.
+  const complaints = [];
+  for (const gen of everyWidget) {
+    const sel = `.sonda-livegen[data-gen="${gen}"]`;
+    await scrollAndMount(widgets, sel);
+    const outcome = await widgets
+      .waitForFunction(
+        (s) => {
+          const el = document.querySelector(s);
+          if (!el) return { gen: null, error: "no placeholder" };
+          const err = el.querySelector(".sonda-livegen__error");
+          if (err && !err.hidden) return { error: err.textContent.trim().slice(0, 80) };
+          const canvas = el.querySelector("canvas");
+          if (canvas && canvas.height > 0) return { error: null };
+          return el.querySelector(".sonda-livegen__logstream, .sonda-livegen__preview")
+            ? { error: null }
+            : false;
+        },
+        sel,
+        { timeout: 30000 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => ({ error: "never settled" }));
+    if (outcome.error) complaints.push(`${gen}: ${outcome.error}`);
+  }
+  check("every widget on the page samples without an engine error",
+    complaints.length === 0,
+    complaints.length ? complaints.join(" | ") : `${everyWidget.length} widget(s) clean`);
 
   await widgets.close();
 
