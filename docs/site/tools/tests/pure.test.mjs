@@ -619,6 +619,45 @@ test("the distribution widgets bound their per-tick observation volume", () => {
   }
 });
 
+/* Every encoder a widget's YAML NAMES, or a loud failure if the reader cannot
+ * account for all of them.
+ *
+ * Fails CLOSED, which is the whole point (review #550 round 4 W1). Four rounds
+ * of this PR found the same family of defect four times — wrong allow-list,
+ * wrong widget class, wrong YAML syntax — and the answer to that is not a
+ * fifth correct list. The pattern understands FLOW style; block style
+ *
+ *     encoder:
+ *       type: otlp
+ *
+ * is the form anyone reaches for the moment an encoder needs a second field,
+ * and the previous version read straight past it and passed. So: count the
+ * `encoder:` keys, and require the pattern to have explained every one. A
+ * syntax this cannot read is now a red gate rather than a silent pass.
+ *
+ * The `named.length > 0` guard it replaces could never fire, because the
+ * shared `head()` preamble always contributes one flow-style match. A guard
+ * that cannot fail is not a guard.
+ *
+ * Note what this returns: every encoder NAMED, not the one that takes effect.
+ * A preamble naming X with an entry overriding it to Y samples as Y, and both
+ * are reported. That is deliberately conservative — it rejects a widget the
+ * engine would have run fine — and it is the safe direction for a gate whose
+ * job is to keep a broken encoder off the page.
+ */
+function encodersNamedIn(yaml, gen) {
+  const declared = [...yaml.matchAll(/^[ \t]*encoder:/gm)].length;
+  const named = [...yaml.matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map((m) => m[1]);
+  assert.equal(
+    named.length,
+    declared,
+    `${gen}: ${declared} encoder key(s) in the YAML but ${named.length} the checker could read — ` +
+      "an encoder written in a syntax this test does not parse is not an encoder it has checked"
+  );
+  assert.ok(declared > 0, `${gen}: no encoder named in the widget's YAML`);
+  return named;
+}
+
 test("a widget may only name encoders the browser's engine carries", () => {
   // The sibling of the logs check below, and the general form of it (review
   // #550 round 3 W1). That one is logs-only, so the widget whose entire
@@ -645,11 +684,7 @@ test("a widget may only name encoders the browser's engine carries", () => {
   const WASM_ENCODERS = new Set(["prometheus_text", "influx_lp", "json_lines", "syslog"]);
   for (const [gen, widget] of Object.entries(WIDGETS)) {
     for (const corner of cornerParams(widget)) {
-      const named = [...widget.yaml(corner).matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map(
-        (m) => m[1]
-      );
-      assert.ok(named.length > 0, `${gen}: no encoder named in the widget's YAML`);
-      for (const encoder of named) {
+      for (const encoder of encodersNamedIn(widget.yaml(corner), gen)) {
         assert.ok(
           WASM_ENCODERS.has(encoder),
           `${gen}: encoder "${encoder}" is not in the wasm build — the widget would compile and then fail to sample`
@@ -696,14 +731,9 @@ test("a logs widget declares an encoder that can encode a log", () => {
   for (const [gen, widget] of Object.entries(WIDGETS)) {
     if (widget.signal !== "logs") continue;
     for (const corner of cornerParams(widget)) {
-      // matchAll for the same reason as the check above: the preamble and the
-      // entry each name an encoder, and only reading the first would miss an
-      // entry-level override.
-      const named = [...widget.yaml(corner).matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map(
-        (m) => m[1]
-      );
-      assert.ok(named.length > 0, `${gen}: no encoder named in the widget's YAML`);
-      for (const encoder of named) {
+      // Shared reader, so both encoder invariants fail closed on a syntax it
+      // cannot parse rather than one of them silently passing.
+      for (const encoder of encodersNamedIn(widget.yaml(corner), gen)) {
         assert.ok(
           LOG_CAPABLE.has(encoder),
           `${gen}: encoder "${encoder}" cannot encode a log event — the widget would compile and then fail to sample`
