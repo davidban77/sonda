@@ -659,40 +659,58 @@ try {
   // could have reached the page behind a green suite. This one enumerates
   // whatever the PAGE actually carries, so a new placeholder is covered the
   // day it lands rather than the day someone remembers to add it here.
-  const everyWidget = await widgets.evaluate(() =>
-    [...document.querySelectorAll(".sonda-livegen[data-gen]")].map((el) => el.dataset.gen)
-  );
-  // One at a time, each scrolled and then WAITED FOR before moving on. The
-  // first version scrolled all of them in a loop with no await, so only the
-  // last one ever intersected and the rest never mounted — the check timed
-  // out on its own harness rather than on the page.
-  const complaints = [];
-  for (const gen of everyWidget) {
-    const sel = `.sonda-livegen[data-gen="${gen}"]`;
-    await scrollAndMount(widgets, sel);
-    const outcome = await widgets
-      .waitForFunction(
-        (s) => {
-          const el = document.querySelector(s);
-          if (!el) return { gen: null, error: "no placeholder" };
-          const err = el.querySelector(".sonda-livegen__error");
-          if (err && !err.hidden) return { error: err.textContent.trim().slice(0, 80) };
-          const canvas = el.querySelector("canvas");
-          if (canvas && canvas.height > 0) return { error: null };
-          return el.querySelector(".sonda-livegen__logstream, .sonda-livegen__preview")
-            ? { error: null }
-            : false;
-        },
-        sel,
-        { timeout: 30000 }
-      )
-      .then((h) => h.jsonValue())
-      .catch(() => ({ error: "never settled" }));
-    if (outcome.error) complaints.push(`${gen}: ${outcome.error}`);
-  }
-  check("every widget on the page samples without an engine error",
-    complaints.length === 0,
-    complaints.length ? complaints.join(" | ") : `${everyWidget.length} widget(s) clean`);
+  // Review #550 round 3 W1 found two holes in the round-2 version of this:
+  // it ran on ONE of the three pages that carry widgets, and it could not see
+  // a preview widget's failure at all, because `encode_preview(...)
+  // .unwrap_or_else(|reason| reason)` folds the engine's complaint into the
+  // preview STRING — the entry renders, no error box appears, and a check
+  // asking "is there an error box" reports clean while the pane labelled as
+  // the engine's bytes shows "requires the 'otlp' feature".
+  //
+  // So: every page that carries widgets, and a preview counts as failed when
+  // its own text is an engine complaint.
+  const auditWidgets = async (page, label) => {
+    const names = await page.evaluate(() =>
+      [...document.querySelectorAll(".sonda-livegen[data-gen]")].map((el) => el.dataset.gen)
+    );
+    const complaints = [];
+    for (const gen of names) {
+      const sel = `.sonda-livegen[data-gen="${gen}"]`;
+      await scrollAndMount(page, sel);
+      const outcome = await page
+        .waitForFunction(
+          (s) => {
+            const el = document.querySelector(s);
+            if (!el) return { error: "no placeholder" };
+            const err = el.querySelector(".sonda-livegen__error");
+            if (err && !err.hidden) return { error: err.textContent.trim().slice(0, 80) };
+            const preview = el.querySelector(".sonda-livegen__preview");
+            if (preview) {
+              const text = preview.textContent.trim();
+              if (!text) return false;
+              // The engine's own error vocabulary, anchored at the start: a
+              // metric line never begins this way.
+              return /^(configuration|encoder|compile|validation) error:/i.test(text)
+                ? { error: text.slice(0, 80) }
+                : { error: null };
+            }
+            const canvas = el.querySelector("canvas");
+            if (canvas && canvas.height > 0) return { error: null };
+            return el.querySelector(".sonda-livegen__logstream") ? { error: null } : false;
+          },
+          sel,
+          { timeout: 30000 }
+        )
+        .then((h) => h.jsonValue())
+        .catch(() => ({ error: "never settled" }));
+      if (outcome.error) complaints.push(`${gen}: ${outcome.error}`);
+    }
+    check(`every widget on ${label} samples without an engine error`,
+      complaints.length === 0,
+      complaints.length ? complaints.join(" | ") : `${names.length} widget(s) clean`);
+    return names.length;
+  };
+  await auditWidgets(widgets, "build/generators");
 
   await widgets.close();
 
@@ -845,6 +863,7 @@ try {
   const widgets2 = watch(await context.newPage());
   widgets2.setDefaultTimeout(30000);
   await widgets2.goto(`${BASE}/build/scheduling/`, { waitUntil: "domcontentloaded" });
+  await auditWidgets(widgets2, "build/scheduling");
 
   for (const gen of ["gaps", "bursts"]) {
     await widgets2.evaluate((g) => document.querySelector(`[data-gen="${g}"]`)?.scrollIntoView(), gen);
@@ -948,15 +967,29 @@ try {
     null,
     { timeout: 90000 }
   );
+  await auditWidgets(widgets2, "build/encoders");
+
   // Each option must produce output SHAPED like the format it names. A
   // widget that offered an encoder the wasm build lacks would show the
   // engine's "requires the 'otlp' feature" here instead.
-  const SHAPES = [
+  const SHAPES = new Map([
     ["prometheus_text", /^cpu_usage\{/],
     ["influx_lp", /^cpu_usage,/],
     ["json_lines", /^\{/],
-  ];
-  for (const [encoder, shape] of SHAPES) {
+  ]);
+  // Driven off the widget's OWN <option> list rather than the table, so a
+  // fourth encoder is exercised the day it is offered instead of the day
+  // someone remembers this loop exists (review #550 round 3 W1). The table
+  // still supplies the expected shape, and an option missing from it fails
+  // rather than being silently checked more weakly.
+  const offered = await widgets2.evaluate(() =>
+    [...document.querySelectorAll('[data-gen="encoders"] select option')].map((o) => o.value)
+  );
+  check("every encoder the widget offers has an expected output shape",
+    offered.length > 0 && offered.every((e) => SHAPES.has(e)),
+    offered.filter((e) => !SHAPES.has(e)).join(", ") || `${offered.length} option(s) covered`);
+  for (const encoder of offered) {
+    const shape = SHAPES.get(encoder) || /$^/;
     await widgets2.selectOption('[data-gen="encoders"] select', encoder);
     let matched = true;
     await widgets2

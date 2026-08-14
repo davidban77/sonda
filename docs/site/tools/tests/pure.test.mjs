@@ -619,6 +619,46 @@ test("the distribution widgets bound their per-tick observation volume", () => {
   }
 });
 
+test("a widget may only name encoders the browser's engine carries", () => {
+  // The sibling of the logs check below, and the general form of it (review
+  // #550 round 3 W1). That one is logs-only, so the widget whose entire
+  // subject IS the encoder — `encoders`, offering its choice as a <select> —
+  // had nothing saying its options must exist in the wasm build. Adding
+  // `otlp` there passed the pure suite, passed 651 compile corners, passed
+  // 98 browser checks, and put "configuration error: encoder type 'otlp'
+  // requires the 'otlp' feature" in the pane labelled as the engine's bytes.
+  //
+  // Same root cause as round 2, one widget further out: `sonda-wasm` takes
+  // sonda-core with `default-features = false, features = ["config"]`, so
+  // `otlp` and `remote_write` — both feature-gated in encoder/mod.rs — are
+  // absent, while ci.yml builds the CLI the compile gate uses WITH them.
+  //
+  // Checked over cornerParams so it sees every <select> option, not just the
+  // default: the corner grid enumerates choices, which is what makes an
+  // offered-but-broken option reachable here at all.
+  //
+  // EVERY occurrence, not the first. A widget's YAML names an encoder twice —
+  // once in the `defaults:` preamble and once on the entry that overrides it —
+  // and `String.match` returns only the first, which is always the preamble's.
+  // The first version of this check read that one and passed the very
+  // mutation it was written for.
+  const WASM_ENCODERS = new Set(["prometheus_text", "influx_lp", "json_lines", "syslog"]);
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    for (const corner of cornerParams(widget)) {
+      const named = [...widget.yaml(corner).matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map(
+        (m) => m[1]
+      );
+      assert.ok(named.length > 0, `${gen}: no encoder named in the widget's YAML`);
+      for (const encoder of named) {
+        assert.ok(
+          WASM_ENCODERS.has(encoder),
+          `${gen}: encoder "${encoder}" is not in the wasm build — the widget would compile and then fail to sample`
+        );
+      }
+    }
+  }
+});
+
 test("a logs widget declares an encoder that can encode a log", () => {
   // The compile gate cannot see this. `encoder: { type: prometheus_text }`
   // with `signal_type: logs` COMPILES — `sonda --dry-run run` accepts it —
@@ -656,11 +696,19 @@ test("a logs widget declares an encoder that can encode a log", () => {
   for (const [gen, widget] of Object.entries(WIDGETS)) {
     if (widget.signal !== "logs") continue;
     for (const corner of cornerParams(widget)) {
-      const encoder = widget.yaml(corner).match(/encoder:\s*\{\s*type:\s*(\w+)/)?.[1];
-      assert.ok(
-        encoder && LOG_CAPABLE.has(encoder),
-        `${gen}: encoder "${encoder}" cannot encode a log event — the widget would compile and then fail to sample`
+      // matchAll for the same reason as the check above: the preamble and the
+      // entry each name an encoder, and only reading the first would miss an
+      // entry-level override.
+      const named = [...widget.yaml(corner).matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map(
+        (m) => m[1]
       );
+      assert.ok(named.length > 0, `${gen}: no encoder named in the widget's YAML`);
+      for (const encoder of named) {
+        assert.ok(
+          LOG_CAPABLE.has(encoder),
+          `${gen}: encoder "${encoder}" cannot encode a log event — the widget would compile and then fail to sample`
+        );
+      }
     }
   }
 });
