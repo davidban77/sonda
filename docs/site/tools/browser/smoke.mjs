@@ -430,12 +430,17 @@ try {
   // The sequence widget's control is a <select>, and choosing a different
   // pattern must redraw. A widget whose control is inert renders perfectly
   // and teaches nothing.
+  // Addressed by key, not by position: `[data-gen="sequence"] select` resolves
+  // the FIRST <select>, which is `pattern` only until someone reorders the
+  // widget's choices (review #549 M1). `repeat`, the other control, is covered
+  // by the control-reaches-template invariant in the pure suite.
   const seqSelector = '.sonda-livegen[data-gen="sequence"]';
+  const seqSelectSelector = `${seqSelector} select[data-key="pattern"]`;
   const seqBefore = await widgets.evaluate(
     (sel) => document.querySelector(sel)?.querySelector(".sonda-livegen__chart")?.toDataURL().length ?? 0,
     seqSelector
   );
-  const seqSelect = await widgets.$(`${seqSelector} select`);
+  const seqSelect = await widgets.$(seqSelectSelector);
   if (seqSelect) await seqSelect.selectOption({ index: 1 });
   const seqChanged = seqSelect
     ? await widgets
@@ -449,7 +454,7 @@ try {
         .catch(() => false)
     : false;
   check("choosing a different sequence pattern redraws the chart", seqChanged,
-    seqSelect ? `was ${seqBefore} chars` : "no <select> rendered");
+    seqSelect ? `was ${seqBefore} chars` : 'no <select data-key="pattern"> rendered');
 
   await widgets.close();
 

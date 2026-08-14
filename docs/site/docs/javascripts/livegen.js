@@ -26,9 +26,11 @@ import {
   burstEmission,
 } from "./sonda-pure.js";
 import { playgroundHref } from "./playground-link.js";
-import { WIDGETS, defaultParams } from "./livegen-presets.js";
+// MAX_TICKS comes from the preset module rather than being declared here: it
+// constrains what a preset may ask for, so the pure invariants need it too,
+// and two definitions that agree by inspection are one edit away from not.
+import { WIDGETS, defaultParams, MAX_TICKS } from "./livegen-presets.js";
 
-const MAX_TICKS = 240;
 const DEBOUNCE_MS = 150;
 
 let wasmReady = null;
@@ -140,6 +142,12 @@ async function mount(root) {
     name.textContent = choice.label || choice.key;
     const select = document.createElement("select");
     select.className = "sonda-livegen__select";
+    // Names which control this is, so a test can drive a specific one. The
+    // browser suite resolved its target as "the first <select> in the widget"
+    // (review #549 M1); that is correct only until a widget's choices are
+    // reordered, at which point the check silently exercises a different
+    // control and stays green.
+    select.dataset.key = choice.key;
     for (const option of choice.options) {
       const el = document.createElement("option");
       el.value = option;

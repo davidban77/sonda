@@ -35,7 +35,14 @@ import {
   scrubNumber,
   toBase64Url,
 } from "../../docs/javascripts/sonda-pure.js";
-import { WIDGETS, cornerParams, defaultParams, sweepParams } from "../../docs/javascripts/livegen-presets.js";
+import {
+  WIDGETS,
+  cornerParams,
+  defaultParams,
+  sweepParams,
+  sampledTicks,
+  MAX_TICKS,
+} from "../../docs/javascripts/livegen-presets.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -523,11 +530,21 @@ test("the step widget wraps inside the sampled window at every corner", () => {
   // wrong shape — a widget that is wrong in the most confident way, since it
   // renders perfectly.
   //
-  // The window is rate * durationSecs ticks. The counter climbs step_size per
-  // tick from `start`, so the worst case is the smallest step_size with the
-  // largest max and the lowest start.
+  // The window is `sampledTicks`, NOT rate * durationSecs (review #549 W1).
+  // The sampler clamps to MAX_TICKS, so the product is an upper bound the
+  // real window need not reach, and the multiplication grows more permissive
+  // exactly where the window stops growing. The two agree for every widget
+  // today only because the tick-budget invariant below holds the product at
+  // or under MAX_TICKS — which made this check correct on the strength of a
+  // NEIGHBOURING assertion rather than its own. Calling sampledTicks makes it
+  // self-sufficient; the reviewer's demonstration edit is caught by that
+  // neighbour today, so this is a latent coupling closed rather than a live
+  // defect fixed.
+  //
+  // The counter climbs step_size per tick from `start`, so the worst case is
+  // the smallest step_size with the largest max and the lowest start.
   const step = WIDGETS.step;
-  const ticks = step.rate * step.durationSecs;
+  const ticks = sampledTicks(step);
   const stepSize = step.sliders.find((s) => s.key === "step_size");
   const max = step.sliders.find((s) => s.key === "max");
   const start = step.sliders.find((s) => s.key === "start");
@@ -561,8 +578,53 @@ test("the sequence widget's patterns are real, non-empty value lists", () => {
 });
 
 test("preset sampling stays within the playground tick budget", () => {
+  // Reads MAX_TICKS from the preset module rather than repeating 240, so this
+  // and `sampledTicks` cannot drift apart. This assertion is what makes the
+  // product and the real window coincide today — see the wrap guard above,
+  // which no longer depends on that.
   for (const [gen, widget] of Object.entries(WIDGETS)) {
-    assert.ok(widget.rate * widget.durationSecs <= 240, `${gen}: rate*duration must fit MAX_TICKS`);
+    assert.ok(
+      widget.rate * widget.durationSecs <= MAX_TICKS,
+      `${gen}: rate*duration must fit MAX_TICKS`
+    );
+  }
+});
+
+test("every control reaches its widget's template (review #549 W2)", () => {
+  // The generalisation of the hand-written `sequence` pattern check above.
+  // That one covered ONE of sequence's two controls, and an inert `repeat`
+  // — `repeat: true` hard-coded in place of `${p.repeat === "on"}` — shipped
+  // green through the whole suite AND the browser suite, whose redraw check
+  // resolves the FIRST <select> and so never touches it. Measured, not
+  // assumed: 191 tests passed with the control dead.
+  //
+  // Differential rather than textual: render the widget twice, changing one
+  // control and nothing else, and require the YAML to differ. That makes no
+  // assumption about interpolation syntax, so it keeps working for a control
+  // the template consumes rather than pastes — `repeat` maps "on"/"off" to a
+  // boolean, and a substring search for the option string would miss it.
+  //
+  // Only this direction needs a test. The reverse — a template referencing a
+  // parameter no control supplies — interpolates `undefined` into the YAML
+  // and the compile gate rejects it.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    const base = defaultParams(widget);
+    for (const slider of widget.sliders || []) {
+      const lo = widget.yaml({ ...base, [slider.key]: slider.min });
+      const hi = widget.yaml({ ...base, [slider.key]: slider.max });
+      assert.notEqual(lo, hi, `${gen}.${slider.key}: a slider the template ignores does nothing`);
+    }
+    for (const choice of widget.choices || []) {
+      assert.ok(choice.options.length >= 2, `${gen}.${choice.key}: a one-option <select> is not a control`);
+      const first = widget.yaml({ ...base, [choice.key]: choice.options[0] });
+      const rest = choice.options
+        .slice(1)
+        .map((option) => widget.yaml({ ...base, [choice.key]: option }));
+      assert.ok(
+        rest.some((yaml) => yaml !== first),
+        `${gen}.${choice.key}: a <select> the template ignores does nothing`
+      );
+    }
   }
 });
 

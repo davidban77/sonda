@@ -28,6 +28,33 @@ defaults:
 scenarios:`;
 }
 
+/* The sampling window every widget is drawn in, in ticks.
+ *
+ * This lives here rather than in livegen.js because it is a property of the
+ * WIDGET CONTRACT, not of the renderer: a preset whose interesting behaviour
+ * happens past tick 240 is misconfigured no matter what draws it, and the
+ * pure invariants have to be able to say so. livegen.js imports it from here
+ * so there is one definition rather than two that agree by inspection.
+ *
+ * Review #549 W1 is why it is exported at all — see `sampledTicks`. */
+export const MAX_TICKS = 240;
+
+/* How many ticks a widget's chart actually covers.
+ *
+ * NOT `rate * durationSecs`. The wasm sampler computes
+ * `min(MAX_TICKS, ceil(duration * rate))` (`bounded_ticks`, sonda-wasm), so
+ * the requested product is an upper bound the window need not reach. The two
+ * coincide for every widget shipped today — the tick-budget invariant in
+ * pure.test.mjs holds `rate * durationSecs <= MAX_TICKS`, and under that
+ * constraint the min is always the product — which is exactly the problem:
+ * any invariant phrased in ticks that multiplies instead of calling this is
+ * correct only for as long as its NEIGHBOUR keeps holding, and silently
+ * wrong the moment that one is relaxed. Review #549 W1 found the step wrap
+ * guard doing the multiplication. */
+export function sampledTicks(widget) {
+  return Math.min(MAX_TICKS, Math.ceil(widget.rate * widget.durationSecs));
+}
+
 const LEAK_DURATION_SECS = 120;
 
 export const WIDGETS = {
