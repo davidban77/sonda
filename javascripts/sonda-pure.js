@@ -1019,3 +1019,383 @@ function _unquoteScalar(value) {
   }
   return text;
 }
+
+/* --- schema-driven completion (WP11 PR3) -------------------------------
+ *
+ * Two pure functions behind the playground editor's autocomplete:
+ * `yamlPathAt` says WHERE the cursor is in the document, and
+ * `schemaCompletions` says what the schema allows THERE.
+ *
+ * The defining constraint is that this runs on BROKEN YAML. A reader asking
+ * for completion has, by definition, typed half a line — so a real parser is
+ * the wrong tool: it would refuse the document exactly when help is wanted.
+ * `yamlPathAt` therefore reads indentation and nothing else, and is honestly
+ * useless for flow style (`{a: 1}`), where it declines rather than guesses.
+ *
+ * "Block style" here means both indentation conventions, not just the one
+ * this repo happens to use:
+ *
+ *     scenarios:          scenarios:
+ *       - signal_type: x  - signal_type: x
+ *
+ * The first version handled only the left-hand form and silently lost the
+ * `scenarios` key on the right (review #548 W1) — while this comment claimed
+ * block style was handled, with a parenthesis about the repo's own files that
+ * was true and narrower than the sentence around it. A claim qualified by an
+ * example is still the claim, not the example.
+ */
+
+/* Where the cursor sits in a block-style YAML document.
+ *
+ * Returns `{ path, context, prefix }`, or `null` when there is nothing
+ * sensible to say:
+ *
+ *   path     keys from the document root, with "[]" for a sequence step.
+ *            `scenarios: - generator: type:` is ["scenarios","[]","generator"].
+ *   context  "key" when the cursor is typing a mapping key, "value" when it
+ *            is after the `:` of one.
+ *   prefix   what has been typed so far at the cursor, for filtering.
+ *
+ * Declines (returns null) inside a comment, inside a quoted scalar, and on
+ * flow-style lines — three places where an indentation reading is not merely
+ * imprecise but wrong, and a confident wrong answer is worse than silence.
+ */
+export function yamlPathAt(text, offset) {
+  const source = String(text ?? "");
+  const cursor = Math.max(0, Math.min(Number(offset) || 0, source.length));
+
+  // Locate the cursor's line without splitting the whole document twice.
+  const lineStart = source.lastIndexOf("\n", cursor - 1) + 1;
+  const lineEndRaw = source.indexOf("\n", cursor);
+  const lineEnd = lineEndRaw === -1 ? source.length : lineEndRaw;
+  const line = source.slice(lineStart, lineEnd);
+  const column = cursor - lineStart;
+  const before = line.slice(0, column);
+
+  if (_declinesCompletion(before)) return null;
+
+  // A `- ` marker opens a mapping at the item's own indent. Treat the text
+  // after it as the line's content, and remember that this line IS the
+  // sequence step so the path gets its "[]" from here rather than from the
+  // parent's indent alone.
+  const indent = _indentWidth(line);
+  const dashMatch = /^(\s*)-\s+/.exec(line);
+  const isSequenceItem = Boolean(dashMatch);
+  // The keys of a `- key: value` item live at the column where `key` starts,
+  // which is past the dash. Anything indented to there belongs to the item.
+  const contentIndent = dashMatch ? dashMatch[0].length : indent;
+
+  const colon = _topLevelColon(before);
+  const context = colon === -1 ? "key" : "value";
+  const prefix =
+    context === "key"
+      ? before.slice(dashMatch ? dashMatch[0].length : indent).trimStart()
+      : before.slice(colon + 1).trim();
+
+  // Walk backwards collecting the enclosing keys: each ancestor is the
+  // nearest preceding line indented strictly less than the level we are
+  // currently looking for.
+  const path = [];
+  if (context === "value") {
+    const key = _keyOf(before.slice(dashMatch ? dashMatch[0].length : indent));
+    if (key === null) return null;
+    path.unshift(key);
+  }
+
+  // The walk carries three numbers rather than one, because "how deep" is not
+  // enough to say what a preceding line IS to us.
+  //
+  //   limit         nothing at a greater indent can enclose the cursor
+  //   ownerIndent   an indent at which a PLAIN key is still an ancestor, not
+  //                 a sibling. Only set after a sequence step, because YAML
+  //                 lets the owning key sit at the dash's own column:
+  //                 `scenarios:` then `- item` both at 0 (review #548 W1).
+  //   siblingDash   an indent at which a DASH line is another item of the
+  //                 sequence we have already counted, and contributes
+  //                 nothing (review #548 B1).
+  //
+  // A single `want` conflated the last two, so the second item of any list
+  // read its predecessor as an enclosing sequence and the path grew a second
+  // `[]` that matches nothing. Every fixture in the first version of this
+  // module used a one-item list, which is why it looked right.
+  let limit = contentIndent;
+  let ownerIndent = -1;
+  let siblingDash = -1;
+  if (isSequenceItem) {
+    path.unshift("[]");
+    limit = indent;
+    ownerIndent = indent;
+    siblingDash = indent;
+  }
+
+  const head = source.slice(0, lineStart);
+  const lines = head.length ? head.split("\n") : [];
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const candidate = lines[i];
+    // Blank lines only. A comment line needs no special case here: `_keyOf`
+    // requires the first character to be `[^\s:#]`, so `# note: important`
+    // yields no key and is skipped like any other keyless line. This walk
+    // used to test for comments explicitly and no mutation could tell the
+    // difference — the check was dead, and a guard nothing can distinguish
+    // is a claim with no gate behind it. The behaviour is pinned by
+    // "comments between lines do not become ancestors", which now fails
+    // through `_keyOf` rather than through a redundant branch.
+    if (!candidate.trim()) continue;
+    const candidateIndent = _indentWidth(candidate);
+    if (candidateIndent > limit) continue;
+
+    const candidateDash = /^(\s*)-\s+/.exec(candidate);
+    const body = candidateDash ? candidate.slice(candidateDash[0].length) : candidate.trimStart();
+    const key = _keyOf(body);
+
+    if (candidateDash) {
+      // Another item of the sequence the cursor is already inside. A list
+      // contributes ONE `[]` however many items precede the cursor.
+      if (candidateIndent === siblingDash) continue;
+      // An enclosing sequence. Its `- key:` form is an ancestor only when its
+      // own keys sit shallower than what we are looking for; at the same
+      // column it is a sibling field of the cursor's, not its parent.
+      if (candidateDash[0].length < limit && key !== null) {
+        path.unshift(key);
+      }
+      path.unshift("[]");
+      limit = candidateIndent;
+      ownerIndent = candidateIndent;
+      siblingDash = candidateIndent;
+      continue;
+    }
+
+    // A plain key at exactly our own indent is a sibling — unless it is the
+    // key that owns the sequence we just stepped out of.
+    if (candidateIndent === limit && candidateIndent !== ownerIndent) continue;
+    if (key === null) continue;
+    path.unshift(key);
+    limit = candidateIndent;
+    ownerIndent = -1;
+    siblingDash = -1;
+    // Early exit, not a behavioural rule: with `ownerIndent` cleared, nothing
+    // at indent 0 or deeper can still be an ancestor, so the remaining
+    // iterations would all `continue`. Dropping this line changes no answer
+    // (review #548 M3 measured exactly that) — it is here to stop walking a
+    // long document after the root key is found.
+    if (limit === 0) break;
+  }
+
+  return { path, context, prefix };
+}
+
+/* Three places an indentation reading is actively wrong rather than rough. */
+function _declinesCompletion(before) {
+  // A comment: everything after an unquoted `#` is prose.
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < before.length; i += 1) {
+    const ch = before[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "#" && !inSingle && !inDouble) {
+      // `#` immediately after a non-space is part of a scalar (`/a#b`), not
+      // a comment — the same rule the PromQL importer learned the hard way.
+      if (i === 0 || /\s/.test(before[i - 1])) return true;
+    }
+  }
+  // Unclosed quote: the cursor is inside a scalar, where key names mean
+  // nothing.
+  if (inSingle || inDouble) return true;
+  // Flow style. Reading indentation inside `{...}` or `[...]` gives an
+  // answer that looks confident and is unrelated to where the cursor is.
+  if (/[[{]/.test(before)) return true;
+  return false;
+}
+
+function _indentWidth(line) {
+  const match = /^[ \t]*/.exec(line);
+  return match ? match[0].length : 0;
+}
+
+/* The `:` that separates this line's key from its value, ignoring any that
+ * sit inside quotes (`msg: "a: b"` has one separator, not two). */
+function _topLevelColon(before) {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < before.length; i += 1) {
+    const ch = before[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === ":" && !inSingle && !inDouble) {
+      // `a:b` is a plain scalar in YAML; a separator needs a space after it
+      // or end-of-line.
+      const next = before[i + 1];
+      if (next === undefined || next === " " || next === "\t") return i;
+    }
+  }
+  return -1;
+}
+
+/* The key a line declares, or null when it declares none. */
+function _keyOf(body) {
+  const match = /^([^\s:#][^:#]*?)\s*:(?:\s|$)/.exec(body);
+  return match ? match[1].trim() : null;
+}
+
+/* What the schema allows at a resolved path.
+ *
+ * Returns `[{ label, detail, info }]`, sorted and de-duplicated, or `[]` when
+ * the path leads nowhere the schema describes. `detail` is a short type hint
+ * for the completion list; `info` is the Rust doc comment, which is why
+ * deriving the schema from the types was worth doing at all.
+ *
+ * Union branches are UNIONED rather than picked between. `generator:` is a
+ * fourteen-branch `oneOf` discriminated by a `type` const, and until the
+ * reader has typed that `type` there is no way to know which branch they
+ * mean — so offering every branch's keys is the only honest answer, and
+ * offering the fourteen `type` values themselves is the single most useful
+ * completion in the document.
+ */
+export function schemaCompletions(schema, path, context) {
+  if (!schema || typeof schema !== "object") return [];
+  const root = schema;
+  let nodes = _expand(root, root);
+
+  for (const step of Array.isArray(path) ? path : []) {
+    const next = [];
+    for (const node of nodes) {
+      if (step === "[]") {
+        if (node.items) next.push(..._expand(node.items, root));
+        continue;
+      }
+      const properties = node.properties;
+      if (properties && Object.prototype.hasOwnProperty.call(properties, step)) {
+        next.push(..._expand(properties[step], root));
+        continue;
+      }
+      // A free-form mapping (`labels:`) describes its VALUES here, which is
+      // the right node to descend into for any key the reader invents.
+      if (node.additionalProperties && typeof node.additionalProperties === "object") {
+        next.push(..._expand(node.additionalProperties, root));
+      }
+    }
+    nodes = next;
+    if (!nodes.length) return [];
+  }
+
+  // `required` is a per-branch fact, and flattening it across a union states
+  // something false. Measured on `generator:` (review #548 W2): 14 of the 36
+  // unioned keys carried a "required" marker, while no single generator
+  // requires more than 5 and the sets are mutually exclusive — so `amplitude`
+  // (sine) and `baseline` (spike) sat adjacent in the list, both marked
+  // required, and only one of them can be.
+  //
+  // Worse than merely untidy: serde ignores unknown keys inside a variant, so
+  // a reader who believes it adds `baseline` to a sine generator and NOTHING
+  // complains — not the schema, not `sonda --dry-run run`, not the run. The
+  // suggestion is inert rather than rejected, which is the failure mode this
+  // module's own docstring calls worse than silence.
+  //
+  // So the marker is emitted only when one branch is speaking. The keys are
+  // still offered — until the `type:` is typed there is no way to narrow
+  // them, and that argument is unchanged — but the list stops claiming a
+  // requirement that depends on a choice the reader has not made.
+  const contributing = nodes.filter((node) => node.properties).length;
+  const singleBranch = contributing === 1;
+
+  const seen = new Map();
+  for (const node of nodes) {
+    if (context === "value") {
+      for (const value of _enumValues(node)) {
+        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+          continue;
+        }
+        const label = String(value);
+        // No `detail` on a value: the label IS the value, and a column
+        // reading "value" against every row of an enum list is furniture.
+        // Keys earn a detail because their type is not visible from the name.
+        if (!seen.has(label)) seen.set(label, { label, info: node.description });
+      }
+      continue;
+    }
+    const properties = node.properties;
+    if (!properties) continue;
+    const required = new Set(Array.isArray(node.required) ? node.required : []);
+    for (const [label, child] of Object.entries(properties)) {
+      if (seen.has(label)) continue;
+      seen.set(label, {
+        label,
+        detail:
+          _typeHint(child, root) +
+          (singleBranch && required.has(label) ? " · required" : ""),
+        info: typeof child.description === "string" ? child.description : undefined,
+      });
+    }
+  }
+
+  return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/* One schema node into the list of nodes it actually stands for: `$ref`
+ * followed, and `anyOf`/`oneOf`/`allOf` flattened.
+ *
+ * `depth` bounds the recursion rather than tracking visited refs. The
+ * scenario schema is not recursive today, but a schema is data — a `$ref`
+ * cycle introduced upstream would hang the editor on a keystroke, and a
+ * completion list is never worth an infinite loop.
+ */
+function _expand(node, root, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 12) return [];
+  if (typeof node.$ref === "string") {
+    const target = _resolveRef(node.$ref, root);
+    return target ? _expand(target, root, depth + 1) : [];
+  }
+  const branches = node.anyOf || node.oneOf || node.allOf;
+  if (Array.isArray(branches)) {
+    const out = [];
+    // A branch list can still carry its own `properties` (allOf-style), so
+    // keep the node itself as well as its branches.
+    if (node.properties || node.items || node.enum || node.const !== undefined) out.push(node);
+    for (const branch of branches) out.push(..._expand(branch, root, depth + 1));
+    return out;
+  }
+  return [node];
+}
+
+function _resolveRef(ref, root) {
+  if (!ref.startsWith("#/")) return null;
+  let node = root;
+  for (const rawPart of ref.slice(2).split("/")) {
+    const part = rawPart.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (!node || typeof node !== "object") return null;
+    node = node[part];
+  }
+  return node && typeof node === "object" ? node : null;
+}
+
+function _enumValues(node) {
+  if (Array.isArray(node.enum)) return node.enum;
+  if (node.const !== undefined) return [node.const];
+  return [];
+}
+
+/* A short type hint for the completion list — "string", "number", "object",
+ * or the discriminator values when the target is a tagged union, because
+ * "object" is a useless thing to say about `generator:`. */
+function _typeHint(node, root) {
+  const expanded = _expand(node, root);
+  const tags = [];
+  for (const candidate of expanded) {
+    const tag = candidate.properties && candidate.properties.type;
+    if (tag && tag.const !== undefined) tags.push(String(tag.const));
+  }
+  if (tags.length > 1) return `${tags.length} types`;
+  const types = new Set();
+  for (const candidate of expanded) {
+    const declared = candidate.type;
+    if (typeof declared === "string") types.add(declared);
+    else if (Array.isArray(declared)) declared.forEach((t) => types.add(t));
+  }
+  types.delete("null");
+  if (!types.size) return "";
+  // The scalar widening means most string positions read
+  // ["string","number","boolean"]; saying "string" is what a reader needs.
+  if (types.has("string")) return "string";
+  return [...types].sort().join(" | ");
+}
