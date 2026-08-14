@@ -2844,6 +2844,8 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 <h2 id="metric-generators">Metric generators<a class="headerlink" href="#metric-generators" title="Permanent link">&para;</a></h2>
 <h3 id="constant">constant<a class="headerlink" href="#constant" title="Permanent link">&para;</a></h3>
 <p><img alt="The constant generator: a flat line at the configured value" src="../img/generators/constant.svg" /></p>
+<div class="sonda-livegen" data-gen="constant" markdown="0"></div>
+
 <p>Returns the same value on every tick. Use it for baseline testing or known-value verification (for example, <abbr title="Prometheus rule that pre-computes a query and stores the result as a new time series.">recording rule</abbr> validation).</p>
 <table>
 <thead>
@@ -2967,6 +2969,8 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 </span></code></pre></div>
 <h3 id="sawtooth">sawtooth<a class="headerlink" href="#sawtooth" title="Permanent link">&para;</a></h3>
 <p><img alt="The sawtooth generator: a linear ramp from min to max that resets each period" src="../img/generators/sawtooth.svg" /></p>
+<div class="sonda-livegen" data-gen="sawtooth" markdown="0"></div>
+
 <p>Ramps linearly from <code>min</code> to <code>max</code> and resets to <code>min</code> at the start of each period.</p>
 <table>
 <thead>
@@ -3036,6 +3040,8 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 </span></code></pre></div>
 <h3 id="uniform">uniform<a class="headerlink" href="#uniform" title="Permanent link">&para;</a></h3>
 <p><img alt="The uniform generator: deterministic random values bounded between min and max" src="../img/generators/uniform.svg" /></p>
+<div class="sonda-livegen" data-gen="uniform" markdown="0"></div>
+
 <p>Produces uniformly distributed random values in the range <code>[min, max]</code>. Deterministic when seeded.</p>
 <table>
 <thead>
@@ -3105,6 +3111,8 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 </span></code></pre></div>
 <h3 id="sequence">sequence<a class="headerlink" href="#sequence" title="Permanent link">&para;</a></h3>
 <p><img alt="The sequence generator: explicit values stepped through in order, repeating" src="../img/generators/sequence.svg" /></p>
+<div class="sonda-livegen" data-gen="sequence" markdown="0"></div>
+
 <p>Steps through an explicit list of values. Use it to model specific incident patterns such as threshold crossings.</p>
 <table>
 <thead>
@@ -3150,6 +3158,8 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 </span></code></pre></div>
 <h3 id="step">step<a class="headerlink" href="#step" title="Permanent link">&para;</a></h3>
 <p><img alt="The step generator: a monotonic staircase that wraps at the configured max" src="../img/generators/step.svg" /></p>
+<div class="sonda-livegen" data-gen="step" markdown="0"></div>
+
 <p>Produces a monotonically increasing counter value: <code>start + tick * step_size</code>. With <code>max</code> set, the value wraps using modular arithmetic to simulate a counter reset. This is the standard <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> for testing <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> <code>rate()</code> and <code>increase()</code> queries.</p>
 <table>
 <thead>
@@ -3275,6 +3285,12 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 <p>Set <code>magnitude</code> to a negative value to create periodic dips below the baseline. For example, <code>baseline: 100.0</code> with <code>magnitude: -50.0</code> produces values that drop from 100 to 50 during the spike window. This is useful for testing low-threshold alerts.</p>
 </div>
 <h3 id="csv_replay">csv_replay<a class="headerlink" href="#csv_replay" title="Permanent link">&para;</a></h3>
+<div class="admonition note">
+<p class="admonition-title">Not live on this page</p>
+<p><code>csv_replay</code> reads a file from disk, and there is no filesystem in the browser — so this
+section stays static by design. The <a href="../../test/examples/">examples gallery</a> shows the
+scenarios that use it, and the <a href="../../import/grafana-exports/">Grafana CSV Replay guide</a> walks the export workflow end to end.</p>
+</div>
 <p>Replays numeric values from a CSV file. Use it to reproduce real production metric patterns captured from monitoring systems, including Grafana CSV exports with embedded labels. The replay rate is derived from the CSV's column-0 timestamps and the optional <code>timescale</code> multiplier, so a 5-minute incident plays back over 5 minutes without manual tuning. For a step-by-step walkthrough of the Grafana export workflow, see the <a href="../../import/grafana-exports/">Grafana CSV Replay</a> guide.</p>
 <table>
 <thead>
@@ -3876,6 +3892,12 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 </div>
 <p>Histograms and summaries are <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> entries with <code>signal_type: histogram</code> or <code>signal_type: summary</code> and a <code>distribution:</code> block in place of the metric <code>generator:</code> block. Run them with <code>sonda run</code> like any other <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. For a hands-on walkthrough of testing latency alerts, see the <a href="../../test/alert-testing/">Histograms, Summaries, and Latency Alerts</a> guide.</p>
 <h3 id="histogram"><abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr><a class="headerlink" href="#histogram" title="Permanent link">&para;</a></h3>
+<div class="admonition tip">
+<p class="admonition-title">See it move</p>
+<p>The playground's <strong>Latency <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr> + quantiles</strong> preset renders these buckets as a live
+heatmap — <a href="../../playground/">open it there</a> and drag <code>mean_shift_per_sec</code> to watch mass
+drift into the higher buckets. A live widget on this page is playbook WP14.</p>
+</div>
 <p>A <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr> answers the question: <strong>"what is the distribution of observed values?"</strong> It does this by sorting observations into buckets — ranges with upper boundaries you define. Each bucket counts how many observations fell at or below that boundary.</p>
 <p>For a metric named <code>http_request_duration_seconds</code> with buckets at 0.1, 0.25, and 0.5, each tick produces something like:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>http_request_duration_seconds_bucket{le=&quot;0.1&quot;}   60   # 60 requests were &lt;= 100ms
@@ -4023,6 +4045,11 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 <p>Set <code>mean_shift_per_sec</code> to a positive value to make the distribution center move higher over time. More observations land in higher buckets, percentile estimates rise, and latency alerts eventually trigger. See the <a href="../../test/alert-testing/#test-a-histogram_quantile-alert-with-sonda">alert testing walkthrough</a> for a complete example.</p>
 </div>
 <h3 id="summary"><abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr><a class="headerlink" href="#summary" title="Permanent link">&para;</a></h3>
+<div class="admonition tip">
+<p class="admonition-title">See it move</p>
+<p>The same <strong>Latency <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr> + quantiles</strong> preset in the <a href="../../playground/">playground</a>
+draws summaries as quantile bands. A live widget on this page is playbook WP14.</p>
+</div>
 <p>Where a <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr> stores raw bucket counts and lets <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> estimate percentiles server-side, a <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> does the math upfront. It computes the actual percentile values on the client and reports them directly. The p50 <em>is</em> 98ms. The p99 <em>is</em> 148ms. No estimation, no bucket interpolation.</p>
 <p>The tradeoff is flexibility. With a <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr>, you can compute <em>any</em> percentile after the fact from the stored buckets. With a <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr>, you only get the specific quantiles you configured. And critically, you <strong>cannot aggregate <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> quantiles across instances</strong> — averaging the p99 of ten pods does not give you the fleet-wide p99. If you need cross-instance percentiles (and in Kubernetes, you almost always do), use histograms.</p>
 <p>Each tick, the <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> samples observations, sorts them, and computes quantile values using the nearest-rank method.</p>
@@ -4217,6 +4244,11 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 <h2 id="log-generators">Log generators<a class="headerlink" href="#log-generators" title="Permanent link">&para;</a></h2>
 <p>Log generators produce structured log events instead of numeric values. They live on a <code>signal_type: logs</code> entry under the <code>log_generator:</code> key (not <code>generator:</code>).</p>
 <h3 id="template">template<a class="headerlink" href="#template" title="Permanent link">&para;</a></h3>
+<div class="admonition tip">
+<p class="admonition-title">See it move</p>
+<p>The <strong>Synthetic log <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr></strong> preset in the <a href="../../playground/">playground</a> renders a live,
+severity-coloured <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr> from this <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr>. A live widget on this page is playbook WP14.</p>
+</div>
 <p>Generates log events from message templates with randomized field values.</p>
 <table>
 <thead>
@@ -4282,6 +4314,12 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
 </span></code></pre></div>
 <p>Templates are selected round-robin by tick. Placeholders are resolved by picking randomly from the corresponding field pool.</p>
 <h3 id="csv_replay_1">csv_replay<a class="headerlink" href="#csv_replay_1" title="Permanent link">&para;</a></h3>
+<div class="admonition note">
+<p class="admonition-title">Not live on this page</p>
+<p><code>csv_replay</code> reads a file from disk, and there is no filesystem in the browser — so this
+section stays static by design. The <a href="../../test/examples/">examples gallery</a> shows the
+scenarios that use it, and the <a href="../../import/log-files/">Log CSV Replay guide</a> walks the export workflow end to end.</p>
+</div>
 <p>Replays structured log events from a CSV file. The CSV has a <code>timestamp</code> column that drives the emission cadence, plus optional <code>severity</code> and <code>message</code> columns and any number of free-form field columns. The replay rate is derived from the median Δt of the timestamp column, the same model the metrics-side <a href="#csv_replay"><code>csv_replay</code></a> uses. A 10-minute window in the CSV plays back over 10 minutes of wall clock without manual rate tuning. For a full walkthrough including the <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> / <code>logcli</code> export pipeline, see the <a href="../../import/log-files/">Log CSV Replay</a> guide.</p>
 <table>
 <thead>
@@ -4443,7 +4481,7 @@ for full editing. Without JavaScript you get the static shape drawings instead.<
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 10, 2026 18:12:40 UTC">August 10, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 14, 2026 14:35:46 UTC">August 14, 2026</span>
   </span>
 
     
