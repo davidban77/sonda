@@ -52,6 +52,23 @@ const SIGNAL_SOURCE = {
   logs: (result) => result.logs || [],
 };
 
+/* How many log lines a widget renders before saying how many it withheld.
+ *
+ * The playground renders the stream ENTIRE and should: it has a preset
+ * picker, a cursor that correlates a chart instant to a line, and a reader
+ * who came to look at logs. A reference-page demo has none of that, and at
+ * `rate: 4` over 60s the same renderer produced 240 lines — a 5,379px scroll
+ * inside a 318px pane, seventeen screens of nested scrolling in the middle of
+ * a page someone is reading top to bottom (review #550 M2).
+ *
+ * 40 keeps the pane about three of its own heights, which is enough to see
+ * the severity mix the widget's sliders control and short enough not to trap
+ * a scroll. The cap lives here rather than in `logStream` so the playground
+ * keeps its unbounded default rather than inheriting a limit aimed at a
+ * different page.
+ */
+const LOG_LINES_SHOWN = 40;
+
 const SIGNAL_DRAW = {
   metrics: (canvas, sample) => drawMini(canvas, sample),
   histogram: drawHistogramHeatmap,
@@ -241,7 +258,9 @@ async function mount(root) {
         // is restyled by CSS and a resize reflows it. Only canvases need to
         // be repainted, and adding this root to `live` would rebuild the
         // whole pane — losing the reader's scroll position — for nothing.
-        output.replaceChildren(logStream(sample, { prefix: "sonda-livegen" }));
+        output.replaceChildren(
+          logStream(sample, { prefix: "sonda-livegen", limit: LOG_LINES_SHOWN })
+        );
       } else {
         const draw = SIGNAL_DRAW[signal];
         root._draw = () => draw(canvas, sample);

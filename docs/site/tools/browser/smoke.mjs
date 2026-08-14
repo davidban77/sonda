@@ -509,20 +509,41 @@ try {
     .waitForFunction(
       (s) => {
         const c = document.querySelector(s)?.querySelector("canvas");
-        // rows are the only thing that sets height: pad(8+26) + rows*rowHeight
-        return c && c.height > 0 ? { height: c.height, pixels: c.toDataURL().length } : false;
+        if (!c || !c.height) return false;
+        // CSS pixels, not device pixels. `canvas.height` is cssHeight * dpr,
+        // and the ceiling below is a CSS-pixel quantity — comparing them
+        // directly made the gate's strictness depend on the display of
+        // whoever ran it (review #550 W1): identical at CI's dpr 1, twice as
+        // strict at dpr 2. `style.height` is what the renderer sets in CSS px.
+        return {
+          cssHeight: parseFloat(c.style.height),
+          devicePixels: c.height,
+          pixels: c.toDataURL().length,
+        };
       },
       histSel,
       { timeout: 30000 }
     )
     .then((h) => h.jsonValue())
     .catch(() => null);
-  // 34px of padding plus at most 40 rows at the 20px maximum row height. A
-  // ladder that outgrows this is one a reader has to scroll a chart to read.
-  const HEATMAP_MAX_HEIGHT = 34 + 40 * 20;
+  // Derived from the arithmetic the renderer can actually produce.
+  // `rowHeight = max(12, min(20, floor(240 / rows)))`, so 20px rows happen
+  // only while rows <= 12 — the tallest 20px heatmap is 8 + 12*20 + 26 = 274.
+  // Every row past that costs the 12px FLOOR, so a ladder of N > 20 rows is
+  // 34 + 12N. 40 rows is already more buckets than a reader can scan, and
+  // that is the bound: 34 + 40*12 = 514.
+  //
+  // The first version of this said "40 rows at the 20px maximum row height",
+  // a configuration the formula cannot reach, and so admitted 66 rows while
+  // claiming to admit 40.
+  const HEATMAP_MAX_CSS_HEIGHT = 34 + 40 * 12;
   check("the heatmap stays bounded with both sliders at maximum",
-    histAtMax !== null && histAtMax.height <= HEATMAP_MAX_HEIGHT && histAtMax.pixels > WIDGET_CHART_WITH_DATA,
-    histAtMax ? `canvas ${histAtMax.height}px, ceiling ${HEATMAP_MAX_HEIGHT}px` : "never redrew");
+    histAtMax !== null &&
+      histAtMax.cssHeight <= HEATMAP_MAX_CSS_HEIGHT &&
+      histAtMax.pixels > WIDGET_CHART_WITH_DATA,
+    histAtMax
+      ? `${histAtMax.cssHeight}css px (${histAtMax.devicePixels} device), ceiling ${HEATMAP_MAX_CSS_HEIGHT}`
+      : "never redrew");
 
   // The logs widget renders ELEMENTS, not pixels — a log line is text, and
   // drawing it into a canvas would make it unselectable and invisible to a
@@ -538,11 +559,16 @@ try {
           return { lines: 0, severities: [], stamped: 0, error: err.textContent };
         const pane = el?.querySelector(".sonda-livegen__logstream");
         if (!pane || !pane.children.length) return false;
-        const rows = [...pane.children];
+        // The trailing "… N more events" footer is not a log line and must be
+        // excluded from every count below, or the stamped check fails on it.
+        const footer = pane.querySelector(".sonda-livegen__logmore");
+        const rows = [...pane.children].filter((r) => r !== footer);
         return {
           lines: rows.length,
           severities: [...new Set(rows.map((r) => (r.className.match(/logline--(\w+)/) || [])[1]))],
           stamped: rows.filter((r) => /^\+\d/.test(r.textContent)).length,
+          withheld: footer ? Number((footer.textContent.match(/(\d+) more/) || [])[1]) : null,
+          screens: Math.round((pane.scrollHeight / pane.clientHeight) * 10) / 10,
           error: null,
         };
       },
@@ -561,6 +587,18 @@ try {
     stream.severities.filter(Boolean).length > 1,
     stream.severities.join(" · ") || "none");
 
+  // Review #550 M2. The renderer showed all 240 events inside a 318px pane —
+  // seventeen screens of nested scroll in the middle of a reference page,
+  // while the heatmap beside it was gated on exactly this kind of reader
+  // effort. The cap has to be visible AND honest: a pane that silently stops
+  // at 40 tells a reader the scenario produced 40 events.
+  check("the log pane is capped rather than becoming a scroll trap",
+    stream.lines <= 40 && stream.screens <= 4,
+    `${stream.lines} line(s), ${stream.screens} screens of scroll`);
+  check("and says how many events it withheld, rather than just stopping",
+    Number.isFinite(stream.withheld) && stream.withheld > 0,
+    stream.withheld === null ? "no footer" : `${stream.withheld} withheld`);
+
   // The reviewer's other named corner: error weight at 0 is the ordinary
   // healthy service, and it must still render rather than producing an empty
   // pane or a division by zero in the engine's weighting.
@@ -577,7 +615,11 @@ try {
         const err = el?.querySelector(".sonda-livegen__error");
         if (err && !err.hidden) return { lines: 0, error: err.textContent };
         const pane = el?.querySelector(".sonda-livegen__logstream");
-        return pane && pane.children.length ? { lines: pane.children.length, error: null } : false;
+        if (!pane || !pane.children.length) return false;
+        // Excludes the "… N more" footer, same as the counts above, so the
+        // two checks report the same quantity rather than differing by one.
+        const footer = pane.querySelector(".sonda-livegen__logmore");
+        return { lines: pane.children.length - (footer ? 1 : 0), error: null };
       },
       logSel,
       { timeout: 30000 }

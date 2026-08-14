@@ -19,10 +19,18 @@
 
 /* Chart colors for the current Material color scheme.
  *
- * The union of what both callers had: playground.js never read `line` and
- * livegen.js never read `plate`, and the six keys they shared were identical
- * strings. Keeping the union means neither caller changed behaviour when its
- * own copy was deleted.
+ * The union of what both callers had. Measured against origin/main before the
+ * deletions rather than remembered (review #550 M1 corrected the first
+ * version of this sentence, which had it backwards):
+ *
+ *   playground.js palette()  grid text      gap burst plate   (5 keys)
+ *   livegen.js    palette()  grid text line gap burst plate   (6 keys)
+ *
+ * So livegen read BOTH `line` and `plate`; playground was the file that never
+ * had `line` at all, and the genuinely shared set is FIVE keys, not six. All
+ * five were byte-equal strings in the two copies, which is why keeping the
+ * union left neither caller's behaviour changed when its own copy was
+ * deleted.
  */
 export function palette() {
   const dark = document.body.getAttribute("data-md-color-scheme") === "slate";
@@ -236,10 +244,11 @@ export function drawSummaryBands(canvas, summary) {
  * Text goes in via `textContent` and `createTextNode`, never markup: a log
  * message is generated content and `check_no_raw_html.sh` holds the floor.
  */
-export function logStream(log, { prefix }) {
+export function logStream(log, { prefix, limit = Infinity }) {
   const stream = document.createElement("div");
   stream.className = `${prefix}__logstream`;
-  for (const line of log.lines) {
+  const shown = log.lines.length > limit ? log.lines.slice(0, limit) : log.lines;
+  for (const line of shown) {
     const row = document.createElement("div");
     row.className = `${prefix}__logline ${prefix}__logline--${line.severity}`;
     const at = document.createElement("span");
@@ -250,6 +259,15 @@ export function logStream(log, { prefix }) {
     sev.textContent = line.severity.toUpperCase().padEnd(5);
     row.append(at, sev, document.createTextNode(line.message));
     stream.appendChild(row);
+  }
+  // Say what was withheld rather than just stopping. A pane that silently
+  // ends at line 40 of 240 tells the reader the scenario produced 40 events,
+  // which is the one thing it must not do on a page teaching `rate`.
+  if (shown.length < log.lines.length) {
+    const more = document.createElement("div");
+    more.className = `${prefix}__logmore`;
+    more.textContent = `… ${log.lines.length - shown.length} more events — open in the playground for the whole stream`;
+    stream.appendChild(more);
   }
   return stream;
 }
