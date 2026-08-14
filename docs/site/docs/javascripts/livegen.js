@@ -26,6 +26,37 @@ import {
   burstEmission,
 } from "./sonda-pure.js";
 import { playgroundHref } from "./playground-link.js";
+// `fmt`/`fmtSecs`/`palette` used to live here as character-identical copies of
+// playground.js's. Names differ from the originals in this file only; bodies
+// were unchanged by the extraction.
+import {
+  palette,
+  formatNumber,
+  formatSeconds,
+  drawHistogramHeatmap,
+  drawSummaryBands,
+  logStream,
+} from "./signal-render.js";
+
+/* Which array of the sample result a widget reads, and what draws it.
+ *
+ * Tables rather than a chain of ifs, for the reason the gallery's
+ * `galleryCardState` exists: adding a signal type should be a row, and a
+ * missing row should be a loud undefined at mount rather than a silent
+ * fall-through to the metrics path that then reads `.values` off a histogram.
+ */
+const SIGNAL_SOURCE = {
+  metrics: (result) => result.entries || [],
+  histogram: (result) => result.histograms || [],
+  summary: (result) => result.summaries || [],
+  logs: (result) => result.logs || [],
+};
+
+const SIGNAL_DRAW = {
+  metrics: (canvas, sample) => drawMini(canvas, sample),
+  histogram: drawHistogramHeatmap,
+  summary: drawSummaryBands,
+};
 // MAX_TICKS comes from the preset module rather than being declared here: it
 // constrains what a preset may ask for, so the pure invariants need it too,
 // and two definitions that agree by inspection are one edit away from not.
@@ -79,19 +110,28 @@ async function mount(root) {
   if (!preset) return;
 
   const params = defaultParams(preset);
-  // A preset either draws a chart or shows the encoded bytes. The encoders
-  // widget is the second kind: the same sine encodes three ways and the line
-  // is identical in all of them, so a chart there would answer a question
-  // nobody asked.
-  const output = preset.preview ? document.createElement("pre") : document.createElement("canvas");
-  output.className = preset.preview ? "sonda-livegen__preview" : "sonda-livegen__chart";
+  // Three output shapes, chosen by the preset rather than sniffed from the
+  // result. `preview` shows the engine's encoded bytes (the encoders widget:
+  // the same sine encodes three ways and the LINE is identical in all of
+  // them, so a chart there would answer a question nobody asked). A logs
+  // widget renders elements, because a log line is text and drawing text into
+  // a canvas would make it unselectable and invisible to a screen reader.
+  // Everything else is a canvas.
+  const signal = preset.signal || "metrics";
+  const kind = preset.preview ? "preview" : signal === "logs" ? "logs" : "chart";
+  const output = document.createElement(
+    kind === "preview" ? "pre" : kind === "logs" ? "div" : "canvas"
+  );
+  output.className = `sonda-livegen__${kind}`;
   output.setAttribute(
     "aria-label",
-    preset.preview
+    kind === "preview"
       ? `Encoded output of the ${root.dataset.gen} example`
-      : `Live chart of the ${root.dataset.gen} generator`
+      : kind === "logs"
+        ? `Live log stream from the ${root.dataset.gen} generator`
+        : `Live chart of the ${root.dataset.gen} generator`
   );
-  const canvas = preset.preview ? null : output;
+  const canvas = kind === "chart" ? output : null;
   const controls = document.createElement("div");
   controls.className = "sonda-livegen__controls";
   const error = document.createElement("p");
@@ -180,14 +220,31 @@ async function mount(root) {
         return;
       }
       error.hidden = true;
-      const entry = result.entries[0];
-      if (preset.preview) {
+      // `ok` from the engine does not mean this widget's signal is present:
+      // a scenario the compiler accepts can still be SKIPPED at sampling (a
+      // csv_replay reaching for a file, an encoder built out of this wasm).
+      // Saying so beats an empty frame the reader has to interpret.
+      const sample = SIGNAL_SOURCE[signal](result)[0];
+      if (!sample) {
+        error.hidden = false;
+        error.textContent =
+          result.skipped?.[0]?.reason || `the engine produced no ${signal} to draw`;
+        return;
+      }
+      if (kind === "preview") {
         // The engine's own encoded bytes, verbatim and as text — never as
         // markup. Trailing newline trimmed so the block does not carry an
         // empty last line.
-        output.textContent = (entry.encoded_preview || "").replace(/\n+$/, "");
+        output.textContent = (sample.encoded_preview || "").replace(/\n+$/, "");
+      } else if (kind === "logs") {
+        // Not registered for redraw: the stream is elements, so a theme flip
+        // is restyled by CSS and a resize reflows it. Only canvases need to
+        // be repainted, and adding this root to `live` would rebuild the
+        // whole pane — losing the reader's scroll position — for nothing.
+        output.replaceChildren(logStream(sample, { prefix: "sonda-livegen" }));
       } else {
-        root._draw = () => drawMini(canvas, entry);
+        const draw = SIGNAL_DRAW[signal];
+        root._draw = () => draw(canvas, sample);
         root._draw();
         live.add(root);
       }
@@ -312,23 +369,6 @@ function hideStaticImage(root) {
   }
 }
 
-function palette() {
-  const dark = document.body.getAttribute("data-md-color-scheme") === "slate";
-  return {
-    grid: dark ? "rgba(148, 163, 184, 0.25)" : "rgba(100, 116, 139, 0.25)",
-    text: dark ? "#94a3b8" : "#64748b",
-    line: "#f97316",
-    // Same two washes as the playground chart, for the same reason: a reader
-    // who learns what the grey band means on one page should not have to
-    // learn it again on the other.
-    gap: dark ? "rgba(148, 163, 184, 0.14)" : "rgba(100, 116, 139, 0.12)",
-    burst: dark ? "rgba(253, 186, 116, 0.14)" : "rgba(249, 115, 22, 0.10)",
-    // Backing plate for the burst label, which is drawn INSIDE the plot
-    // and would otherwise be read through whatever trace passes behind it.
-    plate: dark ? "rgba(15, 23, 42, 0.82)" : "rgba(255, 255, 255, 0.82)",
-  };
-}
-
 function drawMini(canvas, entry) {
   const colors = palette();
   const dpr = window.devicePixelRatio || 1;
@@ -379,7 +419,7 @@ function drawMini(canvas, entry) {
     ctx.lineTo(cssWidth - pad.right, gy);
     ctx.stroke();
     ctx.textAlign = "right";
-    ctx.fillText(fmt(value), pad.left - 5, gy + 3);
+    ctx.fillText(formatNumber(value), pad.left - 5, gy + 3);
   }
   ctx.setLineDash([]);
 
@@ -444,7 +484,7 @@ function drawMini(canvas, entry) {
   ctx.textAlign = "center";
   for (let step = 0; step <= 3; step++) {
     const secs = (spanSecs * step) / 3;
-    ctx.fillText(fmtSecs(secs), pad.left + (plotW * step) / 3, cssHeight - 6);
+    ctx.fillText(formatSeconds(secs), pad.left + (plotW * step) / 3, cssHeight - 6);
   }
 
   ctx.strokeStyle = colors.line;
@@ -456,20 +496,6 @@ function drawMini(canvas, entry) {
     else ctx.lineTo(x(i), y(v));
   });
   ctx.stroke();
-}
-
-function fmt(value) {
-  if (Math.abs(value) >= 1000) return value.toFixed(0);
-  if (Math.abs(value) >= 10) return value.toFixed(1);
-  return value.toFixed(2);
-}
-
-function fmtSecs(secs) {
-  const rounded = Math.round(secs);
-  if (rounded < 60) return `${rounded}s`;
-  const mins = Math.floor(rounded / 60);
-  const rest = rounded % 60;
-  return rest ? `${mins}m${rest}s` : `${mins}m`;
 }
 
 // Theme flips and resizes redraw every live widget from its cached samples;

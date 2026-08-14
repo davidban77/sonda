@@ -590,6 +590,61 @@ test("preset sampling stays within the playground tick budget", () => {
   }
 });
 
+test("the distribution widgets bound their per-tick observation volume", () => {
+  // A metrics entry costs one number per tick. A histogram or summary entry
+  // costs `observations_per_tick` DRAWS per tick, and the engine does that
+  // work for every tick in the window — so the tick budget above, which
+  // bounds ticks alone, says nothing about the quantity these two widgets
+  // actually scale. The failure mode is not an error: the page gets heavy,
+  // which is invisible to every other gate here and to a reader on a fast
+  // machine.
+  //
+  // This is the half a pure module can check. It CANNOT check the heatmap's
+  // cell count, because the bucket ladder is the engine's default for the
+  // named distribution and nothing in this file knows it — asserting a
+  // remembered number here would be a comment pretending to be a gate. The
+  // real rendered row count is measured against the real sampler in the
+  // browser suite instead.
+  const DRAW_BUDGET = 15_000;
+  for (const gen of ["histogram", "summary"]) {
+    const widget = WIDGETS[gen];
+    const ticks = sampledTicks(widget);
+    const observations = (widget.sliders || []).find((s) => s.key === "observations");
+    assert.ok(observations, `${gen}: expected an observations slider to bound`);
+    const worst = ticks * observations.max;
+    assert.ok(
+      worst <= DRAW_BUDGET,
+      `${gen}: ${ticks} ticks x ${observations.max} observations = ${worst} draws exceeds ${DRAW_BUDGET}`
+    );
+  }
+});
+
+test("a logs widget declares an encoder that can encode a log", () => {
+  // The compile gate cannot see this. `encoder: { type: prometheus_text }`
+  // with `signal_type: logs` COMPILES — `sonda --dry-run run` accepts it —
+  // and fails at sampling with "log encoding not supported by this encoder"
+  // (encoder/mod.rs). So the widget passes 648 corner compilations and shows
+  // every reader an error box. Caught in browser UAT, which is the only gate
+  // that runs the sampler, and pinned here so the next logs widget cannot
+  // inherit the metrics default silently.
+  //
+  // The list is the set of encoders implementing `encode_log`, read from
+  // sonda-core/src/encoder/: json.rs, syslog.rs and otlp.rs override it;
+  // prometheus_text, influx_lp and remote_write take the trait's default,
+  // which is the NotSupported error above.
+  const LOG_CAPABLE = new Set(["json_lines", "syslog", "otlp"]);
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    if (widget.signal !== "logs") continue;
+    for (const corner of cornerParams(widget)) {
+      const encoder = widget.yaml(corner).match(/encoder:\s*\{\s*type:\s*(\w+)/)?.[1];
+      assert.ok(
+        encoder && LOG_CAPABLE.has(encoder),
+        `${gen}: encoder "${encoder}" cannot encode a log event — the widget would compile and then fail to sample`
+      );
+    }
+  }
+});
+
 test("every control reaches its widget's template (review #549 W2)", () => {
   // The generalisation of the hand-written `sequence` pattern check above.
   // That one covered ONE of sequence's two controls, and an inert `repeat`
@@ -643,8 +698,12 @@ test("corner and sweep enumeration cover what the compile gate feeds the engine"
           `${gen}: corners use range edges or the default`
         );
       }
-      // Every corner must produce a single-scenario YAML mentioning the type.
-      assert.match(widget.yaml(corner), /signal_type: metrics/);
+      // Every corner must produce a single-scenario YAML declaring the
+      // widget's own signal type. Hard-coded to `metrics` until WP14, which
+      // is the same shape of assumption WP13's slider-less widget broke: an
+      // assertion that reads as general and is really about the one case that
+      // existed when it was written.
+      assert.match(widget.yaml(corner), new RegExp(`signal_type: ${widget.signal || "metrics"}\\b`));
     }
   }
   // Sweeps walk every step of the named slider under min/max neighbors.

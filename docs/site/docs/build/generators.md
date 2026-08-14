@@ -723,10 +723,7 @@ Histograms and summaries are scenario entries with `signal_type: histogram` or `
 
 ### histogram
 
-!!! tip "See it move"
-    The playground's **Latency histogram + quantiles** preset renders these buckets as a live
-    heatmap — [open it there](../playground/index.md) and drag `mean_shift_per_sec` to watch mass
-    drift into the higher buckets. A live widget on this page is playbook WP14.
+<div class="sonda-livegen" data-gen="histogram" markdown="0"></div>
 
 A histogram answers the question: **"what is the distribution of observed values?"** It does this by sorting observations into buckets — ranges with upper boundaries you define. Each bucket counts how many observations fell at or below that boundary.
 
@@ -814,9 +811,7 @@ http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 9.505 17
 
 ### summary
 
-!!! tip "See it move"
-    The same **Latency histogram + quantiles** preset in the [playground](../playground/index.md)
-    draws summaries as quantile bands. A live widget on this page is playbook WP14.
+<div class="sonda-livegen" data-gen="summary" markdown="0"></div>
 
 Where a histogram stores raw bucket counts and lets Prometheus estimate percentiles server-side, a summary does the math upfront. It computes the actual percentile values on the client and reports them directly. The p50 *is* 98ms. The p99 *is* 148ms. No estimation, no bucket interpolation.
 
@@ -932,9 +927,7 @@ Log generators produce structured log events instead of numeric values. They liv
 
 ### template
 
-!!! tip "See it move"
-    The **Synthetic log stream** preset in the [playground](../playground/index.md) renders a live,
-    severity-coloured stream from this generator. A live widget on this page is playbook WP14.
+<div class="sonda-livegen" data-gen="log_template" markdown="0"></div>
 
 Generates log events from message templates with randomized field values.
 
