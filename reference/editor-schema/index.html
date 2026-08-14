@@ -6,35 +6,35 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Reference for the YAML scenario file format, generators, encoders, sinks, scheduling, and catalogs.">
+        <meta name="description" content="Point your editor at Sonda's JSON Schema for completion and inline validation of scenario YAML.">
       
       
       
-        <link rel="canonical" href="https://davidban77.github.io/sonda/build/">
+        <link rel="canonical" href="https://davidban77.github.io/sonda/reference/editor-schema/">
       
       
-        <link rel="prev" href="../playground/alert-lab/">
+        <link rel="prev" href="../scenario-fields/">
       
       
-        <link rel="next" href="concepts/">
+        <link rel="next" href="../glossary/">
       
       
         
       
       
-      <link rel="icon" href="../assets/favicon.svg">
+      <link rel="icon" href="../../assets/favicon.svg">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>Build scenarios - Sonda</title>
+        <title>Editor Schema - Sonda</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -53,9 +53,9 @@
       
     
     
-      <link rel="stylesheet" href="../stylesheets/sonda.css">
+      <link rel="stylesheet" href="../../stylesheets/sonda.css">
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -63,17 +63,17 @@
     
   
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Build scenarios - Sonda" />
-<meta property="og:description" content="Reference for the YAML scenario file format, generators, encoders, sinks, scheduling, and catalogs." />
-<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/build/index.png" />
+<meta property="og:title" content="Editor Schema - Sonda" />
+<meta property="og:description" content="Point your editor at Sonda's JSON Schema for completion and inline validation of scenario YAML." />
+<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/reference/editor-schema.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:url" content="https://davidban77.github.io/sonda/build/" />
+<meta property="og:url" content="https://davidban77.github.io/sonda/reference/editor-schema/" />
 <meta property="twitter:card" content="summary_large_image" />
-<meta property="twitter:title" content="Build scenarios - Sonda" />
-<meta property="twitter:description" content="Reference for the YAML scenario file format, generators, encoders, sinks, scheduling, and catalogs." />
-<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/build/index.png" />
+<meta property="twitter:title" content="Editor Schema - Sonda" />
+<meta property="twitter:description" content="Point your editor at Sonda's JSON Schema for completion and inline validation of scenario YAML." />
+<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/reference/editor-schema.png" />
 </head>
   
   
@@ -93,7 +93,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#build-scenarios" class="md-skip">
+        <a href="#editor-schema" class="md-skip">
           Skip to content
         </a>
       
@@ -109,9 +109,9 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
+    <a href="../.." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
       
-  <img src="../assets/sonda-logo.svg" alt="logo">
+  <img src="../../assets/sonda-logo.svg" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -128,7 +128,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Build scenarios
+              Editor Schema
             
           </span>
         </div>
@@ -240,7 +240,7 @@
   
   
     <li class="md-tabs__item">
-      <a href=".." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -261,7 +261,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../get-started/" class="md-tabs__link">
+        <a href="../../get-started/" class="md-tabs__link">
           
   
   
@@ -283,7 +283,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../playground/" class="md-tabs__link">
+        <a href="../../playground/" class="md-tabs__link">
           
   
   
@@ -301,13 +301,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../build/" class="md-tabs__link">
           
   
   
@@ -329,7 +327,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../test/" class="md-tabs__link">
+        <a href="../../test/" class="md-tabs__link">
           
   
   
@@ -351,7 +349,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../import/" class="md-tabs__link">
+        <a href="../../import/" class="md-tabs__link">
           
   
   
@@ -373,7 +371,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../deploy/" class="md-tabs__link">
+        <a href="../../deploy/" class="md-tabs__link">
           
   
   
@@ -391,11 +389,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../reference/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -437,9 +437,9 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
+    <a href="../.." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
       
-  <img src="../assets/sonda-logo.svg" alt="logo">
+  <img src="../../assets/sonda-logo.svg" alt="logo">
 
     </a>
     Sonda
@@ -466,7 +466,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -522,7 +522,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../get-started/" class="md-nav__link ">
+            <a href="../../get-started/" class="md-nav__link ">
               
   
   
@@ -566,7 +566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../get-started/quickstart/" class="md-nav__link">
+      <a href="../../get-started/quickstart/" class="md-nav__link">
         
   
   
@@ -594,7 +594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../get-started/your-first-scenario/" class="md-nav__link">
+      <a href="../../get-started/your-first-scenario/" class="md-nav__link">
         
   
   
@@ -622,7 +622,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../get-started/send-to-a-backend/" class="md-nav__link">
+      <a href="../../get-started/send-to-a-backend/" class="md-nav__link">
         
   
   
@@ -682,7 +682,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../playground/" class="md-nav__link ">
+            <a href="../../playground/" class="md-nav__link ">
               
   
   
@@ -726,7 +726,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../playground/alert-lab/" class="md-nav__link">
+      <a href="../../playground/alert-lab/" class="md-nav__link">
         
   
   
@@ -758,8 +758,6 @@
       
   
   
-    
-  
   
   
     
@@ -789,23 +787,20 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="./" class="md-nav__link md-nav__link--active">
+            <a href="../../build/" class="md-nav__link ">
               
   
   
@@ -823,13 +818,13 @@
             </a>
             
               
-              <label class="md-nav__link md-nav__link--active" for="__nav_4" id="__nav_4_label" tabindex="">
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -849,7 +844,7 @@
   
   
     <li class="md-nav__item">
-      <a href="concepts/" class="md-nav__link">
+      <a href="../../build/concepts/" class="md-nav__link">
         
   
   
@@ -877,7 +872,7 @@
   
   
     <li class="md-nav__item">
-      <a href="scenario-files/" class="md-nav__link">
+      <a href="../../build/scenario-files/" class="md-nav__link">
         
   
   
@@ -905,7 +900,7 @@
   
   
     <li class="md-nav__item">
-      <a href="generators/" class="md-nav__link">
+      <a href="../../build/generators/" class="md-nav__link">
         
   
   
@@ -933,7 +928,7 @@
   
   
     <li class="md-nav__item">
-      <a href="encoders/" class="md-nav__link">
+      <a href="../../build/encoders/" class="md-nav__link">
         
   
   
@@ -961,7 +956,7 @@
   
   
     <li class="md-nav__item">
-      <a href="sinks/" class="md-nav__link">
+      <a href="../../build/sinks/" class="md-nav__link">
         
   
   
@@ -989,7 +984,7 @@
   
   
     <li class="md-nav__item">
-      <a href="sink-batching/" class="md-nav__link">
+      <a href="../../build/sink-batching/" class="md-nav__link">
         
   
   
@@ -1017,7 +1012,7 @@
   
   
     <li class="md-nav__item">
-      <a href="scheduling/" class="md-nav__link">
+      <a href="../../build/scheduling/" class="md-nav__link">
         
   
   
@@ -1045,7 +1040,7 @@
   
   
     <li class="md-nav__item">
-      <a href="catalogs-and-packs/" class="md-nav__link">
+      <a href="../../build/catalogs-and-packs/" class="md-nav__link">
         
   
   
@@ -1119,7 +1114,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../test/" class="md-nav__link ">
+            <a href="../../test/" class="md-nav__link ">
               
   
   
@@ -1163,7 +1158,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/alert-testing/" class="md-nav__link">
+      <a href="../../test/alert-testing/" class="md-nav__link">
         
   
   
@@ -1191,7 +1186,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/recording-rules/" class="md-nav__link">
+      <a href="../../test/recording-rules/" class="md-nav__link">
         
   
   
@@ -1219,7 +1214,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/end-to-end-pipelines/" class="md-nav__link">
+      <a href="../../test/end-to-end-pipelines/" class="md-nav__link">
         
   
   
@@ -1247,7 +1242,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/synthetic-monitoring/" class="md-nav__link">
+      <a href="../../test/synthetic-monitoring/" class="md-nav__link">
         
   
   
@@ -1275,7 +1270,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/capacity-planning/" class="md-nav__link">
+      <a href="../../test/capacity-planning/" class="md-nav__link">
         
   
   
@@ -1303,7 +1298,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/network-device-telemetry/" class="md-nav__link">
+      <a href="../../test/network-device-telemetry/" class="md-nav__link">
         
   
   
@@ -1331,7 +1326,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/network-automation-testing/" class="md-nav__link">
+      <a href="../../test/network-automation-testing/" class="md-nav__link">
         
   
   
@@ -1359,7 +1354,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/examples/" class="md-nav__link">
+      <a href="../../test/examples/" class="md-nav__link">
         
   
   
@@ -1423,7 +1418,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../import/" class="md-nav__link ">
+            <a href="../../import/" class="md-nav__link ">
               
   
   
@@ -1467,7 +1462,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/from-csv/" class="md-nav__link">
+      <a href="../../import/from-csv/" class="md-nav__link">
         
   
   
@@ -1495,7 +1490,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/grafana-exports/" class="md-nav__link">
+      <a href="../../import/grafana-exports/" class="md-nav__link">
         
   
   
@@ -1523,7 +1518,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/log-files/" class="md-nav__link">
+      <a href="../../import/log-files/" class="md-nav__link">
         
   
   
@@ -1593,7 +1588,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../deploy/" class="md-nav__link ">
+            <a href="../../deploy/" class="md-nav__link ">
               
   
   
@@ -1637,7 +1632,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/cli/" class="md-nav__link">
+      <a href="../../deploy/cli/" class="md-nav__link">
         
   
   
@@ -1665,7 +1660,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/server/" class="md-nav__link">
+      <a href="../../deploy/server/" class="md-nav__link">
         
   
   
@@ -1693,7 +1688,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/http-api/" class="md-nav__link">
+      <a href="../../deploy/http-api/" class="md-nav__link">
         
   
   
@@ -1721,7 +1716,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/server-metrics/" class="md-nav__link">
+      <a href="../../deploy/server-metrics/" class="md-nav__link">
         
   
   
@@ -1749,7 +1744,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/docker/" class="md-nav__link">
+      <a href="../../deploy/docker/" class="md-nav__link">
         
   
   
@@ -1777,7 +1772,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/kubernetes/" class="md-nav__link">
+      <a href="../../deploy/kubernetes/" class="md-nav__link">
         
   
   
@@ -1809,6 +1804,8 @@
       
   
   
+    
+  
   
   
     
@@ -1832,20 +1829,23 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../reference/" class="md-nav__link ">
+            <a href="../" class="md-nav__link ">
               
   
   
@@ -1863,13 +1863,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1889,7 +1889,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/cli-flags/" class="md-nav__link">
+      <a href="../cli-flags/" class="md-nav__link">
         
   
   
@@ -1917,7 +1917,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/scenario-fields/" class="md-nav__link">
+      <a href="../scenario-fields/" class="md-nav__link">
         
   
   
@@ -1942,10 +1942,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../reference/editor-schema/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Editor schema
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1961,6 +1988,87 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#per-file-no-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-file, no configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-project-by-filename-pattern" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-project, by filename pattern
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-schema-checks-and-what-it-does-not" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the schema checks, and what it does not
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the schema checks, and what it does not">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scalar-types-are-deliberately-loose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scalar types are deliberately loose
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keeping-up-with-your-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keeping up with your version
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1973,7 +2081,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/glossary/" class="md-nav__link">
+      <a href="../glossary/" class="md-nav__link">
         
   
   
@@ -2001,7 +2109,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/troubleshooting/" class="md-nav__link">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   
@@ -2056,10 +2164,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#start-here" class="md-nav__link">
+  <a href="#per-file-no-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Start here
+        Per-file, no configuration
       
     </span>
   </a>
@@ -2067,10 +2175,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#building-blocks" class="md-nav__link">
+  <a href="#per-project-by-filename-pattern" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Building blocks
+        Per-project, by filename pattern
       
     </span>
   </a>
@@ -2078,10 +2186,38 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#advanced" class="md-nav__link">
+  <a href="#what-the-schema-checks-and-what-it-does-not" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Advanced
+        What the schema checks, and what it does not
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the schema checks, and what it does not">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scalar-types-are-deliberately-loose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scalar types are deliberately loose
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keeping-up-with-your-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keeping up with your version
       
     </span>
   </a>
@@ -2108,62 +2244,151 @@
   
 
 
-<h1 id="build-scenarios">Build scenarios<a class="headerlink" href="#build-scenarios" title="Permanent link">&para;</a></h1>
-<p>Sonda scenarios are YAML files you check into git alongside your alert rules and dashboards. This section is the reference for the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> format and its parts:</p>
-<ul>
-<li>The file structure and shared defaults.</li>
-<li>The <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> of generators, encoders, and sinks.</li>
-<li>Scheduling options.</li>
-<li>Catalog and <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> layout for many scenarios.</li>
-</ul>
-<p>Start with <strong>Concepts</strong> if you have finished <a href="../get-started/">Get started</a> and want the names for each part. Go to <strong>Generators</strong>, <strong>Encoders</strong>, or <strong>Sinks</strong> when you need to look up a specific type.</p>
-<h3 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h3>
-<div class="grid cards">
-<ul>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 13.5v8H3v-8zm-2 2H5v4h4zM12 2l5.5 9h-11zm0 3.86L10.08 9h3.84zM17.5 13c2.5 0 4.5 2 4.5 4.5S20 22 17.5 22 13 20 13 17.5s2-4.5 4.5-4.5m0 2a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg></span> <strong><a href="concepts/">Concepts</a></strong></p>
-<p>The four nested parts of Sonda — <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, entry, <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>, <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> — with a worked example based on a Node Exporter.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm0 2h7v5h5v11H6zm2 8v2h8v-2zm0 4v2h5v-2z"/></svg></span> <strong><a href="scenario-files/">Scenario file format</a></strong></p>
-<p>The full file structure: <code>version: 2</code>, <code>kind: runnable</code>, shared <code>defaults:</code>, <code>after:</code> chains, environment-variable interpolation, and the <a href="../reference/glossary/#sink-error-policy"><abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>-error policy</a> for <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> write failures.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M22 4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h6l2 2zM2 6v14h18v2H2a2 2 0 0 1-2-2V6zm4 0v10h16V6z"/></svg></span> <strong><a href="catalogs-and-packs/">Catalogs and packs</a></strong></p>
-<p>Organize a directory of scenarios with <code>--catalog &lt;dir&gt;</code>, and reuse metric definitions across scenarios with composable packs.</p>
-</li>
-</ul>
+<h1 id="editor-schema">Editor Schema<a class="headerlink" href="#editor-schema" title="Permanent link">&para;</a></h1>
+<p>Sonda publishes a <a href="../../schema/sonda-scenario.schema.json">JSON Schema</a> for the v2 <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file
+format. Point your editor at it and you get key completion, hover documentation pulled from the
+Rust doc comments, and a red underline on a misspelled field — before you run anything.</p>
+<p>The schema lives at:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json
+</span></code></pre></div>
+<h2 id="per-file-no-configuration">Per-file, no configuration<a class="headerlink" href="#per-file-no-configuration" title="Permanent link">&para;</a></h2>
+<p>The quickest way, and the one that travels with the file. Add a modeline comment as the first
+line of any <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>:</p>
+<div class="language-yaml highlight"><span class="filename">cpu.yaml</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># yaml-language-server: $schema=https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cpu_usage</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60s</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sine</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">      </span><span class="nt">amplitude</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50.0</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">      </span><span class="nt">period_secs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">offset</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50.0</span>
+</span></code></pre></div>
+<p>The comment is understood by the YAML language server that backs the VS Code
+<a href="https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml">YAML extension</a>, Neovim's
+<code>yamlls</code>, Helix, and Zed. Sonda ignores it — it is a YAML comment.</p>
+<h2 id="per-project-by-filename-pattern">Per-project, by filename pattern<a class="headerlink" href="#per-project-by-filename-pattern" title="Permanent link">&para;</a></h2>
+<p>If your scenarios follow a naming convention, wire the schema up once instead of per file.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:3"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">VS Code</label><label for="__tabbed_1_2">Neovim (yamlls)</label><label for="__tabbed_1_3">Offline</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<p>In <code>.vscode/settings.json</code>:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">&quot;yaml.schemas&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">&quot;https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">      </span><span class="s2">&quot;scenarios/**/*.yaml&quot;</span><span class="p">,</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">      </span><span class="s2">&quot;*.sonda.yaml&quot;</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="p">]</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">}</span>
+</span></code></pre></div>
 </div>
-<h3 id="building-blocks">Building blocks<a class="headerlink" href="#building-blocks" title="Permanent link">&para;</a></h3>
-<div class="grid cards">
-<ul>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m3.5 18.5 6-6 4 4L22 6.92 20.59 5.5l-7.09 8-4-4L2 17z"/></svg></span> <strong><a href="generators/">Generators</a></strong></p>
-<p>Eight core metric generators (sine, sawtooth, step, spike, and others). Plus shortcut names for common combinations (<code>flap</code>, <code>saturation</code>, <code>leak</code>) and generators for logs and histograms.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 1H3c-1.1 0-2 .9-2 2v12l3-3h5v-1c0-2.2 1.79-4 4-4V3c0-1.1-.9-2-2-2m0 3H9.5c-.34 1.19-.96 2.3-1.82 3.26l-.02.02 1.26 1.25-.37 1.01L7 8l-2.5 2.5-.69-.73 2.53-2.49A8.6 8.6 0 0 1 4.86 5h.99c.31.6.69 1.17 1.15 1.68A7.7 7.7 0 0 0 8.57 4H3V3h3.5V2h1v1H11zm10 5h-8c-1.1 0-2 .9-2 2v7c0 1.1.9 2 2 2h7l3 3V11c0-1.1-.9-2-2-2m-1.37 10-.85-2.25h-3.56L14.38 19h-1.5l3.37-9h1.5l3.38 9zM17 12l1.22 3.25h-2.43z"/></svg></span> <strong><a href="encoders/">Encoders</a></strong></p>
-<p><abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> text, InfluxDB <abbr title="InfluxDB text format: `measurement,tag=v field=v timestamp`. Used by Telegraf and InfluxDB ingest.">line protocol</abbr>, JSON Lines, <abbr title="RFC 5424 log line format.">syslog</abbr>, <abbr title="Prometheus protocol for pushing samples from a producer to a TSDB over HTTP, using protobuf + Snappy compression.">remote-write</abbr> protobuf, and <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>. Includes precision rules and feature flags.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7.05 3.5a3.52 3.52 0 0 0 0 4.97l8.49 8.48c.58.59.58 1.55 0 2.12-.59.59-1.54.59-2.13 0l-4.24-4.24 1.06-1.06-3.53-3.54-.36.36-1.41-1.42a1.02 1.02 0 0 0-1.43 0l-1.4 1.42c-.39.41-.39 1.02 0 1.41l1.4 1.41-.34.36L6.7 17.3l1.06-1.06L12 20.5a3.53 3.53 0 0 0 4.95 0c1.37-1.38 1.37-3.6 0-4.96L8.46 7.05c-.58-.59-.58-1.55 0-2.12.59-.59 1.54-.59 2.13 0l4.24 4.24-1.06 1.06 3.53 3.54.36-.36 1.41 1.42c.39.39 1.03.39 1.43 0l1.4-1.42c.39-.41.39-1.02 0-1.41l-1.4-1.41.34-.36L17.3 6.7l-1.06 1.06L12 3.5a3.53 3.53 0 0 0-4.95 0m-4.24 7.79 1.41-1.41 1.42 1.41-1.42 1.42m14.14 0 1.42-1.42 1.41 1.42-1.41 1.41Z"/></svg></span> <strong><a href="sinks/">Sinks</a></strong></p>
-<p>stdout, file, TCP, UDP, HTTP push, remote_write, <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>, Kafka, and <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> gRPC. Includes TLS, <abbr title="Simple Authentication and Security Layer -- modular auth framework used by Kafka brokers.">SASL</abbr>, and retry-with-backoff.</p>
-</li>
-</ul>
+<div class="tabbed-block">
+<div class="language-lua highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">require</span><span class="p">(</span><span class="s2">&quot;lspconfig&quot;</span><span class="p">).</span><span class="nv">yamlls</span><span class="p">.</span><span class="nf">setup</span><span class="p">({</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nv">settings</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nv">yaml</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">      </span><span class="nv">schemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">        </span><span class="p">[</span><span class="s2">&quot;https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json&quot;</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">          </span><span class="s2">&quot;scenarios/**/*.yaml&quot;</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">          </span><span class="s2">&quot;*.sonda.yaml&quot;</span><span class="p">,</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">      </span><span class="p">},</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="p">})</span>
+</span></code></pre></div>
 </div>
-<h3 id="advanced">Advanced<a class="headerlink" href="#advanced" title="Permanent link">&para;</a></h3>
-<div class="grid cards">
-<ul>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20c4.4 0 8-3.6 8-8s-3.6-8-8-8-8 3.6-8 8 3.6 8 8 8m0-18c5.5 0 10 4.5 10 10s-4.5 10-10 10S2 17.5 2 12 6.5 2 12 2m5 11.9-.7 1.3-5.3-2.9V7h1.5v4.4z"/></svg></span> <strong><a href="scheduling/">Scheduling</a></strong></p>
-<p>Gaps, bursts, dynamic labels, <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spikes, and dependencies (<code>after:</code> and <code>while:</code>) that drive a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s behavior over time.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 10.96a.985.985 0 0 1-.37-1.37L3.13 7c.11-.2.28-.34.47-.42l7.83-4.4c.16-.12.36-.18.57-.18s.41.06.57.18l7.9 4.44c.19.1.35.26.44.46l1.45 2.52c.28.48.11 1.09-.36 1.36l-1 .58v4.96c0 .38-.21.71-.53.88l-7.9 4.44c-.16.12-.36.18-.57.18s-.41-.06-.57-.18l-7.9-4.44A.99.99 0 0 1 3 16.5v-5.54c-.3.17-.68.18-1 0m10-6.81v6.7l5.96-3.35zM5 15.91l6 3.38v-6.71L5 9.21zm14 0v-3.22l-5 2.9c-.33.18-.7.17-1 .01v3.69zm-5.15-2.55 6.28-3.63-.58-1.01-6.28 3.63z"/></svg></span> <strong><a href="sink-batching/">Sink batching</a></strong></p>
-<p>How network sinks buffer events before delivery, the size and time thresholds that flush the buffer, and the trade-offs when tuning them.</p>
-</li>
-</ul>
+<div class="tabbed-block">
+<p>The schema is a plain file. Vendor it and point at the local copy:</p>
+<div class="language-console highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-sSLO<span class="w"> </span>https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json
+</span></code></pre></div>
+<p>Or generate it from the source you are building against, which is what the repository's own
+copy is produced by:</p>
+<div class="language-console highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="gp">$ </span>cargo<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span>sonda-core<span class="w"> </span>--all-features<span class="w"> </span>--example<span class="w"> </span>scenario_schema<span class="w"> </span>&gt;<span class="w"> </span>sonda.schema.json
+</span></code></pre></div>
+<p><code>--all-features</code> matters: the optional delivery features add config shape, so a narrower
+build emits a schema that rejects <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> config a release binary accepts.</p>
 </div>
+</div>
+</div>
+<h2 id="what-the-schema-checks-and-what-it-does-not">What the schema checks, and what it does not<a class="headerlink" href="#what-the-schema-checks-and-what-it-does-not" title="Permanent link">&para;</a></h2>
+<p>The schema is an authoring aid. <code>sonda</code> itself remains the validator, and it enforces rules that
+JSON Schema cannot express. A file your editor is happy with can still be rejected when you run
+it.</p>
+<table>
+<thead>
+<tr>
+<th>Checked by the schema</th>
+<th>Checked when you compile the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr></th>
+<th>Checked only when it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unknown or misspelled field names</td>
+<td><code>id</code> uniqueness across entries</td>
+<td>Encoder <code>precision</code> being 0–17</td>
+</tr>
+<tr>
+<td>Unknown <code>kind:</code>, <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> <code>type:</code>, <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> <code>type:</code>, <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> <code>type:</code></td>
+<td><code>after.ref</code> and <code>while.ref</code> pointing at an entry that exists</td>
+<td></td>
+</tr>
+<tr>
+<td>Structural shape — <code>scenarios:</code> is a list, <code>labels:</code> is a mapping</td>
+<td><code>delay:</code> requiring a <code>while:</code> on the same entry</td>
+<td></td>
+</tr>
+<tr>
+<td>The <code>while.op</code> operator being one of <code>&lt;</code> or <code>&gt;</code></td>
+<td><code>generator:</code> and <code>pack:</code> being mutually exclusive</td>
+<td></td>
+</tr>
+<tr>
+<td>Required fields being present</td>
+<td>Dependency cycles in <code>after:</code> chains</td>
+<td></td>
+</tr>
+<tr>
+<td>The two shapes <code>delay.close:</code> accepts</td>
+<td>Unresolvable <code>pack:</code> references</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>The middle column is what <code>sonda --dry-run run &lt;file&gt;</code> reports — it compiles the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and prints
+the resolved plan without emitting anything:</p>
+<div class="language-console highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="gp">$ </span>sonda<span class="w"> </span>--dry-run<span class="w"> </span>run<span class="w"> </span>cpu.yaml
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="go">Validation: OK (1 scenario)</span>
+</span></code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title"><code>--dry-run</code> is not a full validator</p>
+<p>The third column is genuinely deferred to run time, and <code>--dry-run</code> will tell you a file is OK
+when it is not. A <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> with <code>precision: 99</code> passes dry-run and then fails on <code>sonda run</code>
+with <code>encoder precision must be 0..=17, got 99</code>. There is no single command that checks
+everything short of running the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>.</p>
+</div>
+<h3 id="scalar-types-are-deliberately-loose">Scalar types are deliberately loose<a class="headerlink" href="#scalar-types-are-deliberately-loose" title="Permanent link">&para;</a></h3>
+<p>You will notice the schema accepts a number or a boolean anywhere it accepts a string — so
+<code>status: 200</code> under <code>labels:</code> is not flagged, even though a label value is a string.</p>
+<p>That is on purpose, and it matches the parser. Sonda's YAML loader coerces any plain scalar into
+a string field, so <code>status: 200</code> becomes the label value <code>"200"</code> and the file runs. A schema that
+insisted on <code>"type": "string"</code> would underline working scenarios in red — including several in
+this repository's own <code>examples/</code> directory. Over-rejection is the one failure that makes a schema
+worse than no schema, so the schema follows what Sonda accepts rather than what the Rust types
+declare.</p>
+<h2 id="keeping-up-with-your-version">Keeping up with your version<a class="headerlink" href="#keeping-up-with-your-version" title="Permanent link">&para;</a></h2>
+<p>The published schema tracks the latest release. If you pin an older <code>sonda</code>, generate the schema
+from that version rather than fetching the published one — the <code>--example scenario_schema</code>
+invocation above works from any checkout or crate source.</p>
+<p>The schema is generated from the same Rust types the parser deserializes into, and the repository
+holds a test that fails if the committed copy falls behind them, plus a corpus check that every
+<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> under <code>examples/</code> still validates. It cannot quietly describe an older format.</p>
 
 
 
@@ -2184,7 +2409,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 17:59:15 UTC">August 8, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 14, 2026 04:53:58 UTC">August 14, 2026</span>
   </span>
 
     
@@ -2222,7 +2447,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../playground/alert-lab/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Alert lab">
+          <a href="../scenario-fields/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Scenario fields">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -2232,20 +2457,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Alert lab
+                Scenario fields
               </div>
             </div>
           </a>
         
         
           
-          <a href="concepts/" class="md-footer__link md-footer__link--next" aria-label="Next: Concepts">
+          <a href="../glossary/" class="md-footer__link md-footer__link--next" aria-label="Next: Glossary">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Concepts
+                Glossary
               </div>
             </div>
             <div class="md-footer__button md-icon">
@@ -2310,22 +2535,22 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
-        <script src="../javascripts/sonda-term.js"></script>
+        <script src="../../javascripts/sonda-term.js"></script>
       
-        <script src="../javascripts/sonda-hero.js"></script>
+        <script src="../../javascripts/sonda-hero.js"></script>
       
-        <script src="../javascripts/playground.js" type="module"></script>
+        <script src="../../javascripts/playground.js" type="module"></script>
       
-        <script src="../javascripts/alert-lab.js" type="module"></script>
+        <script src="../../javascripts/alert-lab.js" type="module"></script>
       
-        <script src="../javascripts/livegen.js" type="module"></script>
+        <script src="../../javascripts/livegen.js" type="module"></script>
       
-        <script src="../javascripts/runnable-fences.js" type="module"></script>
+        <script src="../../javascripts/runnable-fences.js" type="module"></script>
       
     
   </body>
