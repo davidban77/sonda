@@ -102,7 +102,13 @@ async function mount(root) {
   link.className = "sonda-livegen__open";
   link.textContent = "Open in playground →";
 
-  for (const slider of preset.sliders) {
+  // `sliders` is optional. A widget whose entire input is a <select> is a
+  // legitimate shape — `sequence`'s parameter is a LIST, with no range to
+  // drag — and dereferencing it unguarded threw before the choices below
+  // were ever rendered, so the widget mounted with no controls and no chart.
+  // The pure module's `cornerParams` carried the same assumption; both were
+  // written when every widget happened to have sliders.
+  for (const slider of preset.sliders || []) {
     const row = document.createElement("label");
     row.className = "sonda-livegen__row";
     const name = document.createElement("span");

@@ -47,6 +47,8 @@ for full editing. Without JavaScript you get the static shape drawings instead.
 
 ![The constant generator: a flat line at the configured value](img/generators/constant.svg)
 
+<div class="sonda-livegen" data-gen="constant" markdown="0"></div>
+
 Returns the same value on every tick. Use it for baseline testing or known-value verification (for example, recording rule validation).
 
 | Parameter | Type | Required | Default | Description |
@@ -151,6 +153,8 @@ cpu 100 1774279697110
 
 ![The sawtooth generator: a linear ramp from min to max that resets each period](img/generators/sawtooth.svg)
 
+<div class="sonda-livegen" data-gen="sawtooth" markdown="0"></div>
+
 Ramps linearly from `min` to `max` and resets to `min` at the start of each period.
 
 | Parameter | Type | Required | Default | Description |
@@ -203,6 +207,8 @@ ramp 25 1774279702399
 ### uniform
 
 ![The uniform generator: deterministic random values bounded between min and max](img/generators/uniform.svg)
+
+<div class="sonda-livegen" data-gen="uniform" markdown="0"></div>
 
 Produces uniformly distributed random values in the range `[min, max]`. Deterministic when seeded.
 
@@ -257,6 +263,8 @@ noise 27.068700996215277 1774279699731
 
 ![The sequence generator: explicit values stepped through in order, repeating](img/generators/sequence.svg)
 
+<div class="sonda-livegen" data-gen="sequence" markdown="0"></div>
+
 Steps through an explicit list of values. Use it to model specific incident patterns such as threshold crossings.
 
 | Parameter | Type | Required | Default | Description |
@@ -289,6 +297,8 @@ cpu_spike_test{instance="server-01",job="node"} 95 1774279709031
 ### step
 
 ![The step generator: a monotonic staircase that wraps at the configured max](img/generators/step.svg)
+
+<div class="sonda-livegen" data-gen="step" markdown="0"></div>
 
 Produces a monotonically increasing counter value: `start + tick * step_size`. With `max` set, the value wraps using modular arithmetic to simulate a counter reset. This is the standard generator for testing PromQL `rate()` and `increase()` queries.
 
@@ -368,6 +378,11 @@ cpu_spike_test{instance="server-01",job="node"} 250 1775195162888
     Set `magnitude` to a negative value to create periodic dips below the baseline. For example, `baseline: 100.0` with `magnitude: -50.0` produces values that drop from 100 to 50 during the spike window. This is useful for testing low-threshold alerts.
 
 ### csv_replay
+
+!!! note "Not live on this page"
+    `csv_replay` reads a file from disk, and there is no filesystem in the browser — so this
+    section stays static by design. The [examples gallery](../test/examples.md) shows the
+    scenarios that use it, and the [Grafana CSV Replay guide](../import/grafana-exports.md) walks the export workflow end to end.
 
 Replays numeric values from a CSV file. Use it to reproduce real production metric patterns captured from monitoring systems, including Grafana CSV exports with embedded labels. The replay rate is derived from the CSV's column-0 timestamps and the optional `timescale` multiplier, so a 5-minute incident plays back over 5 minutes without manual tuning. For a step-by-step walkthrough of the Grafana export workflow, see the [Grafana CSV Replay](../import/grafana-exports.md) guide.
 
@@ -708,6 +723,11 @@ Histograms and summaries are scenario entries with `signal_type: histogram` or `
 
 ### histogram
 
+!!! tip "See it move"
+    The playground's **Latency histogram + quantiles** preset renders these buckets as a live
+    heatmap — [open it there](../playground/index.md) and drag `mean_shift_per_sec` to watch mass
+    drift into the higher buckets. A live widget on this page is playbook WP14.
+
 A histogram answers the question: **"what is the distribution of observed values?"** It does this by sorting observations into buckets — ranges with upper boundaries you define. Each bucket counts how many observations fell at or below that boundary.
 
 For a metric named `http_request_duration_seconds` with buckets at 0.1, 0.25, and 0.5, each tick produces something like:
@@ -793,6 +813,10 @@ http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 9.505 17
     Set `mean_shift_per_sec` to a positive value to make the distribution center move higher over time. More observations land in higher buckets, percentile estimates rise, and latency alerts eventually trigger. See the [alert testing walkthrough](../test/alert-testing.md#test-a-histogram_quantile-alert-with-sonda) for a complete example.
 
 ### summary
+
+!!! tip "See it move"
+    The same **Latency histogram + quantiles** preset in the [playground](../playground/index.md)
+    draws summaries as quantile bands. A live widget on this page is playbook WP14.
 
 Where a histogram stores raw bucket counts and lets Prometheus estimate percentiles server-side, a summary does the math upfront. It computes the actual percentile values on the client and reports them directly. The p50 *is* 98ms. The p99 *is* 148ms. No estimation, no bucket interpolation.
 
@@ -908,6 +932,10 @@ Log generators produce structured log events instead of numeric values. They liv
 
 ### template
 
+!!! tip "See it move"
+    The **Synthetic log stream** preset in the [playground](../playground/index.md) renders a live,
+    severity-coloured stream from this generator. A live widget on this page is playbook WP14.
+
 Generates log events from message templates with randomized field values.
 
 | Parameter | Type | Required | Default | Description |
@@ -937,6 +965,11 @@ log_generator:
 Templates are selected round-robin by tick. Placeholders are resolved by picking randomly from the corresponding field pool.
 
 ### csv_replay
+
+!!! note "Not live on this page"
+    `csv_replay` reads a file from disk, and there is no filesystem in the browser — so this
+    section stays static by design. The [examples gallery](../test/examples.md) shows the
+    scenarios that use it, and the [Log CSV Replay guide](../import/log-files.md) walks the export workflow end to end.
 
 Replays structured log events from a CSV file. The CSV has a `timestamp` column that drives the emission cadence, plus optional `severity` and `message` columns and any number of free-form field columns. The replay rate is derived from the median Δt of the timestamp column, the same model the metrics-side [`csv_replay`](#csv_replay) uses. A 10-minute window in the CSV plays back over 10 minutes of wall clock without manual rate tuning. For a full walkthrough including the Loki / `logcli` export pipeline, see the [Log CSV Replay](../import/log-files.md) guide.
 

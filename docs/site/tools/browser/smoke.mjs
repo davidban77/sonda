@@ -379,6 +379,78 @@ try {
     return err && !err.hidden ? err.textContent : null;
   });
   check("the widget reports no engine error", widgetError === null, widgetError || "");
+
+  // WP13 completed the core-generator set, so the page now carries widgets of
+  // two SHAPES: slider-driven, and the choice-driven `sequence` whose whole
+  // input is a <select>. Section 8 above only ever mounted whichever widget
+  // came first in the document, which is a slider one — a choice-only widget
+  // could ship broken behind a green suite.
+  //
+  // Each new kind is asserted by mounting it specifically and reading its own
+  // canvas, rather than by counting widgets on the page: a count passes on a
+  // page where five placeholders rendered five empty boxes.
+  for (const gen of ["constant", "sawtooth", "uniform", "step", "sequence"]) {
+    const selector = `.sonda-livegen[data-gen="${gen}"]`;
+    const mounted = await widgets
+      .evaluate(async (sel) => {
+        const host = document.querySelector(sel);
+        if (!host) return { found: false };
+        host.scrollIntoView();
+        return { found: true };
+      }, selector)
+      .catch(() => ({ found: false }));
+
+    let drew = false;
+    if (mounted.found) {
+      drew = await widgets
+        .waitForFunction(
+          ([sel, min]) => {
+            const canvas = document.querySelector(sel)?.querySelector(".sonda-livegen__chart");
+            return Boolean(canvas && canvas.toDataURL().length > min);
+          },
+          [selector, WIDGET_CHART_WITH_DATA],
+          { timeout: 60000 }
+        )
+        .then(() => true)
+        .catch(() => false);
+    }
+
+    const err = await widgets.evaluate((sel) => {
+      const e = document.querySelector(sel)?.querySelector(".sonda-livegen__error");
+      return e && !e.hidden ? e.textContent.trim().slice(0, 120) : null;
+    }, selector);
+
+    check(
+      `the ${gen} widget mounts and draws`,
+      mounted.found && drew && err === null,
+      mounted.found ? err || (drew ? "" : "no chart data") : "no placeholder on the page"
+    );
+  }
+
+  // The sequence widget's control is a <select>, and choosing a different
+  // pattern must redraw. A widget whose control is inert renders perfectly
+  // and teaches nothing.
+  const seqSelector = '.sonda-livegen[data-gen="sequence"]';
+  const seqBefore = await widgets.evaluate(
+    (sel) => document.querySelector(sel)?.querySelector(".sonda-livegen__chart")?.toDataURL().length ?? 0,
+    seqSelector
+  );
+  const seqSelect = await widgets.$(`${seqSelector} select`);
+  if (seqSelect) await seqSelect.selectOption({ index: 1 });
+  const seqChanged = seqSelect
+    ? await widgets
+        .waitForFunction(
+          ([sel, before]) =>
+            (document.querySelector(sel)?.querySelector(".sonda-livegen__chart")?.toDataURL().length ?? 0) !== before,
+          [seqSelector, seqBefore],
+          { timeout: 30000 }
+        )
+        .then(() => true)
+        .catch(() => false)
+    : false;
+  check("choosing a different sequence pattern redraws the chart", seqChanged,
+    seqSelect ? `was ${seqBefore} chars` : "no <select> rendered");
+
   await widgets.close();
 
   // --- 9. A runnable-fence button carries its scenario -------------------

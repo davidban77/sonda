@@ -244,6 +244,127 @@ export const WIDGETS = {
 `;
     },
   },
+  /* --- WP13: the five core generators that had a static SVG and no widget ---
+   *
+   * Post-programme audit (playbook Wave 5): eight generator sections invited
+   * dragging and five did not, which reads as an unfinished pattern rather
+   * than a deliberate line. These complete the set.
+   *
+   * Every min/max pair below is DISJOINT by range construction, not by
+   * validation: the engine rejects `min >= max` (config/validate.rs), and a
+   * slider pair that can cross produces a widget that compiles at rest and
+   * fails under the reader's hand. The leak widget set this precedent and
+   * the compile gate proves it at every corner.
+   */
+  constant: {
+    rate: 2,
+    durationSecs: 60,
+    sliders: [{ key: "value", min: 0, max: 100, step: 1, value: 42 }],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: queue_depth
+    generator: { type: constant, value: ${p.value} }
+`;
+    },
+  },
+  sawtooth: {
+    rate: 4,
+    durationSecs: 60,
+    sliders: [
+      // Disjoint: min tops out at 40, max starts at 50. They cannot cross.
+      { key: "min", min: 0, max: 40, step: 1, value: 10 },
+      { key: "max", min: 50, max: 100, step: 1, value: 90 },
+      { key: "period_secs", min: 5, max: 60, step: 1, value: 20, unit: "s" },
+    ],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: buffer_fill
+    generator: { type: sawtooth, min: ${p.min}, max: ${p.max}, period_secs: ${p.period_secs} }
+`;
+    },
+  },
+  uniform: {
+    rate: 4,
+    durationSecs: 60,
+    sliders: [
+      { key: "min", min: 0, max: 40, step: 1, value: 20 },
+      { key: "max", min: 50, max: 100, step: 1, value: 80 },
+      // The teaching slider: uniform is SEEDED, so dragging back to the same
+      // seed reproduces the trace exactly. That is the property a static SVG
+      // cannot show and the reason this widget is worth more than its size.
+      { key: "seed", min: 0, max: 20, step: 1, value: 7 },
+    ],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: request_latency_ms
+    generator: { type: uniform, min: ${p.min}, max: ${p.max}, seed: ${p.seed} }
+`;
+    },
+  },
+  step: {
+    rate: 4,
+    durationSecs: 60,
+    sliders: [
+      { key: "start", min: 0, max: 50, step: 1, value: 0 },
+      { key: "step_size", min: 1, max: 20, step: 1, value: 8 },
+      // The wrap has to be VISIBLE, which is the whole point of the widget:
+      // a `max` the counter never reaches inside the sampled window draws a
+      // plain ramp and teaches the wrong shape. The window is
+      // rate * durationSecs = 240 ticks, so the smallest climb per window is
+      // step_size(1) * 240 = 240 — above the largest max below. Every corner
+      // wraps at least once. `stepWrapsInWindow` in the harness is what holds
+      // this, because the arithmetic is exactly the kind that rots silently.
+      { key: "max", min: 100, max: 200, step: 50, value: 150 },
+    ],
+    yaml(p) {
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: bytes_sent_total
+    generator: { type: step, start: ${p.start}, step_size: ${p.step_size}, max: ${p.max} }
+`;
+    },
+  },
+  /* `sequence` is not slider-shaped — its input is a LIST — so it uses the
+   * `choices` mechanism #543 added for the encoder switcher. The lists live
+   * here as data rather than in the markup, which is what puts every option
+   * through the compile gate. */
+  sequence: {
+    rate: 2,
+    durationSecs: 60,
+    choices: [
+      {
+        key: "pattern",
+        label: "pattern",
+        options: ["incident ramp", "spike train", "staircase"],
+        value: "incident ramp",
+      },
+      { key: "repeat", label: "repeat", options: ["on", "off"], value: "on" },
+    ],
+    // Kept beside the choices they belong to. `sequence` with `repeat: false`
+    // holds its LAST value once the list is exhausted rather than stopping,
+    // which is why the off option still fills the window.
+    patterns: {
+      "incident ramp": [10, 12, 15, 22, 40, 65, 80, 85, 70, 45, 25, 14],
+      "spike train": [5, 5, 5, 90, 5, 5, 5, 90, 5, 5, 5, 90],
+      staircase: [10, 10, 30, 30, 50, 50, 70, 70, 90, 90],
+    },
+    yaml(p) {
+      const values = this.patterns[p.pattern] || this.patterns["incident ramp"];
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: metrics
+    name: error_rate
+    generator: { type: sequence, values: [${values.join(", ")}], repeat: ${p.repeat === "on"} }
+`;
+    },
+  },
   spike_event: {
     rate: 2,
     durationSecs: 120,
@@ -266,7 +387,7 @@ export const WIDGETS = {
 /* Default parameter values for a widget, keyed by slider. */
 export function defaultParams(widget) {
   const params = {};
-  for (const slider of widget.sliders) params[slider.key] = slider.value;
+  for (const slider of widget.sliders || []) params[slider.key] = slider.value;
   for (const choice of widget.choices || []) params[choice.key] = choice.value;
   return params;
 }
@@ -278,7 +399,10 @@ export function defaultParams(widget) {
  * binding cases, and the default row is what every reader actually sees. */
 export function cornerParams(widget) {
   let corners = [{}];
-  for (const slider of widget.sliders) {
+  // `sliders` is optional: a widget whose whole input is a <select>
+  // (`sequence`, whose parameter is a LIST and has no range to drag) is a
+  // legitimate shape, not a malformed preset.
+  for (const slider of widget.sliders || []) {
     const points = [...new Set([slider.min, slider.value, slider.max])];
     corners = corners.flatMap((corner) => points.map((v) => ({ ...corner, [slider.key]: v })));
   }
@@ -298,10 +422,10 @@ export function cornerParams(widget) {
  * duration-coupled sliders, where "the corners pass" deserves a
  * every-step check along the axis under the worst neighbors. */
 export function sweepParams(widget, key) {
-  const slider = widget.sliders.find((s) => s.key === key);
+  const slider = (widget.sliders || []).find((s) => s.key === key);
   if (!slider) return [];
   let others = [{}];
-  for (const other of widget.sliders) {
+  for (const other of widget.sliders || []) {
     if (other.key === key) continue;
     others = others.flatMap((corner) => [
       { ...corner, [other.key]: other.min },

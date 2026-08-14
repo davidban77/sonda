@@ -457,9 +457,15 @@ test("widget controls are well-formed and defaults sit inside their range", () =
     // Counted as CONTROLS, not sliders: the encoders widget carries one
     // slider and one <select>, and the invariant being defended is "enough
     // to play with, few enough to take in", not the input element used.
-    const controls = widget.sliders.length + (widget.choices || []).length;
-    assert.ok(controls >= 2 && controls <= 3, `${gen}: 2-3 controls, got ${controls}`);
-    for (const s of widget.sliders) {
+    //
+    // The floor is 1, not 2. It was 2 until WP13 added `constant`, which has
+    // exactly one parameter — there is no second knob to offer and inventing
+    // one would be worse than a short widget. The floor exists to catch a
+    // widget shipped with NOTHING to drag, and 1 still catches that; the
+    // ceiling is where the real judgement lives.
+    const controls = (widget.sliders || []).length + (widget.choices || []).length;
+    assert.ok(controls >= 1 && controls <= 3, `${gen}: 1-3 controls, got ${controls}`);
+    for (const s of widget.sliders || []) {
       assert.ok(s.step > 0, `${gen}.${s.key}: positive step`);
       assert.ok(s.min < s.max, `${gen}.${s.key}: min < max`);
       assert.ok(s.value >= s.min && s.value <= s.max, `${gen}.${s.key}: default in range`);
@@ -471,8 +477,8 @@ test("baseline and ceiling ranges are disjoint wherever both exist", () => {
   // Disjoint ranges mean no slider combination can cross them — the
   // compile gate then only has to confirm the engine agrees.
   for (const [gen, widget] of Object.entries(WIDGETS)) {
-    const baseline = widget.sliders.find((s) => s.key === "baseline");
-    const ceiling = widget.sliders.find((s) => s.key === "ceiling");
+    const baseline = (widget.sliders || []).find((s) => s.key === "baseline");
+    const ceiling = (widget.sliders || []).find((s) => s.key === "ceiling");
     if (baseline && ceiling) {
       assert.ok(baseline.max < ceiling.min, `${gen}: baseline range must sit below ceiling range`);
     }
@@ -495,6 +501,65 @@ test("duration-coupled slider floors cover the scenario duration (review #534 M1
   }
 });
 
+test("every min/max slider pair is non-crossable by range construction", () => {
+  // Generalises the baseline/ceiling rule above to the pairs WP13 added.
+  // The engine rejects `min >= max`, so a pair whose ranges OVERLAP ships a
+  // widget that compiles at rest and throws under the reader's hand — the
+  // failure only appears for the readers who actually play with it, which is
+  // everyone the widget is for. Disjoint ranges make it unreachable rather
+  // than merely untested.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    const lo = (widget.sliders || []).find((s) => s.key === "min");
+    const hi = (widget.sliders || []).find((s) => s.key === "max");
+    if (lo && hi) {
+      assert.ok(lo.max < hi.min, `${gen}: min range [${lo.min},${lo.max}] must sit below max range [${hi.min},${hi.max}]`);
+    }
+  }
+});
+
+test("the step widget wraps inside the sampled window at every corner", () => {
+  // The `step` widget exists to show WRAP-AROUND. A `max` the counter never
+  // reaches inside the sampled window draws a plain ramp and teaches the
+  // wrong shape — a widget that is wrong in the most confident way, since it
+  // renders perfectly.
+  //
+  // The window is rate * durationSecs ticks. The counter climbs step_size per
+  // tick from `start`, so the worst case is the smallest step_size with the
+  // largest max and the lowest start.
+  const step = WIDGETS.step;
+  const ticks = step.rate * step.durationSecs;
+  const stepSize = step.sliders.find((s) => s.key === "step_size");
+  const max = step.sliders.find((s) => s.key === "max");
+  const start = step.sliders.find((s) => s.key === "start");
+  const worstClimb = stepSize.min * ticks;
+  assert.ok(
+    worstClimb > max.max - start.min,
+    `step: slowest climb ${worstClimb} must exceed the widest span ${max.max - start.min}, ` +
+      "or the widget shows a ramp and calls it a wrap"
+  );
+});
+
+test("the sequence widget's patterns are real, non-empty value lists", () => {
+  // `sequence` carries its option data in the preset rather than the markup,
+  // which is what puts every option through the compile gate. That only holds
+  // if every offered option resolves to a list the engine accepts.
+  const sequence = WIDGETS.sequence;
+  const pattern = sequence.choices.find((c) => c.key === "pattern");
+  for (const option of pattern.options) {
+    const values = sequence.patterns[option];
+    assert.ok(Array.isArray(values) && values.length > 0, `sequence: "${option}" must name a value list`);
+    for (const v of values) assert.ok(Number.isFinite(v), `sequence: "${option}" values must be finite`);
+    // And the option must reach the YAML — a pattern the template ignores is
+    // a control that does nothing.
+    assert.match(
+      sequence.yaml({ ...defaultParams(sequence), pattern: option }),
+      new RegExp(`values: \\[${values.join(", ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`),
+      `sequence: "${option}" must reach the template`
+    );
+  }
+  assert.ok(pattern.options.includes(pattern.value), "the default pattern must be an offered option");
+});
+
 test("preset sampling stays within the playground tick budget", () => {
   for (const [gen, widget] of Object.entries(WIDGETS)) {
     assert.ok(widget.rate * widget.durationSecs <= 240, `${gen}: rate*duration must fit MAX_TICKS`);
@@ -506,11 +571,11 @@ test("corner and sweep enumeration cover what the compile gate feeds the engine"
     const corners = cornerParams(widget);
     const expected = (widget.choices || []).reduce(
       (n, c) => n * c.options.length,
-      widget.sliders.reduce((n, s) => n * new Set([s.min, s.value, s.max]).size, 1)
+      (widget.sliders || []).reduce((n, s) => n * new Set([s.min, s.value, s.max]).size, 1)
     );
     assert.equal(corners.length, expected, `${gen}: {min,default,max} grid`);
     for (const corner of corners) {
-      for (const s of widget.sliders) {
+      for (const s of widget.sliders || []) {
         assert.ok(
           [s.min, s.value, s.max].includes(corner[s.key]),
           `${gen}: corners use range edges or the default`
