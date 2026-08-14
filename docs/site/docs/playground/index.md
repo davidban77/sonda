@@ -52,6 +52,15 @@ the signal reshape live.
 
 ## What you can try here
 
+!!! tip "The editor completes from the schema"
+    Press ++ctrl+space++ anywhere in the YAML — or just start typing a field name — and the
+    editor offers what the format allows *at that point*: entry fields inside a `scenarios:`
+    item, all fourteen generator `type:` values inside a `generator:` block, encoder and sink
+    types, and the two operators `while.op` accepts. Each suggestion carries its type and the
+    same one-line description the API docs use, because both are generated from the same Rust
+    types. The [published schema](../reference/editor-schema.md) is the same file, so your own
+    editor can do this on your own files.
+
 Everything the metrics engine supports works in the playground: the
 [core generators](../build/generators.md#metric-generators), the
 [operational aliases](../build/generators.md#operational-aliases) (`flap`,

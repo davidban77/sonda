@@ -1166,6 +1166,179 @@ try {
     `${(alExport.match(/severity:/g) || []).length} severity lines`
   );
   await alPage.close();
+
+  // -------------------------------------------------------------------
+  // 14. schema-driven completion in the editor (WP11 PR3)
+  // -------------------------------------------------------------------
+  section("[14] schema-driven completion in the editor");
+  //
+  // The document is loaded through a #yaml= share link rather than typed.
+  // Typing multi-line YAML into an auto-indenting editor does NOT reproduce
+  // the literal text — CodeMirror adds its own indentation on Enter and the
+  // typed leading spaces stack on top of it, so a "type the fixture" harness
+  // silently tests a differently-shaped document. That cost the author a
+  // false negative before this suite existed; the share link is exact.
+  const acShare = (yaml) =>
+    `${BASE}/playground/#yaml=${Buffer.from(yaml, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "")}`;
+
+  const acOptions = async (page) =>
+    page.$$eval(".cm-tooltip-autocomplete li", (els) =>
+      els.map((el) => el.textContent.trim())
+    );
+
+  const acPage = watch(await context.newPage());
+  acPage.setDefaultTimeout(30000);
+
+  // A value position: the cursor sits after `type:` inside `generator:`,
+  // which is the fourteen-branch tagged union and the single most useful
+  // completion in the document.
+  await acPage.goto(
+    acShare(
+      "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    name: cpu\n    rate: 1\n    duration: 30s\n    generator:\n      type: "
+    ),
+    { waitUntil: "domcontentloaded" }
+  );
+  await acPage.waitForSelector("#sonda-playground .cm-content", { timeout: 60000 });
+  await acPage.waitForFunction(
+    () => document.querySelector("#sonda-playground .cm-content")?.textContent.includes("generator"),
+    null,
+    { timeout: 60000 }
+  );
+  await acPage.click("#sonda-playground .cm-content");
+  await acPage.keyboard.press("Control+End");
+  await acPage.keyboard.press("Control+Space");
+
+  let acValueShown = true;
+  await acPage
+    .waitForSelector(".cm-tooltip-autocomplete", { timeout: 20000 })
+    .catch(() => {
+      acValueShown = false;
+    });
+  const acValues = acValueShown ? await acOptions(acPage) : [];
+  check(
+    "the generator type list comes from the schema, not the document",
+    acValueShown && acValues.length >= 10,
+    `${acValues.length} option(s)`
+  );
+  // Naming specific variants rather than counting: a count passes on any
+  // list, including one scraped out of the words already on screen.
+  check(
+    "and it names variants that appear nowhere in the document",
+    ["sawtooth", "csv_replay", "spike_event"].every((kind) =>
+      acValues.some((option) => option.startsWith(kind))
+    ),
+    acValues.slice(0, 4).join(" · ")
+  );
+
+  // A key position, reached by dedenting out of `generator:`. This is the
+  // path resolution doing real work: the answer depends on indentation
+  // alone, because the line is empty.
+  const acKeyPage = watch(await context.newPage());
+  acKeyPage.setDefaultTimeout(30000);
+  await acKeyPage.goto(
+    acShare(
+      "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    generator:\n      type: sine\n    r"
+    ),
+    { waitUntil: "domcontentloaded" }
+  );
+  await acKeyPage.waitForSelector("#sonda-playground .cm-content", { timeout: 60000 });
+  await acKeyPage.waitForFunction(
+    () => document.querySelector("#sonda-playground .cm-content")?.textContent.includes("sine"),
+    null,
+    { timeout: 60000 }
+  );
+  await acKeyPage.click("#sonda-playground .cm-content");
+  await acKeyPage.keyboard.press("Control+End");
+  await acKeyPage.keyboard.press("Control+Space");
+  let acKeyShown = true;
+  await acKeyPage
+    .waitForSelector(".cm-tooltip-autocomplete", { timeout: 20000 })
+    .catch(() => {
+      acKeyShown = false;
+    });
+  const acKeys = acKeyShown ? await acOptions(acKeyPage) : [];
+  check(
+    "dedenting out of a nested mapping offers the entry's keys",
+    acKeyShown && acKeys.some((option) => option.startsWith("rate")),
+    acKeys.slice(0, 4).join(" · ")
+  );
+  // The entry's keys, NOT the generator's — the discriminating half. `rate`
+  // is an entry field; `amplitude` is sine's, one level deeper, and offering
+  // it here would mean the dedent was not read.
+  check(
+    "and not the keys of the block it just left",
+    acKeyShown && !acKeys.some((option) => option.startsWith("amplitude")),
+    acKeys.slice(0, 6).join(" · ")
+  );
+
+  // Deriving the schema from the Rust types is what puts a type next to the
+  // name. Asserted against `rate` specifically, because this list is filtered
+  // by the typed `r` — an earlier version of this check looked for the
+  // "required" marker here and could not pass, since the only required entry
+  // field is `signal_type` and the prefix excludes it.
+  check(
+    "completions carry the type hint from the schema",
+    // The label and the detail are adjacent elements, so textContent reads
+    // them concatenated — "ratenumber". No word boundary between them.
+    acKeys.some((option) => option.startsWith("rate") && option.includes("number")),
+    acKeys.find((option) => /^rate/.test(option)) || "(no rate option)"
+  );
+
+  // Review #548 B1, end to end. The list has TWO items and the cursor is on
+  // the second one's dash line — the keystroke where a reader starts a new
+  // entry, and the position where this feature was dead on arrival. Every
+  // fixture above uses a one-item list, which is exactly why nothing saw it:
+  // a table of single-item lists cannot observe an item count.
+  const acSecondPage = watch(await context.newPage());
+  acSecondPage.setDefaultTimeout(30000);
+  await acSecondPage.goto(
+    acShare(
+      "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    name: cpu\n  - sig"
+    ),
+    { waitUntil: "domcontentloaded" }
+  );
+  await acSecondPage.waitForSelector("#sonda-playground .cm-content", { timeout: 60000 });
+  await acSecondPage.waitForFunction(
+    () => document.querySelector("#sonda-playground .cm-content")?.textContent.includes("cpu"),
+    null,
+    { timeout: 60000 }
+  );
+  await acSecondPage.click("#sonda-playground .cm-content");
+  await acSecondPage.keyboard.press("Control+End");
+  await acSecondPage.keyboard.press("Control+Space");
+  let acSecondShown = true;
+  await acSecondPage
+    .waitForSelector(".cm-tooltip-autocomplete", { timeout: 20000 })
+    .catch(() => {
+      acSecondShown = false;
+    });
+  const acSecond = acSecondShown ? await acOptions(acSecondPage) : [];
+  check(
+    "the SECOND list item completes like the first",
+    acSecondShown && acSecond.some((option) => option.startsWith("signal_type")),
+    acSecondShown ? acSecond.slice(0, 4).join(" · ") : "no list at all"
+  );
+
+  // Declining is a feature. Inside a comment an indentation reading is not
+  // merely imprecise, it is unrelated to what the reader is writing.
+  const acQuietPage = watch(await context.newPage());
+  acQuietPage.setDefaultTimeout(30000);
+  await acQuietPage.goto(
+    acShare("version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    # ra"),
+    { waitUntil: "domcontentloaded" }
+  );
+  await acQuietPage.waitForSelector("#sonda-playground .cm-content", { timeout: 60000 });
+  await acQuietPage.click("#sonda-playground .cm-content");
+  await acQuietPage.keyboard.press("Control+End");
+  await acQuietPage.keyboard.press("Control+Space");
+  await acQuietPage.waitForTimeout(1500);
+  const acQuiet = await acQuietPage.$(".cm-tooltip-autocomplete");
+  check("no completions inside a comment", acQuiet === null);
+
 } catch (err) {
   failures.push(`threw: ${err && err.message ? err.message : err}`);
   console.log(`\n  FAIL threw: ${err && err.stack ? err.stack.split("\n")[0] : err}`);
