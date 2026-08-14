@@ -256,6 +256,10 @@ tasks:
       # exactly for the same reason.
       - npm ci
       - npm run build
+      # Weight is a user-facing property of a bundle every playground visitor
+      # downloads. The drift gate next to this one only asks whether the
+      # bundle is current.
+      - python3 ../../../../scripts/check_editor_size.py
 
   schema:generate:
     desc: Regenerate the committed JSON Schema for v2 scenario files

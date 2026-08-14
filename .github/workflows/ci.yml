@@ -320,6 +320,13 @@ jobs:
             exit 1
           fi
 
+      # The drift gate above answers "is the bundle current"; it says nothing
+      # about how big it is. The playground downloads this on every visit, so
+      # weight is a user-facing property and deserves a ratchet — the same
+      # argument WP5 made for the wasm bundle (review #548 M2).
+      - name: Editor bundle size budget
+        run: python3 scripts/check_editor_size.py
+
       # Zero-dependency node harness over the playground's pure JS helpers
       # (sonda-pure.js) — the only automated coverage the docs-site JS has.
       - name: Playground pure-helper tests

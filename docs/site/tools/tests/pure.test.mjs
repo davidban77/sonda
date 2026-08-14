@@ -1519,6 +1519,46 @@ test("a blank indented line inherits its parent, not the line above it", () => {
   assert.equal(got.prefix, "");
 });
 
+test("a SECOND list item resolves like the first", () => {
+  // Review #548 B1. Every fixture in the first version of this table used a
+  // one-item list, so nothing could see an item count — and on the second
+  // item's dash line the path grew a spurious second `[]`, which matches
+  // nothing in the schema. That is the keystroke where a reader starts a new
+  // entry, and 60 files in this repo have lists of two or more.
+  //
+  // The discriminating input is a list with TWO items. One is not enough,
+  // and neither is varying the values inside a single item.
+  const first = at("version: 2\nscenarios:\n  - sig|");
+  const second = at("version: 2\nscenarios:\n  - signal_type: metrics\n  - sig|");
+  const third = at("version: 2\nscenarios:\n  - a: 1\n  - b: 2\n  - sig|");
+  assert.deepEqual(first.path, ["scenarios", "[]"]);
+  assert.deepEqual(second.path, first.path, "a sibling item is not an ancestor");
+  assert.deepEqual(third.path, first.path, "and neither are two of them");
+});
+
+test("a second item's indented field resolves like the first's", () => {
+  const got = at("version: 2\nscenarios:\n  - a: 1\n  - signal_type: logs\n    ra|");
+  assert.deepEqual(got.path, ["scenarios", "[]"]);
+});
+
+test("a nested sequence contributes one [] per list, not per item", () => {
+  const got = at(
+    "version: 2\nscenarios:\n  - signal_type: metrics\n    dynamic_labels:\n      - name: a\n      - na|"
+  );
+  assert.deepEqual(got.path, ["scenarios", "[]", "dynamic_labels", "[]"]);
+});
+
+test("a dash at the owning key's own indent keeps the parent", () => {
+  // Review #548 W1. YAML lets the sequence sit at the same column as the key
+  // that owns it. `want` used to drop to that column and then skip the owner
+  // as though it were a sibling, losing `scenarios` entirely — the module
+  // docstring claimed block style was handled, and this is block style.
+  const field = at("version: 2\nscenarios:\n- signal_type: metrics\n  ra|");
+  assert.deepEqual(field.path, ["scenarios", "[]"]);
+  const dash = at("version: 2\nscenarios:\n- a: 1\n- sig|");
+  assert.deepEqual(dash.path, ["scenarios", "[]"]);
+});
+
 test("dedenting out of a nested mapping walks back up", () => {
   const got = at(
     "version: 2\nkind: runnable\ndefaults:\n  encoder:\n    type: prometheus_text\n  ra|"
@@ -1702,6 +1742,23 @@ test("completions carry the doc comment and a type hint", () => {
   );
   // "object" would be a useless thing to say about a 14-branch union.
   assert.match(generator.detail, /\d+ types/);
+});
+
+test("a union does not claim requirements that contradict each other", () => {
+  // Review #548 W2. `required` is a per-branch fact. Flattened across
+  // `generator:`'s fourteen branches it marked 14 of 36 keys required, while
+  // no single generator requires more than 5 and the sets are mutually
+  // exclusive — `amplitude` (sine) and `baseline` (spike) sat adjacent, both
+  // marked required, and only one of them can be.
+  //
+  // The keys are still offered; only the false claim is dropped.
+  const generator = schemaCompletions(SCHEMA, ["scenarios", "[]", "generator"], "key");
+  assert.ok(generator.length > 20, "the union is still offered in full");
+  assert.equal(
+    generator.filter((option) => /required/.test(option.detail)).length,
+    0,
+    "no key may be marked required while the branch is undecided"
+  );
 });
 
 test("required fields are marked", () => {

@@ -1029,10 +1029,20 @@ function _unquoteScalar(value) {
  * The defining constraint is that this runs on BROKEN YAML. A reader asking
  * for completion has, by definition, typed half a line — so a real parser is
  * the wrong tool: it would refuse the document exactly when help is wanted.
- * `yamlPathAt` therefore reads indentation and nothing else, which is enough
- * for block-style scenarios (every scenario in the repo and the docs) and
- * honestly useless for flow style (`{a: 1}`), where it declines rather than
- * guesses.
+ * `yamlPathAt` therefore reads indentation and nothing else, and is honestly
+ * useless for flow style (`{a: 1}`), where it declines rather than guesses.
+ *
+ * "Block style" here means both indentation conventions, not just the one
+ * this repo happens to use:
+ *
+ *     scenarios:          scenarios:
+ *       - signal_type: x  - signal_type: x
+ *
+ * The first version handled only the left-hand form and silently lost the
+ * `scenarios` key on the right (review #548 W1) — while this comment claimed
+ * block style was handled, with a parenthesis about the repo's own files that
+ * was true and narrower than the sentence around it. A claim qualified by an
+ * example is still the claim, not the example.
  */
 
 /* Where the cursor sits in a block-style YAML document.
@@ -1086,13 +1096,37 @@ export function yamlPathAt(text, offset) {
   // nearest preceding line indented strictly less than the level we are
   // currently looking for.
   const path = [];
-  let want = context === "key" ? contentIndent : contentIndent;
   if (context === "value") {
     const key = _keyOf(before.slice(dashMatch ? dashMatch[0].length : indent));
     if (key === null) return null;
     path.unshift(key);
   }
-  if (isSequenceItem) path.unshift("[]");
+
+  // The walk carries three numbers rather than one, because "how deep" is not
+  // enough to say what a preceding line IS to us.
+  //
+  //   limit         nothing at a greater indent can enclose the cursor
+  //   ownerIndent   an indent at which a PLAIN key is still an ancestor, not
+  //                 a sibling. Only set after a sequence step, because YAML
+  //                 lets the owning key sit at the dash's own column:
+  //                 `scenarios:` then `- item` both at 0 (review #548 W1).
+  //   siblingDash   an indent at which a DASH line is another item of the
+  //                 sequence we have already counted, and contributes
+  //                 nothing (review #548 B1).
+  //
+  // A single `want` conflated the last two, so the second item of any list
+  // read its predecessor as an enclosing sequence and the path grew a second
+  // `[]` that matches nothing. Every fixture in the first version of this
+  // module used a one-item list, which is why it looked right.
+  let limit = contentIndent;
+  let ownerIndent = -1;
+  let siblingDash = -1;
+  if (isSequenceItem) {
+    path.unshift("[]");
+    limit = indent;
+    ownerIndent = indent;
+    siblingDash = indent;
+  }
 
   const head = source.slice(0, lineStart);
   const lines = head.length ? head.split("\n") : [];
@@ -1108,34 +1142,43 @@ export function yamlPathAt(text, offset) {
     // through `_keyOf` rather than through a redundant branch.
     if (!candidate.trim()) continue;
     const candidateIndent = _indentWidth(candidate);
-    if (candidateIndent >= want) continue;
+    if (candidateIndent > limit) continue;
 
     const candidateDash = /^(\s*)-\s+/.exec(candidate);
     const body = candidateDash ? candidate.slice(candidateDash[0].length) : candidate.trimStart();
     const key = _keyOf(body);
 
     if (candidateDash) {
-      // A `- key:` line is both a sequence step and a mapping key, and which
-      // one it is to US depends on the column. `- signal_type: metrics`
-      // followed by a line at the SAME column is a sibling — claiming its key
-      // as an ancestor would resolve `rate` as living inside `signal_type`.
-      // It is only an ancestor when we are looking for something deeper than
-      // its own keys, hence `<` and not `<=`.
-      if (candidateDash[0].length < want && key !== null) {
+      // Another item of the sequence the cursor is already inside. A list
+      // contributes ONE `[]` however many items precede the cursor.
+      if (candidateIndent === siblingDash) continue;
+      // An enclosing sequence. Its `- key:` form is an ancestor only when its
+      // own keys sit shallower than what we are looking for; at the same
+      // column it is a sibling field of the cursor's, not its parent.
+      if (candidateDash[0].length < limit && key !== null) {
         path.unshift(key);
-        path.unshift("[]");
-        want = candidateIndent;
-        continue;
       }
       path.unshift("[]");
-      want = candidateIndent;
+      limit = candidateIndent;
+      ownerIndent = candidateIndent;
+      siblingDash = candidateIndent;
       continue;
     }
 
+    // A plain key at exactly our own indent is a sibling — unless it is the
+    // key that owns the sequence we just stepped out of.
+    if (candidateIndent === limit && candidateIndent !== ownerIndent) continue;
     if (key === null) continue;
     path.unshift(key);
-    want = candidateIndent;
-    if (want === 0) break;
+    limit = candidateIndent;
+    ownerIndent = -1;
+    siblingDash = -1;
+    // Early exit, not a behavioural rule: with `ownerIndent` cleared, nothing
+    // at indent 0 or deeper can still be an ancestor, so the remaining
+    // iterations would all `continue`. Dropping this line changes no answer
+    // (review #548 M3 measured exactly that) — it is here to stop walking a
+    // long document after the root key is found.
+    if (limit === 0) break;
   }
 
   return { path, context, prefix };
@@ -1236,6 +1279,26 @@ export function schemaCompletions(schema, path, context) {
     if (!nodes.length) return [];
   }
 
+  // `required` is a per-branch fact, and flattening it across a union states
+  // something false. Measured on `generator:` (review #548 W2): 14 of the 36
+  // unioned keys carried a "required" marker, while no single generator
+  // requires more than 5 and the sets are mutually exclusive — so `amplitude`
+  // (sine) and `baseline` (spike) sat adjacent in the list, both marked
+  // required, and only one of them can be.
+  //
+  // Worse than merely untidy: serde ignores unknown keys inside a variant, so
+  // a reader who believes it adds `baseline` to a sine generator and NOTHING
+  // complains — not the schema, not `sonda --dry-run run`, not the run. The
+  // suggestion is inert rather than rejected, which is the failure mode this
+  // module's own docstring calls worse than silence.
+  //
+  // So the marker is emitted only when one branch is speaking. The keys are
+  // still offered — until the `type:` is typed there is no way to narrow
+  // them, and that argument is unchanged — but the list stops claiming a
+  // requirement that depends on a choice the reader has not made.
+  const contributing = nodes.filter((node) => node.properties).length;
+  const singleBranch = contributing === 1;
+
   const seen = new Map();
   for (const node of nodes) {
     if (context === "value") {
@@ -1258,7 +1321,9 @@ export function schemaCompletions(schema, path, context) {
       if (seen.has(label)) continue;
       seen.set(label, {
         label,
-        detail: _typeHint(child, root) + (required.has(label) ? " · required" : ""),
+        detail:
+          _typeHint(child, root) +
+          (singleBranch && required.has(label) ? " · required" : ""),
         info: typeof child.description === "string" ? child.description : undefined,
       });
     }

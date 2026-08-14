@@ -1288,6 +1288,41 @@ try {
     acKeys.find((option) => /^rate/.test(option)) || "(no rate option)"
   );
 
+  // Review #548 B1, end to end. The list has TWO items and the cursor is on
+  // the second one's dash line — the keystroke where a reader starts a new
+  // entry, and the position where this feature was dead on arrival. Every
+  // fixture above uses a one-item list, which is exactly why nothing saw it:
+  // a table of single-item lists cannot observe an item count.
+  const acSecondPage = watch(await context.newPage());
+  acSecondPage.setDefaultTimeout(30000);
+  await acSecondPage.goto(
+    acShare(
+      "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    name: cpu\n  - sig"
+    ),
+    { waitUntil: "domcontentloaded" }
+  );
+  await acSecondPage.waitForSelector("#sonda-playground .cm-content", { timeout: 60000 });
+  await acSecondPage.waitForFunction(
+    () => document.querySelector("#sonda-playground .cm-content")?.textContent.includes("cpu"),
+    null,
+    { timeout: 60000 }
+  );
+  await acSecondPage.click("#sonda-playground .cm-content");
+  await acSecondPage.keyboard.press("Control+End");
+  await acSecondPage.keyboard.press("Control+Space");
+  let acSecondShown = true;
+  await acSecondPage
+    .waitForSelector(".cm-tooltip-autocomplete", { timeout: 20000 })
+    .catch(() => {
+      acSecondShown = false;
+    });
+  const acSecond = acSecondShown ? await acOptions(acSecondPage) : [];
+  check(
+    "the SECOND list item completes like the first",
+    acSecondShown && acSecond.some((option) => option.startsWith("signal_type")),
+    acSecondShown ? acSecond.slice(0, 4).join(" · ") : "no list at all"
+  );
+
   // Declining is a feature. Inside a comment an indentation reading is not
   // merely imprecise, it is unrelated to what the reader is writing.
   const acQuietPage = watch(await context.newPage());
