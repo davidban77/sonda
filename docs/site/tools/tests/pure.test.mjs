@@ -35,7 +35,14 @@ import {
   scrubNumber,
   toBase64Url,
 } from "../../docs/javascripts/sonda-pure.js";
-import { WIDGETS, cornerParams, defaultParams, sweepParams } from "../../docs/javascripts/livegen-presets.js";
+import {
+  WIDGETS,
+  cornerParams,
+  defaultParams,
+  sweepParams,
+  sampledTicks,
+  MAX_TICKS,
+} from "../../docs/javascripts/livegen-presets.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -457,9 +464,15 @@ test("widget controls are well-formed and defaults sit inside their range", () =
     // Counted as CONTROLS, not sliders: the encoders widget carries one
     // slider and one <select>, and the invariant being defended is "enough
     // to play with, few enough to take in", not the input element used.
-    const controls = widget.sliders.length + (widget.choices || []).length;
-    assert.ok(controls >= 2 && controls <= 3, `${gen}: 2-3 controls, got ${controls}`);
-    for (const s of widget.sliders) {
+    //
+    // The floor is 1, not 2. It was 2 until WP13 added `constant`, which has
+    // exactly one parameter — there is no second knob to offer and inventing
+    // one would be worse than a short widget. The floor exists to catch a
+    // widget shipped with NOTHING to drag, and 1 still catches that; the
+    // ceiling is where the real judgement lives.
+    const controls = (widget.sliders || []).length + (widget.choices || []).length;
+    assert.ok(controls >= 1 && controls <= 3, `${gen}: 1-3 controls, got ${controls}`);
+    for (const s of widget.sliders || []) {
       assert.ok(s.step > 0, `${gen}.${s.key}: positive step`);
       assert.ok(s.min < s.max, `${gen}.${s.key}: min < max`);
       assert.ok(s.value >= s.min && s.value <= s.max, `${gen}.${s.key}: default in range`);
@@ -471,8 +484,8 @@ test("baseline and ceiling ranges are disjoint wherever both exist", () => {
   // Disjoint ranges mean no slider combination can cross them — the
   // compile gate then only has to confirm the engine agrees.
   for (const [gen, widget] of Object.entries(WIDGETS)) {
-    const baseline = widget.sliders.find((s) => s.key === "baseline");
-    const ceiling = widget.sliders.find((s) => s.key === "ceiling");
+    const baseline = (widget.sliders || []).find((s) => s.key === "baseline");
+    const ceiling = (widget.sliders || []).find((s) => s.key === "ceiling");
     if (baseline && ceiling) {
       assert.ok(baseline.max < ceiling.min, `${gen}: baseline range must sit below ceiling range`);
     }
@@ -495,9 +508,123 @@ test("duration-coupled slider floors cover the scenario duration (review #534 M1
   }
 });
 
-test("preset sampling stays within the playground tick budget", () => {
+test("every min/max slider pair is non-crossable by range construction", () => {
+  // Generalises the baseline/ceiling rule above to the pairs WP13 added.
+  // The engine rejects `min >= max`, so a pair whose ranges OVERLAP ships a
+  // widget that compiles at rest and throws under the reader's hand — the
+  // failure only appears for the readers who actually play with it, which is
+  // everyone the widget is for. Disjoint ranges make it unreachable rather
+  // than merely untested.
   for (const [gen, widget] of Object.entries(WIDGETS)) {
-    assert.ok(widget.rate * widget.durationSecs <= 240, `${gen}: rate*duration must fit MAX_TICKS`);
+    const lo = (widget.sliders || []).find((s) => s.key === "min");
+    const hi = (widget.sliders || []).find((s) => s.key === "max");
+    if (lo && hi) {
+      assert.ok(lo.max < hi.min, `${gen}: min range [${lo.min},${lo.max}] must sit below max range [${hi.min},${hi.max}]`);
+    }
+  }
+});
+
+test("the step widget wraps inside the sampled window at every corner", () => {
+  // The `step` widget exists to show WRAP-AROUND. A `max` the counter never
+  // reaches inside the sampled window draws a plain ramp and teaches the
+  // wrong shape — a widget that is wrong in the most confident way, since it
+  // renders perfectly.
+  //
+  // The window is `sampledTicks`, NOT rate * durationSecs (review #549 W1).
+  // The sampler clamps to MAX_TICKS, so the product is an upper bound the
+  // real window need not reach, and the multiplication grows more permissive
+  // exactly where the window stops growing. The two agree for every widget
+  // today only because the tick-budget invariant below holds the product at
+  // or under MAX_TICKS — which made this check correct on the strength of a
+  // NEIGHBOURING assertion rather than its own. Calling sampledTicks makes it
+  // self-sufficient; the reviewer's demonstration edit is caught by that
+  // neighbour today, so this is a latent coupling closed rather than a live
+  // defect fixed.
+  //
+  // The counter climbs step_size per tick from `start`, so the worst case is
+  // the smallest step_size with the largest max and the lowest start.
+  const step = WIDGETS.step;
+  const ticks = sampledTicks(step);
+  const stepSize = step.sliders.find((s) => s.key === "step_size");
+  const max = step.sliders.find((s) => s.key === "max");
+  const start = step.sliders.find((s) => s.key === "start");
+  const worstClimb = stepSize.min * ticks;
+  assert.ok(
+    worstClimb > max.max - start.min,
+    `step: slowest climb ${worstClimb} must exceed the widest span ${max.max - start.min}, ` +
+      "or the widget shows a ramp and calls it a wrap"
+  );
+});
+
+test("the sequence widget's patterns are real, non-empty value lists", () => {
+  // `sequence` carries its option data in the preset rather than the markup,
+  // which is what puts every option through the compile gate. That only holds
+  // if every offered option resolves to a list the engine accepts.
+  const sequence = WIDGETS.sequence;
+  const pattern = sequence.choices.find((c) => c.key === "pattern");
+  for (const option of pattern.options) {
+    const values = sequence.patterns[option];
+    assert.ok(Array.isArray(values) && values.length > 0, `sequence: "${option}" must name a value list`);
+    for (const v of values) assert.ok(Number.isFinite(v), `sequence: "${option}" values must be finite`);
+    // And the option must reach the YAML — a pattern the template ignores is
+    // a control that does nothing.
+    assert.match(
+      sequence.yaml({ ...defaultParams(sequence), pattern: option }),
+      new RegExp(`values: \\[${values.join(", ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`),
+      `sequence: "${option}" must reach the template`
+    );
+  }
+  assert.ok(pattern.options.includes(pattern.value), "the default pattern must be an offered option");
+});
+
+test("preset sampling stays within the playground tick budget", () => {
+  // Reads MAX_TICKS from the preset module rather than repeating 240, so this
+  // and `sampledTicks` cannot drift apart. This assertion is what makes the
+  // product and the real window coincide today — see the wrap guard above,
+  // which no longer depends on that.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    assert.ok(
+      widget.rate * widget.durationSecs <= MAX_TICKS,
+      `${gen}: rate*duration must fit MAX_TICKS`
+    );
+  }
+});
+
+test("every control reaches its widget's template (review #549 W2)", () => {
+  // The generalisation of the hand-written `sequence` pattern check above.
+  // That one covered ONE of sequence's two controls, and an inert `repeat`
+  // — `repeat: true` hard-coded in place of `${p.repeat === "on"}` — shipped
+  // green through the whole suite AND the browser suite, whose redraw check
+  // resolves the FIRST <select> and so never touches it. Measured, not
+  // assumed: 191 tests passed with the control dead.
+  //
+  // Differential rather than textual: render the widget twice, changing one
+  // control and nothing else, and require the YAML to differ. That makes no
+  // assumption about interpolation syntax, so it keeps working for a control
+  // the template consumes rather than pastes — `repeat` maps "on"/"off" to a
+  // boolean, and a substring search for the option string would miss it.
+  //
+  // Only this direction needs a test. The reverse — a template referencing a
+  // parameter no control supplies — interpolates `undefined` into the YAML
+  // and the compile gate rejects it.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    const base = defaultParams(widget);
+    for (const slider of widget.sliders || []) {
+      const lo = widget.yaml({ ...base, [slider.key]: slider.min });
+      const hi = widget.yaml({ ...base, [slider.key]: slider.max });
+      assert.notEqual(lo, hi, `${gen}.${slider.key}: a slider the template ignores does nothing`);
+    }
+    for (const choice of widget.choices || []) {
+      assert.ok(choice.options.length >= 2, `${gen}.${choice.key}: a one-option <select> is not a control`);
+      const first = widget.yaml({ ...base, [choice.key]: choice.options[0] });
+      const rest = choice.options
+        .slice(1)
+        .map((option) => widget.yaml({ ...base, [choice.key]: option }));
+      assert.ok(
+        rest.some((yaml) => yaml !== first),
+        `${gen}.${choice.key}: a <select> the template ignores does nothing`
+      );
+    }
   }
 });
 
@@ -506,11 +633,11 @@ test("corner and sweep enumeration cover what the compile gate feeds the engine"
     const corners = cornerParams(widget);
     const expected = (widget.choices || []).reduce(
       (n, c) => n * c.options.length,
-      widget.sliders.reduce((n, s) => n * new Set([s.min, s.value, s.max]).size, 1)
+      (widget.sliders || []).reduce((n, s) => n * new Set([s.min, s.value, s.max]).size, 1)
     );
     assert.equal(corners.length, expected, `${gen}: {min,default,max} grid`);
     for (const corner of corners) {
-      for (const s of widget.sliders) {
+      for (const s of widget.sliders || []) {
         assert.ok(
           [s.min, s.value, s.max].includes(corner[s.key]),
           `${gen}: corners use range edges or the default`
