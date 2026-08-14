@@ -10,6 +10,9 @@ This page is the per-entry field reference. Every field you can set on a `scenar
 !!! info "Start with the file guide"
     For the file shape (`version: 2`, `defaults:`, `scenarios:`), catalog metadata, pack-backed entries, and `after:` temporal chains, see [**Scenario Files**](../build/scenario-files.md). Every field below sits inside a `scenarios:` entry.
 
+!!! tip "Get these fields in your editor"
+    Every field on this page is also published as a [JSON Schema](editor-schema.md). One comment at the top of a scenario file gives you key completion and a red underline on typos, without leaving the editor.
+
 ## Complete example
 
 A single entry that uses every available field:

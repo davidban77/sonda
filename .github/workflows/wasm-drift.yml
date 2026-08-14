@@ -28,6 +28,28 @@ name: Wasm bundle drift
 # config and no env RUSTFLAGS — live, just shadowed). Gating on the file rather
 # than reasoning about which of its keys survive is the cheaper correctness.
 #
+# A COUPLING WORTH KNOWING BEFORE YOU SEE IT AS A RED GATE: editing a Rust
+# file in sonda-core can move the bundle even when the edit changes no code at
+# all. `expect()`/`unwrap()` bake a `core::panic::Location` — file pointer,
+# length, line, column — into the binary, so INSERTING A LINE moves every
+# panic site below it in that file.
+#
+# Measured on #547, which added `#[cfg_attr(feature = "schema", derive(...))]`
+# lines and nothing else. Old and new bundles were both 771,614 bytes, delta
+# zero, and differed in four bytes at four separate panic locations:
+#
+#     696130  201 -> 202   encoder/mod.rs, "write to Vec<u8> is infallible"
+#     696554  279 -> 280   encoder/mod.rs, "RFC 3339 millis timestamp is ..."
+#     701322  137 -> 138   "no entry found for key"
+#     701338  141 -> 142   "no entry found for key"
+#
+# One inserted attribute at encoder/mod.rs:66 moved both of that file's panic
+# sites; other files' attributes moved the rest. So the durable statement is
+# "every panic site below an inserted line moves", not "a one-byte diff" —
+# expect a handful of scattered single-byte differences at identical file
+# size, and do not read that as the gate misfiring. The fix is the ordinary
+# one: rebuild with `task site:wasm` and commit the bundle.
+#
 # scripts/wasm_pins.py holds this list to the inputs it records.
 on:
   push:

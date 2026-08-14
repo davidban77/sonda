@@ -22,6 +22,7 @@ use super::{parse_severity, LogGenerator};
 /// `fields` entry on the emitted [`LogEvent`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LogCsvColumns {
     #[cfg_attr(feature = "config", serde(default))]
     pub timestamp: Option<String>,

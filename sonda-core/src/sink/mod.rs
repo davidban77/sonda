@@ -72,6 +72,7 @@ pub trait Sink: Send + Sync {
 #[cfg(feature = "kafka")]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct KafkaTlsConfig {
     /// Enable TLS for broker connections. Default: `false`.
     #[cfg_attr(feature = "config", serde(default))]
@@ -88,6 +89,7 @@ pub struct KafkaTlsConfig {
 #[cfg(feature = "kafka")]
 #[derive(Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct KafkaSaslConfig {
     /// SASL mechanism: `"PLAIN"`, `"SCRAM-SHA-256"`, or `"SCRAM-SHA-512"`.
     pub mechanism: String,
@@ -122,6 +124,7 @@ impl std::fmt::Debug for KafkaSaslConfig {
 /// instead of a generic "unknown variant" error from serde.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 #[non_exhaustive]
 pub enum SinkConfig {

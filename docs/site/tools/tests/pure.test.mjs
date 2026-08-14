@@ -1390,4 +1390,59 @@ test("a # inside an expression is not treated as a comment", () => {
   assert.equal(parsePromQLRule("expr: cpu > 1 # a real trailing comment").ok, false);
 });
 
+// Review #546 round 2, W2. The grammar runs BEFORE the naming scan, and that
+// ordering is the largest behavioural change in #546 — it was documented in
+// capitals and pinned by nothing. Reverting it left the whole suite green,
+// because every case in the "refused BY NAME" table is genuinely unsupported
+// and so refused under either ordering.
+//
+// What discriminates is the opposite polarity: a rule the anchored grammar
+// ACCEPTS whose label value happens to contain a token the scan greps for.
+// Scan-first refuses these, and refuses them by asserting a specific false
+// fact about the reader's own rule — `{user="alice@example.com"}` reported as
+// "an offset or @ modifier". One case per row of the refusal table, so
+// removing any single row's protection shows up here.
+//
+// The general lesson, which is why this table is written this way: vary the
+// inputs the code interpolates AND the inputs the code scans.
+test("a legal rule is not refused for a token the scan greps for", () => {
+  // The nine the round-2 reviewer wrote down, plus one of mine. Two of theirs
+  // are a shape my own first table missed entirely: `count{...}` and
+  // `sum{...}` put the scanned token in the METRIC NAME, not in a quoted
+  // value — and the aggregation pattern matches `count` followed by `{`, so
+  // scan-first refuses a metric legitimately named `count`. Varying only
+  // label values would never have reached that.
+  const cases = [
+    ['http_requests_total{user="alice@example.com"} > 100', 100, "an offset or @ modifier"],
+    ['log_events{msg="[error] disk"} > 5', 5, "a range selector"],
+    ['q{msg="a or b"} > 5', 5, "a set operator"],
+    ['q{path="/v1/offset"} > 5', 5, "an offset or @ modifier"],
+    ['q{q="rate(x)"} > 5', 5, "a function call"],
+    ['q{cmd="unless"} > 5', 5, "a set operator"],
+    ['q{msg="sum and count"} > 5', 5, "a set operator"],
+    ['count{x="1"} > 5', 5, "an aggregation — metric NAME, not a value"],
+    ['sum{x="1"} > 5', 5, "an aggregation — metric NAME, not a value"],
+    ['cpu{job="sum by(x)"} > 1', 1, "an aggregation"],
+  ];
+  for (const [text, threshold, wouldClaim] of cases) {
+    const rule = parsePromQLRule(text);
+    assert.ok(
+      rule.ok,
+      `${text} is a legal threshold rule, but it was refused as ${wouldClaim}: ${rule.reason}`
+    );
+    assert.equal(rule.threshold, threshold, text);
+  }
+});
+
+// And the other direction, so the pair cannot both be satisfied by a parser
+// that simply stopped refusing things: the same tokens OUTSIDE a quoted value
+// must still be refused, and still by name.
+test("the same tokens outside a label value are still refused by name", () => {
+  assert.match(no("rate(cpu[5m]) > 1"), /a function call/);
+  assert.match(no("sum by(job) (cpu) > 1"), /an aggregation/);
+  assert.match(no("cpu > 1 or mem > 1"), /a set operator/);
+  assert.match(no("cpu[5m] > 1"), /a range selector/);
+  assert.match(no("cpu offset 5m > 1"), /an offset or @ modifier/);
+});
+
 console.log(`${passed} pure-helper tests passed`);

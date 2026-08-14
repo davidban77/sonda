@@ -21,6 +21,7 @@ use crate::model::metric::Labels;
 // (unconditional — used by the JSON encoder) and Deserialize (config-gated).
 // Splitting it would require duplicating the attribute under two cfg_attr guards.
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Severity {
     /// Extremely detailed diagnostic information.
     Trace,

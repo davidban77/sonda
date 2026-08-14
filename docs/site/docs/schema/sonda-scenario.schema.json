@@ -1,0 +1,3239 @@
+{
+  "$id": "https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sonda v2 scenario file",
+  "description": "A synthetic-telemetry scenario for the sonda CLI and server. Accepts three top-level shapes: a canonical file with a `scenarios:` list, a single-signal shorthand with entry fields at the top level, or a `kind: composable` metric-pack definition.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ScenarioFileCanonical"
+    },
+    {
+      "$ref": "#/$defs/FlatFile"
+    },
+    {
+      "$ref": "#/$defs/MetricPackDef"
+    }
+  ],
+  "$defs": {
+    "AfterClause": {
+      "description": "Structured after-clause expressing a causal dependency on another signal.\n\nWhen present on a [`Entry`], the entry will not start emitting until the\nreferenced signal's latest value satisfies the comparison. Compilation of\nafter-clauses into runtime timing is handled in a later phase (PR 5).\n\n# YAML example\n\n```yaml\nafter:\n  ref: cpu_signal\n  op: \">\"\n  value: 90.0\n  delay: \"5s\"\n```",
+      "type": "object",
+      "properties": {
+        "delay": {
+          "description": "Optional additional delay after the condition is met.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "op": {
+          "description": "Comparison operator: `\"<\"` or `\">\"`.",
+          "$ref": "#/$defs/AfterOp"
+        },
+        "ref": {
+          "description": "Target signal id to observe.\n\nSerialized as `\"ref\"` in YAML because `ref` is a Rust keyword.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "value": {
+          "description": "Threshold value for the comparison.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "op",
+        "value"
+      ]
+    },
+    "AfterOp": {
+      "description": "Comparison operator for an [`AfterClause`] threshold check.\n\nSerde maps `\"<\"` to [`LessThan`](AfterOp::LessThan) and `\">\"` to\n[`GreaterThan`](AfterOp::GreaterThan). Any other value is rejected at\ndeserialization time.",
+      "oneOf": [
+        {
+          "description": "The referenced signal's value must be less than the threshold.",
+          "type": "string",
+          "const": "<"
+        },
+        {
+          "description": "The referenced signal's value must be greater than the threshold.",
+          "type": "string",
+          "const": ">"
+        }
+      ]
+    },
+    "AlertExpectation": {
+      "description": "One alert the scenario is expected to trigger.",
+      "type": "object",
+      "properties": {
+        "alert": {
+          "description": "Alert rule name — matched against the `alertname` label of the\n`ALERTS` metric.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "firing_within": {
+          "description": "How long after scenario start the alert must reach `firing`\n(e.g. `\"2m\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "labels": {
+          "description": "Additional label matchers the firing alert must carry.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "resolves_within": {
+          "description": "How long after scenario end the alert must stop firing. `None`\nskips the resolution check.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "alert",
+        "firing_within"
+      ]
+    },
+    "BurstConfig": {
+      "description": "Burst window configuration — a recurring high-rate period within a scenario.\n\nDuring a burst the event rate is multiplied by `multiplier`. The burst\nrepeats on a fixed cycle defined by `every`, and each instance lasts for `for`.\n\nIf a gap and burst overlap in time, the gap takes priority and no events\nare emitted.",
+      "type": "object",
+      "properties": {
+        "every": {
+          "description": "How often the burst recurs (e.g. `\"10s\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "for": {
+          "description": "How long each burst lasts (e.g. `\"2s\"`). Must be less than `every`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "multiplier": {
+          "description": "Rate multiplier during the burst (must be strictly positive).",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "every",
+        "for",
+        "multiplier"
+      ]
+    },
+    "CardinalitySpikeConfig": {
+      "description": "Configuration for a cardinality spike — a recurring window that injects\ndynamic label values to simulate cardinality explosions.\n\nDuring the spike window, a label key is injected with one of `cardinality`\nunique values per tick. Outside the window, the label key is absent.\n\n# Example YAML\n\n```yaml\ncardinality_spikes:\n  - label: pod_name\n    every: 2m\n    for: 30s\n    cardinality: 500\n    strategy: counter\n    prefix: \"pod-\"\n```",
+      "type": "object",
+      "properties": {
+        "cardinality": {
+          "description": "Number of unique label values generated during the spike.\n\nMust be greater than zero.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "every": {
+          "description": "How often the spike recurs (e.g. `\"2m\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "for": {
+          "description": "How long each spike lasts (e.g. `\"30s\"`). Must be less than `every`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "label": {
+          "description": "The label key to inject during the spike window.\n\nMust be a valid Prometheus label key: `[a-zA-Z_][a-zA-Z0-9_]*`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "prefix": {
+          "description": "Optional prefix for generated label values.\n\nDefaults to `\"{label}_\"` when not specified.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "seed": {
+          "description": "Optional RNG seed for the `random` strategy.\n\nIgnored for the `counter` strategy.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "strategy": {
+          "description": "Strategy for generating unique label values.\n\nDefaults to `counter` if not specified.",
+          "$ref": "#/$defs/SpikeStrategy",
+          "default": "counter"
+        }
+      },
+      "required": [
+        "label",
+        "every",
+        "for",
+        "cardinality"
+      ]
+    },
+    "CsvColumnSpec": {
+      "description": "Specification for a single CSV column in a multi-column `csv_replay`\nconfiguration.\n\nWhen the `columns` field is set on a `CsvReplay` generator config, each\n`CsvColumnSpec` specifies a column index and the metric name to use when\nthat column is expanded into its own independent scenario.\n\n# Example YAML\n\n```yaml\ncolumns:\n  - index: 1\n    name: cpu_percent\n  - index: 2\n    name: mem_percent\n```",
+      "type": "object",
+      "properties": {
+        "index": {
+          "description": "Zero-based column index in the CSV file.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "labels": {
+          "description": "Optional per-column labels merged with scenario-level labels during\nexpansion. Column labels override scenario-level labels on key conflict.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        },
+        "name": {
+          "description": "Metric name for the expanded scenario.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "name"
+      ]
+    },
+    "Defaults": {
+      "description": "Shared defaults inherited by all entries in a v2 scenario file.\n\nFields set here act as fallbacks for entries that omit the corresponding\nfield. Defaults resolution is performed in a later compilation phase (PR 3),\nnot during parsing.",
+      "type": "object",
+      "properties": {
+        "delay": {
+          "description": "Default `delay:` clause inherited by every entry.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayClause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duration": {
+          "description": "Default total run duration (e.g. `\"30s\"`, `\"5m\"`). Applied per entry —\neach entry runs for this long from its own resolved start, so a cascade's\ntotal wall-clock is `max(phase_offset + duration)`, not `duration`.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "encoder": {
+          "description": "Default encoder configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EncoderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "labels": {
+          "description": "Default static labels merged into every entry.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        },
+        "on_sink_error": {
+          "description": "Default sink-error policy inherited by every entry.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnSinkError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rate": {
+          "description": "Default event rate in events per second.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "sink": {
+          "description": "Default sink configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SinkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "start_time": {
+          "description": "Default emission-time anchor (absolute RFC 3339, signed offset, or `now`).",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "while": {
+          "description": "Default `while:` clause inherited by every entry.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhileClause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DelayClause": {
+      "description": "Open/close debounce windows applied to a `while:` transition. Requires a `while:` clause on the same entry.",
+      "type": "object",
+      "properties": {
+        "close": {
+          "description": "Debounce for the true → false transition. Either a duration string or an extended mapping.",
+          "oneOf": [
+            {
+              "description": "Duration shorthand, e.g. \"5s\".",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "duration": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                },
+                "snap_to": {
+                  "type": "number"
+                },
+                "stale_marker": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "open": {
+          "description": "Debounce for the false → true transition, e.g. \"250ms\", \"5s\".",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DistributionConfig": {
+      "description": "Distribution model configuration for histogram and summary generators.\n\nDetermines how sample values are distributed when the generator produces\nobservations on each tick. Deserialized from YAML via the `type` tag.\n\n# Example YAML\n\n```yaml\ndistribution:\n  type: exponential\n  rate: 10.0\n```",
+      "oneOf": [
+        {
+          "description": "Exponential distribution with rate parameter lambda.\n\nMean = 1/lambda. Models latency distributions.",
+          "type": "object",
+          "properties": {
+            "rate": {
+              "description": "Rate parameter (lambda). Must be strictly positive.",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "exponential"
+            }
+          },
+          "required": [
+            "type",
+            "rate"
+          ]
+        },
+        {
+          "description": "Normal (Gaussian) distribution.",
+          "type": "object",
+          "properties": {
+            "mean": {
+              "description": "Center of the distribution.",
+              "type": "number",
+              "format": "double"
+            },
+            "stddev": {
+              "description": "Spread of the distribution. Must be strictly positive.",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "normal"
+            }
+          },
+          "required": [
+            "type",
+            "mean",
+            "stddev"
+          ]
+        },
+        {
+          "description": "Uniform distribution over `[min, max]`.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "description": "Upper bound (inclusive).",
+              "type": "number",
+              "format": "double"
+            },
+            "min": {
+              "description": "Lower bound (inclusive).",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "uniform"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ]
+        }
+      ]
+    },
+    "DynamicLabelConfig": {
+      "description": "Configuration for a dynamic label — an always-on rotating label value\nattached to every emitted event.\n\nUnlike [`CardinalitySpikeConfig`], dynamic labels are not time-windowed:\nthey appear in every event for the lifetime of the scenario. This enables\nsimulating a stable fleet of N distinct sources (e.g., 10 hostnames, 5 pod\nnames) without a spike/window concept.\n\n# Example YAML (counter strategy)\n\n```yaml\ndynamic_labels:\n  - key: hostname\n    prefix: \"host-\"\n    cardinality: 10\n```\n\n# Example YAML (values list strategy)\n\n```yaml\ndynamic_labels:\n  - key: region\n    values: [us-east-1, us-west-2, eu-west-1]\n```",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "The label key to attach to every event.\n\nMust be a valid Prometheus label key: `[a-zA-Z_][a-zA-Z0-9_]*`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "anyOf": [
+        {
+          "description": "Cycle through an explicit list of values.\n\nThe label value at each tick is `values[tick % values.len()]`.\nCardinality is implicit (length of the list).",
+          "type": "object",
+          "properties": {
+            "values": {
+              "description": "The explicit list of label values to cycle through.",
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "required": [
+            "values"
+          ]
+        },
+        {
+          "description": "Sequential counter: `\"{prefix}{tick % cardinality}\"`.\n\nProduces deterministic, predictable label values that cycle through\n`cardinality` distinct values indefinitely.",
+          "type": "object",
+          "properties": {
+            "cardinality": {
+              "description": "Number of unique label values in the cycle. Must be greater than zero.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "prefix": {
+              "description": "Prefix prepended to the counter index (e.g. `\"host-\"` produces\n`\"host-0\"`, `\"host-1\"`, ...).",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "cardinality"
+          ]
+        }
+      ],
+      "required": [
+        "key"
+      ]
+    },
+    "EncoderConfig": {
+      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, or `otlp`.\n\nFeature-gated encoders (`remote_write`, `otlp`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
+      "oneOf": [
+        {
+          "description": "Prometheus text exposition format (version 0.0.4).\n\n`precision` optionally limits the number of decimal places in metric values.",
+          "type": "object",
+          "properties": {
+            "precision": {
+              "description": "Maximum decimal places for metric values. `None` preserves full `f64` precision.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "default": null,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "prometheus_text"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "InfluxDB line protocol.\n\n`field_key` sets the field key used for the metric value. Defaults to `\"value\"`.\n`precision` optionally limits the number of decimal places in metric values.",
+          "type": "object",
+          "properties": {
+            "field_key": {
+              "description": "The InfluxDB field key for the metric value. Defaults to `\"value\"` if absent.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ]
+            },
+            "precision": {
+              "description": "Maximum decimal places for metric values. `None` preserves full `f64` precision.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "default": null,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "influx_lp"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "JSON Lines (NDJSON) format.\n\nEach event is serialized as one JSON object per line. Compatible with Elasticsearch,\nLoki, and generic HTTP ingest endpoints.\n\n`precision` optionally rounds the metric value before JSON serialization.",
+          "type": "object",
+          "properties": {
+            "precision": {
+              "description": "Maximum decimal places for metric values. `None` preserves full `f64` precision.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "default": null,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "json_lines"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "RFC 5424 syslog format.\n\nEncodes log events as syslog lines. `hostname` and `app_name` default to `\"sonda\"`.",
+          "type": "object",
+          "properties": {
+            "app_name": {
+              "description": "The APP-NAME field in the syslog header. Defaults to `\"sonda\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ]
+            },
+            "hostname": {
+              "description": "The HOSTNAME field in the syslog header. Defaults to `\"sonda\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "syslog"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Prometheus remote write protobuf format.\n\nEncodes metric events as length-prefixed protobuf `TimeSeries` messages.\nMust be paired with the `remote_write` sink type, which batches TimeSeries\ninto a single `WriteRequest`, snappy-compresses, and HTTP POSTs with the\ncorrect protocol headers. Requires the `remote-write` feature flag.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "remote_write"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "OTLP protobuf format.\n\nEncodes metric events as length-prefixed protobuf `Metric` messages and\nlog events as length-prefixed protobuf `LogRecord` messages. Must be\npaired with the `otlp_grpc` sink type, which batches and sends via gRPC.\nRequires the `otlp` feature flag.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "otlp"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "Entry": {
+      "description": "A single scenario entry in a v2 file.\n\nAn entry is either an **inline signal** (has `generator` and `name`) or a\n**pack reference** (has `pack`). The two forms are mutually exclusive,\nenforced at parse time.\n\nAll fields are optional in the struct to support flexible YAML authoring.\nSemantic validation (required fields, mutual exclusion) is performed by\n[`parse::parse`].",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "Causal dependency on another signal's value.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AfterClause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "buckets": {
+          "description": "Histogram bucket boundaries (histogram only).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "bursts": {
+          "description": "Recurring high-rate burst configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BurstConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cardinality_spikes": {
+          "description": "Cardinality spike configurations.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/CardinalitySpikeConfig"
+          }
+        },
+        "clock_group": {
+          "description": "Clock group for coordinated timing across entries.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "delay": {
+          "description": "Open / close debounce windows applied to `while_clause` transitions.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayClause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distribution": {
+          "description": "Distribution model for histogram or summary observations.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DistributionConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "duration": {
+          "description": "Total run duration (e.g. `\"30s\"`, `\"5m\"`).",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "dynamic_labels": {
+          "description": "Dynamic (rotating) label configurations.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/DynamicLabelConfig"
+          }
+        },
+        "encoder": {
+          "description": "Encoder configuration for this entry.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EncoderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gaps": {
+          "description": "Recurring silent-period configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GapConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "generator": {
+          "description": "Value generator configuration (for metrics).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "help": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ]
+        },
+        "id": {
+          "description": "Unique identifier for causal dependency references (`after.ref`).",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "jitter": {
+          "description": "Jitter amplitude applied to generated values.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "jitter_seed": {
+          "description": "Deterministic seed for jitter RNG.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "labels": {
+          "description": "Static labels attached to every emitted event.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        },
+        "log_generator": {
+          "description": "Log generator configuration (for logs signal type).\n\nMutually exclusive with `generator` — an entry uses one or the other\ndepending on `signal_type`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogGeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mean_shift_per_sec": {
+          "description": "Linear drift applied to the distribution mean each second.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "metric_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromMetricType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "Metric or scenario name. Required for inline entries.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "observations_per_tick": {
+          "description": "Number of observations sampled per tick.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "on_sink_error": {
+          "description": "Per-entry sink-error policy (overrides defaults).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnSinkError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overrides": {
+          "description": "Per-metric overrides within the referenced pack.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/MetricOverride"
+          },
+          "default": null
+        },
+        "pack": {
+          "description": "Pack name or file path. Mutually exclusive with `generator`.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "phase_offset": {
+          "description": "Phase offset for staggered start within a clock group.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "quantiles": {
+          "description": "Summary quantile boundaries (summary only).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "rate": {
+          "description": "Event rate in events per second.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "seed": {
+          "description": "Deterministic seed for histogram/summary sampling.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "signal_type": {
+          "description": "Signal type: `\"metrics\"`, `\"logs\"`, `\"histogram\"`, or `\"summary\"`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sink": {
+          "description": "Sink configuration for this entry.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SinkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "start_time": {
+          "description": "Emission-time anchor (absolute RFC 3339, signed offset, or `now`).",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "while": {
+          "description": "Continuous lifecycle gate on another signal's value.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhileClause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "signal_type"
+      ]
+    },
+    "ExpectConfig": {
+      "description": "Top-level `expect:` block of a scenario file.",
+      "type": "object",
+      "properties": {
+        "alerts": {
+          "description": "Alert expectations, checked in order. Must not be empty.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AlertExpectation"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "alerts"
+      ]
+    },
+    "FlapEnum": {
+      "description": "Domain-specific value mapping for the [`GeneratorConfig::Flap`] alias.\n\nThe variant selects an `(up_value, down_value)` pair aligned with\ngNMI / openconfig conventions:\n\n| Variant | `up_value` | `down_value` | Convention |\n|---|---|---|---|\n| `Boolean` | 1.0 | 0.0 | Generic boolean |\n| `LinkState` | 1.0 | 0.0 | Synonym of `Boolean` |\n| `OperState` | 1.0 | 2.0 | gNMI oper-state (UP=1, DOWN=2) |\n| `AdminState` | 1.0 | 2.0 | gNMI admin-state (UP=1, DOWN=2) |\n| `NeighborState` | 6.0 | 1.0 | BGP neighbor-state (ESTABLISHED=6, IDLE=1) |",
+      "type": "string",
+      "enum": [
+        "boolean",
+        "link_state",
+        "oper_state",
+        "admin_state",
+        "neighbor_state"
+      ]
+    },
+    "FlatFile": {
+      "description": "A flat representation of a single-entry v2 file (no `scenarios:` key).\n\nThis is an internal deserialization target used to support the shorthand\nformat where the top-level YAML mapping contains entry fields directly.",
+      "type": "object",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AfterClause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "buckets": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "bursts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BurstConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cardinality_spikes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/CardinalitySpikeConfig"
+          }
+        },
+        "clock_group": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "delay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayClause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "distribution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DistributionConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "duration": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "dynamic_labels": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/DynamicLabelConfig"
+          }
+        },
+        "encoder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EncoderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "expect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExpectConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gaps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GapConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "generator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "help": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "id": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "jitter": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "jitter_seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Kind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "labels": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        },
+        "log_generator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogGeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mean_shift_per_sec": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "metric_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromMetricType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "name": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "observations_per_tick": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "on_sink_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnSinkError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overrides": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/MetricOverride"
+          },
+          "default": null
+        },
+        "pack": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "phase_offset": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "quantiles": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "signal_type": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "sink": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SinkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "start_time": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "while": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhileClause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version"
+      ]
+    },
+    "GapConfig": {
+      "description": "Gap window configuration — a recurring silent period within a scenario.\n\nDuring a gap the scheduler emits no events. The gap repeats on a fixed\ncycle defined by `every`, and each instance lasts for `for`.",
+      "type": "object",
+      "properties": {
+        "every": {
+          "description": "How often the gap recurs (e.g. `\"2m\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "for": {
+          "description": "How long each gap lasts (e.g. `\"20s\"`). Must be less than `every`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "every",
+        "for"
+      ]
+    },
+    "GeneratorConfig": {
+      "description": "Configuration for a value generator, used for YAML deserialization.\n\nThe `type` field selects which generator to instantiate. Additional fields\nare specific to each variant.\n\n# Core generators\n\n```yaml\ngenerator:\n  type: sine\n  amplitude: 5.0\n  period_secs: 30\n  offset: 10.0\n```\n\n# Operational aliases\n\nAliases desugar into core generators at config expansion time. They use\ndomain-relevant parameter names and have sensible defaults.\n\n```yaml\n# Normal healthy oscillation (desugars to sine + jitter)\ngenerator:\n  type: steady\n  center: 75.0\n  amplitude: 10.0\n  period: \"60s\"\n  noise: 2.0\n\n# Resource leak (desugars to sawtooth)\ngenerator:\n  type: leak\n  baseline: 40.0\n  ceiling: 95.0\n  time_to_ceiling: \"120s\"\n\n# Interface flap (desugars to sequence)\ngenerator:\n  type: flap\n  up_duration: \"10s\"\n  down_duration: \"5s\"\n```",
+      "oneOf": [
+        {
+          "description": "A generator that always returns the same value.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "constant"
+            },
+            "value": {
+              "description": "The fixed value returned on every tick.",
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "description": "A generator that returns deterministically random values in `[min, max]`.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "description": "Upper bound of the output range (inclusive).",
+              "type": "number",
+              "format": "double"
+            },
+            "min": {
+              "description": "Lower bound of the output range (inclusive).",
+              "type": "number",
+              "format": "double"
+            },
+            "seed": {
+              "description": "Optional seed for deterministic replay. Defaults to 0 when absent.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "uniform"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ]
+        },
+        {
+          "description": "A generator that follows a sine curve.",
+          "type": "object",
+          "properties": {
+            "amplitude": {
+              "description": "Half the peak-to-peak swing of the wave.",
+              "type": "number",
+              "format": "double"
+            },
+            "offset": {
+              "description": "Vertical offset applied to every sample (the wave's midpoint).",
+              "type": "number",
+              "format": "double"
+            },
+            "period_secs": {
+              "description": "Duration of one full cycle in seconds.",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "sine"
+            }
+          },
+          "required": [
+            "type",
+            "amplitude",
+            "period_secs",
+            "offset"
+          ]
+        },
+        {
+          "description": "A generator that linearly ramps from `min` to `max` then resets.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "description": "Value approached at the end of each period (never reached).",
+              "type": "number",
+              "format": "double"
+            },
+            "min": {
+              "description": "Value at the start of each period.",
+              "type": "number",
+              "format": "double"
+            },
+            "period_secs": {
+              "description": "Duration of one full ramp in seconds.",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "sawtooth"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max",
+            "period_secs"
+          ]
+        },
+        {
+          "description": "A generator that steps through an explicit sequence of values.",
+          "type": "object",
+          "properties": {
+            "repeat": {
+              "description": "When true (default), the sequence cycles. When false, the last value\nis returned for all ticks beyond the sequence length.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "sequence"
+            },
+            "values": {
+              "description": "The ordered list of values to step through. Must not be empty.",
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "values"
+          ]
+        },
+        {
+          "description": "A generator that outputs a baseline value with periodic spikes.",
+          "type": "object",
+          "properties": {
+            "baseline": {
+              "description": "The normal output value between spikes.",
+              "type": "number",
+              "format": "double"
+            },
+            "duration_secs": {
+              "description": "How long each spike lasts in seconds.",
+              "type": "number",
+              "format": "double"
+            },
+            "interval_secs": {
+              "description": "Time between spike starts in seconds.",
+              "type": "number",
+              "format": "double"
+            },
+            "magnitude": {
+              "description": "The amount added to baseline during a spike.",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "spike"
+            }
+          },
+          "required": [
+            "type",
+            "baseline",
+            "magnitude",
+            "duration_secs",
+            "interval_secs"
+          ]
+        },
+        {
+          "description": "A generator that replays numeric values from a CSV file.",
+          "type": "object",
+          "properties": {
+            "columns": {
+              "description": "Explicit column specifications. When present, the config layer\nexpands this single scenario into N independent single-column\nscenarios before launch.\n\nWhen absent, columns are auto-discovered from the CSV header row.\nAn empty list is an error.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "default": null,
+              "items": {
+                "$ref": "#/$defs/CsvColumnSpec"
+              }
+            },
+            "default_metric_name": {
+              "description": "Fallback metric name for auto-discovered columns whose header has\nno `__name__`. Suffixed with `_<index>` when multiple such columns\nshare the fallback.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "file": {
+              "description": "Path to the CSV file containing numeric values.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "repeat": {
+              "description": "Whether to loop back to the first value after exhausting the CSV.\nDefaults to `true`.",
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "timescale": {
+              "description": "Replay speed multiplier (default `1.0`). `2.0` plays 2× faster,\n`0.5` plays 2× slower. Must be strictly positive.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "csv_replay"
+            }
+          },
+          "required": [
+            "type",
+            "file"
+          ]
+        },
+        {
+          "description": "A monotonic step counter: `start + tick * step_size`, with optional wrap-around.\n\nUseful for testing `rate()` and `increase()` PromQL functions.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "description": "Optional wrap-around threshold. When set and greater than `start`,\nthe value wraps via modular arithmetic.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "start": {
+              "description": "Initial value at tick 0. Defaults to 0.0 when absent.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "step_size": {
+              "description": "Increment applied per tick.",
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "step"
+            }
+          },
+          "required": [
+            "type",
+            "step_size"
+          ]
+        },
+        {
+          "description": "Binary up/down toggle modeling an interface flap.\n\nDesugars into a [`Sequence`](GeneratorConfig::Sequence) generator that\nalternates between `up_value` (default 1.0) and `down_value` (default 0.0).\nThe number of consecutive up/down ticks is derived from `up_duration` and\n`down_duration` relative to the scenario `rate`.\n\nThe optional `enum:` shorthand selects up/down values aligned with\ncommon gNMI / openconfig conventions (oper-state, admin-state,\nBGP neighbor-state). Mutually exclusive with explicit `up_value` /\n`down_value`.\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: flap\n  up_duration: \"10s\"\n  down_duration: \"5s\"\n  enum: oper_state    # up_value=1.0, down_value=2.0\n```",
+          "type": "object",
+          "properties": {
+            "down_duration": {
+              "description": "How long the signal stays in the \"down\" state per cycle.\nDefaults to `\"5s\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "down_value": {
+              "description": "Value emitted during the \"down\" state. Defaults to `0.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "enum": {
+              "description": "Domain-specific shorthand selecting `(up_value, down_value)` per\nthe [`FlapEnum`] mapping. Mutually exclusive with `up_value` /\n`down_value`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FlapEnum"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "flap"
+            },
+            "up_duration": {
+              "description": "How long the signal stays in the \"up\" state per cycle.\nDefaults to `\"10s\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "up_value": {
+              "description": "Value emitted during the \"up\" state. Defaults to `1.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Resource filling up and resetting on a repeating cycle (e.g. disk usage\nsawtoothing after log rotation).\n\nDesugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator with\n`min = baseline`, `max = ceiling`, `period_secs` derived from\n`time_to_saturate`. The sawtooth resets to `baseline` after each\n`time_to_saturate` period, modeling a resource that fills and is\nperiodically reclaimed.\n\n# Distinction from `Leak`\n\n- **Saturation**: repeating fill-and-reset cycle. Default period is\n  `\"5m\"`.\n- **Leak**: one-way ramp, no reset expected within the scenario\n  duration. Default period is `\"10m\"`.\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: saturation\n  baseline: 20.0\n  ceiling: 95.0\n  time_to_saturate: \"5m\"\n```",
+          "type": "object",
+          "properties": {
+            "baseline": {
+              "description": "Resource level at the start of each cycle. Defaults to `0.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "ceiling": {
+              "description": "Maximum resource level before reset. Defaults to `100.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "time_to_saturate": {
+              "description": "Duration of one fill cycle. Defaults to `\"5m\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "saturation"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Resource growing toward a ceiling without resetting — a one-way ramp\nmodeling a memory leak or similar resource exhaustion.\n\nDesugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator.\nThe intent is that `time_to_ceiling` equals or exceeds the scenario\n`duration` so values only ramp upward and never reset within the run.\nIf the scenario has a `duration` set and `time_to_ceiling` is shorter\nthan that duration, desugaring returns a config error because the\nsawtooth would reset mid-run, which is the\n[`Saturation`](GeneratorConfig::Saturation) pattern instead.\n\n# Distinction from `Saturation`\n\n- **Leak**: one-way ramp, no reset expected. `time_to_ceiling` should\n  be >= scenario `duration`. Default period is `\"10m\"`.\n- **Saturation**: repeating fill-and-reset cycle. Default period is\n  `\"5m\"`.\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: leak\n  baseline: 40.0\n  ceiling: 95.0\n  time_to_ceiling: \"120s\"\n```",
+          "type": "object",
+          "properties": {
+            "baseline": {
+              "description": "Initial resource level. Defaults to `0.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "ceiling": {
+              "description": "Target ceiling value. Defaults to `100.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "time_to_ceiling": {
+              "description": "Time to grow from baseline to ceiling. Defaults to `\"10m\"`.\nThe sawtooth period is set to this value so values only ramp\nupward within the scenario duration.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "leak"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Gradual performance loss with noise — models degradation over time\n(e.g. growing latency, increasing error rate).\n\nDesugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator with\njitter automatically applied on [`BaseScheduleConfig`].\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: degradation\n  baseline: 0.05\n  ceiling: 0.5\n  time_to_degrade: \"60s\"\n  noise: 0.02\n```",
+          "type": "object",
+          "properties": {
+            "baseline": {
+              "description": "Starting performance level. Defaults to `0.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "ceiling": {
+              "description": "Worst-case performance level. Defaults to `100.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "noise": {
+              "description": "Jitter amplitude added as noise. Defaults to `1.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "noise_seed": {
+              "description": "Seed for the noise generator. Defaults to `0`.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "default": null,
+              "minimum": 0
+            },
+            "time_to_degrade": {
+              "description": "Duration of the degradation ramp. Defaults to `\"5m\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "degradation"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Normal healthy oscillation around a center value — the \"everything is\nfine\" baseline signal.\n\nDesugars into a [`Sine`](GeneratorConfig::Sine) generator with jitter\nautomatically applied on [`BaseScheduleConfig`].\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: steady\n  center: 75.0\n  amplitude: 10.0\n  period: \"60s\"\n  noise: 2.0\n```",
+          "type": "object",
+          "properties": {
+            "amplitude": {
+              "description": "Half the peak-to-peak swing. Defaults to `10.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "center": {
+              "description": "Center of the oscillation (the sine wave's offset). Defaults to `50.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "noise": {
+              "description": "Jitter amplitude added as noise. Defaults to `1.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "noise_seed": {
+              "description": "Seed for the noise generator. Defaults to `0`.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "default": null,
+              "minimum": 0
+            },
+            "period": {
+              "description": "Duration of one full oscillation cycle. Defaults to `\"60s\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "steady"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Periodic anomalous bursts above a baseline — models sudden spikes\nin CPU, memory, or request rate.\n\nDesugars into a [`Spike`](GeneratorConfig::Spike) generator.\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: spike_event\n  baseline: 35.0\n  spike_height: 60.0\n  spike_duration: \"10s\"\n  spike_interval: \"30s\"\n```",
+          "type": "object",
+          "properties": {
+            "baseline": {
+              "description": "Normal output value between spikes. Defaults to `0.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "spike_duration": {
+              "description": "How long each spike lasts. Defaults to `\"10s\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "spike_height": {
+              "description": "Amount added to baseline during a spike. Defaults to `100.0`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "spike_interval": {
+              "description": "Time between spike starts. Defaults to `\"30s\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "spike_event"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "KafkaSaslConfig": {
+      "description": "SASL authentication configuration for Kafka broker connections.\n\nSupported mechanisms are `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.",
+      "type": "object",
+      "properties": {
+        "mechanism": {
+          "description": "SASL mechanism: `\"PLAIN\"`, `\"SCRAM-SHA-256\"`, or `\"SCRAM-SHA-512\"`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "password": {
+          "description": "SASL password.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "writeOnly": true
+        },
+        "username": {
+          "description": "SASL username.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "mechanism",
+        "username",
+        "password"
+      ]
+    },
+    "KafkaTlsConfig": {
+      "description": "TLS configuration for Kafka broker connections.\n\nWhen `enabled` is `true`, the Kafka sink connects to brokers over TLS.\nAn optional `ca_cert` path can be provided to trust a custom or self-signed\nCA certificate. When `ca_cert` is omitted, Mozilla's bundled root\ncertificates are used via [`webpki_roots`].",
+      "type": "object",
+      "properties": {
+        "ca_cert": {
+          "description": "Optional path to a PEM-encoded CA certificate file for custom or\nself-signed CAs. When omitted, Mozilla's bundled root certificates are used.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "enabled": {
+          "description": "Enable TLS for broker connections. Default: `false`.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "Kind": {
+      "description": "Discriminator declaring the role of a v2 YAML file.\n\nRequired at the top level of every v2 scenario file. `Runnable` files\ncarry one or more scenario entries (inline or via `pack:` references)\nand are executable. `Composable` files are pack definitions; their\nbody matches [`MetricPackDef`](crate::packs::MetricPackDef) and they\nare referenced from runnable files via `pack:`.",
+      "type": "string",
+      "enum": [
+        "runnable",
+        "composable"
+      ]
+    },
+    "LogCsvColumns": {
+      "description": "Column-role assignment for a [`LogCsvReplayGenerator`].\n\n`timestamp`, `severity`, and `message` map header column names to their\nsemantic role. Any header column not referenced here becomes a free-form\n`fields` entry on the emitted [`LogEvent`].",
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "severity": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "timestamp": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        }
+      }
+    },
+    "LogGeneratorConfig": {
+      "description": "Configuration for a log generator, used for YAML deserialization.\n\nThe `type` field selects which generator to instantiate.\n\n# Example YAML — template generator\n\n```yaml\ngenerator:\n  type: template\n  templates:\n    - message: \"Request from {ip} to {endpoint}\"\n      field_pools:\n        ip: [\"10.0.0.1\", \"10.0.0.2\"]\n        endpoint: [\"/api\", \"/health\"]\n  severity_weights:\n    info: 0.7\n    warn: 0.2\n    error: 0.1\n  seed: 42\n```\n\n# Example YAML — csv_replay generator\n\n```yaml\ngenerator:\n  type: csv_replay\n  file: logs.csv\n  timescale: 1.0\n  default_severity: info\n  repeat: true\n  columns:\n    timestamp: timestamp\n    severity: severity\n    message: message\n```",
+      "oneOf": [
+        {
+          "description": "Generates events from message templates with randomized field pool values.",
+          "type": "object",
+          "properties": {
+            "seed": {
+              "description": "Seed for deterministic replay. Defaults to `0` when absent.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "severity_weights": {
+              "description": "Optional severity weight map. Keys are severity names (`info`, `warn`, etc.),\nvalues are relative weights. Defaults to `info: 1.0` when absent.",
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "number",
+                "format": "double"
+              },
+              "default": null
+            },
+            "templates": {
+              "description": "One or more template entries. Templates are selected round-robin by tick.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TemplateConfig"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "template"
+            }
+          },
+          "required": [
+            "type",
+            "templates"
+          ]
+        },
+        {
+          "description": "Replays structured log events from a CSV file with `timestamp`,\n`severity`, `message`, and arbitrary field columns.\n\nThe scenario rate is derived from the median Δt of the timestamp\ncolumn at config-expansion time; a user-supplied `rate:` is always\noverridden (a `tracing::warn!` records the override).",
+          "type": "object",
+          "properties": {
+            "columns": {
+              "description": "Optional explicit column-role mapping. When absent, roles are\nauto-discovered from the CSV header.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LogCsvColumns"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "default_severity": {
+              "description": "Fallback severity when the severity cell is missing or unparseable.\nDefaults to `Info`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "file": {
+              "description": "Path to the CSV file.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "repeat": {
+              "description": "Whether to cycle rows after exhausting the CSV. Defaults to `true`.",
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "timescale": {
+              "description": "Replay speed multiplier (default `1.0`, must be strictly positive).",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "csv_replay"
+            }
+          },
+          "required": [
+            "type",
+            "file"
+          ]
+        }
+      ]
+    },
+    "MetricOverride": {
+      "description": "Per-metric override within a [`PackScenarioConfig`] or a v2 pack-backed\nscenario entry.\n\nAllows the user to customize the generator, add extra labels, or attach a\ncausal dependency (`after:`) for a specific metric without modifying the\npack definition. The v1 expansion path ([`expand_pack`]) consumes only\n`generator` and `labels`; the v2 compiler additionally propagates `after`\nonto the expanded signal (see\n[`crate::compiler::expand`]).",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "Optional causal dependency (`after:`) attached specifically to this\nexpanded metric.\n\nPer spec §2.4, a per-metric `after:` on a pack override sets a\ncausal dependency for that specific expanded signal, overriding\nany entry-level `after` on the parent pack entry. The v2 compiler\npropagates this onto the resulting signal in Phase 3; v1 pack\nexpansion ignores the field.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AfterClause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "delay": {
+          "description": "Per-metric `delay:` clause; replaces any entry-level `delay:` for\nthis expanded signal.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayClause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generator": {
+          "description": "Replacement generator for this metric.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "labels": {
+          "description": "Additional labels merged on top of all other label sources.\n\nUses `BTreeMap` for deterministic serialization order, consistent with\nthe v2 AST label types.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        },
+        "while": {
+          "description": "Per-metric `while:` clause; replaces any entry-level `while:` for\nthis expanded signal.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhileClause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "MetricPackDef": {
+      "description": "A metric pack definition: a reusable bundle of metric names and label schemas.\n\nPacks are templates — they contain no rate, duration, sink, or encoder.\nThose come from the user via [`PackScenarioConfig`] at expansion time.\n\n# YAML Schema\n\n```yaml\nname: telegraf_snmp_interface\ndescription: \"Standard SNMP interface metrics (Telegraf-normalized)\"\ncategory: network\nshared_labels:\n  device: \"\"\n  job: snmp\nmetrics:\n  - name: ifOperStatus\n    generator:\n      type: constant\n      value: 1.0\n  - name: ifHCInOctets\n    generator:\n      type: step\n      step_size: 125000.0\n```",
+      "type": "object",
+      "properties": {
+        "category": {
+          "description": "Broad grouping (e.g. `\"network\"`, `\"infrastructure\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "description": {
+          "description": "One-line human-readable description.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "metrics": {
+          "description": "The list of metric specifications in this pack.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MetricSpec"
+          }
+        },
+        "name": {
+          "description": "Snake_case identifier for the pack (e.g. `\"telegraf_snmp_interface\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "shared_labels": {
+          "description": "Labels shared across all metrics in the pack. Per-metric labels and\nuser labels are merged on top (user wins on conflict).",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "category",
+        "metrics"
+      ]
+    },
+    "MetricSpec": {
+      "description": "A single metric within a pack definition.\n\nSpecifies the metric name and optionally per-metric labels and a default\ngenerator. When the generator is absent, [`expand_pack`] uses a\n`constant { value: 0.0 }` default.",
+      "type": "object",
+      "properties": {
+        "generator": {
+          "description": "Default value generator for this metric. When absent, a constant(0.0)\ngenerator is used.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "labels": {
+          "description": "Labels specific to this metric, merged on top of the pack's shared labels.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        },
+        "name": {
+          "description": "The metric name (e.g. `\"ifHCInOctets\"`, `\"node_cpu_seconds_total\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "OnSinkError": {
+      "description": "Policy for handling sink I/O errors during a running scenario.\n\n`Warn` (the default) logs a rate-limited message, increments error stats,\ndrops the failing batch, and continues ticking. `Fail` propagates the\nerror and terminates the scenario thread — the historical behavior.",
+      "type": "string",
+      "enum": [
+        "warn",
+        "fail"
+      ]
+    },
+    "OtlpSignalType": {
+      "description": "Selects which OTLP signal type the sink handles.\n\nDetermines both the gRPC path and the parsing/batching strategy.",
+      "oneOf": [
+        {
+          "description": "Metric signal — data is parsed as OTLP `Metric` messages and sent\nto the `MetricsService/Export` gRPC endpoint.",
+          "type": "string",
+          "const": "metrics"
+        },
+        {
+          "description": "Log signal — data is parsed as OTLP `LogRecord` messages and sent\nto the `LogsService/Export` gRPC endpoint.",
+          "type": "string",
+          "const": "logs"
+        }
+      ]
+    },
+    "PromMetricType": {
+      "description": "Prometheus exposition metric kind for `# TYPE` annotations.",
+      "type": "string",
+      "enum": [
+        "gauge",
+        "counter",
+        "histogram",
+        "summary",
+        "untyped"
+      ]
+    },
+    "RetryConfig": {
+      "description": "Serde-deserializable retry configuration embedded in sink YAML blocks.\n\nAll three fields are required when the `retry:` block is present.\n\n# Example YAML\n\n```yaml\nretry:\n  max_attempts: 3\n  initial_backoff: 100ms\n  max_backoff: 5s\n```",
+      "type": "object",
+      "properties": {
+        "initial_backoff": {
+          "description": "Duration string for the first retry delay (e.g. `\"100ms\"`, `\"1s\"`).\n\nParsed by [`parse_duration`](crate::config::validate::parse_duration).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "max_attempts": {
+          "description": "Number of retry attempts after the initial failure.\n\nThe total number of calls is `max_attempts + 1` (one initial attempt\nplus up to `max_attempts` retries). Must be at least 1.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_backoff": {
+          "description": "Duration string for the maximum backoff cap (e.g. `\"5s\"`, `\"30s\"`).\n\nMust be greater than or equal to `initial_backoff`. Parsed by\n[`parse_duration`](crate::config::validate::parse_duration).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "max_attempts",
+        "initial_backoff",
+        "max_backoff"
+      ]
+    },
+    "ScenarioFileCanonical": {
+      "description": "A parsed v2 scenario file.\n\nThis is the top-level AST node produced by [`parse::parse`]. It captures\nthe exact structure of the YAML input without resolving defaults, expanding\npacks, or compiling after-clauses.\n\n# Catalog metadata\n\nThe three optional fields [`scenario_name`](Self::scenario_name),\n[`category`](Self::category), and [`description`](Self::description)\ncarry top-level metadata used by catalog probes. The compiler pipeline\nitself (normalize → expand → compile_after → prepare) does **not** consume\nthese fields — they are pure metadata, not compile input.",
+      "type": "object",
+      "properties": {
+        "category": {
+          "description": "Legacy catalog category. Superseded by `tags` (filtered via\n`sonda list --tag`). Carried through for back-compat with files\nauthored before 1.9a; not surfaced by the current CLI.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "defaults": {
+          "description": "Optional shared defaults inherited by all entries.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Defaults"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "description": "One-line human-readable description surfaced by `sonda list` and\n`sonda show`. Pure metadata — ignored by every compiler phase.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "expect": {
+          "description": "Optional alert expectations consumed by `sonda test`. Pure metadata —\nignored by every compiler phase and by the runtime.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExpectConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "description": "Discriminator declaring whether the file is a runnable scenario\nor a composable pack definition.",
+          "$ref": "#/$defs/Kind"
+        },
+        "scenario_name": {
+          "description": "Catalog display name (kebab-case). When present it overrides the\nfilename-derived name in the CLI catalog probe. Pure metadata —\nignored by every compiler phase.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "scenarios": {
+          "description": "One or more scenario entries (inline signals or pack references).\nEmpty when `kind: composable` — composable files carry no entries.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Entry"
+          }
+        },
+        "tags": {
+          "description": "Optional file-level metadata tags surfaced by `sonda list --tag`.\nCarried through normalization unchanged; ignored at runtime.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "version": {
+          "description": "Schema version. Must be `2`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "kind"
+      ]
+    },
+    "Severity": {
+      "description": "The severity level of a log event.\n\nVariants map to the conventional log severity ladder. Serializes to and from\nlowercase strings (e.g., `\"info\"`, `\"error\"`) for YAML and JSON compatibility.",
+      "oneOf": [
+        {
+          "description": "Extremely detailed diagnostic information.",
+          "type": "string",
+          "const": "trace"
+        },
+        {
+          "description": "Diagnostic information useful during development.",
+          "type": "string",
+          "const": "debug"
+        },
+        {
+          "description": "General informational messages.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "Potentially harmful situations that warrant attention.",
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "description": "Error events that may allow the application to continue.",
+          "type": "string",
+          "const": "error"
+        },
+        {
+          "description": "Severe error events that will likely cause the application to abort.",
+          "type": "string",
+          "const": "fatal"
+        }
+      ]
+    },
+    "SinkConfig": {
+      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, or `otlp_grpc`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
+      "oneOf": [
+        {
+          "description": "Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stdout"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Write encoded events to a file at the given path.\n\nParent directories are created automatically if they do not exist.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Filesystem path to write encoded events to.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ]
+        },
+        {
+          "description": "Write encoded events over a persistent TCP connection.\n\nThe sink connects on construction and buffers writes via [`BufWriter`](std::io::BufWriter).",
+          "type": "object",
+          "properties": {
+            "address": {
+              "description": "Remote address to connect to, e.g. `\"127.0.0.1:9999\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "retry": {
+              "description": "Optional retry policy for transient failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RetryConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "tcp"
+            }
+          },
+          "required": [
+            "type",
+            "address"
+          ]
+        },
+        {
+          "description": "Send each encoded event as a single UDP datagram.\n\nNo connection is established; an ephemeral local port is bound and each\ncall to `write` sends one `send_to` datagram.",
+          "type": "object",
+          "properties": {
+            "address": {
+              "description": "Remote address to send datagrams to, e.g. `\"127.0.0.1:9999\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "udp"
+            }
+          },
+          "required": [
+            "type",
+            "address"
+          ]
+        },
+        {
+          "description": "In-process memory sink for tests and benchmarks.\n\nWhen `capture` is `true`, each write records its `Instant` alongside\nthe bytes, bounded to the most recent `max_events` entries. When\n`capture` is `false`, the sink only accumulates bytes in its buffer.\nProgrammatic embedders can pass `capture_handle: Some(arc)` to mirror\nwrites into an externally-owned ring; YAML scenarios always leave it\n`None` because the field is `serde(skip)`.",
+          "type": "object",
+          "properties": {
+            "capture": {
+              "description": "Whether to record `(Instant, bytes)` on every write.",
+              "type": "boolean",
+              "default": false
+            },
+            "max_events": {
+              "description": "Cap on retained captured events. Defaults to `1_000_000` when\n`capture` is `true` and the field is omitted.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "memory"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Batch encoded events and deliver them via HTTP POST.\n\nBytes are accumulated in a buffer until `batch_size` bytes are reached,\nthen flushed as a single POST request. The `flush()` method sends any\nremaining buffered data.\n\nRequires the `http` Cargo feature to be enabled.",
+          "type": "object",
+          "properties": {
+            "batch_size": {
+              "description": "Optional flush threshold in bytes. Defaults to 4 KiB if not specified.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "content_type": {
+              "description": "Optional `Content-Type` header value. Defaults to\n`\"application/octet-stream\"` if not specified.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ]
+            },
+            "headers": {
+              "description": "Optional extra HTTP headers to send with every POST request.\n\nWhen provided, these headers are sent in addition to the `Content-Type`\nheader. Useful for protocols that require specific headers, such as\nPrometheus remote write (`Content-Encoding: snappy`,\n`X-Prometheus-Remote-Write-Version: 0.1.0`).",
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "default": null
+            },
+            "max_buffer_age": {
+              "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "retry": {
+              "description": "Optional retry policy for transient failures.\n\nWhen absent, the sink fails immediately on errors (no retry).",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RetryConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "http_push"
+            },
+            "url": {
+              "description": "Target URL for HTTP POST requests, e.g. `\"http://localhost:9090/api/v1/write\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "description": "Batch TimeSeries and deliver them as Prometheus remote write requests.\n\nThis sink is designed to be paired with the `remote_write` encoder, which\nproduces length-prefixed protobuf `TimeSeries` bytes. The sink accumulates\nTimeSeries entries and, on flush or when `batch_size` is reached, wraps them\nin a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs\nwith the correct remote write protocol headers.\n\nRequires the `remote-write` Cargo feature to be enabled.",
+          "type": "object",
+          "properties": {
+            "batch_size": {
+              "description": "Flush threshold in number of TimeSeries entries. Defaults to 100 if\nnot specified.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 0
+            },
+            "max_buffer_age": {
+              "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "retry": {
+              "description": "Optional retry policy for transient failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RetryConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "remote_write"
+            },
+            "url": {
+              "description": "Target URL for the remote write endpoint, e.g.\n`\"http://localhost:8428/api/v1/write\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "description": "Batch encoded events and deliver them to a Kafka topic.\n\nUses [`rskafka`](https://crates.io/crates/rskafka) — a pure-Rust Kafka\nclient with no C dependencies — for musl-compatible static linking.\n\nBytes are accumulated in an internal buffer. When the buffer reaches\n64 KiB, or when `flush()` is called explicitly, the buffer is published\nas a single Kafka record to partition 0 of the configured topic.\n\nRequires the `kafka` Cargo feature to be enabled.",
+          "type": "object",
+          "properties": {
+            "brokers": {
+              "description": "Comma-separated list of broker `host:port` addresses,\ne.g. `\"127.0.0.1:9092\"` or `\"broker1:9092,broker2:9092\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "max_buffer_age": {
+              "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "retry": {
+              "description": "Optional retry policy for transient failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RetryConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "sasl": {
+              "description": "Optional SASL authentication configuration.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/KafkaSaslConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tls": {
+              "description": "Optional TLS configuration for encrypted broker connections.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/KafkaTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "topic": {
+              "description": "The Kafka topic name to produce records to.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "kafka"
+            }
+          },
+          "required": [
+            "type",
+            "brokers",
+            "topic"
+          ]
+        },
+        {
+          "description": "Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.\nEntries are grouped by combined label set (constructor labels + per-event\noverlay from `dynamic_labels`) into one stream per unique combination.\nRequires the `http` Cargo feature.",
+          "type": "object",
+          "properties": {
+            "batch_size": {
+              "description": "Flush threshold in log entries.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 0
+            },
+            "max_buffer_age": {
+              "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "max_streams_per_push": {
+              "description": "Hard cap on unique streams per push. Defaults to\n[`DEFAULT_MAX_STREAMS_PER_PUSH`](loki::DEFAULT_MAX_STREAMS_PER_PUSH).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "default": null,
+              "minimum": 0
+            },
+            "retry": {
+              "description": "Optional retry policy for transient failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RetryConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "loki"
+            },
+            "url": {
+              "description": "Base URL of the Loki instance, e.g. `\"http://localhost:3100\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "description": "Batch OTLP protobuf data and deliver via gRPC to an OpenTelemetry Collector.\n\nThis sink is designed to be paired with the `otlp` encoder, which produces\nlength-prefixed protobuf `Metric` or `LogRecord` bytes. The sink accumulates\nentries and, on flush or when `batch_size` is reached, wraps them in the\nappropriate OTLP export request and sends via gRPC.\n\nRequires the `otlp` Cargo feature to be enabled.",
+          "type": "object",
+          "properties": {
+            "batch_size": {
+              "description": "Flush threshold in number of data points / log records.\nDefaults to 100 if not specified.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 0
+            },
+            "endpoint": {
+              "description": "gRPC endpoint URL, e.g. `\"http://localhost:4317\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "max_buffer_age": {
+              "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "retry": {
+              "description": "Optional retry policy for transient failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RetryConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "signal_type": {
+              "description": "Whether to send metrics or logs.",
+              "$ref": "#/$defs/OtlpSignalType"
+            },
+            "type": {
+              "type": "string",
+              "const": "otlp_grpc"
+            }
+          },
+          "required": [
+            "type",
+            "endpoint",
+            "signal_type"
+          ]
+        }
+      ]
+    },
+    "SpikeStrategy": {
+      "description": "Strategy for generating unique label values during a cardinality spike.\n\nDetermines how the spike window produces distinct values for the injected\nlabel key on each tick.",
+      "oneOf": [
+        {
+          "description": "Sequential counter: `prefix + (tick % cardinality)`.\n\nProduces deterministic, predictable label values without needing a seed.",
+          "type": "string",
+          "const": "counter"
+        },
+        {
+          "description": "Deterministic random: SplitMix64 hash of `seed ^ tick`, formatted as hex.\n\nProduces label values that look random but are reproducible given the\nsame seed.",
+          "type": "string",
+          "const": "random"
+        }
+      ]
+    },
+    "TemplateConfig": {
+      "description": "Configuration for one message template used by [`LogGeneratorConfig::Template`].\n\nThe `message` field may contain `{placeholder}` tokens that are resolved\nusing the corresponding value pool from `field_pools`.\n\n# Example YAML\n\n```yaml\nmessage: \"Request from {ip} to {endpoint}\"\nfield_pools:\n  ip:\n    - \"10.0.0.1\"\n    - \"10.0.0.2\"\n  endpoint:\n    - \"/api\"\n    - \"/health\"\n```",
+      "type": "object",
+      "properties": {
+        "field_pools": {
+          "description": "Maps placeholder names to their value pools.\n\nUses `BTreeMap` for deterministic iteration order, matching the\ncodebase convention for ordered maps.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "default": {}
+        },
+        "message": {
+          "description": "The message template. Use `{field_name}` for dynamic placeholders.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ]
+    },
+    "UnresolvedBehavior": {
+      "description": "Policy applied when a cross-POST `while:` reference cannot be resolved at\nscenario start. Only meaningful when [`WhileClause::scenario_name`] is set.",
+      "oneOf": [
+        {
+          "description": "Treat the gate as open until the upstream registers.",
+          "type": "string",
+          "const": "open"
+        },
+        {
+          "description": "Treat the gate as closed until the upstream registers.",
+          "type": "string",
+          "const": "closed"
+        },
+        {
+          "description": "Hold the scenario in `unresolved` state until the upstream registers.",
+          "type": "string",
+          "const": "pending"
+        }
+      ]
+    },
+    "WhileClause": {
+      "description": "Continuous lifecycle gate on another signal's value.\n\n```yaml\nwhile:\n  ref: link_state\n  op: \">\"\n  value: 0\n```",
+      "type": "object",
+      "properties": {
+        "if_unresolved": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnresolvedBehavior"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "op": {
+          "$ref": "#/$defs/WhileOp"
+        },
+        "ref": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "scenario_name": {
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "op",
+        "value"
+      ]
+    },
+    "WhileOp": {
+      "description": "Strict comparison operator for a [`WhileClause`].\n\nOnly `<` and `>` are accepted. Non-strict operators (`<=`, `>=`, `==`,\n`!=`) are rejected at deserialize time with a hint pointing to the\nstrict alternatives — equality on `f64` over a continuous gate is\nnumerically unsafe and forbidden by design.",
+      "type": "string",
+      "enum": [
+        "<",
+        ">"
+      ]
+    }
+  }
+}

@@ -34,6 +34,8 @@ pub mod model;
 pub mod packs;
 #[cfg(feature = "runtime")]
 pub mod schedule;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod sink;
 pub(crate) mod util;
 pub mod verify;

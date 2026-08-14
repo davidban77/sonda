@@ -146,6 +146,16 @@ jobs:
       - name: Doctests without default features
         run: cargo test -p sonda-core --no-default-features --doc
 
+      # `schema` implies `config` and nothing else. That is the whole claim of
+      # the feature line, and `--all-features` cannot check it: there, every
+      # other feature is on, so a hidden dependency on `runtime` (or on `http`,
+      # via the verify module) would compile anyway and only surface for a
+      # downstream consumer who enabled `schema` alone. The schema tests
+      # themselves run in the all-features job — this step is about the
+      # feature boundary, so it stops at building.
+      - name: Build with `schema` as the only feature
+        run: cargo build -p sonda-core --no-default-features --features schema
+
   all-features:
     name: Build, Test, Clippy (all features)
     runs-on: ubuntu-latest

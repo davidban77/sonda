@@ -245,5 +245,6 @@ nav:
       - reference/index.md
       - CLI flags: reference/cli-flags.md
       - Scenario fields: reference/scenario-fields.md
+      - Editor schema: reference/editor-schema.md
       - Glossary: reference/glossary.md
       - Troubleshooting: reference/troubleshooting.md

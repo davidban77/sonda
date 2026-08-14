@@ -182,6 +182,19 @@ pub fn detect_version(yaml: &str) -> Option<u32> {
     probe.version
 }
 
+/// Register the shorthand file shape with a schema generator and return a
+/// reference to it.
+///
+/// `FlatFile` is private on purpose — it is a deserialization target, not API.
+/// But it is one of the three top-level shapes [`parse`] accepts, so the
+/// generated JSON Schema has to describe it or it would reject files this
+/// parser takes. This hands `crate::schema` a subschema without widening the
+/// type's visibility.
+#[cfg(feature = "schema")]
+pub(crate) fn flat_file_subschema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    generator.subschema_for::<FlatFile>()
+}
+
 // ---------------------------------------------------------------------------
 // Single-signal shorthand support
 // ---------------------------------------------------------------------------
@@ -192,6 +205,7 @@ pub fn detect_version(yaml: &str) -> Option<u32> {
 /// format where the top-level YAML mapping contains entry fields directly.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct FlatFile {
     version: u32,
 
