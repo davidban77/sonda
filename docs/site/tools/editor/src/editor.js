@@ -17,7 +17,13 @@ import {
 import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { yaml } from "@codemirror/lang-yaml";
-import { numberSpanAt, scrubNumber } from "../../../docs/javascripts/sonda-pure.js";
+import {
+  numberSpanAt,
+  scrubNumber,
+  yamlPathAt,
+  schemaCompletions,
+} from "../../../docs/javascripts/sonda-pure.js";
+import { autocompletion } from "@codemirror/autocomplete";
 import {
   syntaxHighlighting,
   defaultHighlightStyle,
@@ -143,6 +149,66 @@ function beginScrub(view, event, from, original, clickPos) {
   window.addEventListener("mouseup", up);
 }
 
+/* --- schema-driven completion ------------------------------------------
+ *
+ * The scenario schema is the same generated artifact the docs publish, so
+ * completions here and a reader's own editor answer from one source. It is
+ * ~108 KB of JSON, which is why it is FETCHED on first use rather than
+ * bundled: a visitor who never opens the completion list never pays for it,
+ * and the editor bundle stays about the editor.
+ *
+ * Every failure path is silent. A 404, an offline visitor, a parse error —
+ * all mean "no completions", never a thrown keystroke. The editor works
+ * without this; it is an enhancement on an enhancement.
+ */
+const SCHEMA_URL = new URL("../schema/sonda-scenario.schema.json", import.meta.url);
+
+let schemaPromise = null;
+function loadSchema() {
+  if (!schemaPromise) {
+    schemaPromise = fetch(SCHEMA_URL)
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
+  }
+  return schemaPromise;
+}
+
+/* CodeMirror completion source: where is the cursor, and what does the
+ * schema allow there. Both questions are answered by sonda-pure.js — this
+ * function only adapts the shapes. */
+async function schemaCompletionSource(context) {
+  const schema = await loadSchema();
+  if (!schema) return null;
+
+  const where = yamlPathAt(context.state.doc.toString(), context.pos);
+  // null means the cursor is somewhere an indentation reading would be
+  // wrong — a comment, a quoted scalar, flow style. Decline rather than
+  // offer a confidently misplaced list.
+  if (!where) return null;
+
+  const options = schemaCompletions(schema, where.path, where.context);
+  if (!options.length) return null;
+
+  // Explicit invocation (Ctrl+Space) should show the list even with nothing
+  // typed; automatic invocation on an empty prefix would pop up on every
+  // newline, which is noise.
+  if (!context.explicit && where.prefix === "") return null;
+
+  return {
+    from: context.pos - where.prefix.length,
+    options: options.map((option) => ({
+      label: option.label,
+      detail: option.detail || undefined,
+      info: option.info || undefined,
+      // A key completion is followed by `: ` far more often than not; a
+      // value completion stands alone.
+      apply: where.context === "key" ? `${option.label}: ` : option.label,
+      type: where.context === "key" ? "property" : "enum",
+    })),
+    validFor: /^[\w.-]*$/,
+  };
+}
+
 const lightTheme = [syntaxHighlighting(defaultHighlightStyle)];
 const darkTheme = [oneDark];
 
@@ -169,6 +235,14 @@ export function createScenarioEditor(options) {
         indentUnit.of("  "),
         yaml(),
         lintGutter(),
+        autocompletion({
+          // `override` rather than adding a source: CodeMirror's default
+          // word-scanner would pad the list with words already in the
+          // document, which is exactly the noise the schema exists to
+          // replace.
+          override: [schemaCompletionSource],
+          icons: false,
+        }),
         scrubHighlighter,
         scrubGesture,
         baseTheme,

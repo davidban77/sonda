@@ -27,6 +27,8 @@ import {
   niceDeadlineSecs,
   normalizeFence,
   parsePromQLRule,
+  yamlPathAt,
+  schemaCompletions,
   numberSpanAt,
   runnableScenario,
   scheduleWindows,
@@ -1443,6 +1445,289 @@ test("the same tokens outside a label value are still refused by name", () => {
   assert.match(no("cpu > 1 or mem > 1"), /a set operator/);
   assert.match(no("cpu[5m] > 1"), /a range selector/);
   assert.match(no("cpu offset 5m > 1"), /an offset or @ modifier/);
+});
+
+
+// --- yamlPathAt (WP11 PR3) ---------------------------------------------
+//
+// This runs on BROKEN YAML by design: a reader asking for completion has
+// typed half a line. So the case table is written the way the editor will
+// actually call it — cursor marked with `|` in a document that would not
+// parse — rather than on tidy complete documents.
+
+/** Split a fixture on the `|` cursor marker and resolve the path there. */
+const at = (marked) => {
+  const offset = marked.indexOf("|");
+  assert.notEqual(offset, -1, "fixture must mark the cursor with |");
+  return yamlPathAt(marked.replace("|", ""), offset);
+};
+
+test("the path at a top-level key is empty", () => {
+  const got = at("version: 2\nkin|");
+  assert.deepEqual(got.path, []);
+  assert.equal(got.context, "key");
+  assert.equal(got.prefix, "kin");
+});
+
+test("a value position names its own key", () => {
+  const got = at("version: 2\nkind: run|");
+  assert.deepEqual(got.path, ["kind"]);
+  assert.equal(got.context, "value");
+  assert.equal(got.prefix, "run");
+});
+
+test("a key inside a sequence item carries the [] step", () => {
+  const got = at(
+    "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    ra|"
+  );
+  assert.deepEqual(got.path, ["scenarios", "[]"]);
+  assert.equal(got.context, "key");
+  assert.equal(got.prefix, "ra");
+});
+
+test("a nested mapping inside a sequence item nests under it", () => {
+  const got = at(
+    "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    generator:\n      ty|"
+  );
+  assert.deepEqual(got.path, ["scenarios", "[]", "generator"]);
+  assert.equal(got.context, "key");
+});
+
+test("a value inside a nested mapping names the full chain", () => {
+  const got = at(
+    "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    generator:\n      type: sin|"
+  );
+  assert.deepEqual(got.path, ["scenarios", "[]", "generator", "type"]);
+  assert.equal(got.context, "value");
+  assert.equal(got.prefix, "sin");
+});
+
+test("the key on the dash line itself is a sequence step", () => {
+  const got = at("version: 2\nkind: runnable\nscenarios:\n  - signal_ty|");
+  assert.deepEqual(got.path, ["scenarios", "[]"]);
+  assert.equal(got.context, "key");
+});
+
+test("a blank indented line inherits its parent, not the line above it", () => {
+  // The commonest completion moment: Enter, then Ctrl+Space. There is no
+  // text on this line at all, so only the indentation can answer.
+  const got = at(
+    "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    generator:\n      type: sine\n    |"
+  );
+  assert.deepEqual(got.path, ["scenarios", "[]"]);
+  assert.equal(got.context, "key");
+  assert.equal(got.prefix, "");
+});
+
+test("dedenting out of a nested mapping walks back up", () => {
+  const got = at(
+    "version: 2\nkind: runnable\ndefaults:\n  encoder:\n    type: prometheus_text\n  ra|"
+  );
+  assert.deepEqual(got.path, ["defaults"]);
+});
+
+test("comments between lines do not become ancestors", () => {
+  const got = at(
+    "version: 2\nkind: runnable\nscenarios:\n  # the cpu signal\n  - signal_type: metrics\n    # how fast\n    ra|"
+  );
+  assert.deepEqual(got.path, ["scenarios", "[]"]);
+});
+
+test("completion declines inside a comment", () => {
+  assert.equal(at("version: 2\n# kin|"), null);
+  assert.equal(at("version: 2  # a note her|"), null);
+});
+
+test("a # inside a scalar is not a comment", () => {
+  // Same trap the PromQL importer hit: `#` only opens a comment after
+  // whitespace. `path: /a#b` is one scalar.
+  const got = at("version: 2\nscenarios:\n  - path: /a#b|");
+  assert.notEqual(got, null);
+  assert.equal(got.context, "value");
+});
+
+test("completion declines inside a quoted scalar", () => {
+  // Key names mean nothing here, and the `: ` inside would otherwise be read
+  // as a separator.
+  assert.equal(at('scenarios:\n  - msg: "a: b|'), null);
+  assert.equal(at("scenarios:\n  - msg: 'hello worl|"), null);
+});
+
+test("a closed quote is not inside a scalar", () => {
+  const got = at('scenarios:\n  - msg: "a: b"\n    ra|');
+  assert.deepEqual(got.path, ["scenarios", "[]"]);
+});
+
+test("completion declines on flow style rather than guessing", () => {
+  // Indentation says nothing about position inside `{...}`, so an answer
+  // here would look confident and be unrelated to the cursor.
+  assert.equal(at("scenarios:\n  - generator: { type: sin|"), null);
+  assert.equal(at("scenarios:\n  - buckets: [1, 2, |"), null);
+});
+
+test("a colon with no space after it is a scalar, not a separator", () => {
+  // YAML needs whitespace after the `:` for it to separate a key from a
+  // value; `ratio:9` is one plain scalar. A reader mid-word here is still
+  // typing a KEY, and telling them otherwise resolves the path one level
+  // too deep and offers the wrong list.
+  //
+  // The first version of this case used `at: 10:3` and could not fail: the
+  // line's FIRST colon already had a space after it, so a separator rule
+  // that ignored the space entirely returned the same answer. The case has
+  // to put the space-less colon where the separator would be found.
+  const scalar = at("scenarios:\n  - ratio:9|");
+  assert.equal(scalar.context, "key");
+  assert.deepEqual(scalar.path, ["scenarios", "[]"]);
+  assert.equal(scalar.prefix, "ratio:9");
+
+  // And the ordinary case still reads as a value, colons in the value and
+  // all — `url: http://x` has exactly one separator.
+  const value = at("scenarios:\n  - url: http://x|");
+  assert.equal(value.context, "value");
+  assert.deepEqual(value.path, ["scenarios", "[]", "url"]);
+  assert.equal(value.prefix, "http://x");
+});
+
+test("an empty document offers root keys", () => {
+  const got = at("|");
+  assert.deepEqual(got.path, []);
+  assert.equal(got.context, "key");
+  assert.equal(got.prefix, "");
+});
+
+test("an out-of-range offset is clamped rather than thrown", () => {
+  assert.notEqual(yamlPathAt("version: 2", 9999), null);
+  assert.notEqual(yamlPathAt("version: 2", -5), null);
+  assert.notEqual(yamlPathAt(null, 0), null);
+});
+
+// --- schemaCompletions (WP11 PR3) --------------------------------------
+//
+// Driven by the REAL committed schema, not a fixture. A hand-written schema
+// fixture would let this suite pass while the shipped schema's shape drifted
+// away from it — and the shipped schema is a generated artifact that moves
+// whenever a config type does.
+
+const SCHEMA = JSON.parse(
+  readFileSync(
+    new URL("../../docs/schema/sonda-scenario.schema.json", import.meta.url),
+    "utf8"
+  )
+);
+
+const labels = (path, context) =>
+  schemaCompletions(SCHEMA, path, context).map((c) => c.label);
+
+test("root keys come from all three top-level shapes", () => {
+  const got = labels([], "key");
+  for (const key of ["version", "kind", "scenarios", "defaults"]) {
+    assert.ok(got.includes(key), `root should offer ${key}, got ${got.join(",")}`);
+  }
+  // The composable branch contributes too — the root is an anyOf and a pack
+  // definition is one of the shapes a reader may be writing.
+  assert.ok(got.includes("metrics"));
+});
+
+test("kind offers exactly the two values the parser takes", () => {
+  assert.deepEqual(labels(["kind"], "value"), ["composable", "runnable"]);
+});
+
+test("entry keys come through the sequence step", () => {
+  const got = labels(["scenarios", "[]"], "key");
+  for (const key of ["signal_type", "generator", "rate", "duration", "encoder", "sink"]) {
+    assert.ok(got.includes(key), `entry should offer ${key}`);
+  }
+});
+
+test("generator type offers every variant the engine has", () => {
+  // The single most useful completion in the document, and the reason union
+  // branches are unioned rather than picked between.
+  const got = labels(["scenarios", "[]", "generator", "type"], "value");
+  for (const kind of ["constant", "sine", "sawtooth", "step", "spike", "csv_replay"]) {
+    assert.ok(got.includes(kind), `generator types should include ${kind}, got ${got.join(",")}`);
+  }
+  assert.ok(got.length >= 10, `expected the full variant list, got ${got.length}`);
+});
+
+test("a generator's own fields are offered once a type is in view", () => {
+  const got = labels(["scenarios", "[]", "generator"], "key");
+  assert.ok(got.includes("type"));
+  // Unioned across branches: `amplitude` is sine's, `value` is constant's.
+  assert.ok(got.includes("amplitude"));
+  assert.ok(got.includes("value"));
+});
+
+test("sink and encoder types are offered", () => {
+  const sinks = labels(["scenarios", "[]", "sink", "type"], "value");
+  assert.ok(sinks.includes("stdout"), sinks.join(","));
+  assert.ok(sinks.includes("file"));
+  const encoders = labels(["scenarios", "[]", "encoder", "type"], "value");
+  assert.ok(encoders.includes("prometheus_text"), encoders.join(","));
+});
+
+test("while.op offers the operator glyphs, not the variant names", () => {
+  // The same wire-shape question #547 M1 was about, asked from the editor's
+  // side: a reader completing `op:` must be offered `<` and `>`.
+  assert.deepEqual(labels(["scenarios", "[]", "while", "op"], "value"), ["<", ">"]);
+});
+
+test("defaults resolves separately from an entry", () => {
+  const got = labels(["defaults"], "key");
+  assert.ok(got.includes("rate"));
+  assert.ok(got.includes("encoder"));
+  // `defaults` carries no `signal_type` — that is an entry-level field, and
+  // offering it here would be inventing a key the parser rejects.
+  assert.ok(!got.includes("signal_type"), got.join(","));
+});
+
+test("a free-form mapping descends into its value schema", () => {
+  // `labels:` is a map of arbitrary names to strings, so there are no key
+  // completions to offer and the walk must not crash looking for them.
+  assert.deepEqual(labels(["scenarios", "[]", "labels", "anything"], "key"), []);
+});
+
+test("an unknown path yields nothing rather than guessing", () => {
+  assert.deepEqual(labels(["nope"], "key"), []);
+  assert.deepEqual(labels(["scenarios", "[]", "generator", "nope", "deeper"], "key"), []);
+});
+
+test("completions carry the doc comment and a type hint", () => {
+  const rate = schemaCompletions(SCHEMA, ["scenarios", "[]"], "key").find(
+    (c) => c.label === "rate"
+  );
+  assert.ok(rate.info && rate.info.length > 0, "the Rust doc comment should reach the reader");
+  assert.ok(rate.detail.includes("number"), rate.detail);
+  const generator = schemaCompletions(SCHEMA, ["scenarios", "[]"], "key").find(
+    (c) => c.label === "generator"
+  );
+  // "object" would be a useless thing to say about a 14-branch union.
+  assert.match(generator.detail, /\d+ types/);
+});
+
+test("required fields are marked", () => {
+  const signalType = schemaCompletions(SCHEMA, ["scenarios", "[]"], "key").find(
+    (c) => c.label === "signal_type"
+  );
+  assert.match(signalType.detail, /required/);
+});
+
+test("results are sorted and free of duplicates", () => {
+  const got = labels(["scenarios", "[]", "generator"], "key");
+  assert.deepEqual(got, [...got].sort((a, b) => a.localeCompare(b)));
+  assert.equal(new Set(got).size, got.length);
+});
+
+test("a malformed schema yields nothing rather than throwing", () => {
+  assert.deepEqual(schemaCompletions(null, [], "key"), []);
+  assert.deepEqual(schemaCompletions({}, ["a"], "key"), []);
+  assert.deepEqual(schemaCompletions({ $ref: "#/nope" }, [], "key"), []);
+});
+
+test("a $ref cycle terminates instead of hanging the editor", () => {
+  // A schema is data. The scenario schema is not recursive today, but an
+  // upstream change that made it so must not turn a keystroke into a hang.
+  const cyclic = { $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } }, $ref: "#/$defs/a" };
+  assert.deepEqual(schemaCompletions(cyclic, [], "key"), []);
 });
 
 console.log(`${passed} pure-helper tests passed`);

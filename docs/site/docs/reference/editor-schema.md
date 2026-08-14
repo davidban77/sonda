@@ -15,6 +15,11 @@ The schema lives at:
 https://davidban77.github.io/sonda/schema/sonda-scenario.schema.json
 ```
 
+!!! tip "Try it without setting anything up"
+    The [playground](../playground/index.md) editor already reads this file. Press
+    ++ctrl+space++ in its YAML pane to see the same completions you will get locally once you
+    have wired the schema up below.
+
 ## Per-file, no configuration
 
 The quickest way, and the one that travels with the file. Add a modeline comment as the first
