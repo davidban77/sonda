@@ -995,6 +995,14 @@
   display: block;
 }
 
+/* The logs widget's output slot. The stream inside it carries its own border
+   and scroll (shared with the playground pane), so this is only a block-level
+   wrapper — a second border here would draw a box inside a box. */
+.sonda-livegen__logs {
+  width: 100%;
+  display: block;
+}
+
 .sonda-livegen__controls {
   display: flex;
   flex-wrap: wrap;
@@ -1174,7 +1182,8 @@
   opacity: 0.7;
 }
 
-.sonda-playground__logstream {
+.sonda-playground__logstream,
+.sonda-livegen__logstream {
   max-height: 16rem;
   overflow-y: auto;
   border: 1px solid var(--md-default-fg-color--lightest);
@@ -1186,50 +1195,83 @@
   background: var(--md-code-bg-color);
 }
 
-.sonda-playground__logline {
+.sonda-playground__logline,
+.sonda-livegen__logline {
   white-space: nowrap;
 }
 
-.sonda-playground__logat {
+/* How many events the pane is showing, and of how many. Sits above the
+   stream so it is true at rest rather than only after a scroll. */
+.md-typeset .sonda-livegen__logtally {
+  margin: 0 0 0.35rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+
+/* The "and N more" footer on a capped stream. Livegen-only by construction:
+   the playground renders its stream entire, so this row never appears there. */
+.sonda-livegen__logmore {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+  opacity: 0.65;
+  font-style: italic;
+  white-space: normal;
+}
+
+.sonda-playground__logat,
+.sonda-livegen__logat {
   display: inline-block;
   min-width: 3.6rem;
   opacity: 0.55;
 }
 
-.sonda-playground__logsev {
+.sonda-playground__logsev,
+.sonda-livegen__logsev {
   display: inline-block;
   min-width: 3.6rem;
   font-weight: 700;
 }
 
 .sonda-playground__logline--trace .sonda-playground__logsev,
-.sonda-playground__logline--debug .sonda-playground__logsev {
+.sonda-playground__logline--debug .sonda-playground__logsev,
+.sonda-livegen__logline--trace .sonda-livegen__logsev,
+.sonda-livegen__logline--debug .sonda-livegen__logsev {
   color: var(--md-default-fg-color--light);
 }
 
-.sonda-playground__logline--info .sonda-playground__logsev {
+.sonda-playground__logline--info .sonda-playground__logsev,
+.sonda-livegen__logline--info .sonda-livegen__logsev {
   color: #2563eb;
 }
 
-.sonda-playground__logline--warn .sonda-playground__logsev {
+.sonda-playground__logline--warn .sonda-playground__logsev,
+.sonda-livegen__logline--warn .sonda-livegen__logsev {
   color: #a16207;
 }
 
-[data-md-color-scheme="slate"] .sonda-playground__logline--warn .sonda-playground__logsev {
+[data-md-color-scheme="slate"] .sonda-playground__logline--warn .sonda-playground__logsev,
+[data-md-color-scheme="slate"] .sonda-livegen__logline--warn .sonda-livegen__logsev {
   color: #facc15;
 }
 
 .sonda-playground__logline--error .sonda-playground__logsev,
-.sonda-playground__logline--fatal .sonda-playground__logsev {
+.sonda-playground__logline--fatal .sonda-playground__logsev,
+.sonda-livegen__logline--error .sonda-livegen__logsev,
+.sonda-livegen__logline--fatal .sonda-livegen__logsev {
   color: #dc2626;
 }
 
 [data-md-color-scheme="slate"] .sonda-playground__logline--error .sonda-playground__logsev,
-[data-md-color-scheme="slate"] .sonda-playground__logline--fatal .sonda-playground__logsev {
+[data-md-color-scheme="slate"] .sonda-playground__logline--fatal .sonda-playground__logsev,
+[data-md-color-scheme="slate"] .sonda-livegen__logline--error .sonda-livegen__logsev,
+[data-md-color-scheme="slate"] .sonda-livegen__logline--fatal .sonda-livegen__logsev {
   color: #f87171;
 }
 
-[data-md-color-scheme="slate"] .sonda-playground__logline--info .sonda-playground__logsev {
+[data-md-color-scheme="slate"] .sonda-playground__logline--info .sonda-playground__logsev,
+[data-md-color-scheme="slate"] .sonda-livegen__logline--info .sonda-livegen__logsev {
   color: #60a5fa;
 }
 

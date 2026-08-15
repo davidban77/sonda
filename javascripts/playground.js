@@ -19,6 +19,16 @@ import {
   cursorSamples,
   logLinesNear,
 } from "./sonda-pure.js";
+// Shared with livegen.js so the two pages cannot drift on what a histogram,
+// a summary or a log line looks like. Extracted verbatim — see signal-render.js.
+import {
+  palette,
+  formatNumber,
+  formatSeconds,
+  drawHistogramHeatmap,
+  drawSummaryBands,
+  logStream,
+} from "./signal-render.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 500;
@@ -825,20 +835,10 @@ function renderLogs(el, logs, correlatable) {
     const caption = document.createElement("p");
     caption.textContent = `${log.name} — synthetic log stream (${log.lines.length} events)`;
     caption.style.cssText = "font: 12px ui-monospace, monospace; opacity: .75; margin: 10px 0 2px;";
-    const stream = document.createElement("div");
-    stream.className = "sonda-playground__logstream";
-    for (const line of log.lines) {
-      const row = document.createElement("div");
-      row.className = `sonda-playground__logline sonda-playground__logline--${line.severity}`;
-      const at = document.createElement("span");
-      at.className = "sonda-playground__logat";
-      at.textContent = `+${line.secs.toFixed(line.secs % 1 ? 2 : 0)}s`;
-      const sev = document.createElement("span");
-      sev.className = "sonda-playground__logsev";
-      sev.textContent = line.severity.toUpperCase().padEnd(5);
-      row.append(at, sev, document.createTextNode(line.message));
-      stream.appendChild(row);
-    }
+    // Same element tree as before, built in signal-render.js. The prefix keeps
+    // the class names this page's stylesheet, its cursor correlation
+    // (`highlightLogs`) and its smoke assertions already depend on.
+    const stream = logStream(log, { prefix: "sonda-playground" });
     pane.append(caption, stream);
   }
 }
@@ -945,178 +945,6 @@ function scrollRowIntoPane(stream, row) {
   const rect = row.getBoundingClientRect();
   if (rect.top < pane.top) stream.scrollTop -= pane.top - rect.top;
   else if (rect.bottom > pane.bottom) stream.scrollTop += rect.bottom - pane.bottom;
-}
-
-function drawHistogramHeatmap(canvas, histogram) {
-  const colors = palette();
-  const dpr = window.devicePixelRatio || 1;
-  const cssWidth = canvas.parentElement.clientWidth;
-  const rows = histogram.bucket_bounds.length + 1; // +Inf row on top
-  const rowHeight = Math.max(12, Math.min(20, Math.floor(240 / rows)));
-  const pad = { left: 64, right: 12, top: 8, bottom: 26 };
-  const cssHeight = pad.top + rows * rowHeight + pad.bottom;
-  canvas.width = cssWidth * dpr;
-  canvas.height = cssHeight * dpr;
-  canvas.style.width = cssWidth + "px";
-  canvas.style.height = cssHeight + "px";
-  const ctx = canvas.getContext("2d");
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-  const ticks = histogram.counts.length;
-  if (!ticks) return;
-  const offset = histogram.offset_secs || 0;
-  const spanSecs = offset + ticks * histogram.tick_secs;
-  const plotW = cssWidth - pad.left - pad.right;
-  const x = (secs) => pad.left + (secs / spanSecs) * plotW;
-  // Row 0 (lowest bucket) sits at the bottom, like a latency axis.
-  const rowY = (row) => pad.top + (rows - 1 - row) * rowHeight;
-
-  let maxCount = 1;
-  for (const row of histogram.counts) {
-    for (const count of row) if (count > maxCount) maxCount = count;
-  }
-
-  const cellW = Math.max(1, (histogram.tick_secs / spanSecs) * plotW);
-  histogram.counts.forEach((rowCounts, tick) => {
-    const px = x(offset + tick * histogram.tick_secs);
-    rowCounts.forEach((count, row) => {
-      if (!count) return;
-      const alpha = 0.12 + 0.88 * (count / maxCount);
-      ctx.fillStyle = `rgba(249, 115, 22, ${alpha.toFixed(3)})`;
-      ctx.fillRect(px, rowY(row), cellW + 0.5, rowHeight - 1);
-    });
-  });
-
-  ctx.fillStyle = colors.text;
-  ctx.font = "10px ui-monospace, monospace";
-  ctx.textAlign = "right";
-  const labelEvery = Math.ceil(rows / 12);
-  for (let row = 0; row < rows; row++) {
-    if (row % labelEvery !== 0 && row !== rows - 1) continue;
-    const label = row === rows - 1 ? "+Inf" : `≤${formatBound(histogram.bucket_bounds[row])}`;
-    ctx.fillText(label, pad.left - 6, rowY(row) + rowHeight / 2 + 3);
-  }
-  ctx.textAlign = "center";
-  const xSteps = Math.min(6, Math.max(2, Math.floor(plotW / 110)));
-  for (let step = 0; step <= xSteps; step++) {
-    const secs = (spanSecs * step) / xSteps;
-    ctx.fillText(formatSeconds(secs), x(secs), cssHeight - 8);
-  }
-}
-
-function drawSummaryBands(canvas, summary) {
-  const colors = palette();
-  const dpr = window.devicePixelRatio || 1;
-  const cssWidth = canvas.parentElement.clientWidth;
-  const cssHeight = 220;
-  canvas.width = cssWidth * dpr;
-  canvas.height = cssHeight * dpr;
-  canvas.style.width = cssWidth + "px";
-  canvas.style.height = cssHeight + "px";
-  const ctx = canvas.getContext("2d");
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-  const ticks = summary.values.length;
-  const quantileCount = summary.quantiles.length;
-  if (!ticks || !quantileCount) return;
-
-  const pad = { left: 48, right: 46, top: 12, bottom: 26 };
-  const plotW = cssWidth - pad.left - pad.right;
-  const plotH = cssHeight - pad.top - pad.bottom;
-  const offset = summary.offset_secs || 0;
-  const spanSecs = offset + (ticks - 1) * summary.tick_secs;
-
-  let min = Infinity;
-  let max = -Infinity;
-  for (const row of summary.values) {
-    for (const value of row) {
-      if (value < min) min = value;
-      if (value > max) max = value;
-    }
-  }
-  if (!Number.isFinite(min)) return;
-  if (max - min < 1e-12) {
-    min -= 1;
-    max += 1;
-  }
-  const range = max - min;
-  min -= range * 0.08;
-  max += range * 0.08;
-  const x = (tick) => pad.left + ((offset + tick * summary.tick_secs) / spanSecs) * plotW;
-  const y = (value) => pad.top + (1 - (value - min) / (max - min)) * plotH;
-
-  ctx.strokeStyle = colors.grid;
-  ctx.fillStyle = colors.text;
-  ctx.lineWidth = 1;
-  ctx.font = "10px ui-monospace, monospace";
-  ctx.setLineDash([2, 5]);
-  for (let row = 0; row <= 3; row++) {
-    const value = min + ((max - min) * row) / 3;
-    const gy = y(value);
-    ctx.beginPath();
-    ctx.moveTo(pad.left, gy);
-    ctx.lineTo(cssWidth - pad.right, gy);
-    ctx.stroke();
-    ctx.textAlign = "right";
-    ctx.fillText(formatNumber(value), pad.left - 6, gy + 3);
-  }
-  ctx.setLineDash([]);
-
-  // Envelope between the lowest and highest quantile, then one line per
-  // quantile, brightest at the median end.
-  ctx.fillStyle = "rgba(59, 130, 246, 0.14)";
-  ctx.beginPath();
-  summary.values.forEach((row, tick) => {
-    const py = y(row[0]);
-    if (tick === 0) ctx.moveTo(x(tick), py);
-    else ctx.lineTo(x(tick), py);
-  });
-  for (let tick = ticks - 1; tick >= 0; tick--) {
-    ctx.lineTo(x(tick), y(summary.values[tick][quantileCount - 1]));
-  }
-  ctx.closePath();
-  ctx.fill();
-
-  for (let q = 0; q < quantileCount; q++) {
-    const alpha = 0.35 + 0.65 * (1 - q / Math.max(1, quantileCount - 1));
-    ctx.strokeStyle = `rgba(59, 130, 246, ${alpha.toFixed(3)})`;
-    ctx.lineWidth = q === 0 ? 2 : 1.4;
-    ctx.beginPath();
-    summary.values.forEach((row, tick) => {
-      const py = y(row[q]);
-      if (tick === 0) ctx.moveTo(x(tick), py);
-      else ctx.lineTo(x(tick), py);
-    });
-    ctx.stroke();
-    ctx.fillStyle = colors.text;
-    ctx.textAlign = "left";
-    const lastY = y(summary.values[ticks - 1][q]);
-    ctx.fillText(`p${Math.round(summary.quantiles[q] * 100)}`, cssWidth - pad.right + 4, lastY + 3);
-  }
-
-  ctx.fillStyle = colors.text;
-  ctx.textAlign = "center";
-  const xSteps = Math.min(6, Math.max(2, Math.floor(plotW / 110)));
-  for (let step = 0; step <= xSteps; step++) {
-    const secs = (spanSecs * step) / xSteps;
-    const px = pad.left + (secs / spanSecs) * plotW;
-    ctx.fillText(formatSeconds(secs), px, cssHeight - 8);
-  }
-}
-
-function palette() {
-  const dark = document.body.getAttribute("data-md-color-scheme") === "slate";
-  return {
-    grid: dark ? "rgba(148, 163, 184, 0.25)" : "rgba(100, 116, 139, 0.25)",
-    text: dark ? "#94a3b8" : "#64748b",
-    gap: dark ? "rgba(148, 163, 184, 0.14)" : "rgba(100, 116, 139, 0.12)",
-    burst: dark ? "rgba(253, 186, 116, 0.14)" : "rgba(249, 115, 22, 0.10)",
-    // Backing plate for the burst label, which is drawn INSIDE the plot
-    // and would otherwise be read through whatever trace passes behind it.
-    plate: dark ? "rgba(15, 23, 42, 0.82)" : "rgba(255, 255, 255, 0.82)",
-  };
 }
 
 /* The line chart.
@@ -1414,25 +1242,6 @@ function drawChart(canvas, entries, opts = {}) {
 
 /* Bucket bounds need more precision than axis ticks — 0.005 and 0.01 are
  * distinct buckets and must not round to the same label. */
-function formatBound(value) {
-  if (value !== 0 && Math.abs(value) < 0.01) return value.toPrecision(1);
-  return formatNumber(value);
-}
-
-function formatNumber(value) {
-  if (Math.abs(value) >= 1000) return value.toFixed(0);
-  if (Math.abs(value) >= 10) return value.toFixed(1);
-  return value.toFixed(2);
-}
-
-function formatSeconds(secs) {
-  const rounded = Math.round(secs);
-  if (rounded < 60) return `${rounded}s`;
-  const mins = Math.floor(rounded / 60);
-  const rest = rounded % 60;
-  return rest ? `${mins}m${rest}s` : `${mins}m`;
-}
-
 if (window.document$ && typeof window.document$.subscribe === "function") {
   window.document$.subscribe(boot);
 } else if (document.readyState === "loading") {
