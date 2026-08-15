@@ -1,8 +1,15 @@
 //! `sonda test` — run a scenario and verify its `expect:` alert expectations.
 //!
 //! Orchestration and rendering only: every deadline decision is made by
-//! `sonda_core::verify::evaluator` over [`Observation`] timelines. Two
-//! acquisition layers feed it:
+//! `sonda_core::verify::evaluator` over [`Observation`] timelines.
+//!
+//! Exactly one **acquisition source** supplies those timelines, chosen by
+//! the caller with `--prometheus-url` or `--alertmanager-url`. They answer
+//! different questions about the same `expect:` block — *did the rule
+//! fire?* versus *did the notification arrive?* — so the same expectations
+//! verify two different hops of the alerting path.
+//!
+//! **Prometheus** (`--prometheus-url`) acquires in two stages:
 //!
 //! - **Live polling** (instant queries) runs while the scenario does and
 //!   only decides *when each check has settled* — firing observed, resolved,
@@ -13,6 +20,15 @@
 //!   skewed by time spent polling other expectations. When range
 //!   acquisition fails or disagrees with what live polling saw (remote-
 //!   write lag), the live timeline is the warned-about fallback.
+//!
+//! **Alertmanager** (`--alertmanager-url`) has no range API and no stored
+//! history, so it is live polling only. Its verdict timeline is the poll
+//! timeline, with the first firing observation sharpened by the alert's own
+//! `startsAt` stamp — bounded by our own observations, never beyond them
+//! (`verify::alertmanager::refine_firing_timeline`). Verdict times on this
+//! path therefore carry `--interval` precision, not sample precision, and
+//! the report says so rather than borrowing the Prometheus path's
+//! guarantees.
 //!
 //! Firing deadlines are measured from scenario start, resolution deadlines
 //! from scenario end. The process exits non-zero when any expectation
@@ -26,9 +42,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context};
 use owo_colors::{OwoColorize, Stream::Stderr};
+use sonda_core::verify::alertmanager::{refine_firing_timeline, AlertmanagerClient};
 use sonda_core::verify::evaluator::{evaluate_firing, evaluate_resolution, Observation, Outcome};
 use sonda_core::verify::prometheus::{PrometheusClient, ServerClock};
-use sonda_core::verify::{foreign_label_values, parse_expectations, AlertState, ExpectConfig};
+use sonda_core::verify::{
+    foreign_label_values, parse_expectations, AlertExpectation, AlertState, ExpectConfig,
+};
 use sonda_core::CancellationToken;
 
 use crate::cli::{self, Cli, Verbosity};
@@ -39,6 +58,148 @@ use crate::cli::{self, Cli, Verbosity};
 enum Check {
     Firing,
     Resolution,
+}
+
+/// The acquisition source the caller chose, before any client is built —
+/// so the same choice can be reconnected for the poller thread.
+#[derive(Clone, Copy)]
+enum Target<'a> {
+    Prometheus(&'a str),
+    Alertmanager(&'a str),
+}
+
+impl Target<'_> {
+    fn url(&self) -> &str {
+        match self {
+            Target::Prometheus(url) | Target::Alertmanager(url) => url,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Target::Prometheus(_) => "Prometheus",
+            Target::Alertmanager(_) => "Alertmanager",
+        }
+    }
+
+    /// Build a client. `am_offset` is ignored by the Prometheus variant.
+    fn connect(&self, timeout: Duration, am_offset: f64) -> Source {
+        match self {
+            Target::Prometheus(url) => Source::Prometheus(PrometheusClient::new(url, timeout)),
+            Target::Alertmanager(url) => Source::Alertmanager(
+                AlertmanagerClient::new(url, timeout).with_clock_offset(am_offset),
+            ),
+        }
+    }
+}
+
+/// The one acquisition source this run verifies against.
+///
+/// Both variants answer "is this expectation firing right now?"; only the
+/// Prometheus one can also reconstruct history after the fact.
+enum Source {
+    Prometheus(PrometheusClient),
+    Alertmanager(AlertmanagerClient),
+}
+
+/// What one poll of one expectation yielded, in the shape both acquisitions
+/// can produce. The Prometheus path leaves `series` and `started_at` empty
+/// — it recovers matched series from its range query instead.
+#[derive(Default)]
+struct Poll {
+    series: Vec<BTreeMap<String, String>>,
+    started_at: Option<f64>,
+    suppressed: bool,
+}
+
+/// Everything the live poller learned about one expectation beyond its
+/// timeline: matched label sets (provenance) and Alertmanager's own view of
+/// when the alert started.
+#[derive(Default, Clone)]
+struct Evidence {
+    series: Vec<BTreeMap<String, String>>,
+    started_at: Option<f64>,
+    suppressed: bool,
+}
+
+/// What the live firing poller hands back: one timeline and one evidence
+/// bundle per expectation, in expectation order.
+struct FiringPoll {
+    timelines: Vec<Vec<Observation>>,
+    evidence: Vec<Evidence>,
+}
+
+impl FiringPoll {
+    fn empty(alerts: usize) -> Self {
+        Self {
+            timelines: vec![Vec::new(); alerts],
+            evidence: vec![Evidence::default(); alerts],
+        }
+    }
+}
+
+impl Evidence {
+    fn absorb(&mut self, poll: Poll) {
+        for labels in poll.series {
+            if !self.series.contains(&labels) {
+                self.series.push(labels);
+            }
+        }
+        if let Some(starts) = poll.started_at {
+            self.started_at = Some(self.started_at.map_or(starts, |cur: f64| cur.min(starts)));
+        }
+        self.suppressed |= poll.suppressed;
+    }
+}
+
+impl Source {
+    /// Poll one expectation. The state is the poller's settling signal; the
+    /// rest is evidence the caller accumulates.
+    fn poll(&self, expectation: &AlertExpectation) -> (Result<AlertState, String>, Poll) {
+        match self {
+            Source::Prometheus(client) => (
+                client.alert_state(expectation).map_err(|e| e.to_string()),
+                Poll::default(),
+            ),
+            Source::Alertmanager(client) => match client.alerts(expectation) {
+                Ok(snapshot) => (
+                    Ok(snapshot.state),
+                    Poll {
+                        series: snapshot.series,
+                        started_at: snapshot.started_at,
+                        suppressed: snapshot.suppressed,
+                    },
+                ),
+                Err(e) => (Err(e.to_string()), Poll::default()),
+            },
+        }
+    }
+
+    /// Reachability + selector probe, used by the preflight gate.
+    fn probe(&self, expectation: &AlertExpectation) -> anyhow::Result<()> {
+        match self {
+            Source::Prometheus(client) => client.alert_state(expectation).map(|_| ()),
+            Source::Alertmanager(client) => client.alert_state(expectation).map(|_| ()),
+        }
+        .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// How the report names this source.
+    fn label(&self) -> &'static str {
+        match self {
+            Source::Prometheus(_) => "Prometheus",
+            Source::Alertmanager(_) => "Alertmanager",
+        }
+    }
+
+    /// Alertmanager stamps live on its own clock; this is the measured
+    /// server-minus-local offset used to translate them back.
+    fn clock_offset_secs(&self) -> f64 {
+        match self {
+            Source::Prometheus(_) => 0.0,
+            Source::Alertmanager(client) => client.clock_offset_secs(),
+        }
+    }
 }
 
 /// Per-expectation live resolution polling result: `None` when the check
@@ -83,25 +244,67 @@ pub fn run(
         return Ok(());
     }
 
-    let Some(prometheus_url) = args.prometheus_url.as_deref() else {
-        bail!("--prometheus-url is required (or set SONDA_PROMETHEUS_URL); only --dry-run works without it");
+    // Exactly one acquisition source. Both is a contradiction (which
+    // verdict would win?), neither leaves nothing to ask.
+    let target = match (
+        args.prometheus_url.as_deref(),
+        args.alertmanager_url.as_deref(),
+    ) {
+        (Some(_), Some(_)) => bail!(
+            "--prometheus-url and --alertmanager-url are mutually exclusive — \
+             `sonda test` verifies against exactly one acquisition source \
+             (the rule evaluator or Alertmanager), so pick the hop you mean to test"
+        ),
+        (Some(url), None) => Target::Prometheus(url),
+        (None, Some(url)) => Target::Alertmanager(url),
+        (None, None) => bail!(
+            "one of --prometheus-url (env SONDA_PROMETHEUS_URL) or --alertmanager-url \
+             (env SONDA_ALERTMANAGER_URL) is required; only --dry-run works without one"
+        ),
     };
+    let url = target.url().to_string();
 
-    let client = PrometheusClient::new(prometheus_url, query_timeout);
-    preflight(&client, &expect, cancel)
-        .with_context(|| format!("prometheus preflight against {prometheus_url} failed"))?;
+    preflight(&target.connect(query_timeout, 0.0), &expect, cancel).with_context(|| {
+        format!(
+            "{} preflight against {url} failed",
+            target.label().to_lowercase()
+        )
+    })?;
+
+    // Alertmanager's alert stamps come from *its* clock, measured from the
+    // Date header — one-second granular, and only ever used to sharpen a
+    // firing time within bounds we observed ourselves.
+    let am_offset = match target {
+        Target::Prometheus(_) => 0.0,
+        Target::Alertmanager(_) => AlertmanagerClient::new(&url, query_timeout)
+            .measure_clock_offset()
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "  {} could not measure the Alertmanager clock ({e}); assuming zero offset \
+                     — firing times refined from `startsAt` may be skewed by any clock difference",
+                    warn_marker()
+                );
+                0.0
+            }),
+    };
+    let client = target.connect(query_timeout, am_offset);
 
     // Verdict anchors must live on the *server's* clock — range samples
     // carry server timestamps, and subtracting a local anchor from them
-    // bakes any clock skew straight into the verdicts.
-    let clock = client.server_clock().unwrap_or_else(|e| {
-        eprintln!(
-            "  {} could not measure the server clock ({e}); assuming zero offset — \
-             verdict times may be skewed by any clock difference",
-            warn_marker()
-        );
-        ServerClock::identity()
-    });
+    // bakes any clock skew straight into the verdicts. Alertmanager has no
+    // `time()` endpoint and no range API, so this stays the identity there;
+    // its own offset is applied to `startsAt` stamps instead.
+    let clock = match &client {
+        Source::Prometheus(prometheus) => prometheus.server_clock().unwrap_or_else(|e| {
+            eprintln!(
+                "  {} could not measure the server clock ({e}); assuming zero offset — \
+                 verdict times may be skewed by any clock difference",
+                warn_marker()
+            );
+            ServerClock::identity()
+        }),
+        Source::Alertmanager(_) => ServerClock::identity(),
+    };
 
     // The firing poller runs alongside the scenario. `stop` cuts it short
     // when the scenario itself fails — no point waiting out deadlines to
@@ -111,9 +314,9 @@ pub fn run(
     let started_wall = SystemTime::now();
     let started_at = Instant::now();
     let stop = Arc::new(AtomicBool::new(false));
-    let (timeline_tx, timeline_rx) = mpsc::channel::<Vec<Vec<Observation>>>();
+    let (timeline_tx, timeline_rx) = mpsc::channel::<FiringPoll>();
     let poller = spawn_firing_poller(
-        PrometheusClient::new(prometheus_url, query_timeout),
+        target.connect(query_timeout, am_offset),
         expect.clone(),
         started_at,
         interval,
@@ -134,7 +337,7 @@ pub fn run(
 
     let ended_wall = started_wall + ended_at.duration_since(started_at);
     let poller_died = poller.join().is_err();
-    let firing_timelines = timeline_rx.try_recv().ok();
+    let firing_poll = timeline_rx.try_recv().ok();
     if cancel.is_cancelled() {
         bail!("interrupted before alert expectations could be verified");
     }
@@ -143,12 +346,18 @@ pub fn run(
     // acquisition below can still recover a verdict from the datastore,
     // and when it can't, the evaluator maps the empty timeline to
     // Undecided and the report says why (review W4).
-    let live_firing = firing_timelines.unwrap_or_else(|| vec![Vec::new(); expect.alerts.len()]);
+    let FiringPoll {
+        timelines: live_firing,
+        evidence,
+    } = firing_poll.unwrap_or_else(|| FiringPoll::empty(expect.alerts.len()));
 
     // One settling pause before the verdict queries: the rule evaluator
     // remote-writes ALERTS on its own cadence, and the freshest samples
-    // need a beat to land.
-    std::thread::sleep(query_step.min(Duration::from_secs(5)));
+    // need a beat to land. Alertmanager holds no history for a later query
+    // to find, so there is nothing to wait for on that path.
+    if matches!(client, Source::Prometheus(_)) {
+        std::thread::sleep(query_step.min(Duration::from_secs(5)));
+    }
     if cancel.is_cancelled() {
         bail!("interrupted before alert expectations could be verified");
     }
@@ -157,6 +366,9 @@ pub fn run(
     let mut matched_firing_series: Vec<BTreeMap<String, String>> = Vec::new();
 
     let anchor_start = clock.at(started_wall);
+    // Alertmanager stamps are translated back to the local clock the
+    // scenario anchors live on; `local_unix(started_wall)` is that anchor.
+    let local_start = unix_secs(started_wall);
     let mut firing_outcomes: Vec<Outcome> = Vec::with_capacity(expect.alerts.len());
     for (index, expectation) in expect.alerts.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -165,17 +377,31 @@ pub fn run(
         let deadline = expectation
             .firing_within()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let (timeline, series) = verdict_timeline(
-            &client,
-            &clock,
-            expectation,
-            &live_firing[index],
-            deadline,
-            anchor_start,
-            query_step,
-            Check::Firing,
-            &mut warnings,
-        );
+        let (timeline, series) = match &client {
+            Source::Prometheus(prometheus) => verdict_timeline(
+                prometheus,
+                &clock,
+                expectation,
+                &live_firing[index],
+                deadline,
+                anchor_start,
+                query_step,
+                Check::Firing,
+                &mut warnings,
+            ),
+            // No stored history to query: the poll timeline *is* the
+            // verdict timeline, sharpened by the alert's own startsAt.
+            Source::Alertmanager(_) => (
+                refine_firing_timeline(
+                    &live_firing[index],
+                    evidence[index]
+                        .started_at
+                        .map(|stamp| stamp - client.clock_offset_secs()),
+                    local_start,
+                ),
+                evidence[index].series.clone(),
+            ),
+        };
         matched_firing_series.extend(series);
         firing_outcomes.push(evaluate_firing(&timeline, deadline));
     }
@@ -199,19 +425,42 @@ pub fn run(
             resolution_outcomes.push(None);
             continue;
         };
-        let (timeline, series) = verdict_timeline(
-            &client,
-            &clock,
-            expectation,
-            live,
-            *deadline,
-            anchor_end,
-            query_step,
-            Check::Resolution,
-            &mut warnings,
-        );
-        matched_firing_series.extend(series);
-        resolution_outcomes.push(Some(evaluate_resolution(&timeline, *deadline)));
+        let outcome = match &client {
+            Source::Prometheus(prometheus) => {
+                let (timeline, series) = verdict_timeline(
+                    prometheus,
+                    &clock,
+                    expectation,
+                    live,
+                    *deadline,
+                    anchor_end,
+                    query_step,
+                    Check::Resolution,
+                    &mut warnings,
+                );
+                matched_firing_series.extend(series);
+                evaluate_resolution(&timeline, *deadline)
+            }
+            // `startsAt` says nothing about when an alert ended, and the
+            // stamp an expiring alert carries (`endsAt`) is a *deadline*
+            // Alertmanager set in advance, not an observation — so the
+            // resolution verdict stays exactly what polling saw.
+            Source::Alertmanager(_) => evaluate_resolution(live, *deadline),
+        };
+        resolution_outcomes.push(Some(outcome));
+    }
+
+    // A silence stops the notification, not the alert: the expectation is
+    // satisfied, but a test author asserting on a silenced alert is very
+    // likely asserting on the wrong thing.
+    for (expectation, found) in expect.alerts.iter().zip(&evidence) {
+        if found.suppressed {
+            warnings.push(format!(
+                "{} matched an alert Alertmanager has suppressed (silenced or inhibited) — \
+                 it still counts as firing, but no notification was delivered for it",
+                expectation.alert
+            ));
+        }
     }
 
     // Provenance: an expectation that matched an alert carrying label
@@ -242,6 +491,8 @@ pub fn run(
         poller_died,
         started_at,
         ended_at,
+        client.label(),
+        matches!(client, Source::Alertmanager(_)).then_some(interval),
     )
 }
 
@@ -367,7 +618,7 @@ fn emitted_label_values(
 /// exactly once each. Against a dead endpoint the total cost is therefore
 /// bounded by 3 query timeouts, independent of expectation count (review M4).
 fn preflight(
-    client: &PrometheusClient,
+    client: &Source,
     expect: &ExpectConfig,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
@@ -380,8 +631,8 @@ fn preflight(
         if cancel.is_cancelled() {
             bail!("interrupted");
         }
-        match client.alert_state(first) {
-            Ok(_) => {
+        match client.probe(first) {
+            Ok(()) => {
                 gate = None;
                 break;
             }
@@ -398,9 +649,7 @@ fn preflight(
         if cancel.is_cancelled() {
             bail!("interrupted");
         }
-        client
-            .alert_state(expectation)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        client.probe(expectation)?;
     }
     Ok(())
 }
@@ -411,13 +660,13 @@ fn preflight(
 /// returns, never reused across queries (review blocker 1).
 #[allow(clippy::too_many_arguments)]
 fn spawn_firing_poller(
-    client: PrometheusClient,
+    client: Source,
     expect: ExpectConfig,
     started_at: Instant,
     interval: Duration,
     cancel: CancellationToken,
     stop: Arc<AtomicBool>,
-    timelines_out: mpsc::Sender<Vec<Vec<Observation>>>,
+    timelines_out: mpsc::Sender<FiringPoll>,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let deadlines: Vec<Duration> = expect
         .alerts
@@ -429,16 +678,15 @@ fn spawn_firing_poller(
     let handle = std::thread::Builder::new()
         .name("sonda-test-poller".into())
         .spawn(move || {
-            let mut timelines: Vec<Vec<Observation>> = vec![Vec::new(); expect.alerts.len()];
+            let mut poll = FiringPoll::empty(expect.alerts.len());
             let mut pending: Vec<usize> = (0..expect.alerts.len()).collect();
             while !pending.is_empty() && !cancel.is_cancelled() && !stop.load(Ordering::SeqCst) {
                 pending.retain(|&index| {
-                    let state = client
-                        .alert_state(&expect.alerts[index])
-                        .map_err(|e| e.to_string());
+                    let (state, extra) = client.poll(&expect.alerts[index]);
                     let at = started_at.elapsed();
                     let fired = matches!(state, Ok(AlertState::Firing));
-                    timelines[index].push(Observation::new(at, state));
+                    poll.evidence[index].absorb(extra);
+                    poll.timelines[index].push(Observation::new(at, state));
                     // Settled once firing is seen or coverage of the
                     // deadline is recorded; the evaluator makes the verdict.
                     !(fired || at >= deadlines[index])
@@ -447,7 +695,7 @@ fn spawn_firing_poller(
                     std::thread::sleep(interval);
                 }
             }
-            let _ = timelines_out.send(timelines);
+            let _ = timelines_out.send(poll);
         })?;
     Ok(handle)
 }
@@ -464,7 +712,7 @@ fn spawn_firing_poller(
 /// another's first query past its own deadline, leaving that window
 /// unobserved (round-2 review blocker).
 fn poll_resolutions(
-    client: &PrometheusClient,
+    client: &Source,
     expect: &ExpectConfig,
     firing_outcomes: &[Outcome],
     ended_at: Instant,
@@ -503,9 +751,7 @@ fn poll_resolutions(
             let Some((deadline, timeline)) = &mut timelines[index] else {
                 return false;
             };
-            let state = client
-                .alert_state(&expect.alerts[index])
-                .map_err(|e| e.to_string());
+            let (state, _) = client.poll(&expect.alerts[index]);
             let at = ended_at.elapsed();
             let resolved = matches!(state, Ok(ref s) if !matches!(s, AlertState::Firing));
             timeline.push(Observation::new(at, state));
@@ -519,6 +765,14 @@ fn poll_resolutions(
     Ok(timelines)
 }
 
+/// Render the verdicts.
+///
+/// `poll_precision` is `Some` only for acquisitions with no stored history
+/// to query — Alertmanager — and states the resolution their transition
+/// times actually carry. The Prometheus path's times come from stored
+/// samples on a measured server clock (#528); saying the same thing about
+/// a live-polled path would be a claim the data does not support.
+#[allow(clippy::too_many_arguments)]
 fn report(
     expect: &ExpectConfig,
     firing: &[Outcome],
@@ -526,6 +780,8 @@ fn report(
     poller_died: bool,
     started_at: Instant,
     ended_at: Instant,
+    source: &str,
+    poll_precision: Option<Duration>,
 ) -> anyhow::Result<()> {
     let mut failures = 0usize;
     eprintln!();
@@ -636,15 +892,22 @@ fn report(
     let total = expect.alerts.len();
     let elapsed = ended_at.duration_since(started_at);
     eprintln!();
+    if let Some(interval) = poll_precision {
+        eprintln!(
+            "  note: {source} keeps no queryable history, so these times come from live polling \
+             every {interval:.0?}, sharpened by each alert's own startsAt stamp \
+             (~1s clock resolution) — not from stored samples"
+        );
+    }
     if failures == 0 {
         eprintln!(
-            "  {} {total} alert expectation(s) verified (scenario ran {:.0?})",
+            "  {} {total} alert expectation(s) verified via {source} (scenario ran {:.0?})",
             pass_marker(),
             elapsed
         );
         Ok(())
     } else {
-        bail!("{failures} alert expectation(s) failed");
+        bail!("{failures} alert expectation(s) failed (verified via {source})");
     }
 }
 
@@ -674,6 +937,13 @@ fn fmt_after(at: Duration) -> String {
     } else {
         format!("{at:.0?}")
     }
+}
+
+/// A wall-clock instant as unix seconds.
+fn unix_secs(t: SystemTime) -> f64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn pass_marker() -> String {

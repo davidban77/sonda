@@ -17,7 +17,10 @@ config = ["dep:serde_yaml_ng", "dep:chrono", "chrono/serde"]
 # The async scheduling and delivery layer (tokio). Disable for pure-engine
 # consumers — e.g. compiling generators/encoders/compiler to WebAssembly.
 runtime = ["dep:tokio", "dep:tokio-util"]
-http = ["dep:ureq", "runtime"]
+# chrono: the Alertmanager acquisition parses RFC 3339 alert stamps and the
+# RFC 7231 `Date` header it measures the server clock from. Already a
+# dependency of the default `config` feature — no new supply chain.
+http = ["dep:ureq", "dep:chrono", "runtime"]
 kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots", "runtime"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]

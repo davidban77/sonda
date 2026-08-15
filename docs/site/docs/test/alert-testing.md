@@ -847,6 +847,63 @@ otherwise — which makes alert rules testable in CI. The
 or contacting Prometheus. The `expect:` block is pure metadata to `sonda run`
 — the same file works for both commands.
 
+### Verify the notification, not just the rule
+
+`--prometheus-url` asks the rule evaluator a question: *did the rule fire?*
+That leaves the rest of the path untested. A rule can evaluate perfectly and
+still never reach anyone — a wrong `-notifier.url`, a route that drops the
+alert, a receiver that was never configured. Every one of those is green on
+the `ALERTS` metric.
+
+`--alertmanager-url` asks the next hop instead: *did the notification
+arrive?* Same scenario, same `expect:` block, one flag different:
+
+```bash
+sonda test examples/alert-lifecycle-test.yaml \
+  --alertmanager-url http://localhost:9093
+```
+
+```text
+  PASS HighCpuUsage firing after 40s (within 90s)
+  PASS HighCpuUsage resolved after 10s (within 2m of scenario end)
+
+  note: Alertmanager keeps no queryable history, so these times come from live polling every 5s, sharpened by each alert's own startsAt stamp (~1s clock resolution) — not from stored samples
+  PASS 1 alert expectation(s) verified via Alertmanager (scenario ran 90s)
+```
+
+The alert shows up later here than on the `--prometheus-url` run of the same
+scenario, and that gap is the point: it is the extra hop — vmalert deciding
+the rule is firing, then notifying Alertmanager — that this path measures
+and the other one cannot see.
+
+Pick exactly one: passing both URLs is an error, because the two answer
+different questions and there is no sensible way to merge their verdicts.
+Run the same scenario twice — once per flag — when you want both hops
+covered, and the second run tells you which hop broke.
+
+Three things behave differently on this path, all of them consequences of
+Alertmanager not being a datastore:
+
+- **Times are poll-precise, not sample-precise.** There is no range API to
+  reconstruct history from, so the verdict is what polling saw, sharpened
+  (never extended) by the alert's own `startsAt`. Tighten `--interval` if
+  you need finer resolution.
+- **There is no `pending`.** An alert still inside its rule's `for:` window
+  has not been sent yet, so Alertmanager simply doesn't know about it.
+  `firing_within` still means what it says; there is just no intermediate
+  state to observe.
+- **Silenced alerts still count as firing**, with a warning. A silence stops
+  the notification, not the alert — but if your test is asserting on a
+  silenced alert, that warning is the thing to read.
+
+Resolution on this path means *the alert is no longer in Alertmanager* — a
+resolved alert is dropped from the API rather than kept around. That is only
+a safe signal because the notifier keeps re-announcing a still-firing alert:
+vmalert re-sends on every evaluation, each time pushing the alert's `endsAt`
+well past the next few evaluations, so a firing alert cannot briefly vanish
+and fake a resolution. Keep `--interval` comfortably below your rule
+evaluation interval and this stays true.
+
 Resolution above leans on series staleness (emission stops, the rule's
 query eventually empties out), which takes minutes. For a fast, explicit
 recovery, `examples/alert-lifecycle-test.yaml` adds a second phase that

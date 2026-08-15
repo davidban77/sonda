@@ -196,6 +196,49 @@ MATRIX: tuple[MatrixRow, ...] = (
         # 90s scenario + firing/resolution polling; observed ~105s live.
         timeout_s=300.0,
     ),
+    # -- The same two rows one hop further down: Alertmanager acquisition.
+    # These prove the *notification* path, not just rule evaluation. A
+    # vmalert whose --notifier.url is wrong (or an Alertmanager route that
+    # drops the alert) is green on the rows above and red on these.
+    MatrixRow(
+        name="alert-test-fail-control-am",
+        profiles=("alerting",),
+        subcommand="metrics",
+        scenario=Path("tests/e2e/alert-negative-control.yaml"),
+        verify_url="",
+        failure_log_containers=("alertmanager", "vmalert", "victoriametrics"),
+        verb="test",
+        extra_args=(
+            "--alertmanager-url",
+            "http://localhost:9093",
+            "--interval",
+            "5s",
+        ),
+        expect_exit=1,
+        expect_stderr="did not fire within",
+        timeout_s=120.0,
+    ),
+    MatrixRow(
+        name="alert-test-pass-am",
+        profiles=("alerting",),
+        subcommand="metrics",
+        scenario=Path("examples/alert-lifecycle-test.yaml"),
+        verify_url="",
+        failure_log_containers=("alertmanager", "vmalert", "victoriametrics"),
+        verb="test",
+        extra_args=(
+            "--alertmanager-url",
+            "http://localhost:9093",
+            "--interval",
+            "5s",
+        ),
+        # "resolved after" is the half this scenario exists to exercise, and
+        # on this path it is also the proof that Alertmanager's own expiry
+        # semantics were read correctly rather than the alert merely
+        # vanishing from the API.
+        expect_stderr="resolved after",
+        timeout_s=300.0,
+    ),
 )
 
 # Backends keyed by compose profile. The empty-tuple key is for the default

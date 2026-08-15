@@ -14,9 +14,14 @@
 //!
 //! The block is pure metadata to the compiler and runtime — scenarios run
 //! identically with or without it. [`parse_expectations`] extracts it, and
-//! the [`prometheus`] client (feature `http`) polls a Prometheus-compatible
-//! API's `ALERTS` metric to check each expectation.
+//! one of two acquisition layers (feature `http`) checks each expectation:
+//! the [`prometheus`] client polls a Prometheus-compatible API's `ALERTS`
+//! metric — did the *rule* fire? — while the [`alertmanager`] client polls
+//! `GET /api/v2/alerts` — did the *notification* arrive? The same
+//! `expect:` block drives both; the caller picks exactly one.
 
+#[cfg(feature = "http")]
+pub mod alertmanager;
 pub mod evaluator;
 #[cfg(feature = "http")]
 pub mod prometheus;
@@ -28,8 +33,10 @@ use crate::SondaError;
 
 /// Observed state of one alert at a single poll.
 ///
-/// Produced by acquisition (the [`prometheus`] client today, Alertmanager
-/// sampling in a later phase) and consumed by the [`evaluator`].
+/// Produced by acquisition (the [`prometheus`] or [`alertmanager`] client)
+/// and consumed by the [`evaluator`]. Not every acquisition can produce
+/// every variant: Alertmanager has no `pending` concept, so that path only
+/// ever reports `Firing` or `Inactive`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertState {
     /// No alert series matched the expectation's selector.

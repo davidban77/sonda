@@ -278,10 +278,15 @@ sonda test examples/alert-expectation-test.yaml \
 
 | Flag | Description |
 |------|-------------|
-| `--prometheus-url <URL>` | Base URL of the Prometheus-compatible API evaluating the alert rules (e.g. `http://localhost:9090`). Required except with `--dry-run`; also read from `SONDA_PROMETHEUS_URL`. |
+| `--prometheus-url <URL>` | Base URL of the Prometheus-compatible API evaluating the alert rules (e.g. `http://localhost:9090`) — verifies that the **rule** fires. Also read from `SONDA_PROMETHEUS_URL`. |
+| `--alertmanager-url <URL>` | Base URL of the Alertmanager receiving the alerts (e.g. `http://localhost:9093`) — verifies that the **notification** arrived. Also read from `SONDA_ALERTMANAGER_URL`. |
 | `--interval <DUR>` | Poll interval for alert-state checks. Default `5s`. |
 | `--query-timeout <DUR>` | Overall timeout for each alert-state query (connect + read), so a stalled endpoint fails fast instead of hanging. Default `10s`. |
-| `--query-step <DUR>` | Grid resolution for the post-hoc range queries that produce the verdict timelines. Match your rule evaluation interval. Default `5s`. |
+| `--query-step <DUR>` | Grid resolution for the post-hoc range queries that produce the verdict timelines. Match your rule evaluation interval. Default `5s`. `--prometheus-url` only. |
+
+Exactly one of `--prometheus-url` / `--alertmanager-url` is required (except
+with `--dry-run`). Passing both is an error: they verify different hops of
+the alerting path, so there is no sensible way to merge their verdicts.
 
 The scenario runs exactly as `sonda run` would (no overrides). Firing
 deadlines are measured from scenario start; resolution deadlines from
@@ -297,9 +302,24 @@ times — independent of how often `sonda test` polled. If the range API is
 unavailable, the verdict falls back to the live poll timeline with a
 warning.
 
+Against `--alertmanager-url` the verdict is read from live polling alone.
+Alertmanager keeps no queryable history — there is no range API and no
+`time()` endpoint — so there is nothing to reconstruct after the fact.
+Transition times therefore carry `--interval` precision, sharpened by each
+alert's own `startsAt` stamp (about one second of clock resolution, measured
+from Alertmanager's `Date` header) and never pushed beyond what polling
+observed. The report says so on every run; do not read these numbers as the
+sample-accurate times the Prometheus path reports.
+
+Two more differences on the Alertmanager path: it has no `pending` state (an
+alert inside its rule's `for:` window has not been sent yet, so it is simply
+absent), and an alert that Alertmanager has **suppressed** — silenced or
+inhibited — still counts as firing, with a warning. A silence stops the
+notification, not the alert.
+
 Before the scenario starts, a preflight confirms the endpoint answers a
 query for every expectation. Only the first expectation is retried (3
-attempts, for a Prometheus still starting up in CI); the rest are probed
+attempts, for a backend still starting up in CI); the rest are probed
 once each, so preflight against a dead endpoint fails within about three
 query timeouts regardless of how many expectations the scenario declares.
 
