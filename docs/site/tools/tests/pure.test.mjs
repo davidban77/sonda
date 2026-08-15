@@ -590,6 +590,159 @@ test("preset sampling stays within the playground tick budget", () => {
   }
 });
 
+test("the distribution widgets bound their per-tick observation volume", () => {
+  // A metrics entry costs one number per tick. A histogram or summary entry
+  // costs `observations_per_tick` DRAWS per tick, and the engine does that
+  // work for every tick in the window — so the tick budget above, which
+  // bounds ticks alone, says nothing about the quantity these two widgets
+  // actually scale. The failure mode is not an error: the page gets heavy,
+  // which is invisible to every other gate here and to a reader on a fast
+  // machine.
+  //
+  // This is the half a pure module can check. It CANNOT check the heatmap's
+  // cell count, because the bucket ladder is the engine's default for the
+  // named distribution and nothing in this file knows it — asserting a
+  // remembered number here would be a comment pretending to be a gate. The
+  // real rendered row count is measured against the real sampler in the
+  // browser suite instead.
+  const DRAW_BUDGET = 15_000;
+  for (const gen of ["histogram", "summary"]) {
+    const widget = WIDGETS[gen];
+    const ticks = sampledTicks(widget);
+    const observations = (widget.sliders || []).find((s) => s.key === "observations");
+    assert.ok(observations, `${gen}: expected an observations slider to bound`);
+    const worst = ticks * observations.max;
+    assert.ok(
+      worst <= DRAW_BUDGET,
+      `${gen}: ${ticks} ticks x ${observations.max} observations = ${worst} draws exceeds ${DRAW_BUDGET}`
+    );
+  }
+});
+
+/* Every encoder a widget's YAML NAMES, or a loud failure if the reader cannot
+ * account for all of them.
+ *
+ * Fails CLOSED, which is the whole point (review #550 round 4 W1). Four rounds
+ * of this PR found the same family of defect four times — wrong allow-list,
+ * wrong widget class, wrong YAML syntax — and the answer to that is not a
+ * fifth correct list. The pattern understands FLOW style; block style
+ *
+ *     encoder:
+ *       type: otlp
+ *
+ * is the form anyone reaches for the moment an encoder needs a second field,
+ * and the previous version read straight past it and passed. So: count the
+ * `encoder:` keys, and require the pattern to have explained every one. A
+ * syntax this cannot read is now a red gate rather than a silent pass.
+ *
+ * The `named.length > 0` guard it replaces could never fire, because the
+ * shared `head()` preamble always contributes one flow-style match. A guard
+ * that cannot fail is not a guard.
+ *
+ * Note what this returns: every encoder NAMED, not the one that takes effect.
+ * A preamble naming X with an entry overriding it to Y samples as Y, and both
+ * are reported. That is deliberately conservative — it rejects a widget the
+ * engine would have run fine — and it is the safe direction for a gate whose
+ * job is to keep a broken encoder off the page.
+ */
+function encodersNamedIn(yaml, gen) {
+  const declared = [...yaml.matchAll(/^[ \t]*encoder:/gm)].length;
+  const named = [...yaml.matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map((m) => m[1]);
+  assert.equal(
+    named.length,
+    declared,
+    `${gen}: ${declared} encoder key(s) in the YAML but ${named.length} the checker could read — ` +
+      "an encoder written in a syntax this test does not parse is not an encoder it has checked"
+  );
+  assert.ok(declared > 0, `${gen}: no encoder named in the widget's YAML`);
+  return named;
+}
+
+test("a widget may only name encoders the browser's engine carries", () => {
+  // The sibling of the logs check below, and the general form of it (review
+  // #550 round 3 W1). That one is logs-only, so the widget whose entire
+  // subject IS the encoder — `encoders`, offering its choice as a <select> —
+  // had nothing saying its options must exist in the wasm build. Adding
+  // `otlp` there passed the pure suite, passed 651 compile corners, passed
+  // 98 browser checks, and put "configuration error: encoder type 'otlp'
+  // requires the 'otlp' feature" in the pane labelled as the engine's bytes.
+  //
+  // Same root cause as round 2, one widget further out: `sonda-wasm` takes
+  // sonda-core with `default-features = false, features = ["config"]`, so
+  // `otlp` and `remote_write` — both feature-gated in encoder/mod.rs — are
+  // absent, while ci.yml builds the CLI the compile gate uses WITH them.
+  //
+  // Checked over cornerParams so it sees every <select> option, not just the
+  // default: the corner grid enumerates choices, which is what makes an
+  // offered-but-broken option reachable here at all.
+  //
+  // EVERY occurrence, not the first. A widget's YAML names an encoder twice —
+  // once in the `defaults:` preamble and once on the entry that overrides it —
+  // and `String.match` returns only the first, which is always the preamble's.
+  // The first version of this check read that one and passed the very
+  // mutation it was written for.
+  const WASM_ENCODERS = new Set(["prometheus_text", "influx_lp", "json_lines", "syslog"]);
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    for (const corner of cornerParams(widget)) {
+      for (const encoder of encodersNamedIn(widget.yaml(corner), gen)) {
+        assert.ok(
+          WASM_ENCODERS.has(encoder),
+          `${gen}: encoder "${encoder}" is not in the wasm build — the widget would compile and then fail to sample`
+        );
+      }
+    }
+  }
+});
+
+test("a logs widget declares an encoder that can encode a log", () => {
+  // The compile gate cannot see this. `encoder: { type: prometheus_text }`
+  // with `signal_type: logs` COMPILES — `sonda --dry-run run` accepts it —
+  // and fails at sampling with "log encoding not supported by this encoder"
+  // (encoder/mod.rs). So the widget passes 648 corner compilations and shows
+  // every reader an error box. Caught in browser UAT, which is the only gate
+  // that runs the sampler, and pinned here so the next logs widget cannot
+  // inherit the metrics default silently.
+  //
+  // The list is an INTERSECTION, and the second half is the half that bites
+  // (review #550 round 2 W1). The first version listed the three encoders
+  // implementing `encode_log` — json.rs, syslog.rs, otlp.rs — and that is a
+  // true statement about sonda-core which is nevertheless the wrong list for
+  // a browser widget.
+  //
+  //   1. implements `encode_log`      json_lines, syslog, otlp
+  //   2. present in the wasm build    json_lines, syslog
+  //
+  // `sonda-wasm` depends on sonda-core with `default-features = false,
+  // features = ["config"]` (sonda-wasm/Cargo.toml), and `otlp` pulls in
+  // `runtime` plus four crates, so it is absent from the engine these widgets
+  // actually run on. `create_encoder` then returns "encoder type 'otlp'
+  // requires the 'otlp' feature" — at SAMPLING, exactly the failure this
+  // whole invariant exists to prevent.
+  //
+  // And the other two nets would not have caught it: this suite would pass
+  // because otlp was on the list, and the compile gate would pass because
+  // ci.yml builds the release binary with `-F otlp` even though the wasm has
+  // no such feature. An invariant written to close the compile-vs-sample gap
+  // that permits a value reopening it is worse than no invariant, because it
+  // is read as coverage.
+  //
+  // `syslog` is not feature-gated in sonda-core at all, so it stays.
+  const LOG_CAPABLE = new Set(["json_lines", "syslog"]);
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    if (widget.signal !== "logs") continue;
+    for (const corner of cornerParams(widget)) {
+      // Shared reader, so both encoder invariants fail closed on a syntax it
+      // cannot parse rather than one of them silently passing.
+      for (const encoder of encodersNamedIn(widget.yaml(corner), gen)) {
+        assert.ok(
+          LOG_CAPABLE.has(encoder),
+          `${gen}: encoder "${encoder}" cannot encode a log event — the widget would compile and then fail to sample`
+        );
+      }
+    }
+  }
+});
+
 test("every control reaches its widget's template (review #549 W2)", () => {
   // The generalisation of the hand-written `sequence` pattern check above.
   // That one covered ONE of sequence's two controls, and an inert `repeat`
@@ -643,8 +796,12 @@ test("corner and sweep enumeration cover what the compile gate feeds the engine"
           `${gen}: corners use range edges or the default`
         );
       }
-      // Every corner must produce a single-scenario YAML mentioning the type.
-      assert.match(widget.yaml(corner), /signal_type: metrics/);
+      // Every corner must produce a single-scenario YAML declaring the
+      // widget's own signal type. Hard-coded to `metrics` until WP14, which
+      // is the same shape of assumption WP13's slider-less widget broke: an
+      // assertion that reads as general and is really about the one case that
+      // existed when it was written.
+      assert.match(widget.yaml(corner), new RegExp(`signal_type: ${widget.signal || "metrics"}\\b`));
     }
   }
   // Sweeps walk every step of the named slider under min/max neighbors.

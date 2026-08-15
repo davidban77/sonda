@@ -17,13 +17,22 @@
  * run rather than trusting this comment.
  */
 
-function head(rate, durationSecs) {
+/* The shared scenario preamble.
+ *
+ * `encoder` is a parameter because it is not universal: `prometheus_text`
+ * cannot encode a log event, and a logs widget built on this default fails at
+ * SAMPLING with "log encoding not supported by this encoder" rather than at
+ * compile — so `sonda --dry-run run` accepts it and the compile gate stays
+ * green while the widget shows a reader an error. Found in browser UAT, which
+ * is the only gate that runs the sampler.
+ */
+function head(rate, durationSecs, encoder = "prometheus_text") {
   return `version: 2
 kind: runnable
 defaults:
   rate: ${rate}
   duration: ${durationSecs}s
-  encoder: { type: prometheus_text }
+  encoder: { type: ${encoder} }
   sink: { type: stdout }
 scenarios:`;
 }
@@ -389,6 +398,114 @@ export const WIDGETS = {
     signal_type: metrics
     name: error_rate
     generator: { type: sequence, values: [${values.join(", ")}], repeat: ${p.repeat === "on"} }
+`;
+    },
+  },
+  /* --- WP14: the three sections that are not metrics ---------------------
+   *
+   * These carry `signal`, which the other widgets omit and default to
+   * "metrics". It selects which array of `sample_scenario`'s result the
+   * widget reads and which renderer draws it — the same three renderers the
+   * playground uses, now shared rather than copied (signal-render.js).
+   *
+   * The tick budget bites differently here. A metrics entry costs one number
+   * per tick; a histogram costs one number per BUCKET per tick, and the
+   * heatmap has to carry all of them. `histogramCells` in pure.test.mjs
+   * bounds that product at every slider corner, because the failure mode is
+   * not an error — it is a page that quietly gets heavy.
+   */
+  histogram: {
+    rate: 2,
+    durationSecs: 120,
+    signal: "histogram",
+    sliders: [
+      // The teaching slider: drift the distribution's mean and watch mass
+      // climb out of the low buckets into the high ones. 0 is a legal and
+      // meaningful setting — a stationary distribution — so the floor is 0
+      // rather than a small positive number.
+      { key: "shift", min: 0, max: 12, step: 1, value: 4 },
+      { key: "observations", min: 5, max: 60, step: 5, value: 40 },
+    ],
+    yaml(p) {
+      // `shift` is per-mille per second: the useful range for a 120s window
+      // is thousandths, and a slider that reads 0.004 is a slider nobody
+      // drags. The label says what the reader is setting; the template does
+      // the conversion.
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: histogram
+    name: http_request_duration_seconds
+    distribution: { type: exponential, rate: 10.0 }
+    observations_per_tick: ${p.observations}
+    mean_shift_per_sec: ${(p.shift / 1000).toFixed(3)}
+    seed: 42
+    labels: { service: api }
+`;
+    },
+  },
+  summary: {
+    rate: 2,
+    durationSecs: 120,
+    signal: "summary",
+    sliders: [
+      { key: "stddev", min: 1, max: 40, step: 1, value: 20 },
+      { key: "shift", min: 0, max: 12, step: 1, value: 2 },
+      { key: "observations", min: 5, max: 60, step: 5, value: 40 },
+    ],
+    yaml(p) {
+      // stddev is per-mille of a second for the same reason as `shift`, and
+      // its floor is 1 rather than 0: a zero-width normal makes every
+      // quantile equal, which draws a single line where the widget's whole
+      // subject is the SPREAD between them.
+      return `${head(this.rate, this.durationSecs)}
+  - id: live
+    signal_type: summary
+    name: rpc_duration_seconds
+    distribution: { type: normal, mean: 0.1, stddev: ${(p.stddev / 1000).toFixed(3)} }
+    observations_per_tick: ${p.observations}
+    mean_shift_per_sec: ${(p.shift / 1000).toFixed(3)}
+    seed: 7
+    labels: { service: api }
+`;
+    },
+  },
+  log_template: {
+    rate: 4,
+    durationSecs: 60,
+    signal: "logs",
+    sliders: [
+      // Severity weights the engine normalises, so these are RATIOS, not
+      // percentages, and every corner is legal. error at 0 is the ordinary
+      // healthy service and must render — a stream of nothing but info — and
+      // error at max with info at min is the incident. Both are corners the
+      // compile gate visits.
+      { key: "error_weight", min: 0, max: 10, step: 1, value: 1 },
+      { key: "warn_weight", min: 0, max: 10, step: 1, value: 2 },
+    ],
+    yaml(p) {
+      // info is pinned at 8 rather than being a third slider: with all three
+      // free, the all-zero corner is reachable, and severity_weights summing
+      // to zero is a scenario with no severities to pick from. One fixed
+      // weight makes the sum positive by construction — the same "unreachable
+      // rather than merely untested" move the min/max ranges make.
+      return `${head(this.rate, this.durationSecs, "json_lines")}
+  - id: live
+    signal_type: logs
+    name: checkout_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint} took {latency}ms"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.7"]
+            endpoint: ["/api/cart", "/api/checkout", "/api/health"]
+            latency: ["12", "48", "230", "870"]
+        - message: "payment gateway timeout after {timeout}s"
+          field_pools:
+            timeout: ["5", "10"]
+      severity_weights: { info: 8, warn: ${p.warn_weight}, error: ${p.error_weight} }
+      seed: 42
+    labels: { service: checkout }
 `;
     },
   },

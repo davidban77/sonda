@@ -380,6 +380,18 @@ try {
   });
   check("the widget reports no engine error", widgetError === null, widgetError || "");
 
+  // Widgets mount on intersection, so each one has to be scrolled to before it
+  // exists. Shared by the WP13 and WP14 loops below rather than written twice.
+  const scrollAndMount = (page, sel) =>
+    page
+      .evaluate((s) => {
+        const host = document.querySelector(s);
+        if (!host) return { found: false };
+        host.scrollIntoView();
+        return { found: true };
+      }, sel)
+      .catch(() => ({ found: false }));
+
   // WP13 completed the core-generator set, so the page now carries widgets of
   // two SHAPES: slider-driven, and the choice-driven `sequence` whose whole
   // input is a <select>. Section 8 above only ever mounted whichever widget
@@ -391,14 +403,7 @@ try {
   // page where five placeholders rendered five empty boxes.
   for (const gen of ["constant", "sawtooth", "uniform", "step", "sequence"]) {
     const selector = `.sonda-livegen[data-gen="${gen}"]`;
-    const mounted = await widgets
-      .evaluate(async (sel) => {
-        const host = document.querySelector(sel);
-        if (!host) return { found: false };
-        host.scrollIntoView();
-        return { found: true };
-      }, selector)
-      .catch(() => ({ found: false }));
+    const mounted = await scrollAndMount(widgets, selector);
 
     let drew = false;
     if (mounted.found) {
@@ -455,6 +460,257 @@ try {
     : false;
   check("choosing a different sequence pattern redraws the chart", seqChanged,
     seqSelect ? `was ${seqBefore} chars` : 'no <select data-key="pattern"> rendered');
+
+  // --- 8b. WP14: the three sections that are not metrics -----------------
+  //
+  // These exercise the renderers extracted out of playground.js. The engine
+  // error check is not decoration here: a logs widget on the metrics default
+  // encoder COMPILES and fails at sampling, so the compile gate is green and
+  // only this sees it.
+  for (const gen of ["histogram", "summary"]) {
+    const sel = `.sonda-livegen[data-gen="${gen}"]`;
+    const mounted = await scrollAndMount(widgets, sel);
+    // Condition-based: mounting is asynchronous (intersection observer, then
+    // the lazily-fetched wasm), so reading the DOM straight after scrolling
+    // reads it before the widget exists.
+    const shot = await widgets
+      .waitForFunction(
+        ([s, min]) => {
+          const el = document.querySelector(s);
+          const err = el?.querySelector(".sonda-livegen__error");
+          if (err && !err.hidden) return { pixels: 0, height: 0, error: err.textContent };
+          const canvas = el?.querySelector("canvas");
+          if (!canvas) return false;
+          const pixels = canvas.toDataURL().length;
+          return pixels > min ? { pixels, height: canvas.height, error: null } : false;
+        },
+        [sel, WIDGET_CHART_WITH_DATA],
+        { timeout: 60000 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => ({ pixels: 0, height: 0, error: "never drew" }));
+    check(`the ${gen} widget mounts and draws`,
+      mounted.found && shot.pixels > WIDGET_CHART_WITH_DATA && shot.error === null,
+      shot.error || (mounted.found ? `dataURL ${shot.pixels}` : "no placeholder on the page"));
+  }
+
+  // The half the pure module cannot check: it bounds ticks x observations,
+  // but the heatmap's ROW count comes from the engine's default bucket ladder
+  // for the named distribution, which no JS in this repo knows. Measured here
+  // against the real sampler, at the corner where both sliders are at max.
+  const histSel = '.sonda-livegen[data-gen="histogram"]';
+  await widgets.evaluate((s) => {
+    for (const input of document.querySelectorAll(`${s} input[type="range"]`)) {
+      input.value = input.max;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }, histSel);
+  const histAtMax = await widgets
+    .waitForFunction(
+      (s) => {
+        const c = document.querySelector(s)?.querySelector("canvas");
+        if (!c || !c.height) return false;
+        // CSS pixels, not device pixels. `canvas.height` is cssHeight * dpr,
+        // and the ceiling below is a CSS-pixel quantity — comparing them
+        // directly made the gate's strictness depend on the display of
+        // whoever ran it (review #550 W1): identical at CI's dpr 1, twice as
+        // strict at dpr 2. `style.height` is what the renderer sets in CSS px.
+        return {
+          cssHeight: parseFloat(c.style.height),
+          devicePixels: c.height,
+          pixels: c.toDataURL().length,
+        };
+      },
+      histSel,
+      { timeout: 30000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  // Derived from the arithmetic the renderer can actually produce.
+  // `rowHeight = max(12, min(20, floor(240 / rows)))`, so 20px rows happen
+  // only while rows <= 12 — the tallest 20px heatmap is 8 + 12*20 + 26 = 274.
+  // Every row past that costs the 12px FLOOR, so a ladder of N > 20 rows is
+  // 34 + 12N. 40 rows is already more buckets than a reader can scan, and
+  // that is the bound: 34 + 40*12 = 514.
+  //
+  // The first version of this said "40 rows at the 20px maximum row height",
+  // a configuration the formula cannot reach, and so admitted 66 rows while
+  // claiming to admit 40.
+  const HEATMAP_MAX_CSS_HEIGHT = 34 + 40 * 12;
+  check("the heatmap stays bounded with both sliders at maximum",
+    histAtMax !== null &&
+      histAtMax.cssHeight <= HEATMAP_MAX_CSS_HEIGHT &&
+      histAtMax.pixels > WIDGET_CHART_WITH_DATA,
+    histAtMax
+      ? `${histAtMax.cssHeight}css px (${histAtMax.devicePixels} device), ceiling ${HEATMAP_MAX_CSS_HEIGHT}`
+      : "never redrew");
+
+  // The logs widget renders ELEMENTS, not pixels — a log line is text, and
+  // drawing it into a canvas would make it unselectable and invisible to a
+  // screen reader. So it is checked as DOM.
+  const logSel = '.sonda-livegen[data-gen="log_template"]';
+  const logMounted = await scrollAndMount(widgets, logSel);
+  const stream = await widgets
+    .waitForFunction(
+      (s) => {
+        const el = document.querySelector(s);
+        const err = el?.querySelector(".sonda-livegen__error");
+        if (err && !err.hidden)
+          return { lines: 0, severities: [], stamped: 0, error: err.textContent };
+        const pane = el?.querySelector(".sonda-livegen__logstream");
+        if (!pane || !pane.children.length) return false;
+        // The trailing "… N more events" footer is not a log line and must be
+        // excluded from every count below, or the stamped check fails on it.
+        const footer = pane.querySelector(".sonda-livegen__logmore");
+        const rows = [...pane.children].filter((r) => r !== footer);
+        return {
+          lines: rows.length,
+          severities: [...new Set(rows.map((r) => (r.className.match(/logline--(\w+)/) || [])[1]))],
+          stamped: rows.filter((r) => /^\+\d/.test(r.textContent)).length,
+          withheld: footer ? Number((footer.textContent.match(/(\d+) more/) || [])[1]) : null,
+          screens: Math.round((pane.scrollHeight / pane.clientHeight) * 10) / 10,
+          error: null,
+        };
+      },
+      logSel,
+      { timeout: 60000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => ({ lines: 0, severities: [], stamped: 0, error: "never rendered" }));
+  check("the log_template widget renders a severity-coloured stream",
+    logMounted.found && stream.lines > 0 && stream.error === null,
+    stream.error || `${stream.lines} line(s)`);
+  check("every log line is stamped with its offset on the timeline",
+    stream.lines > 0 && stream.stamped === stream.lines,
+    `${stream.stamped}/${stream.lines} stamped`);
+  check("the stream carries more than one severity, so the colouring means something",
+    stream.severities.filter(Boolean).length > 1,
+    stream.severities.join(" · ") || "none");
+
+  // Review #550 M2. The renderer showed all 240 events inside a 318px pane —
+  // seventeen screens of nested scroll in the middle of a reference page,
+  // while the heatmap beside it was gated on exactly this kind of reader
+  // effort. The cap has to be visible AND honest: a pane that silently stops
+  // at 40 tells a reader the scenario produced 40 events.
+  check("the log pane is capped rather than becoming a scroll trap",
+    stream.lines <= 40 && stream.screens <= 4,
+    `${stream.lines} line(s), ${stream.screens} screens of scroll`);
+  check("and says how many events it withheld, rather than just stopping",
+    Number.isFinite(stream.withheld) && stream.withheld > 0,
+    stream.withheld === null ? "no footer" : `${stream.withheld} withheld`);
+
+  // Review #550 round 2 M1. The footer sat 911px down a 318px window, so the
+  // view AT REST was 40 lines ending at +9.75s with nothing saying 200 were
+  // dropped — the state the cap's own rationale says must not exist. The
+  // count now sits above the pane; this asserts it is outside the scroll
+  // container rather than merely present in the DOM.
+  const logTally = await widgets.evaluate((s) => {
+    const el = document.querySelector(s);
+    const node = el?.querySelector(".sonda-livegen__logtally");
+    const pane = el?.querySelector(".sonda-livegen__logstream");
+    if (!node || !pane) return null;
+    return {
+      text: node.textContent.trim(),
+      aboveThePane: node.getBoundingClientRect().bottom <= pane.getBoundingClientRect().top + 1,
+      insidePane: pane.contains(node),
+    };
+  }, logSel);
+  check("the withheld count is readable without scrolling the pane",
+    logTally !== null &&
+      logTally.aboveThePane &&
+      !logTally.insidePane &&
+      /\b40\b.*\b240\b/.test(logTally.text),
+    logTally ? logTally.text : "no tally element");
+
+  // The reviewer's other named corner: error weight at 0 is the ordinary
+  // healthy service, and it must still render rather than producing an empty
+  // pane or a division by zero in the engine's weighting.
+  await widgets.evaluate((s) => {
+    for (const input of document.querySelectorAll(`${s} input[type="range"]`)) {
+      input.value = input.min;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }, logSel);
+  const atZero = await widgets
+    .waitForFunction(
+      (s) => {
+        const el = document.querySelector(s);
+        const err = el?.querySelector(".sonda-livegen__error");
+        if (err && !err.hidden) return { lines: 0, error: err.textContent };
+        const pane = el?.querySelector(".sonda-livegen__logstream");
+        if (!pane || !pane.children.length) return false;
+        // Excludes the "… N more" footer, same as the counts above, so the
+        // two checks report the same quantity rather than differing by one.
+        const footer = pane.querySelector(".sonda-livegen__logmore");
+        return { lines: pane.children.length - (footer ? 1 : 0), error: null };
+      },
+      logSel,
+      { timeout: 30000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  check("all severity weights at minimum still produces a stream",
+    atZero !== null && atZero.error === null && atZero.lines > 0,
+    atZero ? atZero.error || `${atZero.lines} line(s)` : "never settled");
+
+  // Review #550 round 2 W1 named the structural hole: every check above
+  // enumerates widgets by NAME, so a widget added later is invisible to all
+  // of them — which is how an encoder that compiles and then fails to sample
+  // could have reached the page behind a green suite. This one enumerates
+  // whatever the PAGE actually carries, so a new placeholder is covered the
+  // day it lands rather than the day someone remembers to add it here.
+  // Review #550 round 3 W1 found two holes in the round-2 version of this:
+  // it ran on ONE of the three pages that carry widgets, and it could not see
+  // a preview widget's failure at all, because `encode_preview(...)
+  // .unwrap_or_else(|reason| reason)` folds the engine's complaint into the
+  // preview STRING — the entry renders, no error box appears, and a check
+  // asking "is there an error box" reports clean while the pane labelled as
+  // the engine's bytes shows "requires the 'otlp' feature".
+  //
+  // So: every page that carries widgets, and a preview counts as failed when
+  // its own text is an engine complaint.
+  const auditWidgets = async (page, label) => {
+    const names = await page.evaluate(() =>
+      [...document.querySelectorAll(".sonda-livegen[data-gen]")].map((el) => el.dataset.gen)
+    );
+    const complaints = [];
+    for (const gen of names) {
+      const sel = `.sonda-livegen[data-gen="${gen}"]`;
+      await scrollAndMount(page, sel);
+      const outcome = await page
+        .waitForFunction(
+          (s) => {
+            const el = document.querySelector(s);
+            if (!el) return { error: "no placeholder" };
+            const err = el.querySelector(".sonda-livegen__error");
+            if (err && !err.hidden) return { error: err.textContent.trim().slice(0, 80) };
+            const preview = el.querySelector(".sonda-livegen__preview");
+            if (preview) {
+              const text = preview.textContent.trim();
+              if (!text) return false;
+              // The engine's own error vocabulary, anchored at the start: a
+              // metric line never begins this way.
+              return /^(configuration|encoder|compile|validation) error:/i.test(text)
+                ? { error: text.slice(0, 80) }
+                : { error: null };
+            }
+            const canvas = el.querySelector("canvas");
+            if (canvas && canvas.height > 0) return { error: null };
+            return el.querySelector(".sonda-livegen__logstream") ? { error: null } : false;
+          },
+          sel,
+          { timeout: 30000 }
+        )
+        .then((h) => h.jsonValue())
+        .catch(() => ({ error: "never settled" }));
+      if (outcome.error) complaints.push(`${gen}: ${outcome.error}`);
+    }
+    check(`every widget on ${label} samples without an engine error`,
+      complaints.length === 0,
+      complaints.length ? complaints.join(" | ") : `${names.length} widget(s) clean`);
+    return names.length;
+  };
+  await auditWidgets(widgets, "build/generators");
 
   await widgets.close();
 
@@ -607,6 +863,7 @@ try {
   const widgets2 = watch(await context.newPage());
   widgets2.setDefaultTimeout(30000);
   await widgets2.goto(`${BASE}/build/scheduling/`, { waitUntil: "domcontentloaded" });
+  await auditWidgets(widgets2, "build/scheduling");
 
   for (const gen of ["gaps", "bursts"]) {
     await widgets2.evaluate((g) => document.querySelector(`[data-gen="${g}"]`)?.scrollIntoView(), gen);
@@ -710,15 +967,29 @@ try {
     null,
     { timeout: 90000 }
   );
+  await auditWidgets(widgets2, "build/encoders");
+
   // Each option must produce output SHAPED like the format it names. A
   // widget that offered an encoder the wasm build lacks would show the
   // engine's "requires the 'otlp' feature" here instead.
-  const SHAPES = [
+  const SHAPES = new Map([
     ["prometheus_text", /^cpu_usage\{/],
     ["influx_lp", /^cpu_usage,/],
     ["json_lines", /^\{/],
-  ];
-  for (const [encoder, shape] of SHAPES) {
+  ]);
+  // Driven off the widget's OWN <option> list rather than the table, so a
+  // fourth encoder is exercised the day it is offered instead of the day
+  // someone remembers this loop exists (review #550 round 3 W1). The table
+  // still supplies the expected shape, and an option missing from it fails
+  // rather than being silently checked more weakly.
+  const offered = await widgets2.evaluate(() =>
+    [...document.querySelectorAll('[data-gen="encoders"] select option')].map((o) => o.value)
+  );
+  check("every encoder the widget offers has an expected output shape",
+    offered.length > 0 && offered.every((e) => SHAPES.has(e)),
+    offered.filter((e) => !SHAPES.has(e)).join(", ") || `${offered.length} option(s) covered`);
+  for (const encoder of offered) {
+    const shape = SHAPES.get(encoder) || /$^/;
     await widgets2.selectOption('[data-gen="encoders"] select', encoder);
     let matched = true;
     await widgets2
