@@ -509,14 +509,29 @@ export function galleryCardState(result) {
     };
   }
 
+  // These three used to be `note` — "open it in the playground for the bucket
+  // heatmap" — because the gallery had no renderer for them. WP14 gave the
+  // widget layer those renderers (signal-render.js) and said in its own spec
+  // that the gallery would be upgraded "for free"; that half did not ship,
+  // and eight example files stayed as prose telling a reader to go elsewhere
+  // for a picture this page can now draw.
+  //
+  // The mode NAMES the signal rather than being a generic "renderable", so
+  // the caller looks up a renderer instead of re-deriving which array to
+  // read. A signal type with no row in the caller's table is then a loud
+  // undefined at mount, not a card that silently falls back to prose.
+  // Precedence is unchanged from when these were notes: logs, then
+  // histograms, then summaries. Nothing pinned that order before, so it is
+  // pinned now — a mixed scenario showing a different signal than it used to
+  // would be a behaviour change this package has no reason to make.
   if (arrayOf(result.logs).length) {
-    return { mode: "note", message: "Log stream — open it in the playground to read the lines." };
+    return { mode: "logs" };
   }
   if (arrayOf(result.histograms).length) {
-    return { mode: "note", message: "Histogram — open it in the playground for the bucket heatmap." };
+    return { mode: "histogram" };
   }
   if (arrayOf(result.summaries).length) {
-    return { mode: "note", message: "Summary — open it in the playground for the quantile bands." };
+    return { mode: "summary" };
   }
 
   return { mode: "empty", message: "Nothing to sample — this file defines metrics for other scenarios to use." };
