@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.20.0](https://github.com/davidban77/sonda/compare/v1.19.0...v1.20.0) (2026-08-15)
+
+
+### Features
+
+* **ci:** browser smoke suite for the docs site ([#539](https://github.com/davidban77/sonda/issues/539)) ([491f34c](https://github.com/davidban77/sonda/commit/491f34c8540020b2a086827bf7aef259ecc0468a))
+* **ci:** compile the docs' scenario fragments, not just the complete ones ([#545](https://github.com/davidban77/sonda/issues/545)) ([d3a7107](https://github.com/davidban77/sonda/commit/d3a71076d62793cbc2953f09e104c0ae3b3883bd))
+* **core:** publish a JSON Schema for v2 scenario files ([#547](https://github.com/davidban77/sonda/issues/547)) ([be31072](https://github.com/davidban77/sonda/commit/be31072814af88a3d6cbd2657ccc873f4087c2f5))
+* **site:** a live examples gallery on the examples index ([#541](https://github.com/davidban77/sonda/issues/541)) ([832d7f6](https://github.com/davidban77/sonda/commit/832d7f66a36fa4362e01f24b3c0b2e3cffc7ef8d))
+* **site:** a time cursor on the playground chart, with log correlation ([#544](https://github.com/davidban77/sonda/issues/544)) ([7cb2e70](https://github.com/davidban77/sonda/commit/7cb2e703c387602e94bfb6df3b27536544e32a99))
+* **site:** download the scenario YAML and the chart PNG from the playground ([#538](https://github.com/davidban77/sonda/issues/538)) ([afd3239](https://github.com/davidban77/sonda/commit/afd3239fd6781319add6d589c417b4b10e50f799))
+* **site:** gallery cards draw histogram, summary and log signals ([#551](https://github.com/davidban77/sonda/issues/551)) ([3c1c080](https://github.com/davidban77/sonda/commit/3c1c08094774ba43086951ba5fe5ba452e526487))
+* **site:** live gap, burst and encoder widgets on the build pages ([#543](https://github.com/davidban77/sonda/issues/543)) ([95d93c0](https://github.com/davidban77/sonda/commit/95d93c00650c6bac86270df89677d87e0766682c))
+* **site:** live histogram, summary and log widgets on generators.md ([#550](https://github.com/davidban77/sonda/issues/550)) ([e7c5f2a](https://github.com/davidban77/sonda/commit/e7c5f2a854b97fcb91b76433ff3b12d86830524c))
+* **site:** live widgets for the five remaining core generators ([#549](https://github.com/davidban77/sonda/issues/549)) ([0b3ad83](https://github.com/davidban77/sonda/commit/0b3ad8330a998ec8defc4b065c4425ecb965e102))
+* **site:** runnable YAML fences site-wide, proven by a docs compile gate ([#536](https://github.com/davidban77/sonda/issues/536)) ([180b7a3](https://github.com/davidban77/sonda/commit/180b7a3f2d0e90f3a2b6e51e3f2ebd0c4d1ff0e8))
+* **site:** schema-driven completion in the playground editor ([#548](https://github.com/davidban77/sonda/issues/548)) ([0c80dee](https://github.com/davidban77/sonda/commit/0c80dee2ba623bfe2625d01dd7d2022539552ba8))
+* **site:** warning/critical rule pairs and PromQL rule import in the alert lab ([#546](https://github.com/davidban77/sonda/issues/546)) ([6a631d0](https://github.com/davidban77/sonda/commit/6a631d075c56e3f5633c6a18a2df79246095bc06))
+
+
+### Bug Fixes
+
+* **ci:** rebuild the wasm bundle at the version it was built at ([#542](https://github.com/davidban77/sonda/issues/542)) ([39aad20](https://github.com/davidban77/sonda/commit/39aad200e287bba3f3337c242113ea8becd218bf))
+
 ## [1.19.0](https://github.com/davidban77/sonda/compare/v1.18.0...v1.19.0) (2026-08-10)
 
 
