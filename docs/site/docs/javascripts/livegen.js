@@ -69,6 +69,12 @@ const SIGNAL_SOURCE = {
  */
 const LOG_LINES_SHOWN = 40;
 
+/* The same cap for a gallery CARD, which is a thumbnail in a grid rather than
+ * a section of a reference page — so it is shorter than the widget's 40. Both
+ * name what they withheld; a pane that stops silently tells a reader the
+ * scenario produced that many events (review #550 M2). */
+const GALLERY_LOG_LINES = 12;
+
 const SIGNAL_DRAW = {
   metrics: (canvas, sample) => drawMini(canvas, sample),
   histogram: drawHistogramHeatmap,
@@ -367,23 +373,52 @@ async function mountScenario(root) {
     state = { mode: "error", message: String(err) };
   }
 
-  if (state.mode !== "chart") {
+  // `chart` is metrics; `logs`/`histogram`/`summary` are the three the gallery
+  // used to answer with prose. Everything else — error, skipped, empty — is
+  // still a sentence, because those cards genuinely have nothing to draw.
+  const SIGNAL_FOR_MODE = { chart: "metrics", logs: "logs", histogram: "histogram", summary: "summary" };
+  const signal = SIGNAL_FOR_MODE[state.mode];
+  if (!signal) {
     say(state.message, state.mode);
     return;
   }
 
-  const entry = result.entries[0];
+  const sample = SIGNAL_SOURCE[signal](result)[0];
+  if (!sample) {
+    // `galleryCardState` said this signal was present, so an empty read here
+    // means the two disagree — a bug in one of them, not a fact about the
+    // scenario, and the card says so rather than rendering a blank frame.
+    say(`The engine reported ${signal} but produced none.`, "error");
+    return;
+  }
+
+  const title = sample.name || root.dataset.title || "this scenario";
+
+  if (signal === "logs") {
+    // Elements, not pixels — the same reason the log widget renders as DOM.
+    // The card is a thumbnail, so it shows fewer lines than the page widget
+    // and says how many it withheld.
+    canvas.remove();
+    const pane = document.createElement("div");
+    pane.className = "sonda-livegen__logs";
+    pane.append(logStream(sample, { prefix: "sonda-livegen", limit: GALLERY_LOG_LINES }));
+    root.insertBefore(pane, note);
+    const total = sample.lines.length;
+    if (total > GALLERY_LOG_LINES) {
+      say(`Showing ${GALLERY_LOG_LINES} of ${total} events.`, "more");
+    }
+    return;
+  }
+
   canvas.hidden = false;
-  canvas.setAttribute(
-    "aria-label",
-    `Live chart of ${entry.name || root.dataset.title || "this scenario"}`
-  );
-  root._draw = () => drawMini(canvas, entry);
+  canvas.setAttribute("aria-label", `Live chart of ${title}`);
+  const draw = SIGNAL_DRAW[signal];
+  root._draw = () => draw(canvas, sample);
   root._draw();
   live.add(root);
   if (state.extraSeries > 0) {
     const n = state.extraSeries;
-    say(`Showing ${entry.name} — ${n} more ${n === 1 ? "series" : "series"} here.`, "more");
+    say(`Showing ${title} — ${n} more ${n === 1 ? "series" : "series"} here.`, "more");
   }
 }
 

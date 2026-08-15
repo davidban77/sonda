@@ -648,11 +648,32 @@ test("the distribution widgets bound their per-tick observation volume", () => {
 function encodersNamedIn(yaml, gen) {
   const declared = [...yaml.matchAll(/^[ \t]*encoder:/gm)].length;
   const named = [...yaml.matchAll(/encoder:\s*\{\s*type:\s*(\w+)/g)].map((m) => m[1]);
+  // The message branches on the DIRECTION of the mismatch (review #550 round
+  // 5 M1). The two halves measure differently on purpose — declarations are
+  // line-anchored, values are read anywhere — so both directions can happen
+  // and they mean opposite things:
+  //
+  //   more keys than values   a key in a syntax the pattern cannot read
+  //   more values than keys   a value the pattern read but the count missed,
+  //                           e.g. a legal one-line `defaults: { … }`
+  //
+  // Telling an author "a syntax this test does not parse" when it parsed the
+  // encoder perfectly well sends them after a bug that is not there. Both
+  // directions still fail closed; only the wording differs.
+  //
+  // Note a mention counts as a declaration: a commented-out `# encoder:` or a
+  // log line whose CONTENT begins `encoder:` is counted. That is the safe
+  // direction for a gate, and it is why the message says "accounted for"
+  // rather than "declared".
   assert.equal(
     named.length,
     declared,
-    `${gen}: ${declared} encoder key(s) in the YAML but ${named.length} the checker could read — ` +
-      "an encoder written in a syntax this test does not parse is not an encoder it has checked"
+    named.length < declared
+      ? `${gen}: ${declared} encoder key(s) in the YAML but only ${named.length} the checker could read — ` +
+        "an encoder written in a syntax this test does not parse is not an encoder it has checked"
+      : `${gen}: the checker read ${named.length} encoder(s) but could only account for ${declared} — ` +
+        "the values parsed; the key count did not match them (an inline mapping, or an `encoder:` " +
+        "inside a comment or a log message)"
   );
   assert.ok(declared > 0, `${gen}: no encoder named in the widget's YAML`);
   return named;
@@ -1004,10 +1025,36 @@ test("a skipped entry with no reason still says it was skipped", () => {
   assert.match(state.message, /Not sampled in the browser/);
 });
 
-test("logs, histograms and summaries each get their own note", () => {
-  assert.match(galleryCardState(okWith({ logs: [{ lines: [] }] })).message, /Log stream/);
-  assert.match(galleryCardState(okWith({ histograms: [{}] })).message, /Histogram/);
-  assert.match(galleryCardState(okWith({ summaries: [{}] })).message, /Summary/);
+test("logs, histograms and summaries are named so the caller can render them", () => {
+  // These were `note` modes carrying prose that sent the reader to the
+  // playground for a picture. The widget layer can draw all three now, so the
+  // state names WHICH signal rather than apologising for not having one.
+  assert.equal(galleryCardState(okWith({ logs: [{ lines: [] }] })).mode, "logs");
+  assert.equal(galleryCardState(okWith({ histograms: [{}] })).mode, "histogram");
+  assert.equal(galleryCardState(okWith({ summaries: [{}] })).mode, "summary");
+});
+
+test("the renderable modes carry no message — there is nothing to apologise for", () => {
+  // A message on a mode the caller renders would be dead prose, and the kind
+  // that survives a refactor and starts being displayed again by accident.
+  for (const result of [
+    okWith({ logs: [{ lines: [] }] }),
+    okWith({ histograms: [{}] }),
+    okWith({ summaries: [{}] }),
+  ]) {
+    assert.equal(galleryCardState(result).message, undefined);
+  }
+});
+
+test("precedence among the non-metric signals is logs, then histogram, then summary", () => {
+  // Unchanged from when these were notes. Nothing pinned it before; a mixed
+  // scenario quietly changing which signal its card shows would be a
+  // behaviour change this package has no reason to make.
+  assert.equal(
+    galleryCardState(okWith({ logs: [{ lines: [] }], histograms: [{}], summaries: [{}] })).mode,
+    "logs"
+  );
+  assert.equal(galleryCardState(okWith({ histograms: [{}], summaries: [{}] })).mode, "histogram");
 });
 
 test("entries win over logs — a mixed scenario shows its chart", () => {
