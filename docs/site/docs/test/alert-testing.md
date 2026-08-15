@@ -872,9 +872,17 @@ sonda test examples/alert-lifecycle-test.yaml \
 ```
 
 The alert shows up later here than on the `--prometheus-url` run of the same
-scenario, and that gap is the point: it is the extra hop — vmalert deciding
-the rule is firing, then notifying Alertmanager — that this path measures
-and the other one cannot see.
+scenario. Measured against one live VictoriaMetrics + vmalert + Alertmanager
+stack, same scenario, separate series so neither run could see the other's
+alerts: **10s on the Prometheus path, 35–40s on the Alertmanager path.**
+
+Most of that gap is real — it is the extra hop, vmalert deciding the rule is
+firing and then notifying Alertmanager, which is exactly what this path
+measures and the other one cannot see. Some of it is not: this path polls,
+so up to one `--interval` of the difference is just when Sonda happened to
+look. Do not read the two numbers as a latency measurement of the notifier;
+read them as "the rule fired here, the notification landed somewhere after
+there."
 
 Pick exactly one: passing both URLs is an error, because the two answer
 different questions and there is no sensible way to merge their verdicts.
