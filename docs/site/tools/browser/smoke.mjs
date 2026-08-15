@@ -790,7 +790,12 @@ try {
       return cards.every((card) => {
         const canvas = card.querySelector("canvas");
         const note = card.querySelector(".sonda-livegen__note");
-        return (canvas && !canvas.hidden) || (note && !note.hidden);
+        // A logs card has neither: its canvas is removed and its note only
+        // appears when the stream was truncated. Without this branch a short
+        // log example never satisfies the condition and the suite waits out
+        // its whole timeout on a card that rendered correctly.
+        const stream = card.querySelector(".sonda-livegen__logstream");
+        return (canvas && !canvas.hidden) || (note && !note.hidden) || stream;
       });
     },
     null,
@@ -798,12 +803,17 @@ try {
   );
 
   const tally = await gallery.evaluate(() => {
-    const out = { cards: 0, charts: 0, skipped: 0, notes: 0, errors: 0, linkless: 0, reason: "" };
+    const out = { cards: 0, charts: 0, logs: 0, skipped: 0, notes: 0, errors: 0, linkless: 0, reason: "", prose: [] };
     for (const card of document.querySelectorAll(".sonda-gallery__live")) {
       out.cards += 1;
       if (!card.querySelector(".sonda-livegen__open")) out.linkless += 1;
       const canvas = card.querySelector("canvas");
       const note = card.querySelector(".sonda-livegen__note");
+      const stream = card.querySelector(".sonda-livegen__logstream");
+      if (stream) {
+        out.logs += 1;
+        continue;
+      }
       if (canvas && !canvas.hidden) {
         out.charts += 1;
         continue;
@@ -813,7 +823,10 @@ try {
         out.skipped += 1;
         if (!out.reason) out.reason = note.textContent.trim();
       } else if (kind === "error") out.errors += 1;
-      else out.notes += 1;
+      else {
+        out.notes += 1;
+        if (note) out.prose.push(note.textContent.trim().slice(0, 60));
+      }
     }
     return out;
   });
@@ -827,6 +840,35 @@ try {
     tally.skipped > 0 && /csv_replay|feature|file/.test(tally.reason),
     `${tally.skipped} skipped — ${tally.reason.slice(0, 70)}`
   );
+
+  // The half of WP14 that did not ship with it: the gallery had renderers for
+  // these three signals and answered with prose anyway — "Histogram — open it
+  // in the playground for the bucket heatmap" — on a page that could draw it.
+  check("log-stream examples render their stream rather than describing it",
+    tally.logs > 0, `${tally.logs} log card(s)`);
+  check("no card still answers a drawable signal with prose",
+    tally.notes === 0, tally.prose.join(" | ") || "none");
+
+  // Named, so the check reports which signal broke rather than a count.
+  for (const [file, expect] of [["histogram", "canvas"], ["summary", "canvas"], ["log-template", "stream"]]) {
+    const shown = await gallery.evaluate(
+      ([f, want]) => {
+        const card = [...document.querySelectorAll(".sonda-gallery__live")].find((c) =>
+          (c.dataset.title || "").includes(f)
+        );
+        if (!card) return "no card";
+        if (want === "stream") {
+          const pane = card.querySelector(".sonda-livegen__logstream");
+          return pane ? `${pane.children.length} rows` : "no stream";
+        }
+        const canvas = card.querySelector("canvas:not([hidden])");
+        return canvas && canvas.height > 0 ? `${canvas.height}px canvas` : "no canvas";
+      },
+      [file, expect]
+    );
+    check(`the ${file} example draws its signal on the card`,
+      /rows|px canvas/.test(shown), shown);
+  }
 
   const galleryLink = await gallery.getAttribute(
     ".sonda-gallery__live .sonda-livegen__open",
