@@ -632,6 +632,53 @@ def attribute_failure(
 # --- Orchestration -----------------------------------------------------------
 
 
+def boot_only(repo_root: Path, profiles: Sequence[str]) -> int:
+    """Bring the stack up for ``profiles``, wait for readiness, leave it running.
+
+    The ``sonda-action`` self-test needs the same live stack this matrix
+    uses, but runs its assertions through the action rather than through
+    :func:`run_all`. Exposing the bootstrap here keeps one definition of
+    "which backends exist, where their health endpoints are, and how long
+    they get to start" — duplicating that in workflow YAML is how the two
+    drift apart.
+
+    Deliberately does **not** tear down: the caller is mid-job and still
+    needs the stack. The runner reclaims it.
+    """
+    ordered = tuple(sorted(set(profiles)))
+    print(
+        f"==> compose up (profiles: {','.join(ordered) or '<default>'})",
+        file=sys.stderr,
+    )
+    up = compose_up(repo_root, ordered)
+    if up.returncode != 0:
+        print(up.stdout, file=sys.stderr)
+        print(up.stderr, file=sys.stderr)
+        print(f"docker compose up failed (exit {up.returncode})", file=sys.stderr)
+        return 1
+
+    backends: list[Backend] = []
+    seen: set[str] = set()
+    for prof in ("",) + ordered:
+        for backend in BACKENDS_BY_PROFILE.get(prof, ()):
+            if backend.name not in seen:
+                seen.add(backend.name)
+                backends.append(backend)
+
+    for backend in backends:
+        print(f"==> waiting for {backend.name} ({backend.health_url})", file=sys.stderr)
+        if not wait_for_backend_ready(backend):
+            print(
+                f"{backend.name} never became ready at {backend.health_url} "
+                f"within {READINESS_TIMEOUT_S:.0f}s",
+                file=sys.stderr,
+            )
+            return 1
+
+    print(f"==> stack ready ({len(backends)} backend(s))", file=sys.stderr)
+    return 0
+
+
 def find_repo_root(start: Path) -> Path:
     """Walk up from ``start`` until a directory with a ``Cargo.toml`` is found."""
     current = start.resolve()
@@ -767,6 +814,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--boot-only",
+        action="append",
+        default=None,
+        metavar="PROFILE",
+        help=(
+            "Bring the compose stack up for this profile, wait until every "
+            "backend is ready, then exit 0 leaving it running. Repeatable. "
+            "No matrix rows run and nothing is torn down. Used by the "
+            "sonda-action self-test so it boots the same stack this matrix "
+            "does instead of duplicating the bootstrap in workflow YAML."
+        ),
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run inline unit tests and exit. No Docker required.",
@@ -777,6 +837,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_self_tests()
 
     repo_root = find_repo_root(Path(__file__).parent)
+
+    # Bootstrap-only mode needs no sonda binary — it starts containers.
+    if args.boot_only is not None:
+        return boot_only(repo_root, args.boot_only)
 
     raw_bin = args.sonda or (repo_root / DEFAULT_SONDA_BINARY)
     raw_bin = raw_bin if raw_bin.is_absolute() else (repo_root / raw_bin)

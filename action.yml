@@ -1,0 +1,136 @@
+name: 'Sonda alert test'
+description: >-
+  Run a Sonda scenario and verify its expect: alert expectations against a
+  Prometheus-compatible API or an Alertmanager. Exits non-zero when an alert
+  does not fire, or resolve, on deadline.
+author: 'davidban77'
+
+branding:
+  icon: 'activity'
+  color: 'purple'
+
+inputs:
+  scenario:
+    description: >-
+      Path to a v2 scenario YAML with an expect: block, relative to the
+      workspace.
+    required: true
+  prometheus-url:
+    description: >-
+      Base URL of the Prometheus-compatible API evaluating the alert rules —
+      verifies that the rule fires. Exactly one of prometheus-url /
+      alertmanager-url is required.
+    required: false
+    default: ''
+  alertmanager-url:
+    description: >-
+      Base URL of the Alertmanager receiving the alerts — verifies that the
+      notification arrived, one hop further down the path. Mutually exclusive
+      with prometheus-url.
+    required: false
+    default: ''
+  version:
+    description: >-
+      Sonda version to install (e.g. v1.20.0), or "latest". Defaults to the
+      ref this action was called with, resolved to a concrete release so a
+      moving tag like @v1 still installs a determinate binary.
+    required: false
+    default: ''
+  extra-args:
+    description: >-
+      Additional arguments appended to `sonda test`, split on whitespace
+      (e.g. "--interval 5s --query-step 5s"). Never passed through a shell.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Every input reaches bash through env:, never through ${{ }}
+    # interpolation into a run: body. Interpolation happens before bash
+    # parses the script, so a scenario name containing $(...) or a quote
+    # would become part of the program rather than a value handed to it.
+    - name: Resolve the release to install
+      id: resolve
+      shell: bash
+      env:
+        SONDA_VERSION_INPUT: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        SONDA_AM_URL: ${{ inputs.alertmanager-url }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        ref="${SONDA_VERSION_INPUT:-${ACTION_REF:-latest}}"
+        # The alertmanager-url input has a version floor: it is newer than
+        # some releases this action can legitimately be pinned to. Checking
+        # before download turns "unexpected argument" — which reads as an
+        # action bug — into a message naming the floor.
+        guard=()
+        if [ -n "$SONDA_AM_URL" ]; then
+          guard=(--needs-alertmanager)
+        fi
+        tag="$(python3 "${GITHUB_ACTION_PATH}/scripts/resolve_release.py" --ref "$ref" "${guard[@]+"${guard[@]}"}")"
+        echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+        echo "Resolved '${ref}' to ${tag}"
+
+    - name: Install sonda
+      shell: bash
+      env:
+        # The installer is the repo's own published install path, reused
+        # rather than reimplemented: it already maps uname to the release's
+        # target-triple asset names and verifies the download against the
+        # release's SHA256SUMS. A second implementation here would be a
+        # second thing to keep correct, and a second thing to drift.
+        SONDA_VERSION: ${{ steps.resolve.outputs.tag }}
+        SONDA_INSTALL_DIR: ${{ runner.temp }}/sonda-bin
+      run: |
+        set -euo pipefail
+        mkdir -p "$SONDA_INSTALL_DIR"
+        sh "${GITHUB_ACTION_PATH}/install.sh"
+        echo "$SONDA_INSTALL_DIR" >> "$GITHUB_PATH"
+
+    - name: Verify alert expectations
+      shell: bash
+      env:
+        SONDA_SCENARIO: ${{ inputs.scenario }}
+        SONDA_PROM_URL: ${{ inputs.prometheus-url }}
+        SONDA_AM_URL: ${{ inputs.alertmanager-url }}
+        SONDA_EXTRA_ARGS: ${{ inputs.extra-args }}
+      run: |
+        set -euo pipefail
+
+        # Mirror the CLI's own rule here so the error names the *input* the
+        # workflow author wrote, not the flag the action derived from it.
+        if [ -n "$SONDA_PROM_URL" ] && [ -n "$SONDA_AM_URL" ]; then
+          echo "::error::prometheus-url and alertmanager-url are mutually exclusive — they verify different hops of the alerting path, so pick the one you mean to test." >&2
+          exit 1
+        fi
+        if [ -z "$SONDA_PROM_URL" ] && [ -z "$SONDA_AM_URL" ]; then
+          echo "::error::one of prometheus-url or alertmanager-url is required." >&2
+          exit 1
+        fi
+
+        # Build argv as an array. Quoting each expansion keeps a value with
+        # spaces, semicolons or $(...) as exactly one argument — the shell
+        # never re-parses it, so there is nothing to inject into.
+        args=(test "$SONDA_SCENARIO")
+        if [ -n "$SONDA_PROM_URL" ]; then
+          args+=(--prometheus-url "$SONDA_PROM_URL")
+        else
+          args+=(--alertmanager-url "$SONDA_AM_URL")
+        fi
+
+        # extra-args is the one input that must split into several
+        # arguments, so it is the one that needs care. `set -f` disables
+        # globbing first: without it a bare `*` would expand against the
+        # workspace. Word splitting is all that remains — command
+        # substitution is not re-run on an expanded value.
+        if [ -n "$SONDA_EXTRA_ARGS" ]; then
+          set -f
+          # shellcheck disable=SC2206
+          extra=($SONDA_EXTRA_ARGS)
+          set +f
+          args+=("${extra[@]}")
+        fi
+
+        sonda "${args[@]}"

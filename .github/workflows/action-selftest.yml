@@ -1,0 +1,138 @@
+# The action's own live proof.
+#
+# `uses: ./` runs the composite action exactly as a consumer would — it
+# resolves a release, downloads that release's binary, verifies it against
+# the release's SHA256SUMS, and runs `sonda test` against a live vmalert +
+# Alertmanager stack. Nothing here is mocked: a broken tag→asset mapping, a
+# checksum mismatch, or an argv bug all fail this job.
+#
+# Note what that means: this job tests the *published* binary, not the code
+# in the PR. That is the point — the action's contract is "install a release
+# and run it", and the failure mode it exists to catch is that contract
+# breaking. Changes to `sonda test` itself are covered by ci.yml and the
+# Live Infra UAT.
+#
+# Path-filtered: the action, its resolver, the installer it reuses, and the
+# release workflow that produces what it downloads. A docs push does not
+# need to pay for a compose stack.
+name: Action self-test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - 'install.sh'
+      - 'scripts/resolve_release.py'
+      - 'scripts/tests/action_argv_test.sh'
+      - 'scripts/live_infra_uat.py'
+      - '.github/workflows/action-selftest.yml'
+      - '.github/workflows/release.yml'
+      - 'examples/docker-compose-victoriametrics.yml'
+      - 'examples/alertmanager/**'
+      - 'examples/alert-lifecycle-test.yaml'
+      - 'tests/e2e/alert-negative-control.yaml'
+  pull_request:
+    branches: ["**"]
+    paths:
+      - 'action.yml'
+      - 'install.sh'
+      - 'scripts/resolve_release.py'
+      - 'scripts/tests/action_argv_test.sh'
+      - 'scripts/live_infra_uat.py'
+      - '.github/workflows/action-selftest.yml'
+      - '.github/workflows/release.yml'
+      - 'examples/docker-compose-victoriametrics.yml'
+      - 'examples/alertmanager/**'
+      - 'examples/alert-lifecycle-test.yaml'
+      - 'tests/e2e/alert-negative-control.yaml'
+  workflow_dispatch:
+
+concurrency:
+  group: action-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    name: sonda-action self-test (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Reuses the Live Infra UAT's own bootstrap rather than a second copy
+      # of "which backends exist and how long they get to start".
+      - name: Boot the alerting stack
+        run: python3 scripts/live_infra_uat.py --boot-only alerting
+
+      # The positive case. `uses: ./` is the action as published: resolve,
+      # download, checksum, run. Exit 0 means the alert fired and resolved
+      # on deadline, end to end.
+      - name: Action must pass on a scenario whose alert fires
+        uses: ./
+        with:
+          scenario: examples/alert-lifecycle-test.yaml
+          prometheus-url: http://localhost:8428
+          extra-args: --interval 5s
+
+      # The negative control. Without it, an action that silently exits 0 —
+      # a swallowed exit code, a binary that never ran — passes the job
+      # above and looks healthy.
+      - name: Action must fail on a scenario whose alert cannot fire
+        id: control
+        continue-on-error: true
+        uses: ./
+        with:
+          scenario: tests/e2e/alert-negative-control.yaml
+          prometheus-url: http://localhost:8428
+          extra-args: --interval 5s
+
+      - name: Assert the negative control actually failed
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.control.outcome }}" != "failure" ]; then
+            echo "::error::the negative control did not fail (outcome=${{ steps.control.outcome }}). The action's exit code is not reaching the workflow, so a real alert regression would pass silently." >&2
+            exit 1
+          fi
+          echo "negative control failed as required"
+
+      # A version floor the action must refuse rather than install past.
+      # `alertmanager-url` is newer than some releases this action can be
+      # pinned to; installing one of those would produce a clap error that
+      # reads like a bug in the action.
+      - name: Action must refuse alertmanager-url on a release that predates it
+        id: floor
+        continue-on-error: true
+        uses: ./
+        with:
+          scenario: examples/alert-lifecycle-test.yaml
+          alertmanager-url: http://localhost:9093
+          version: v1.20.0
+
+      - name: Assert the version floor was enforced
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.floor.outcome }}" != "failure" ]; then
+            echo "::error::pinning v1.20.0 with alertmanager-url should have been refused before download." >&2
+            exit 1
+          fi
+          echo "version floor enforced as required"
+
+      - name: Collect stack logs (on failure)
+        if: failure()
+        run: |
+          mkdir -p action-logs
+          docker compose -f examples/docker-compose-victoriametrics.yml \
+            --profile alerting logs --no-color --tail 300 \
+            > action-logs/stack.log 2>&1 || true
+
+      - name: Upload stack logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: action-selftest-logs
+          path: action-logs/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -842,7 +842,9 @@ sonda test examples/alert-expectation-test.yaml \
 
 The exit code is the contract: `0` when every expectation holds, non-zero
 otherwise — which makes alert rules testable in CI. The
-[CI validation walkthrough](end-to-end-pipelines.md) shows the full pipeline;
+[GitHub Action](ci-github-action.md) wraps exactly this into three lines of
+workflow YAML; the [CI validation walkthrough](end-to-end-pipelines.md)
+shows the full pipeline;
 `--dry-run` validates the scenario and its `expect:` block without emitting
 or contacting Prometheus. The `expect:` block is pure metadata to `sonda run`
 — the same file works for both commands.

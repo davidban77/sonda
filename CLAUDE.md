@@ -73,6 +73,21 @@ Full design rationale is in `docs/architecture.md`. Key decisions:
 To add a generator, encoder, or sink: use the matching skill in `.claude/skills/` (add-generator,
 add-encoder, add-sink). Each crate's `CLAUDE.md` also has step-by-step guidance.
 
+## The published GitHub Action
+
+`action.yml` at the repo root is a composite action wrapping `sonda test` for CI. It resolves the
+ref it was pinned at to a concrete release (`scripts/resolve_release.py`), installs that release
+with the repo's own `install.sh` — reused, not reimplemented, so the checksum verification has one
+definition — and runs `sonda test`.
+
+- **Inputs never reach a shell.** Every input is passed through `env:`, never interpolated into a
+  `run:` body, and argv is built as a quoted array. `scripts/tests/action_argv_test.sh` drives that
+  construction with hostile values and fails if `action.yml` stops containing it.
+- **`release.yml` moves a `vN` tag** onto each release so `uses: davidban77/sonda@v1` tracks the
+  newest `1.x`. Guarded so a pre-release or a `2.0.0` never moves `v1`.
+- **Two workflows:** `action-contract` in `ci.yml` (fast, always) and `action-selftest.yml`
+  (live stack, path-filtered) which runs `uses: ./` against real vmalert + Alertmanager.
+
 ## Phase Plans
 
 Completed development phases are documented in `docs/phase-{0..9}-*.md` for historical reference.

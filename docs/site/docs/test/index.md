@@ -15,6 +15,10 @@ This section covers the patterns. Each page starts from a real failure mode you'
 
     Six patterns in one page: thresholds, resolution, compound `A AND B`, cardinality explosion, incident replay, histogram-based latency alerts.
 
+-   :material-github: __[Run it in CI](ci-github-action.md)__
+
+    The `sonda` GitHub Action: pin a release, verify the download against its published checksums, and make an alert rule a required check in three lines of workflow YAML.
+
 -   :material-calculator-variant: __[Recording rules](recording-rules.md)__
 
     Test that precomputed PromQL series produce the right values — sum rules, rate-based rules, multi-rule chains.
