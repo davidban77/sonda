@@ -55,6 +55,12 @@ run_action_step() {
     # shellcheck disable=SC2206
     extra=($SONDA_EXTRA_ARGS)
     set +f
+    for arg in "${extra[@]}"; do
+      if [ "$arg" = "--dry-run" ]; then
+        echo "--dry-run in extra-args would make this step pass without verifying" >&2
+        exit 1
+      fi
+    done
     args+=("${extra[@]}")
   fi
   sonda "${args[@]}"
@@ -188,12 +194,52 @@ else
   fail "alertmanager-url selects the alertmanager flag" "$(show)"
 fi
 
+dry="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL="" SONDA_EXTRA_ARGS="--interval 5s --dry-run" \
+  bash -c "$(declare -f run_action_step); run_action_step" 2>&1 >/dev/null; echo "rc=$?")"
+case "$dry" in
+  *"without verifying"*rc=1*) pass "--dry-run in extra-args is refused" ;;
+  *) fail "--dry-run in extra-args is refused" "$dry" ;;
+esac
+
+invoke "s.yaml" "--interval 5s"
+if [ "$ARGC" -eq 6 ]; then
+  pass "a normal extra-arg is still accepted"
+else
+  fail "a normal extra-arg is still accepted" "argc=${ARGC}: $(show)"
+fi
+
 echo
 echo "== the harness still mirrors action.yml =="
-# A copy of production code in a test rots silently. Pin the pieces that
-# carry the safety property; if action.yml stops containing them, this
-# harness is testing something the action no longer does.
+# A copy of production code in a test rots silently, so the copy is only
+# defensible if these checks pin it to production. Round 1 of #554 broke
+# safety in action.yml TWICE with every check green, both times because the
+# checks read the whole file as flat text:
+#
+#   - the `set -f` needle was satisfied by a COMMENT mentioning it, so
+#     deleting the real line changed nothing here while globs expanded;
+#   - the "no interpolation" check allowed any `:` before the expression,
+#     so `echo "scenario:<expr>"` inside a run: body passed — which is
+#     arbitrary command execution from a workflow input.
+#
+# Both are fixed by looking at the right text: the bodies of `run:` blocks,
+# with comment lines removed, rather than the whole file.
+run_bodies() {
+  python3 "$(dirname "$0")/extract_run_bodies.py" "$1" "${2:-code}"
+}
+
 ACTION="$(dirname "$0")/../../action.yml"
+ACTION_CODE="$(run_bodies "$ACTION" code)"
+ACTION_RAW="$(run_bodies "$ACTION" raw)"
+
+# The extractor is now load-bearing for every check below it, so it gets
+# its own check: an extractor that silently returns nothing would make all
+# of them pass vacuously.
+if [ -n "$ACTION_CODE" ]; then
+  pass "run: bodies extracted from action.yml ($(printf '%s\n' "$ACTION_CODE" | grep -c .) code lines)"
+else
+  fail "run: bodies extracted from action.yml" "extractor produced nothing — every check below would pass vacuously"
+fi
+
 missing=()
 for needle in \
   'args=(test "$SONDA_SCENARIO")' \
@@ -201,20 +247,44 @@ for needle in \
   'args+=(--alertmanager-url "$SONDA_AM_URL")' \
   'extra=($SONDA_EXTRA_ARGS)' \
   'sonda "${args[@]}"' \
-  'set -f'
+  'set -f' \
+  'set +f' \
+  'if [ "$arg" = "--dry-run" ]; then'
 do
-  grep -qF -- "$needle" "$ACTION" || missing+=("$needle")
+  printf '%s\n' "$ACTION_CODE" | grep -qF -- "$needle" || missing+=("$needle")
 done
 if [ ${#missing[@]} -eq 0 ]; then
-  pass "every construction under test is present in action.yml"
+  pass "every construction under test is real code in action.yml, not a comment"
 else
-  fail "every construction under test is present in action.yml" "absent: ${missing[*]}"
+  fail "every construction under test is real code in action.yml, not a comment" "absent: ${missing[*]}"
 fi
-# And the inverse: the action must not interpolate inputs into a run: body.
-if grep -nE '\$\{\{ *inputs\.' "$ACTION" | grep -qv ': *\${{'; then
-  fail "no input is interpolated into a run: body" "$(grep -nE '\$\{\{ *inputs\.' "$ACTION")"
+
+# The inverse, and the one that matters most: NOTHING may be interpolated
+# into a run: body — not an input, not any other expression. GitHub
+# substitutes them textually before bash parses the script, so the value
+# becomes program text. Checked against the raw bodies (comments included,
+# since those are substituted too) with no allow-list to have a hole in.
+if printf '%s\n' "$ACTION_RAW" | grep -q '\${{'; then
+  fail "no expression is interpolated into a run: body" "$(printf '%s\n' "$ACTION_RAW" | grep -n '\${{' | head -5)"
 else
-  pass "inputs reach bash only through env:"
+  pass "no expression is interpolated into a run: body"
+fi
+
+# …and the inputs must therefore arrive through env:, which is where the
+# run: bodies read them from.
+env_bound=0
+for binding in \
+  'SONDA_SCENARIO: ${{ inputs.scenario }}' \
+  'SONDA_PROM_URL: ${{ inputs.prometheus-url }}' \
+  'SONDA_AM_URL: ${{ inputs.alertmanager-url }}' \
+  'SONDA_EXTRA_ARGS: ${{ inputs.extra-args }}'
+do
+  grep -qF -- "$binding" "$ACTION" && env_bound=$((env_bound + 1))
+done
+if [ "$env_bound" -eq 4 ]; then
+  pass "all four inputs reach bash through env: bindings"
+else
+  fail "all four inputs reach bash through env: bindings" "found ${env_bound}/4"
 fi
 
 echo
@@ -253,11 +323,46 @@ check_major "v1.20"       "SKIP"
 check_major "nightly"     "SKIP"
 check_major "v1"          "SKIP"   # the major tag itself must not recurse
 
+# The backward-move guard, run against a REAL git repo rather than a
+# reimplementation of it — `sort -V` and `git tag -l` are the parts most
+# likely to behave differently from what the shell here assumes.
+moves_to() {
+  local release_tag="$1"; shift
+  local repo="$TMP/tagrepo"
+  rm -rf "$repo"; mkdir -p "$repo"
+  (
+    cd "$repo"
+    git init -q .; git config user.email t@t; git config user.name t
+    git commit -q --allow-empty -m x
+    for t in "$@"; do git tag "$t"; done
+    major="${release_tag%%.*}"
+    highest="$(git tag -l "${major}.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+    if [ -n "$highest" ] && [ "$highest" != "$release_tag" ]; then
+      printf 'SKIP(%s)' "$highest"
+    else
+      printf '%s' "$major"
+    fi
+  )
+}
+
+check_move() {
+  local label="$1" want="$2" got; shift 2
+  got="$(moves_to "$@")"
+  if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got ${got}, want ${want}"; fi
+}
+
+check_move "newest release moves v1"          "v1"            "v1.20.0" v1.19.0 v1.20.0
+check_move "a backport does NOT move v1 back" "SKIP(v1.20.0)" "v1.19.1" v1.19.0 v1.19.1 v1.20.0
+check_move "v1.9.0 vs v1.20.0 is numeric"     "SKIP(v1.20.0)" "v1.9.0"  v1.9.0 v1.20.0
+check_move "a 2.0 release moves v2 only"      "v2"            "v2.0.0"  v1.20.0 v2.0.0
+check_move "first release of a line moves it" "v1"            "v1.0.0"  v1.0.0
+
 RELEASE_YML="$(dirname "$0")/../../.github/workflows/release.yml"
 release_missing=()
 for needle in \
   '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   'major="${RELEASE_TAG%%.*}"' \
+  'sort -V | tail -1)"' \
   'git push --force origin "refs/tags/${major}"'
 do
   grep -qF -- "$needle" "$RELEASE_YML" || release_missing+=("$needle")

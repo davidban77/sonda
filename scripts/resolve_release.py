@@ -69,35 +69,49 @@ def major_of(ref: str) -> str | None:
     return match.group(1) if match else None
 
 
-def newest_in_major(releases: Iterable[dict[str, Any]], major: str) -> str | None:
-    """Newest published release tag within one major version.
-
-    ``releases`` is the GitHub API payload order (newest first). Drafts and
-    pre-releases are skipped: pinning ``@v1`` must never select something
-    the maintainer has not published.
-    """
-    prefix = f"v{major}."
-    for release in releases:
-        tag = release.get("tag_name", "")
-        if not isinstance(tag, str) or not tag.startswith(prefix):
-            continue
-        if release.get("draft") or release.get("prerelease"):
-            continue
-        if is_full_tag(tag):
-            return tag
-    return None
-
-
-def newest_published(releases: Iterable[dict[str, Any]]) -> str | None:
-    """Newest published, non-pre-release tag of any major version."""
+def _published_tags(releases: Iterable[dict[str, Any]]) -> list[str]:
+    """Full release tags that are published (not drafts, not pre-releases)."""
+    tags = []
     for release in releases:
         tag = release.get("tag_name", "")
         if not isinstance(tag, str) or not is_full_tag(tag):
             continue
         if release.get("draft") or release.get("prerelease"):
             continue
-        return tag
-    return None
+        tags.append(tag)
+    return tags
+
+
+def highest(tags: Iterable[str]) -> str | None:
+    """The highest tag by *version*, not by position or by string order.
+
+    The releases endpoint is ordered by creation time, so the first entry
+    is the most recently *cut* release — which is not the highest version
+    the moment a patch is backported onto an older line. Taking position
+    for version there resolves ``@v1`` backwards and silently downgrades
+    everyone pinned to it (#554 review W3). Compare numerically instead:
+    string order would also get this wrong, since ``"v1.9.0" > "v1.20.0"``.
+    """
+    ranked = [(parse_version(tag), tag) for tag in tags]
+    ranked = [(version, tag) for version, tag in ranked if version is not None]
+    if not ranked:
+        return None
+    return max(ranked)[1]
+
+
+def newest_in_major(releases: Iterable[dict[str, Any]], major: str) -> str | None:
+    """Highest published release tag within one major version.
+
+    Drafts and pre-releases are skipped: pinning ``@v1`` must never select
+    something the maintainer has not published.
+    """
+    prefix = f"v{major}."
+    return highest(tag for tag in _published_tags(releases) if tag.startswith(prefix))
+
+
+def newest_published(releases: Iterable[dict[str, Any]]) -> str | None:
+    """Highest published, non-pre-release tag of any major version."""
+    return highest(_published_tags(releases))
 
 
 def parse_version(tag: str) -> tuple[int, int, int] | None:
@@ -161,14 +175,50 @@ def check_downloadable(tag: str, release: dict[str, Any] | None) -> None:
         )
 
 
+def _next_link(header: str | None) -> str | None:
+    """The ``rel="next"`` URL from a GitHub ``Link`` header, if present."""
+    if not header:
+        return None
+    for part in header.split(","):
+        chunks = part.split(";")
+        if len(chunks) < 2:
+            continue
+        url = chunks[0].strip()
+        if url.startswith("<") and url.endswith(">"):
+            if any(c.strip() in ('rel="next"', "rel=next") for c in chunks[1:]):
+                return url[1:-1]
+    return None
+
+
 def _api_get(url: str, token: str | None) -> Any:
-    request = urllib.request.Request(url)
-    request.add_header("Accept", "application/vnd.github+json")
-    request.add_header("User-Agent", "sonda-action")
-    if token:
-        request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
-        return json.loads(response.read().decode("utf-8"))
+    """GET a GitHub API URL, following pagination for list responses.
+
+    The releases endpoint pages at 30 by default and this repo already has
+    more than that, so one page is not the release list — it is the newest
+    slice of it. Asking `@v0` for a resolution today already fails with
+    "no published release found" while eighteen v0.x releases exist, and
+    `@v1` inherits that the moment ~30 newer releases sit in front of it
+    (#554 review M2). Ask for the maximum page size, then follow
+    ``Link: rel="next"`` so the answer does not depend on how many
+    releases have happened since.
+    """
+    if "?" not in url:
+        url = f"{url}?per_page=100"
+    collected: list[Any] | None = None
+    while url:
+        request = urllib.request.Request(url)
+        request.add_header("Accept", "application/vnd.github+json")
+        request.add_header("User-Agent", "sonda-action")
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            link = response.headers.get("Link")
+        if not isinstance(payload, list):
+            return payload
+        collected = payload if collected is None else collected + payload
+        url = _next_link(link)
+    return collected if collected is not None else []
 
 
 def resolve(
@@ -240,6 +290,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ref", default="", help="Version input, or github.action_ref.")
     parser.add_argument("--repo", default=DEFAULT_REPO, help="owner/repo to resolve against.")
     parser.add_argument(
+        "--check-floor-staleness",
+        action="store_true",
+        help=(
+            "Network check for CI: fail once MIN_ALERTMANAGER_VERSION is "
+            "stale — i.e. once a release at or above the floor exists, at "
+            "which point the constant no longer needs to gate anything and "
+            "someone must revisit it."
+        ),
+    )
+    parser.add_argument(
         "--needs-alertmanager",
         action="store_true",
         help=(
@@ -257,6 +317,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
+
+    if args.check_floor_staleness:
+        # The floor is a constant someone has to remember to revisit. This
+        # turns that into a red check at exactly the moment it matters —
+        # the release that makes it stale — rather than relying on memory
+        # (#554 review, question 3). Deriving it from the binary is not an
+        # option: the only honest source is the installed `--help`, which
+        # means downloading first, which is the thing the floor exists to
+        # avoid.
+        floor = "v" + ".".join(str(p) for p in MIN_ALERTMANAGER_VERSION)
+        try:
+            newest = resolve("latest", args.repo, os.environ.get("GITHUB_TOKEN"))
+        except (ResolveError, urllib.error.URLError, TimeoutError) as e:
+            print(f"error: could not check floor staleness: {e}", file=sys.stderr)
+            return 1
+        if at_least(newest, MIN_ALERTMANAGER_VERSION):
+            print(
+                f"error: MIN_ALERTMANAGER_VERSION ({floor}) is stale — {newest} is "
+                "released and at or above it, so the floor no longer gates "
+                "anything. Confirm `--alertmanager-url` shipped in that release "
+                "and either drop the guard or move the floor.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"floor {floor} still ahead of the newest release ({newest})")
+        return 0
 
     try:
         tag = resolve(args.ref, args.repo, os.environ.get("GITHUB_TOKEN"))
@@ -359,9 +445,43 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(newest_in_major(releases, "1"), "v1.20.0")
         self.assertEqual(newest_published(releases), "v1.20.0")
 
+    def test_a_backport_cut_later_does_not_win(self):
+        # The releases endpoint is ordered by CREATION time. A 1.19.1
+        # backport cut after 1.20.0 therefore sits first in the payload,
+        # and taking position for version resolves @v1 backwards —
+        # silently downgrading everyone pinned to it (#554 review W3).
+        api_order = [_release("v1.19.1"), _release("v1.20.0"), _release("v1.19.0")]
+        self.assertEqual(newest_in_major(api_order, "1"), "v1.20.0")
+        self.assertEqual(newest_published(api_order), "v1.20.0")
+
+    def test_selection_is_numeric_not_lexical(self):
+        # The other way to get this wrong: "v1.9.0" > "v1.20.0" as strings.
+        api_order = [_release("v1.9.0"), _release("v1.20.0")]
+        self.assertEqual(newest_in_major(api_order, "1"), "v1.20.0")
+
+    def test_highest_across_majors(self):
+        self.assertEqual(highest(["v1.20.0", "v2.0.0", "v1.9.0"]), "v2.0.0")
+        self.assertEqual(highest(["v1.2.3"]), "v1.2.3")
+        self.assertIsNone(highest([]))
+        self.assertIsNone(highest(["main", "v1"]))
+
     def test_no_match_returns_none(self):
         self.assertIsNone(newest_in_major([_release("v2.0.0")], "3"))
         self.assertIsNone(newest_published([]))
+
+
+class PaginationTests(unittest.TestCase):
+    def test_next_link_is_extracted(self):
+        header = '<https://api/x?page=2>; rel="next", <https://api/x?page=3>; rel="last"'
+        self.assertEqual(_next_link(header), "https://api/x?page=2")
+
+    def test_last_page_has_no_next(self):
+        header = '<https://api/x?page=1>; rel="prev", <https://api/x?page=1>; rel="first"'
+        self.assertIsNone(_next_link(header))
+
+    def test_absent_or_malformed_headers(self):
+        for header in (None, "", "garbage", "<no-rel>"):
+            self.assertIsNone(_next_link(header), repr(header))
 
 
 class DownloadableTests(unittest.TestCase):

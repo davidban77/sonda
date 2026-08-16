@@ -110,6 +110,10 @@ jobs:
       # the repo out, so there would be no git to tag with.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # The major-tag step compares this release against every existing
+          # vN.* tag, so it needs them all — a shallow checkout has none.
+          fetch-depth: 0
 
       - name: Download all tarball artifacts
         uses: actions/download-artifact@v8
@@ -170,6 +174,21 @@ jobs:
             exit 0
           fi
           major="${RELEASE_TAG%%.*}"          # v1.20.0 -> v1
+
+          # Never move the major tag BACKWARDS. A patch backported onto an
+          # older line — 1.19.1 cut after 1.20.0 — is a normal thing to do
+          # precisely once a newer line exists, and moving `v1` onto it
+          # would silently downgrade everyone pinned to `@v1`
+          # (#554 review W3). Compare by version, not by what was released
+          # most recently, and not as strings (v1.9.0 > v1.20.0 as text).
+          highest="$(git tag -l "${major}.*" \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1)"
+          if [ -n "$highest" ] && [ "$highest" != "$RELEASE_TAG" ]; then
+            echo "note: ${highest} is newer than ${RELEASE_TAG}; leaving ${major} where it is"
+            exit 0
+          fi
+
           echo "moving ${major} to ${RELEASE_TAG} ($(git rev-parse --short HEAD))"
           git tag -f "$major"
           git push --force origin "refs/tags/${major}"

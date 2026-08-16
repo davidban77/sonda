@@ -494,3 +494,11 @@ jobs:
       # release-please no-assets window, missing checksums, version floors.
       - name: Release resolver unit tests
         run: python3 scripts/resolve_release.py --self-test
+
+      # The alertmanager-url version floor is a constant someone must
+      # remember to revisit. This goes red on the release that makes it
+      # stale, which is exactly when it needs revisiting.
+      - name: Version floor is not stale
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/resolve_release.py --check-floor-staleness

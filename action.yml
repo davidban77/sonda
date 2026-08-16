@@ -130,6 +130,17 @@ runs:
           # shellcheck disable=SC2206
           extra=($SONDA_EXTRA_ARGS)
           set +f
+          # --dry-run validates and returns before verifying anything, so a
+          # step carrying it exits 0 having checked nothing — a green
+          # required check that is not checking. Refused by name, like the
+          # other two cases whose failure would otherwise confuse
+          # downstream (#554 review M1).
+          for arg in "${extra[@]}"; do
+            if [ "$arg" = "--dry-run" ]; then
+              echo "::error::--dry-run in extra-args would make this step pass without verifying any alert expectation. Remove it, or use `sonda test --dry-run` locally." >&2
+              exit 1
+            fi
+          done
           args+=("${extra[@]}")
         fi
 
