@@ -110,7 +110,13 @@ the single discovery surface. The verbosity model is captured in the `Verbosity`
   otherwise the YAML is printed to stdout.
 
 - **`sonda test`** — run a scenario and verify its top-level `expect:` alert expectations
-  against a Prometheus-compatible API (`--prometheus-url`, env `SONDA_PROMETHEUS_URL`).
+  against **exactly one** acquisition source: a Prometheus-compatible API
+  (`--prometheus-url`, env `SONDA_PROMETHEUS_URL`) or an Alertmanager
+  (`--alertmanager-url`, env `SONDA_ALERTMANAGER_URL`). Passing both is an error — they
+  verify different hops (did the *rule* fire vs. did the *notification* arrive) and
+  their verdicts cannot be merged. The Alertmanager path has no range API and no
+  `time()`, so it is live-polling only; its report states that precision explicitly
+  rather than borrowing the Prometheus path's sample-time guarantees.
   Live polling of the `ALERTS` metric (a poller thread beside the same run machinery as
   `sonda run`) only decides when each check has *settled*; the verdict timeline is then
   reconstructed by a range query over the stored samples at `--query-step` resolution, so

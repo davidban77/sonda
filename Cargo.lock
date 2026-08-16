@@ -2563,6 +2563,7 @@ name = "sonda"
 version = "1.19.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "ctrlc",
  "dialoguer",

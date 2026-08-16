@@ -28,7 +28,22 @@ const FIRING_RESULT: &str = r#"{"status":"success","data":{"resultType":"vector"
 fn mock_prometheus(
     respond: impl Fn(usize, &str) -> (String, std::time::Duration) + Send + Sync + 'static,
 ) -> (String, Arc<AtomicUsize>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock prometheus");
+    mock_server(move |n, line| {
+        let (body, stall) = respond(n, line);
+        (body, Vec::new(), stall)
+    })
+}
+
+/// The shared scripted-HTTP responder behind [`mock_prometheus`] and
+/// [`mock_alertmanager`]. `respond` returns the body, any extra response
+/// headers, and an artificial delay.
+fn mock_server(
+    respond: impl Fn(usize, &str) -> (String, Vec<(String, String)>, std::time::Duration)
+        + Send
+        + Sync
+        + 'static,
+) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
     let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
     let hits = Arc::new(AtomicUsize::new(0));
     let hits_clone = Arc::clone(&hits);
@@ -50,10 +65,14 @@ fn mock_prometheus(
                     }
                     line.clear();
                 }
-                let (body, stall) = respond(n, &request_line);
+                let (body, headers, stall) = respond(n, &request_line);
                 std::thread::sleep(stall);
+                let extra: String = headers
+                    .iter()
+                    .map(|(name, value)| format!("{name}: {value}\r\n"))
+                    .collect();
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
@@ -182,6 +201,176 @@ fn skewed_alert_world(
             )
         }
     }
+}
+
+// --- Mock Alertmanager -------------------------------------------------
+//
+// The Alertmanager acquisition asks a different question of the same alert
+// world: not "is the rule firing?" but "did the notification arrive?".
+// These fixtures speak the v2 `GET /api/v2/alerts` shape and are driven by
+// the same clock as [`alert_world`], so the parity test can put one world
+// through both acquisitions and demand the same verdict.
+
+/// Every request line the mock received, in order — so tests can assert on
+/// the *wire* form of the filters, which is the only place a mis-escaped or
+/// mis-encoded matcher is visible.
+type RequestLog = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// A scripted responder: request index and request line in, body + extra
+/// response headers + artificial delay out.
+type Responder =
+    dyn Fn(usize, &str) -> (String, Vec<(String, String)>, std::time::Duration) + Send + Sync;
+
+/// Format an instant as Alertmanager renders `startsAt` / `endsAt`.
+fn rfc3339(unix: f64) -> String {
+    chrono::DateTime::from_timestamp(unix.trunc() as i64, (unix.fract() * 1e9) as u32)
+        .expect("representable timestamp")
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// An Alertmanager whose alert is present from `fire_at` and carries an
+/// `endsAt` of `resolve_at` — deliberately *keeping* the resolved alert in
+/// the response. A real Alertmanager (measured: 0.28.1) removes it instead,
+/// which makes this the harder fixture of the two: resolution here can only
+/// be detected by reading `endsAt`, not by the alert disappearing.
+///
+/// `extra_labels` is appended verbatim inside the label object (leading
+/// comma included) and `state` names the `status.state` to report.
+///
+/// `keep_after_resolve == false` models what a real Alertmanager does —
+/// drop the alert once it resolves — so both resolution shapes are covered.
+fn am_world(
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &'static str,
+    state: &'static str,
+    keep_after_resolve: bool,
+) -> (Box<Responder>, RequestLog) {
+    let log: RequestLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = Arc::clone(&log);
+    let anchor: Arc<std::sync::OnceLock<(std::time::Instant, f64)>> =
+        Arc::new(std::sync::OnceLock::new());
+    let responder = Box::new(move |_: usize, request_line: &str| {
+        if let Ok(mut lines) = seen.lock() {
+            lines.push(request_line.to_string());
+        }
+        let (mono0, unix0) = *anchor.get_or_init(|| {
+            (
+                std::time::Instant::now(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("epoch")
+                    .as_secs_f64(),
+            )
+        });
+        let offset = mono0.elapsed().as_secs_f64();
+        let headers = vec![(
+            "Date".to_string(),
+            chrono::Utc::now()
+                .format("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string(),
+        )];
+        let gone = !keep_after_resolve && resolve_at.is_some_and(|r| offset >= r);
+        let body = match fire_at {
+            Some(fire) if offset >= fire && !gone => {
+                // Alertmanager gives a live alert an endsAt in the future
+                // (the resend deadline) and rewrites it to the resolution
+                // time when the alert ends.
+                let ends = resolve_at.map_or(unix0 + offset + 300.0, |r| unix0 + r);
+                format!(
+                    r#"[{{"labels":{{"alertname":"HighCpuUsage","host":"{host}"}},
+                        "annotations":{{}},
+                        "startsAt":"{}","endsAt":"{}","updatedAt":"{}",
+                        "status":{{"state":"{state}","silencedBy":[],"inhibitedBy":[]}},
+                        "receivers":[{{"name":"webhook"}}],"fingerprint":"deadbeef"}}]"#,
+                    rfc3339(unix0 + fire),
+                    rfc3339(ends),
+                    rfc3339(unix0 + offset),
+                )
+            }
+            _ => "[]".to_string(),
+        };
+        (body, headers, NO_STALL)
+    });
+    (responder, log)
+}
+
+/// An Alertmanager that keeps the resolved alert with a past `endsAt`.
+fn mock_alertmanager(
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &'static str,
+    state: &'static str,
+) -> (String, RequestLog) {
+    let (responder, log) = am_world(fire_at, resolve_at, host, state, true);
+    let (url, _hits) = mock_server(responder);
+    (url, log)
+}
+
+/// An Alertmanager that drops the alert on resolution, as real ones do.
+fn mock_alertmanager_dropping(
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &'static str,
+) -> (String, RequestLog) {
+    let (responder, log) = am_world(fire_at, resolve_at, host, "active", false);
+    let (url, _hits) = mock_server(responder);
+    (url, log)
+}
+
+/// The `filter=` values the mock actually received, percent-decoded.
+fn filters_seen(log: &RequestLog) -> Vec<String> {
+    let lines = log.lock().expect("request log");
+    let mut filters = Vec::new();
+    for line in lines.iter() {
+        let Some(target) = line.split_whitespace().nth(1) else {
+            continue;
+        };
+        let Some((_, params)) = target.split_once('?') else {
+            continue;
+        };
+        for pair in params.split('&') {
+            if let Some(value) = pair.strip_prefix("filter=") {
+                filters.push(percent_decode(value));
+            }
+        }
+    }
+    filters
+}
+
+/// Decode a percent-encoded query value. Deliberately hand-rolled: the
+/// point of the escaping tests is to read exactly what went on the wire,
+/// not to trust the same library that put it there.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn scenario_with_expect(expect_block: &str) -> String {
@@ -709,6 +898,63 @@ expect:
             && stderr.contains("scope `expect.labels`"),
         "stderr: {stderr}"
     );
+    // The noun names what this source actually holds — a reader chasing
+    // the warning must be pointed at the system that was queried.
+    assert!(
+        stderr.contains("matched an ALERTS series"),
+        "the Prometheus path must name the ALERTS series\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn alertmanager_provenance_warning_names_alertmanager_not_alerts() {
+    // #552 review M1: the provenance check is acquisition-independent, but
+    // its message was not — it told an Alertmanager user to go look at a
+    // metric this path never queries. This path exists for people whose
+    // two systems disagree, so pointing them at the wrong one is worse
+    // here than anywhere else.
+    let (url, _log) = mock_alertmanager(Some(0.0), None, "intruder-host", "active");
+    let dir = TempDir::new().expect("tempdir");
+    let yaml = "version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 300ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: sonda-test
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 5s
+";
+    let path = write_scenario(&dir, yaml);
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("WARN") && stderr.contains("host=\"intruder-host\""),
+        "the provenance check must still fire on this path\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("matched an Alertmanager alert"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("ALERTS series"),
+        "the Alertmanager path must not name a metric it never queried\nstderr: {stderr}"
+    );
 }
 
 #[test]
@@ -740,32 +986,11 @@ fn dry_run_works_without_prometheus_url() {
     );
 }
 
-#[test]
-fn missing_prometheus_url_is_rejected_outside_dry_run() {
-    let dir = TempDir::new().expect("tempdir");
-    let path = write_scenario(
-        &dir,
-        &scenario_with_expect(
-            "expect:
-  alerts:
-    - alert: HighCpuUsage
-      firing_within: 2m
-",
-        ),
-    );
-
-    let output = Command::new(sonda_bin())
-        .args(["test", path.to_str().expect("utf8 path")])
-        .env_remove("SONDA_PROMETHEUS_URL")
-        .output()
-        .expect("run sonda test");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success());
-    assert!(
-        stderr.contains("--prometheus-url is required"),
-        "stderr: {stderr}"
-    );
-}
+// `missing_prometheus_url_is_rejected_outside_dry_run` lived here until
+// `--alertmanager-url` arrived. It is superseded by
+// `neither_acquisition_url_names_both_options`, which clears *both* env
+// vars and asserts the message names both flags — the weaker version could
+// pass while the new flag's env var silently supplied a URL.
 
 #[test]
 fn failed_scenario_reports_immediately_without_waiting_out_deadlines() {
@@ -836,5 +1061,271 @@ fn run_still_accepts_files_with_expect_blocks() {
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// --- Alertmanager acquisition ------------------------------------------
+
+/// Standard expect block for the Alertmanager tests.
+fn am_expect(firing_within: &str, resolves_within: Option<&str>) -> String {
+    let resolves = resolves_within
+        .map(|d| format!("      resolves_within: {d}\n"))
+        .unwrap_or_default();
+    format!(
+        "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: {firing_within}
+{resolves}"
+    )
+}
+
+fn run_against_alertmanager(path: &std::path::Path, url: &str) -> std::process::Output {
+    Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--alertmanager-url", url, "--interval", "100ms"])
+        .output()
+        .expect("run sonda test")
+}
+
+#[test]
+fn alertmanager_passes_when_the_notification_arrives_and_clears() {
+    // Firing from first contact, ending one second in — just after the
+    // 300ms scenario. The mock keeps the ended alert in the response with
+    // a past endsAt, so resolution is detected by the expiry check, not by
+    // the alert disappearing.
+    let (url, _log) = mock_alertmanager(Some(0.0), Some(1.0), "sonda-test", "active");
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("5s", Some("5s"))));
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}\nstderr: {stderr}",
+        output.status
+    );
+    assert!(stderr.contains("firing after"), "stderr: {stderr}");
+    assert!(stderr.contains("resolved after"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("verified via Alertmanager"),
+        "the report must name the acquisition path\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn alertmanager_detects_resolution_when_the_alert_disappears() {
+    // The shape a real Alertmanager produces: a resolved alert is dropped
+    // from /api/v2/alerts rather than lingering with a past endsAt. Both
+    // shapes must reach the same verdict, because which one you get is the
+    // Alertmanager's choice, not the test author's.
+    let (url, _log) = mock_alertmanager_dropping(Some(0.0), Some(1.0), "sonda-test");
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("5s", Some("5s"))));
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("resolved after"), "stderr: {stderr}");
+}
+
+#[test]
+fn alertmanager_report_states_its_precision_instead_of_borrowing_prometheus_guarantees() {
+    // The likeliest wrong claim on this path is implying the sample-time
+    // precision the range-query path earned. The note must be present and
+    // must say where the numbers come from.
+    let (url, _log) = mock_alertmanager(Some(0.0), None, "sonda-test", "active");
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("5s", None)));
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("keeps no queryable history"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("live polling every"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("range"),
+        "the Alertmanager path must not mention range acquisition\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn alertmanager_fails_when_no_notification_arrives() {
+    let (url, _log) = mock_alertmanager(None, None, "sonda-test", "active");
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("1s", None)));
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "must exit non-zero\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("did not fire within 1s"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("verified via Alertmanager"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn alertmanager_and_prometheus_agree_on_the_same_alert_world() {
+    // Parity: one alert world, two acquisitions, one verdict. The point of
+    // the Alertmanager path is that it asks a *different question* — it
+    // must not answer a different *answer* when both hops are healthy.
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("5s", Some("5s"))));
+
+    let (prom_url, _hits) = mock_prometheus(alert_world(Some(0.0), Some(1.0), "sonda-test"));
+    let prometheus = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &prom_url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+
+    let (am_url, _log) = mock_alertmanager(Some(0.0), Some(1.0), "sonda-test", "active");
+    let alertmanager = run_against_alertmanager(&path, &am_url);
+
+    let prom_err = String::from_utf8_lossy(&prometheus.stderr);
+    let am_err = String::from_utf8_lossy(&alertmanager.stderr);
+    assert_eq!(
+        prometheus.status.success(),
+        alertmanager.status.success(),
+        "acquisitions disagreed on the same world\nprometheus: {prom_err}\nalertmanager: {am_err}"
+    );
+    for expected in [
+        "firing after",
+        "resolved after",
+        "1 alert expectation(s) verified",
+    ] {
+        assert!(prom_err.contains(expected), "prometheus: {prom_err}");
+        assert!(am_err.contains(expected), "alertmanager: {am_err}");
+    }
+}
+
+#[test]
+fn alertmanager_suppressed_alert_counts_as_firing_and_warns() {
+    // A silence stops the notification, not the alert. The expectation is
+    // satisfied — and the operator is told, because asserting on a
+    // silenced alert is almost never what was meant.
+    let (url, _log) = mock_alertmanager(Some(0.0), None, "sonda-test", "suppressed");
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("5s", None)));
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("suppressed (silenced or inhibited)"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn alertmanager_down_is_a_preflight_failure_not_a_silent_pass() {
+    // No listener at all: the preflight gate must name the failure rather
+    // than let the run proceed to an unprovable verdict.
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("1s", None)));
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args([
+            "--alertmanager-url",
+            "http://127.0.0.1:1",
+            "--interval",
+            "100ms",
+        ])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("alertmanager preflight against http://127.0.0.1:1 failed"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn both_acquisition_urls_is_a_config_error() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("1s", None)));
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", "http://127.0.0.1:1"])
+        .args(["--alertmanager-url", "http://127.0.0.1:2"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("mutually exclusive"), "stderr: {stderr}");
+}
+
+#[test]
+fn neither_acquisition_url_names_both_options() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(&dir, &scenario_with_expect(&am_expect("1s", None)));
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .env_remove("SONDA_PROMETHEUS_URL")
+        .env_remove("SONDA_ALERTMANAGER_URL")
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("--prometheus-url"), "stderr: {stderr}");
+    assert!(stderr.contains("--alertmanager-url"), "stderr: {stderr}");
+}
+
+#[rustfmt::skip]
+#[rstest::rstest]
+// Hostile expectation label values must survive TWO layers on the wire:
+// Alertmanager matcher quoting (done by sonda) and percent-encoding (done
+// by the HTTP layer). Decoding the request line back proves both — a value
+// that broke out of its quotes, or one that was never encoded, shows up
+// here as a filter that is not the one we meant to send.
+#[case::spaces(      "on call",        r#"team="on call""#)]
+#[case::double_quote("net\"ops",       r#"team="net\"ops""#)]
+#[case::backslash(   "a\\b",           r#"team="a\\b""#)]
+#[case::comma(       "a,b",            r#"team="a,b""#)]
+#[case::ampersand(   "a&b=c",          r#"team="a&b=c""#)]
+#[case::braces(      "{a}",            r#"team="{a}""#)]
+#[case::percent(     "100%",           r#"team="100%""#)]
+#[case::utf8(        "café-日本",       r#"team="café-日本""#)]
+fn alertmanager_filters_survive_the_wire(#[case] value: &str, #[case] expected: &str) {
+    let (url, log) = mock_alertmanager(None, None, "sonda-test", "active");
+    let dir = TempDir::new().expect("tempdir");
+    let expect_block = format!(
+        "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 300ms
+      labels:
+        team: {}
+",
+        serde_json::to_string(value).expect("json string")
+    );
+    let path = write_scenario(&dir, &scenario_with_expect(&expect_block));
+
+    let output = run_against_alertmanager(&path, &url);
+    // The alert never fires here; the verdict is beside the point.
+    let _ = output.status;
+    let filters = filters_seen(&log);
+    assert!(
+        filters.contains(&r#"alertname="HighCpuUsage""#.to_string()),
+        "alertname filter missing from {filters:?}"
+    );
+    assert!(
+        filters.contains(&expected.to_string()),
+        "expected filter {expected:?} on the wire, saw {filters:?}"
     );
 }

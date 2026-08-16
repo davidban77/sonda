@@ -130,9 +130,18 @@ pub struct TestArgs {
     pub scenario: String,
 
     /// Base URL of the Prometheus-compatible API evaluating the alert rules
-    /// (e.g. `http://localhost:9090`). Required except with `--dry-run`.
+    /// (e.g. `http://localhost:9090`) — verifies that the *rule* fires.
+    /// Exactly one of `--prometheus-url` / `--alertmanager-url` is required,
+    /// except with `--dry-run`.
     #[arg(long, env = "SONDA_PROMETHEUS_URL")]
     pub prometheus_url: Option<String>,
+
+    /// Base URL of the Alertmanager receiving the alerts
+    /// (e.g. `http://localhost:9093`) — verifies that the *notification*
+    /// arrived, one hop further down the alerting path. Mutually exclusive
+    /// with `--prometheus-url`.
+    #[arg(long, env = "SONDA_ALERTMANAGER_URL")]
+    pub alertmanager_url: Option<String>,
 
     /// Poll interval for alert-state checks (e.g. `5s`).
     #[arg(long, default_value = "5s")]
@@ -143,7 +152,9 @@ pub struct TestArgs {
     pub query_timeout: String,
 
     /// Grid resolution for the post-hoc range queries that produce the
-    /// verdict timelines. Match your rule evaluation interval.
+    /// verdict timelines. Match your rule evaluation interval. Applies to
+    /// `--prometheus-url` only: Alertmanager has no range API, so that path
+    /// is live-polling only and its resolution is `--interval`.
     #[arg(long, default_value = "5s")]
     pub query_step: String,
 }

@@ -332,9 +332,11 @@ Pick the tab that matches your scenario.
     | Metrics | `influx_lp` | `file` | `examples/influx-file.yaml` | `wc -l < /tmp/sonda-influx-output.txt` |
     | Metrics | `remote_write` | `remote_write` (VM + vmalert) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --prometheus-url http://localhost:8428 --interval 5s` — self-verifying: exit 0 means the alert fired *and* resolved on deadline |
     | Metrics | `remote_write` | `remote_write` (VM + vmalert, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `sonda test` shape — must exit 1 with `did not fire within`, proving the failure path fails |
+    | Metrics | `remote_write` | `remote_write` (VM + vmalert → Alertmanager) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --alertmanager-url http://localhost:9093 --interval 5s` — same scenario one hop further: exit 0 means the *notification* reached Alertmanager and cleared |
+    | Metrics | `remote_write` | `remote_write` (Alertmanager, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `--alertmanager-url` shape — must exit 1 with `did not fire within` |
 
     !!! info "Compose profiles"
-        Loki, Kafka, Prometheus, the OTel Collector, and the alerting stack (vmalert + Alertmanager, needed by the two `sonda test` rows) are behind profiles to keep the base stack lean. Bring up only what each row needs. The vmagent row uses the default stack — no extra profile.
+        Loki, Kafka, Prometheus, the OTel Collector, and the alerting stack (vmalert + Alertmanager, needed by the four `sonda test` rows) are behind profiles to keep the base stack lean. Bring up only what each row needs. The vmagent row uses the default stack — no extra profile.
         ```bash
         docker compose -f examples/docker-compose-victoriametrics.yml \
           --profile loki --profile kafka --profile prometheus --profile otel-collector up -d

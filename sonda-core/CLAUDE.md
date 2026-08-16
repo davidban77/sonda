@@ -140,14 +140,24 @@ src/
 │   ├── evaluator.rs    ← pure, feature-free verdicts: Observation timelines + a deadline
 │   │                      → Outcome (Pass | Late | Missed | Undecided). Owns EVERY deadline
 │   │                      comparison — acquisition layers must never decide pass/fail.
+│   ├── alertmanager.rs ← acquisition (feature = "http"): blocking AlertmanagerClient over
+│   │                      GET /api/v2/alerts — verifies the *notification*, one hop past the
+│   │                      rule evaluator. Live polling only (no range API, no time()):
+│   │                      parse_alerts maps matched, unexpired alerts to Firing (never
+│   │                      Pending — AM has no such state), collects their labels for the
+│   │                      provenance check, and reports suppression. refine_firing_timeline
+│   │                      sharpens the first firing observation with the alert's own startsAt,
+│   │                      clamped between the last successful non-firing poll and the poll
+│   │                      that saw it — so a skewed clock can never rewrite observed history.
+│   │                      Clock offset comes from the HTTP Date header (1s granularity);
+│   │                      do NOT describe these verdicts with the prometheus.rs guarantees.
 │   └── prometheus.rs   ← acquisition (feature = "http"): blocking PrometheusClient with a
 │                          mandatory per-request timeout. Instant queries (alert_state) drive
 │                          live settling; range queries (range_timeline) reconstruct verdict
 │                          timelines from the stored ALERTS samples — grid parse in
 │                          parse_range_timeline, firing-series labels collected for the
 │                          foreign_label_values provenance check (verify/mod.rs). Errors are
-│                          SondaError::Verify, retryable by polling loops. Alertmanager
-│                          acquisition is planned as a sibling.
+│                          SondaError::Verify, retryable by polling loops.
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,
