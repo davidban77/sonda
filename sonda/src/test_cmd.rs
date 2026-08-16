@@ -192,6 +192,18 @@ impl Source {
         }
     }
 
+    /// What a matched thing *is* on this source, for messages that point a
+    /// reader at something to go and look at. The provenance check is
+    /// acquisition-independent, but its warning is not much use if it names
+    /// a metric this path never queried — and this path exists precisely
+    /// for people whose two systems disagree (#552 review M1).
+    fn matched_noun(&self) -> &'static str {
+        match self {
+            Source::Prometheus(_) => "ALERTS series",
+            Source::Alertmanager(_) => "Alertmanager alert",
+        }
+    }
+
     /// Alertmanager stamps live on its own clock; this is the measured
     /// server-minus-local offset used to translate them back.
     fn clock_offset_secs(&self) -> f64 {
@@ -464,17 +476,20 @@ pub fn run(
     }
 
     // Provenance: an expectation that matched an alert carrying label
-    // values this scenario never emitted is probably under-scoped —
-    // ALERTS is global (#527 review).
+    // values this scenario never emitted is probably under-scoped — both
+    // sources are global (`ALERTS` is a shared metric; Alertmanager holds
+    // every alert anyone sent it). The check is acquisition-independent;
+    // only the noun in the message follows the source (#527, #552 M1).
     let emitted = emitted_label_values(&args.scenario, catalog);
     let mut foreign_seen: BTreeSet<(String, String)> = BTreeSet::new();
     for series in &matched_firing_series {
         for (key, value) in foreign_label_values(series, &emitted) {
             if foreign_seen.insert((key.clone(), value.clone())) {
                 warnings.push(format!(
-                    "matched an ALERTS series with {key}=\"{value}\", which this scenario \
-                     never emits — another series may have triggered the alert; scope \
-                     `expect.labels` to something unique to this scenario"
+                    "matched an {} with {key}=\"{value}\", which this scenario \
+                     never emits — something outside this scenario may have triggered the \
+                     alert; scope `expect.labels` to something unique to this scenario",
+                    client.matched_noun()
                 ));
             }
         }

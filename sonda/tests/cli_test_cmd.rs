@@ -898,6 +898,63 @@ expect:
             && stderr.contains("scope `expect.labels`"),
         "stderr: {stderr}"
     );
+    // The noun names what this source actually holds — a reader chasing
+    // the warning must be pointed at the system that was queried.
+    assert!(
+        stderr.contains("matched an ALERTS series"),
+        "the Prometheus path must name the ALERTS series\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn alertmanager_provenance_warning_names_alertmanager_not_alerts() {
+    // #552 review M1: the provenance check is acquisition-independent, but
+    // its message was not — it told an Alertmanager user to go look at a
+    // metric this path never queries. This path exists for people whose
+    // two systems disagree, so pointing them at the wrong one is worse
+    // here than anywhere else.
+    let (url, _log) = mock_alertmanager(Some(0.0), None, "intruder-host", "active");
+    let dir = TempDir::new().expect("tempdir");
+    let yaml = "version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 300ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: sonda-test
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 5s
+";
+    let path = write_scenario(&dir, yaml);
+
+    let output = run_against_alertmanager(&path, &url);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("WARN") && stderr.contains("host=\"intruder-host\""),
+        "the provenance check must still fire on this path\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("matched an Alertmanager alert"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("ALERTS series"),
+        "the Alertmanager path must not name a metric it never queried\nstderr: {stderr}"
+    );
 }
 
 #[test]
