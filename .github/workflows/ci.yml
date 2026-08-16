@@ -470,3 +470,42 @@ jobs:
             exit 1
           fi
           echo "OK: both pinned to ${pinned}"
+
+  action-contract:
+    name: sonda-action contract (argv safety + release resolution)
+    runs-on: ubuntu-latest
+
+    # Deliberately NOT path-filtered, unlike the live self-test. These are
+    # seconds of shell and Python with no containers, and they guard the
+    # two things a broken action would leak quietly: a workflow input
+    # reaching a shell, and a moving tag resolving to the wrong release.
+    # Cheap enough to run on every PR, so they do.
+    #
+    # One step makes a single GitHub API call (the floor-staleness check).
+    # It cannot fail this job on an unreachable or rate-limited API — only
+    # on a genuinely stale constant — because every other PR in the repo
+    # would otherwise go red on a question none of them asked.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Argv construction under hostile inputs (spaces, ;, $(…), globs,
+      # newlines), plus drift checks asserting action.yml and release.yml
+      # still contain the constructions the harness exercises.
+      - name: Action argv safety
+        run: bash scripts/tests/action_argv_test.sh
+
+      # Tag -> concrete release resolution: major-tag selection, the
+      # release-please no-assets window, missing checksums, version floors.
+      - name: Release resolver unit tests
+        run: python3 scripts/resolve_release.py --self-test
+
+      # The alertmanager-url version floor is a constant someone must
+      # remember to revisit. This goes red on the release that makes it
+      # stale, which is exactly when it needs revisiting — and stays green
+      # when the API is simply unreachable, since "could not ask" is not
+      # "is stale".
+      - name: Version floor is not stale
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/resolve_release.py --check-floor-staleness

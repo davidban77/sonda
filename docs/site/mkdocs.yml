@@ -221,6 +221,7 @@ nav:
   - Test pipelines:
       - test/index.md
       - Alert testing: test/alert-testing.md
+      - Run it in CI (GitHub Action): test/ci-github-action.md
       - Recording rules: test/recording-rules.md
       - End-to-end pipelines: test/end-to-end-pipelines.md
       - Synthetic monitoring: test/synthetic-monitoring.md
