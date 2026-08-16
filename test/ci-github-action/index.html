@@ -6,17 +6,17 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Point Sonda at Prometheus remote_write or Loki instead of stdout.">
+        <meta name="description" content="Synthetic telemetry generator for the people who run the pipeline — metrics, logs, histograms, and summaries shaped like the real thing, in a single static binary.">
       
       
       
-        <link rel="canonical" href="https://davidban77.github.io/sonda/get-started/send-to-a-backend/">
+        <link rel="canonical" href="https://davidban77.github.io/sonda/test/ci-github-action/">
       
       
-        <link rel="prev" href="../your-first-scenario/">
+        <link rel="prev" href="../alert-testing/">
       
       
-        <link rel="next" href="../../playground/">
+        <link rel="next" href="../recording-rules/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Send to a real backend - Sonda</title>
+        <title>Run it in CI (GitHub Action) - Sonda</title>
       
     
     
@@ -63,17 +63,17 @@
     
   
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Send to a real backend - Sonda" />
-<meta property="og:description" content="Point Sonda at Prometheus remote_write or Loki instead of stdout." />
-<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/get-started/send-to-a-backend.png" />
+<meta property="og:title" content="Run it in CI (GitHub Action) - Sonda" />
+<meta property="og:description" content="Synthetic telemetry generator for the people who run the pipeline — metrics, logs, histograms, and summaries shaped like the real thing, in a single static binary." />
+<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/test/ci-github-action.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:url" content="https://davidban77.github.io/sonda/get-started/send-to-a-backend/" />
+<meta property="og:url" content="https://davidban77.github.io/sonda/test/ci-github-action/" />
 <meta property="twitter:card" content="summary_large_image" />
-<meta property="twitter:title" content="Send to a real backend - Sonda" />
-<meta property="twitter:description" content="Point Sonda at Prometheus remote_write or Loki instead of stdout." />
-<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/get-started/send-to-a-backend.png" />
+<meta property="twitter:title" content="Run it in CI (GitHub Action) - Sonda" />
+<meta property="twitter:description" content="Synthetic telemetry generator for the people who run the pipeline — metrics, logs, histograms, and summaries shaped like the real thing, in a single static binary." />
+<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/test/ci-github-action.png" />
 </head>
   
   
@@ -93,7 +93,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#send-to-a-real-backend" class="md-skip">
+        <a href="#run-it-in-ci-with-the-github-action" class="md-skip">
           Skip to content
         </a>
       
@@ -128,7 +128,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Send to a real backend
+              Run it in CI (GitHub Action)
             
           </span>
         </div>
@@ -257,13 +257,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../get-started/" class="md-tabs__link">
           
   
   
@@ -325,11 +323,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../test/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -490,8 +490,6 @@
       
   
   
-    
-  
   
   
     
@@ -511,23 +509,20 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../" class="md-nav__link ">
+            <a href="../../get-started/" class="md-nav__link ">
               
   
   
@@ -545,13 +540,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="">
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -571,7 +566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../quickstart/" class="md-nav__link">
+      <a href="../../get-started/quickstart/" class="md-nav__link">
         
   
   
@@ -599,7 +594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../your-first-scenario/" class="md-nav__link">
+      <a href="../../get-started/your-first-scenario/" class="md-nav__link">
         
   
   
@@ -624,37 +619,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Send to a real backend
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../get-started/send-to-a-backend/" class="md-nav__link">
         
   
   
@@ -670,48 +638,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#clean-up" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Clean up
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#where-to-next" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where to next
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1146,6 +1072,8 @@
       
   
   
+    
+  
   
   
     
@@ -1177,20 +1105,23 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../test/" class="md-nav__link ">
+            <a href="../" class="md-nav__link ">
               
   
   
@@ -1208,13 +1139,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1234,7 +1165,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/alert-testing/" class="md-nav__link">
+      <a href="../alert-testing/" class="md-nav__link">
         
   
   
@@ -1259,10 +1190,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../test/ci-github-action/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run it in CI (GitHub Action)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1278,6 +1236,81 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-action-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the action does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pinning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pinning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-the-notification-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying the notification path
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1290,7 +1323,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/recording-rules/" class="md-nav__link">
+      <a href="../recording-rules/" class="md-nav__link">
         
   
   
@@ -1318,7 +1351,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/end-to-end-pipelines/" class="md-nav__link">
+      <a href="../end-to-end-pipelines/" class="md-nav__link">
         
   
   
@@ -1346,7 +1379,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/synthetic-monitoring/" class="md-nav__link">
+      <a href="../synthetic-monitoring/" class="md-nav__link">
         
   
   
@@ -1374,7 +1407,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/capacity-planning/" class="md-nav__link">
+      <a href="../capacity-planning/" class="md-nav__link">
         
   
   
@@ -1402,7 +1435,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/network-device-telemetry/" class="md-nav__link">
+      <a href="../network-device-telemetry/" class="md-nav__link">
         
   
   
@@ -1430,7 +1463,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/network-automation-testing/" class="md-nav__link">
+      <a href="../network-automation-testing/" class="md-nav__link">
         
   
   
@@ -1458,7 +1491,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../test/examples/" class="md-nav__link">
+      <a href="../examples/" class="md-nav__link">
         
   
   
@@ -2155,10 +2188,43 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#clean-up" class="md-nav__link">
+  <a href="#inputs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Clean up
+        Inputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-action-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the action does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pinning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pinning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-the-notification-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying the notification path
       
     </span>
   </a>
@@ -2196,118 +2262,121 @@
   
 
 
-<h1 id="send-to-a-real-backend">Send to a real backend<a class="headerlink" href="#send-to-a-real-backend" title="Permanent link">&para;</a></h1>
-<p>This page shows how to send a Sonda <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> to <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> or <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> running locally in Docker.</p>
-<p>Stdout confirms that your YAML parses and produces data. To test an alert rule like "fire when latency crosses 200 ms", you need the data in a real backend. Two backends cover most first-time setups: <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> (using the <code>remote_write</code> protocol) and <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>.</p>
-<p>Two Sonda fields decide where the data goes:</p>
+<h1 id="run-it-in-ci-with-the-github-action">Run it in CI with the GitHub Action<a class="headerlink" href="#run-it-in-ci-with-the-github-action" title="Permanent link">&para;</a></h1>
+<p><code>sonda test</code> turns alert rules into a test suite. The action turns that into
+three lines of workflow YAML — it installs a pinned Sonda release, verifies
+the download against the release's published checksums, and runs your
+<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. The exit code is the check.</p>
+<div class="language-yaml highlight"><span class="filename">.github/workflows/alert-rules.yml</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Alert rules</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">pull_request</span><span class="p p-Indicator">]</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nt">jobs</span><span class="p">:</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">verify</span><span class="p">:</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">      </span><span class="c1"># ... start your Prometheus/vmalert stack here ...</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">davidban77/sonda@v1</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">          </span><span class="nt">scenario</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">examples/alert-lifecycle-test.yaml</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">          </span><span class="nt">prometheus-url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8428</span>
+</span></code></pre></div>
+<p>The job fails when an alert does not fire, or does not resolve, on deadline
+— the same contract <code>sonda test</code> has on your laptop.</p>
+<h2 id="inputs">Inputs<a class="headerlink" href="#inputs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scenario</code></td>
+<td>yes</td>
+<td>Path to a v2 <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML with an <code>expect:</code> block, relative to the workspace.</td>
+</tr>
+<tr>
+<td><code>prometheus-url</code></td>
+<td>one of</td>
+<td>Base URL of the <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>-compatible API evaluating the rules — verifies the <strong>rule</strong> fires.</td>
+</tr>
+<tr>
+<td><code>alertmanager-url</code></td>
+<td>one of</td>
+<td>Base URL of the <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> receiving the alerts — verifies the <strong>notification</strong> arrived.</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>no</td>
+<td>Release to install (e.g. <code>v1.20.0</code>), or <code>latest</code>. Defaults to the ref you pinned the action at.</td>
+</tr>
+<tr>
+<td><code>extra-args</code></td>
+<td>no</td>
+<td>Extra arguments for <code>sonda test</code>, split on whitespace (e.g. <code>--interval 5s</code>).</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Exactly one of <code>prometheus-url</code> / <code>alertmanager-url</code></strong>, mirroring the CLI.
+Passing both is an error: they verify different hops of the alerting path,
+so there is no sensible way to merge their verdicts. To cover both, add two
+steps — and the one that fails tells you which hop broke.</p>
+<div class="admonition note">
+<p class="admonition-title"><code>alertmanager-url</code> has a version floor</p>
+<p>That input needs a Sonda release that has it. If you pin an older
+version, the action refuses <strong>before</strong> downloading anything and names
+the floor, rather than installing a binary that would reject the flag
+with a confusing <code>unexpected argument</code>.</p>
+</div>
+<h2 id="what-the-action-does">What the action does<a class="headerlink" href="#what-the-action-does" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Resolves your ref to a concrete release.</strong> <code>@v1</code> is a tag that moves
+   with every release, so it is resolved to the newest published <code>1.x</code>
+   before anything is downloaded — a run always installs a determinate
+   version, and the log says which.</li>
+<li><strong>Installs that release</strong>, reusing the same <code>install.sh</code> the docs point
+   humans at: it maps the runner's OS and architecture to the release
+   asset, downloads it, and <strong>verifies it against the release's
+   <code>SHA256SUMS</code></strong>. A mismatch aborts.</li>
+<li><strong>Runs <code>sonda test</code></strong> with your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and URL.</li>
+</ol>
+<p>Two failure modes get named rather than left to guesswork:</p>
 <ul>
-<li><code>encoder:</code> — converts values into the wire format the backend expects.</li>
-<li><code>sink:</code> — sends the encoded bytes to the backend over the network.</li>
+<li><strong>A tag whose release has no assets yet.</strong> The version bump merges and
+  tags before the binary build finishes uploading, so for a few minutes a
+  real tag has nothing to download. The action says so and suggests
+  re-running or pinning the previous version.</li>
+<li><strong>A release with assets but no checksums.</strong> The action refuses instead of
+  installing something it cannot verify.</li>
 </ul>
-<p>The pattern is the same for every backend. You change the <code>encoder:</code> and <code>sink:</code> blocks in your YAML, set the <code>url:</code>, and run.</p>
-<div class="admonition tip">
-<p class="admonition-title">About the <code>url:</code> field</p>
-<p>The <code>url:</code> is resolved by the process that runs the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. If you POST a YAML to a containerised <code>sonda-server</code>, <code>http://localhost:8428</code> resolves to the container itself, not your host machine. The loopback address <code>localhost</code> always points to the current process's own machine, so a container sees its own internal network. See <a href="../../deploy/server/#networking">Networking</a> for the full table.</p>
-</div>
-<p>For Kafka or other sinks, see <a href="../../build/sinks/">Sinks</a>. The <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> is not included in the pre-built binaries from the install script or Docker image. To use <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>, you need a custom build of Sonda — see <a href="../../build/encoders/#otlp">Encoders — <code>otlp</code></a> for the details.</p>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1"><abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> remote_write</label><label for="__tabbed_1_2"><abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr></label></div>
-<div class="tabbed-content">
-<div class="tabbed-block">
-<p><a href="../../reference/glossary/#victoriametrics"><abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr></a> is the easiest <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>-compatible backend to run locally. It is a single container with no config file. It accepts <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> <a href="../../reference/glossary/#remote_write"><code>remote_write</code></a> with no extra setup.</p>
-<p>Start it:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span>--name<span class="w"> </span>vm<span class="w"> </span>-p<span class="w"> </span><span class="m">8428</span>:8428<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>victoriametrics/victoria-metrics:latest
+<h2 id="pinning">Pinning<a class="headerlink" href="#pinning" title="Permanent link">&para;</a></h2>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">davidban77/sonda@v1</span><span class="w">        </span><span class="c1"># newest 1.x, moves with each release</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">davidban77/sonda@v1.20.0</span><span class="w">   </span><span class="c1"># exactly this release, forever</span>
 </span></code></pre></div>
-<p>Now update your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
-<div class="admonition info">
-<p class="admonition-title">Why both are called <code>remote_write</code></p>
-<p>The <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> share the name because they are two sides of the same protocol. The <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> produces the payload format <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> expects: Protocol Buffers compressed with Snappy. The <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> sends the payload to <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> over HTTP. You pick both together when targeting a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> <code>remote_write</code> endpoint.</p>
-</div>
-<div class="language-yaml highlight"><span class="filename">cpu-remote-write.yaml</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">remote_write</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">remote_write</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://localhost:8428/api/v1/write&quot;</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="nt">scenarios</span><span class="p">:</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cpu</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cpu_usage</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">      </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">web-01</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sine</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">      </span><span class="nt">amplitude</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50.0</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">      </span><span class="nt">offset</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50.0</span>
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">      </span><span class="nt">period_secs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
+<p><code>@v1</code> is maintained by the release workflow, which moves the <code>v1</code> tag onto
+each new <code>1.x</code> release. A future <code>2.0.0</code> creates and moves <code>v2</code> and leaves
+<code>v1</code> where it is, so pinning <code>@v1</code> never carries you across a major version.</p>
+<h2 id="verifying-the-notification-path">Verifying the notification path<a class="headerlink" href="#verifying-the-notification-path" title="Permanent link">&para;</a></h2>
+<p>Swap the flag to check the hop past the rule evaluator — did the alert
+actually reach <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr>?</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">davidban77/sonda@v1</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">with</span><span class="p">:</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">scenario</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">examples/alert-lifecycle-test.yaml</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">alertmanager-url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:9093</span>
 </span></code></pre></div>
-<p>Run the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, then query <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>cpu-remote-write.yaml
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="c1"># Wait ~5s for ingestion, then verify</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;http://localhost:8428/api/v1/query?query=cpu_usage&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.data.result&#39;</span>
-</span></code></pre></div>
-<p>See <a href="../../build/sinks/#remote_write">Sinks — <code>remote_write</code></a> for the full backend matrix: <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>, <abbr title="VictoriaMetrics's lightweight metrics relay and forwarder.">vmagent</abbr>, Thanos, Cortex, and Mimir. See <a href="../../build/encoders/#remote_write">Encoders — <code>remote_write</code></a> for the feature-flag note.</p>
-</div>
-<div class="tabbed-block">
-<p><a href="../../reference/glossary/#loki"><abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr></a> is Grafana's log aggregation backend. It indexes logs by labels rather than full text. Start it:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span>--name<span class="w"> </span>loki<span class="w"> </span>-p<span class="w"> </span><span class="m">3100</span>:3100<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>grafana/loki:latest
-</span></code></pre></div>
-<p>Update your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> to a <code>logs</code> signal. Use the JSON Lines <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and the <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>:</p>
-<div class="language-yaml highlight"><span class="filename">app-logs-loki.yaml</span><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">json_lines</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">loki</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://localhost:3100&quot;</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">    </span><span class="nt">batch_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="nt">scenarios</span><span class="p">:</span>
-</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">app_logs</span>
-</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">logs</span>
-</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">app_logs</span>
-</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span>
-</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">      </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda</span>
-</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">      </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dev</span>
-</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">    </span><span class="nt">log_generator</span><span class="p">:</span>
-</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">template</span>
-</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">      </span><span class="nt">templates</span><span class="p">:</span>
-</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">message</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Request</span><span class="nv"> </span><span class="s">handled</span><span class="nv"> </span><span class="s">in</span><span class="nv"> </span><span class="s">47ms&quot;</span>
-</span></code></pre></div>
-<p>Run the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, then query <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>app-logs-loki.yaml
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># Wait ~5s, then verify the stream exists</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;http://localhost:3100/loki/api/v1/labels&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>curl<span class="w"> </span>-s<span class="w"> </span>-G<span class="w"> </span><span class="s2">&quot;http://localhost:3100/loki/api/v1/query_range&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span>--data-urlencode<span class="w"> </span><span class="s1">&#39;query={job=&quot;sonda&quot;}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.data.result | length&#39;</span>
-</span></code></pre></div>
-<p>See <a href="../../build/sinks/#loki">Sinks — <code>loki</code></a> for the <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr> model, per-flush <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> cap, and dynamic-label rotations.</p>
-</div>
-</div>
-</div>
-<h2 id="clean-up">Clean up<a class="headerlink" href="#clean-up" title="Permanent link">&para;</a></h2>
-<p>Stop and remove the containers when you are done:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>docker<span class="w"> </span>rm<span class="w"> </span>-f<span class="w"> </span>vm<span class="w"> </span>loki
-</span></code></pre></div>
+<p>A rule that evaluates correctly but never reaches <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> — a wrong
+<code>-notifier.url</code>, a route that drops it — is green on <code>prometheus-url</code> and
+red here. See <a href="../alert-testing/#verify-the-notification-not-just-the-rule">Alert testing</a>
+for what that path can and cannot promise.</p>
 <h2 id="where-to-next">Where to next<a class="headerlink" href="#where-to-next" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../../deploy/server/">Run as a server</a> — keep <code>sonda-server</code> running and POST scenarios over HTTP.</li>
-<li><a href="../../build/sinks/">Sinks</a> — every <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> type, full parameter reference.</li>
-<li><a href="../../test/">Test pipelines</a> — test alert rules, recording rules, and full pipelines with the data you are now pushing.</li>
+<li><a href="../alert-testing/">Alert testing</a> — writing the <code>expect:</code> block itself.</li>
+<li><a href="../end-to-end-pipelines/">End-to-end pipelines</a> — the full CI walkthrough,
+  including bringing up the backend stack the action runs against.</li>
 </ul>
-<div class="sonda-nav-footer">
-  <p><a href="../your-first-scenario/"><span class="sonda-nav-footer__label">Previous</span><span class="sonda-nav-footer__title">Your first scenario</span></a></p>
-  <p class="sonda-nav-footer__next"><a href="../../build/"><span class="sonda-nav-footer__label">Next</span><span class="sonda-nav-footer__title">Build scenarios</span></a></p>
-</div>
 
 
 
@@ -2328,7 +2397,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 17:59:15 UTC">August 8, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 16, 2026 19:24:25 UTC">August 16, 2026</span>
   </span>
 
     
@@ -2366,7 +2435,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../your-first-scenario/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Your first scenario">
+          <a href="../alert-testing/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Alert testing">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -2376,20 +2445,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Your first scenario
+                Alert testing
               </div>
             </div>
           </a>
         
         
           
-          <a href="../../playground/" class="md-footer__link md-footer__link--next" aria-label="Next: Playground">
+          <a href="../recording-rules/" class="md-footer__link md-footer__link--next" aria-label="Next: Recording rules">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Playground
+                Recording rules
               </div>
             </div>
             <div class="md-footer__button md-icon">
