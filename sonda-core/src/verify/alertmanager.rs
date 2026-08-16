@@ -365,8 +365,16 @@ pub fn parse_alerts(
 ///
 /// Both bounds matter because refinement moves verdicts in exactly one
 /// direction (towards `Pass`); an unbounded stamp from a skewed clock would
-/// be a false-pass channel. Returns the timeline unchanged when there is no
-/// stamp or nothing fired.
+/// be a false-pass channel.
+///
+/// When there is **no** successful earlier observation — every earlier poll
+/// errored, or the first poll already found the alert firing — the lower
+/// bound does not exist and the timeline is returned unchanged. Falling
+/// back to zero there would hand the stamp the most Pass-favourable value
+/// in the range at exactly the moment nothing corroborates it, which is the
+/// false-pass channel this function exists to close (#552 review W1).
+///
+/// Returns the timeline unchanged when there is no stamp or nothing fired.
 pub fn refine_firing_timeline(
     observations: &[Observation],
     starts_at_local: Option<f64>,
@@ -382,12 +390,19 @@ pub fn refine_firing_timeline(
     else {
         return refined;
     };
-    let floor = refined[..index]
+    // No successful earlier observation means no evidence to bound the
+    // stamp below, and the only available fallback — zero — is the most
+    // Pass-favourable value in the range. Refusing to refine is the
+    // correct answer: refinement is a sharpening of evidence we have, not
+    // a substitute for evidence we lack.
+    let Some(floor) = refined[..index]
         .iter()
         .rev()
         .find(|o| o.state.is_ok())
         .map(|o| o.at)
-        .unwrap_or(Duration::ZERO);
+    else {
+        return refined;
+    };
     let ceiling = refined[index].at;
     if floor >= ceiling {
         return refined;
@@ -756,9 +771,58 @@ mod tests {
     fn a_first_poll_that_is_already_firing_cannot_be_refined() {
         // No earlier evidence and no room below zero: the stamp has
         // nothing to sharpen, so the timeline must survive untouched.
+        //
+        // NOTE: this case alone is NOT discriminating — floor and ceiling
+        // coincide at 0s, so it passes whether or not the no-evidence path
+        // is handled (#552 review W1). The two tests below are the ones
+        // with teeth; this one stays for the boundary itself.
         let observations = timeline(&[(0, Some(AlertState::Firing))]);
         let refined = refine_firing_timeline(&observations, Some(500.0), 1000.0);
         assert_eq!(refined[0].at, Duration::ZERO);
+    }
+
+    #[test]
+    fn a_stamp_with_no_successful_earlier_poll_is_refused() {
+        // Every earlier poll errored, so nothing we observed can bound the
+        // stamp from below. A stale stamp (unix 900 against a 1000 anchor)
+        // would otherwise be clamped to zero — the most Pass-favourable
+        // value in the range — and flip a missed deadline into a pass.
+        let observations = timeline(&[
+            (0, None),
+            (10, None),
+            (20, None),
+            (30, Some(AlertState::Firing)),
+        ]);
+        let refined = refine_firing_timeline(&observations, Some(900.0), 1000.0);
+        assert_eq!(
+            refined[3].at,
+            Duration::from_secs(30),
+            "a stamp nothing corroborates must not move the firing time"
+        );
+    }
+
+    #[test]
+    fn a_late_first_poll_that_is_already_firing_is_refused() {
+        // Same hole, reached the other way: the very first observation is
+        // firing, but at 30s rather than 0s, so floor and ceiling do NOT
+        // coincide and a zero fallback would be a 30s jump to Pass.
+        let observations = timeline(&[(30, Some(AlertState::Firing))]);
+        let refined = refine_firing_timeline(&observations, Some(900.0), 1000.0);
+        assert_eq!(refined[0].at, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn one_successful_earlier_poll_is_enough_to_refine_again() {
+        // The refusal must be scoped to "no evidence", not to "some polls
+        // failed" — a single successful earlier observation restores the
+        // floor and the sharpening resumes.
+        let observations = timeline(&[
+            (0, None),
+            (10, Some(AlertState::Inactive)),
+            (30, Some(AlertState::Firing)),
+        ]);
+        let refined = refine_firing_timeline(&observations, Some(1020.0), 1000.0);
+        assert_eq!(refined[2].at, Duration::from_secs(20));
     }
 
     #[test]
