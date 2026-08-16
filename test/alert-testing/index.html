@@ -1457,6 +1457,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Automate it with sonda test">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#verify-the-notification-not-just-the-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify the notification, not just the rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2585,6 +2602,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Automate it with sonda test">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#verify-the-notification-not-just-the-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify the notification, not just the rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3628,6 +3662,60 @@ otherwise — which makes alert rules testable in CI. The
 <code>--dry-run</code> validates the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and its <code>expect:</code> block without emitting
 or contacting <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>. The <code>expect:</code> block is pure metadata to <code>sonda run</code>
 — the same file works for both commands.</p>
+<h3 id="verify-the-notification-not-just-the-rule">Verify the notification, not just the rule<a class="headerlink" href="#verify-the-notification-not-just-the-rule" title="Permanent link">&para;</a></h3>
+<p><code>--prometheus-url</code> asks the rule evaluator a question: <em>did the rule fire?</em>
+That leaves the rest of the path untested. A rule can evaluate perfectly and
+still never reach anyone — a wrong <code>-notifier.url</code>, a route that drops the
+alert, a receiver that was never configured. Every one of those is green on
+the <code>ALERTS</code> metric.</p>
+<p><code>--alertmanager-url</code> asks the next hop instead: <em>did the notification
+arrive?</em> Same <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, same <code>expect:</code> block, one flag different:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>sonda<span class="w"> </span><span class="nb">test</span><span class="w"> </span>examples/alert-lifecycle-test.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a><span class="w">  </span>--alertmanager-url<span class="w"> </span>http://localhost:9093
+</span></code></pre></div>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>  PASS HighCpuUsage firing after 40s (within 90s)
+</span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>  PASS HighCpuUsage resolved after 10s (within 2m of scenario end)
+</span><span id="__span-48-3"><a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>
+</span><span id="__span-48-4"><a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>  note: Alertmanager keeps no queryable history, so these times come from live polling every 5s, sharpened by each alert&#39;s own startsAt stamp (~1s clock resolution) — not from stored samples
+</span><span id="__span-48-5"><a id="__codelineno-48-5" name="__codelineno-48-5" href="#__codelineno-48-5"></a>  PASS 1 alert expectation(s) verified via Alertmanager (scenario ran 90s)
+</span></code></pre></div>
+<p>The alert shows up later here than on the <code>--prometheus-url</code> run of the same
+<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. Measured against one live <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> + <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> + <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr>
+stack, same <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, separate series so neither run could see the other's
+alerts: <strong>10s on the <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> path, 35–40s on the <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> path.</strong></p>
+<p>Most of that <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr> is real — it is the extra hop, <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> deciding the rule is
+firing and then notifying <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr>, which is exactly what this path
+measures and the other one cannot see. Some of it is not: this path polls,
+so up to one <code>--interval</code> of the difference is just when Sonda happened to
+look. Do not read the two numbers as a latency measurement of the notifier;
+read them as "the rule fired here, the notification landed somewhere after
+there."</p>
+<p>Pick exactly one: passing both URLs is an error, because the two answer
+different questions and there is no sensible way to merge their verdicts.
+Run the same <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> twice — once per flag — when you want both hops
+covered, and the second run tells you which hop broke.</p>
+<p>Three things behave differently on this path, all of them consequences of
+<abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> not being a datastore:</p>
+<ul>
+<li><strong>Times are poll-precise, not sample-precise.</strong> There is no range API to
+  reconstruct history from, so the verdict is what polling saw, sharpened
+  (never extended) by the alert's own <code>startsAt</code>. Tighten <code>--interval</code> if
+  you need finer resolution.</li>
+<li><strong>There is no <code>pending</code>.</strong> An alert still inside its rule's <code>for:</code> window
+  has not been sent yet, so <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> simply doesn't know about it.
+  <code>firing_within</code> still means what it says; there is just no intermediate
+  state to observe.</li>
+<li><strong>Silenced alerts still count as firing</strong>, with a warning. A silence stops
+  the notification, not the alert — but if your test is asserting on a
+  silenced alert, that warning is the thing to read.</li>
+</ul>
+<p>Resolution on this path means <em>the alert is no longer in <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr></em> — a
+resolved alert is dropped from the API rather than kept around. That is only
+a safe signal because the notifier keeps re-announcing a still-firing alert:
+<abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> re-sends on every evaluation, each time pushing the alert's <code>endsAt</code>
+well past the next few evaluations, so a firing alert cannot briefly vanish
+and fake a resolution. Keep <code>--interval</code> comfortably below your rule
+evaluation interval and this stays true.</p>
 <p>Resolution above leans on series staleness (emission stops, the rule's
 query eventually empties out), which takes minutes. For a fast, explicit
 recovery, <code>examples/alert-lifecycle-test.yaml</code> adds a second phase that
@@ -3663,7 +3751,7 @@ non-firing alert exits <code>1</code>.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 9, 2026 19:21:56 UTC">August 9, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 16, 2026 08:54:21 UTC">August 16, 2026</span>
   </span>
 
     
