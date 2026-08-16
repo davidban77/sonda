@@ -231,13 +231,24 @@ ACTION="$(dirname "$0")/../../action.yml"
 ACTION_CODE="$(run_bodies "$ACTION" code)"
 ACTION_RAW="$(run_bodies "$ACTION" raw)"
 
-# The extractor is now load-bearing for every check below it, so it gets
-# its own check: an extractor that silently returns nothing would make all
-# of them pass vacuously.
+# The extractor is load-bearing for every check below it, so it gets its
+# own checks — and they must test COMPLETENESS, not presence. Round 2
+# showed why: the extractor recognised only `run: |` with exactly one
+# space, so a single-line `run:` or a re-indented `run:  |` vanished, every
+# check below inherited the blindness, and a non-empty result kept the
+# guard green. "Some" is not "all".
+counts="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$ACTION" count)"
+keys_in_file="${counts%% *}"
+keys_opened="${counts##* }"
 if [ -n "$ACTION_CODE" ]; then
   pass "run: bodies extracted from action.yml ($(printf '%s\n' "$ACTION_CODE" | grep -c .) code lines)"
 else
   fail "run: bodies extracted from action.yml" "extractor produced nothing — every check below would pass vacuously"
+fi
+if [ "$keys_in_file" = "$keys_opened" ] && [ "$keys_in_file" -gt 0 ]; then
+  pass "every run: key in action.yml was opened by the extractor (${keys_opened}/${keys_in_file})"
+else
+  fail "every run: key in action.yml was opened by the extractor" "file has ${keys_in_file} run: keys, extractor opened ${keys_opened} — the difference is invisible to every check below"
 fi
 
 missing=()
@@ -268,6 +279,18 @@ if printf '%s\n' "$ACTION_RAW" | grep -q '\${{'; then
   fail "no expression is interpolated into a run: body" "$(printf '%s\n' "$ACTION_RAW" | grep -n '\${{' | head -5)"
 else
   pass "no expression is interpolated into a run: body"
+fi
+
+# No unescaped backtick may survive in a run: body. Round 2 found one in
+# the --dry-run refusal message, where it ran `sonda test --dry-run` while
+# claiming to refuse it AND deleted the actionable half of the message.
+# A general guard rather than a needle for that one line: the class is
+# "shell metacharacter evaluated in the file whose thesis is that nothing
+# is evaluated by the shell".
+if printf '%s\n' "$ACTION_CODE" | grep -q '`'; then
+  fail "no unescaped backtick in a run: body" "$(printf '%s\n' "$ACTION_CODE" | grep -n '`' | head -3)"
+else
+  pass "no unescaped backtick in a run: body"
 fi
 
 # …and the inputs must therefore arrive through env:, which is where the

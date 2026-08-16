@@ -476,10 +476,15 @@ jobs:
     runs-on: ubuntu-latest
 
     # Deliberately NOT path-filtered, unlike the live self-test. These are
-    # seconds of pure shell and Python with no network and no containers,
-    # and they guard the two things a broken action would leak quietly:
-    # a workflow input reaching a shell, and a moving tag resolving to the
-    # wrong release. Cheap enough to run on every PR, so they do.
+    # seconds of shell and Python with no containers, and they guard the
+    # two things a broken action would leak quietly: a workflow input
+    # reaching a shell, and a moving tag resolving to the wrong release.
+    # Cheap enough to run on every PR, so they do.
+    #
+    # One step makes a single GitHub API call (the floor-staleness check).
+    # It cannot fail this job on an unreachable or rate-limited API — only
+    # on a genuinely stale constant — because every other PR in the repo
+    # would otherwise go red on a question none of them asked.
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -497,7 +502,9 @@ jobs:
 
       # The alertmanager-url version floor is a constant someone must
       # remember to revisit. This goes red on the release that makes it
-      # stale, which is exactly when it needs revisiting.
+      # stale, which is exactly when it needs revisiting — and stays green
+      # when the API is simply unreachable, since "could not ask" is not
+      # "is stale".
       - name: Version floor is not stale
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -92,11 +92,21 @@ def highest(tags: Iterable[str]) -> str | None:
     everyone pinned to it (#554 review W3). Compare numerically instead:
     string order would also get this wrong, since ``"v1.9.0" > "v1.20.0"``.
     """
-    ranked = [(parse_version(tag), tag) for tag in tags]
-    ranked = [(version, tag) for version, tag in ranked if version is not None]
+    ranked = []
+    for tag in tags:
+        version = parse_version(tag)
+        if version is None:
+            continue
+        # `parse_version` drops pre-release metadata, so v2.0.0-rc.1 and
+        # v2.0.0 both rank (2, 0, 0) and max() would fall through to the
+        # tag STRING — where the longer one wins and the release candidate
+        # beats the release (#554 round 2, M1). Break that tie explicitly:
+        # a tag with no pre-release suffix is the final one.
+        is_final = "-" not in tag[1:]
+        ranked.append((version, is_final, tag))
     if not ranked:
         return None
-    return max(ranked)[1]
+    return max(ranked)[2]
 
 
 def newest_in_major(releases: Iterable[dict[str, Any]], major: str) -> str | None:
@@ -327,11 +337,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         # means downloading first, which is the thing the floor exists to
         # avoid.
         floor = "v" + ".".join(str(p) for p in MIN_ALERTMANAGER_VERSION)
+        # Deliberately NOT via resolve(): that ends in check_downloadable,
+        # so during the release-please window — tag created, assets still
+        # uploading, which this module documents as normal and transient —
+        # every open PR in the repo would go red on a question about a
+        # constant (#554 round 2, W3). Staleness needs the newest published
+        # *tag*, not something downloadable.
         try:
-            newest = resolve("latest", args.repo, os.environ.get("GITHUB_TOKEN"))
-        except (ResolveError, urllib.error.URLError, TimeoutError) as e:
-            print(f"error: could not check floor staleness: {e}", file=sys.stderr)
-            return 1
+            token = os.environ.get("GITHUB_TOKEN")
+            newest = newest_published(_api_get(f"{GITHUB_API}/repos/{args.repo}/releases", token))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            # "Could not ask" is not "is stale". Failing here would take
+            # every open PR down with a GitHub 5xx or a rate limit, and
+            # protect nothing: the constant is either stale or it is not,
+            # and this run simply does not know.
+            print(f"note: could not check floor staleness ({e}); skipping", file=sys.stderr)
+            return 0
+        if newest is None:
+            print("note: no published releases to compare the floor against; skipping")
+            return 0
         if at_least(newest, MIN_ALERTMANAGER_VERSION):
             print(
                 f"error: MIN_ALERTMANAGER_VERSION ({floor}) is stale — {newest} is "
@@ -468,6 +492,26 @@ class SelectionTests(unittest.TestCase):
     def test_no_match_returns_none(self):
         self.assertIsNone(newest_in_major([_release("v2.0.0")], "3"))
         self.assertIsNone(newest_published([]))
+
+
+class PreReleaseTieTests(unittest.TestCase):
+    def test_a_final_release_beats_its_own_candidate(self):
+        # parse_version drops the suffix, so both rank (2,0,0); a string
+        # tiebreak would hand it to the longer tag — the rc (#554 rd2 M1).
+        self.assertEqual(highest(["v2.0.0", "v2.0.0-rc.1"]), "v2.0.0")
+        self.assertEqual(highest(["v2.0.0-rc.1", "v2.0.0"]), "v2.0.0")
+
+    def test_a_candidate_still_wins_when_it_is_the_highest(self):
+        self.assertEqual(highest(["v1.20.0", "v2.0.0-rc.1"]), "v2.0.0-rc.1")
+
+    def test_the_tie_does_not_disturb_ordinary_ordering(self):
+        self.assertEqual(highest(["v1.9.0", "v1.20.0", "v1.20.1"]), "v1.20.1")
+
+    def test_newest_published_inherits_the_tiebreak(self):
+        # Reachable only if a maintainer publishes an rc without ticking
+        # "pre-release", since _published_tags filters on the API flag.
+        releases = [_release("v2.0.0-rc.1"), _release("v2.0.0")]
+        self.assertEqual(newest_published(releases), "v2.0.0")
 
 
 class PaginationTests(unittest.TestCase):

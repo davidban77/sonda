@@ -137,7 +137,7 @@ runs:
           # downstream (#554 review M1).
           for arg in "${extra[@]}"; do
             if [ "$arg" = "--dry-run" ]; then
-              echo "::error::--dry-run in extra-args would make this step pass without verifying any alert expectation. Remove it, or use `sonda test --dry-run` locally." >&2
+              echo "::error::--dry-run in extra-args would make this step pass without verifying any alert expectation. Remove it, or run sonda test --dry-run locally." >&2
               exit 1
             fi
           done
