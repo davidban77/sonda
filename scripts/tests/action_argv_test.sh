@@ -27,44 +27,37 @@ trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/sonda" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s' "$#" > "$SONDA_ARGC_FILE"
+# Any invocation at all is recorded, so a test can assert the step ran
+# nothing — which is how a command substitution in a message is caught
+# regardless of how it was spelled.
+[ -n "${SONDA_INVOKE_LOG:-}" ] && printf 'INVOKED: %s\n' "$*" >> "$SONDA_INVOKE_LOG"
 for a in "$@"; do printf '%s\0' "$a"; done > "$SONDA_ARGV_FILE"
 FAKE
 chmod +x "$TMP/sonda"
 PATH="$TMP:$PATH"
 
-# Verbatim from action.yml's "Verify alert expectations" step. Kept in sync
-# by `assert_matches_action` below, which fails if the action drifts.
-run_action_step() {
-  set -euo pipefail
-  if [ -n "$SONDA_PROM_URL" ] && [ -n "$SONDA_AM_URL" ]; then
-    echo "mutually exclusive" >&2
-    exit 1
-  fi
-  if [ -z "$SONDA_PROM_URL" ] && [ -z "$SONDA_AM_URL" ]; then
-    echo "one of prometheus-url or alertmanager-url is required" >&2
-    exit 1
-  fi
-  args=(test "$SONDA_SCENARIO")
-  if [ -n "$SONDA_PROM_URL" ]; then
-    args+=(--prometheus-url "$SONDA_PROM_URL")
-  else
-    args+=(--alertmanager-url "$SONDA_AM_URL")
-  fi
-  if [ -n "$SONDA_EXTRA_ARGS" ]; then
-    set -f
-    # shellcheck disable=SC2206
-    extra=($SONDA_EXTRA_ARGS)
-    set +f
-    for arg in "${extra[@]}"; do
-      if [ "$arg" = "--dry-run" ]; then
-        echo "--dry-run in extra-args would make this step pass without verifying" >&2
-        exit 1
-      fi
-    done
-    args+=("${extra[@]}")
-  fi
-  sonda "${args[@]}"
-}
+# THE REAL STEP, NOT A COPY.
+#
+# Every previous round of this PR found a defect the harness could not see
+# because it drove a copy of action.yml's shell: the copy diverged on
+# exactly the line a bug was on, twice, and a backtick that executed a
+# command sat in production while the copy carried a clean message. So the
+# copy is gone. `block:3` extracts the "Verify alert expectations" body
+# from action.yml itself and every check below runs THAT.
+#
+# This also retires a whole class of finding: there is no longer a second
+# copy that can drift, so the drift needles guard the remaining blocks
+# (resolve, install) rather than the one under test.
+ACTION_FILE="$(cd "$(dirname "$0")/../.." && pwd)/action.yml"
+VERIFY_STEP="$TMP/verify_step.sh"
+if ! python3 "$(dirname "$0")/extract_run_bodies.py" "$ACTION_FILE" block:3 > "$VERIFY_STEP"; then
+  echo "could not extract the verify step from action.yml" >&2
+  exit 1
+fi
+if ! grep -q 'sonda "${args\[@\]}"' "$VERIFY_STEP"; then
+  echo "extracted block 3 does not look like the verify step — refusing to test the wrong thing" >&2
+  exit 1
+fi
 
 export SONDA_ARGC_FILE="$TMP/argc" SONDA_ARGV_FILE="$TMP/argv"
 
@@ -77,7 +70,7 @@ invoke() {
   SONDA_PROM_URL="${3-http://localhost:9090}" \
   SONDA_AM_URL="${4-}" \
   SONDA_EXTRA_ARGS="${2:-}" \
-  bash -c "$(declare -f run_action_step); run_action_step" 2>/dev/null
+  bash "$VERIFY_STEP" 2>/dev/null
   ARGC="$(cat "$SONDA_ARGC_FILE" 2>/dev/null || echo 0)"
   ARGV=()
   while IFS= read -r -d '' item; do ARGV+=("$item"); done < "$SONDA_ARGV_FILE"
@@ -174,14 +167,14 @@ fi
 echo
 echo "== the one-of rule =="
 neither="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL="" SONDA_AM_URL="" SONDA_EXTRA_ARGS="" \
-  bash -c "$(declare -f run_action_step); run_action_step" 2>&1 >/dev/null; echo "rc=$?")"
+  bash "$VERIFY_STEP" 2>&1 >/dev/null; echo "rc=$?")"
 case "$neither" in
   *"one of prometheus-url or alertmanager-url is required"*rc=1*) pass "neither URL is rejected" ;;
   *) fail "neither URL is rejected" "$neither" ;;
 esac
 
 both="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL=http://a SONDA_EXTRA_ARGS="" \
-  bash -c "$(declare -f run_action_step); run_action_step" 2>&1 >/dev/null; echo "rc=$?")"
+  bash "$VERIFY_STEP" 2>&1 >/dev/null; echo "rc=$?")"
 case "$both" in
   *"mutually exclusive"*rc=1*) pass "both URLs are rejected" ;;
   *) fail "both URLs are rejected" "$both" ;;
@@ -195,7 +188,7 @@ else
 fi
 
 dry="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL="" SONDA_EXTRA_ARGS="--interval 5s --dry-run" \
-  bash -c "$(declare -f run_action_step); run_action_step" 2>&1 >/dev/null; echo "rc=$?")"
+  bash "$VERIFY_STEP" 2>&1 >/dev/null; echo "rc=$?")"
 case "$dry" in
   *"without verifying"*rc=1*) pass "--dry-run in extra-args is refused" ;;
   *) fail "--dry-run in extra-args is refused" "$dry" ;;
@@ -280,6 +273,39 @@ if printf '%s\n' "$ACTION_RAW" | grep -q '\${{'; then
 else
   pass "no expression is interpolated into a run: body"
 fi
+
+# W1, the behavioural half: refusing --dry-run must not RUN anything.
+#
+# Round 2 shipped a backtick in the refusal message, which executed
+# `sonda test --dry-run` while claiming to refuse it. Round 3 rewrote the
+# same bug as $(…) and the backtick check missed it — and banning $(…)
+# syntactically is not available, since the run bodies use it legitimately
+# three times. A syntactic guard would have to become an allow-list, which
+# is the shape round 1 deleted.
+#
+# So assert the behaviour instead: drive the real step and require that the
+# fake binary was never invoked. That covers every spelling, present and
+# future, because it tests what the shell DID rather than how it was
+# written.
+: > "$TMP/invoked.log"
+SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL="" \
+  SONDA_EXTRA_ARGS="--dry-run" SONDA_INVOKE_LOG="$TMP/invoked.log" \
+  bash "$VERIFY_STEP" >/dev/null 2>&1
+if [ -s "$TMP/invoked.log" ]; then
+  fail "refusing --dry-run executes nothing" "the step invoked sonda while refusing: $(cat "$TMP/invoked.log")"
+else
+  pass "refusing --dry-run executes nothing"
+fi
+
+# …and the refusal must still say something useful. A substitution that
+# runs also swallows its own output, deleting the actionable half of the
+# message — which is how round 2's bug hid in plain sight.
+dry_msg="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL="" \
+  SONDA_EXTRA_ARGS="--dry-run" bash "$VERIFY_STEP" 2>&1 >/dev/null)"
+case "$dry_msg" in
+  *"sonda test --dry-run locally"*) pass "the refusal message survives intact" ;;
+  *) fail "the refusal message survives intact" "message was: ${dry_msg}" ;;
+esac
 
 # No unescaped backtick may survive in a run: body. Round 2 found one in
 # the --dry-run refusal message, where it ran `sonda test --dry-run` while
@@ -381,6 +407,37 @@ check_move "a 2.0 release moves v2 only"      "v2"            "v2.0.0"  v1.20.0 
 check_move "first release of a line moves it" "v1"            "v1.0.0"  v1.0.0
 
 RELEASE_YML="$(dirname "$0")/../../.github/workflows/release.yml"
+# Read release.yml the way action.yml is read. Round 1's fix — needles
+# against run: bodies with comments dropped — went to action.yml only, so
+# the ORIGINAL defect stayed reachable in the file that decides where @v1
+# points: commenting the tag move out, quoting it verbatim, kept every
+# check green while the workflow logged "moving v1" and moved nothing
+# (#554 round 3, W2).
+RELEASE_CODE="$(run_bodies "$RELEASE_YML" code)"
+RELEASE_RAW="$(run_bodies "$RELEASE_YML" raw)"
+rel_counts="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$RELEASE_YML" count)"
+if [ "${rel_counts%% *}" = "${rel_counts##* }" ] && [ "${rel_counts%% *}" -gt 0 ]; then
+  pass "every run: key in release.yml was opened by the extractor (${rel_counts##* }/${rel_counts%% *})"
+else
+  fail "every run: key in release.yml was opened by the extractor" "counts: ${rel_counts}"
+fi
+# release.yml cannot hold action.yml's absolute rule: its build steps
+# legitimately interpolate `matrix.target`, a value defined literally in
+# the same file. So the assertion is an INVENTORY rather than a ban —
+# every interpolation reaching a run: body is pinned by name, and anything
+# new goes red until a human decides whether its value can be influenced
+# from outside the repo. That fails closed on change without becoming an
+# allow-list that permits by syntactic accident.
+release_exprs="$(printf '%s\n' "$RELEASE_RAW" \
+  | grep -o '\${{[^}]*}}' \
+  | sed -e 's/\${{ *//' -e 's/ *}}//' \
+  | sort -u | tr '\n' ' ' | sed 's/ $//')"
+expected_exprs="matrix.target"
+if [ "$release_exprs" = "$expected_exprs" ]; then
+  pass "release.yml run: bodies interpolate only the pinned expressions (${release_exprs})"
+else
+  fail "release.yml run: bodies interpolate only the pinned expressions" "expected '${expected_exprs}', found '${release_exprs}' — a new interpolation must be reviewed for whether its value is controlled from outside the repo, then pinned here"
+fi
 release_missing=()
 for needle in \
   '^v[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -388,7 +445,7 @@ for needle in \
   'sort -V | tail -1)"' \
   'git push --force origin "refs/tags/${major}"'
 do
-  grep -qF -- "$needle" "$RELEASE_YML" || release_missing+=("$needle")
+  printf '%s\n' "$RELEASE_CODE" | grep -qF -- "$needle" || release_missing+=("$needle")
 done
 if [ ${#release_missing[@]} -eq 0 ]; then
   pass "the derivation under test is present in release.yml"

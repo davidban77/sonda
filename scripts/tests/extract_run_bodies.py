@@ -78,21 +78,47 @@ def run_bodies(text: str, mode: str = "code") -> tuple[list[str], int]:
             opened += 1
             if not (mode == "code" and rest.startswith("#")):
                 out.append(line)
-        else:
-            # `run:` with nothing after it is not valid on its own; count it
-            # so the completeness check notices rather than skipping it.
-            opened += 1
+        # else: `run:` with the block scalar on the NEXT line. That is
+        # valid YAML and this walk does not follow it, so it must NOT be
+        # counted as opened — counting it is what keeps the completeness
+        # check equal and therefore silent, which is the guard defeating
+        # itself (#554 round 3, W3). Left uncounted, `run_key_count` sees
+        # the key, `opened` does not, and the caller goes red.
 
     return out, opened
 
 
+def run_blocks(text: str) -> list[str]:
+    """Each block-scalar `run:` body as one dedented, executable script."""
+    blocks: list[str] = []
+    current: list[str] | None = None
+    indent = 0
+    for line in text.split("\n"):
+        key = RUN_KEY.match(line)
+        if current is not None:
+            if line.strip() == "" or len(line) - len(line.lstrip()) > indent:
+                current.append(line[indent + 2 :] if len(line) > indent else "")
+                continue
+            blocks.append("\n".join(current))
+            current = None
+        if key and BLOCK_SCALAR.match(key.group(3).strip()):
+            indent = len(key.group(1))
+            current = []
+    if current is not None:
+        blocks.append("\n".join(current))
+    return blocks
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("usage: extract_run_bodies.py <file> [code|raw|count]", file=sys.stderr)
+        print("usage: extract_run_bodies.py <file> [code|raw|count|block:N]", file=sys.stderr)
         return 2
     mode = argv[2] if len(argv) > 2 else "code"
-    if mode not in ("code", "raw", "count"):
-        print(f"unknown mode {mode!r}: expected 'code', 'raw' or 'count'", file=sys.stderr)
+    if not (mode in ("code", "raw", "count") or mode.startswith("block:")):
+        print(
+            f"unknown mode {mode!r}: expected 'code', 'raw', 'count' or 'block:N'",
+            file=sys.stderr,
+        )
         return 2
     with open(argv[1], encoding="utf-8") as handle:
         text = handle.read()
@@ -101,6 +127,20 @@ def main(argv: list[str]) -> int:
         # everything; unequal means some body is invisible to every check.
         _, opened = run_bodies(text, "raw")
         print(f"{run_key_count(text)} {opened}")
+        return 0
+    if mode.startswith("block:"):
+        # One step's body, dedented, ready to execute. This is what lets a
+        # test drive PRODUCTION shell instead of a copy of it — the copy is
+        # what diverged on exactly the line a bug was on, twice.
+        wanted = int(mode.split(":", 1)[1])
+        blocks = run_blocks(text)
+        if wanted < 1 or wanted > len(blocks):
+            print(
+                f"block {wanted} out of range: file has {len(blocks)} run: blocks",
+                file=sys.stderr,
+            )
+            return 2
+        print(blocks[wanted - 1])
         return 0
     lines, _ = run_bodies(text, mode)
     print("\n".join(lines))
