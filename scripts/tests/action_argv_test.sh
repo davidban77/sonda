@@ -166,19 +166,34 @@ fi
 
 echo
 echo "== the one-of rule =="
-neither="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL="" SONDA_AM_URL="" SONDA_EXTRA_ARGS="" \
-  bash "$VERIFY_STEP" 2>&1 >/dev/null; echo "rc=$?")"
-case "$neither" in
-  *"one of prometheus-url or alertmanager-url is required"*rc=1*) pass "neither URL is rejected" ;;
-  *) fail "neither URL is rejected" "$neither" ;;
-esac
+# Every bail path is checked for BOTH things: that it refuses, and that
+# refusing executes nothing. The step has three message paths, and the
+# substitution bug has now shipped twice — as a backtick in round 2 and as
+# $(…) in round 3 — both times inside an ::error:: string in this step.
+# Guarding only the path where it happened would be guarding the instance
+# instead of the class (#554 round 4, W1).
+check_bail() {
+  local label="$1" want="$2"; shift 2
+  local out
+  : > "$TMP/invoked.log"
+  out="$(env "$@" SONDA_SCENARIO=s.yaml SONDA_EXTRA_ARGS="" \
+    SONDA_INVOKE_LOG="$TMP/invoked.log" \
+    bash "$VERIFY_STEP" 2>&1 >/dev/null; echo "rc=$?")"
+  case "$out" in
+    *"$want"*rc=1*) pass "$label" ;;
+    *) fail "$label" "$out" ;;
+  esac
+  if [ -s "$TMP/invoked.log" ]; then
+    fail "$label executes nothing" "the step invoked sonda while refusing: $(cat "$TMP/invoked.log")"
+  else
+    pass "$label executes nothing"
+  fi
+}
 
-both="$(SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL=http://a SONDA_EXTRA_ARGS="" \
-  bash "$VERIFY_STEP" 2>&1 >/dev/null; echo "rc=$?")"
-case "$both" in
-  *"mutually exclusive"*rc=1*) pass "both URLs are rejected" ;;
-  *) fail "both URLs are rejected" "$both" ;;
-esac
+check_bail "neither URL is rejected" "one of prometheus-url or alertmanager-url is required" \
+  SONDA_PROM_URL="" SONDA_AM_URL=""
+check_bail "both URLs are rejected" "mutually exclusive" \
+  SONDA_PROM_URL=http://p SONDA_AM_URL=http://a
 
 invoke "s.yaml" "" "" "http://am:9093"
 if [ "${ARGV[2]-}" = "--alertmanager-url" ] && [ "${ARGV[3]-}" = "http://am:9093" ]; then
@@ -284,9 +299,11 @@ fi
 # is the shape round 1 deleted.
 #
 # So assert the behaviour instead: drive the real step and require that the
-# fake binary was never invoked. That covers every spelling, present and
-# future, because it tests what the shell DID rather than how it was
-# written.
+# fake binary was never invoked. That covers every SPELLING, present and
+# future, because it tests what the shell did rather than how it was
+# written — but only on the paths actually driven, which is why the two
+# bail paths below carry the same assertion rather than trusting this one
+# to speak for the file.
 : > "$TMP/invoked.log"
 SONDA_SCENARIO=s.yaml SONDA_PROM_URL=http://p SONDA_AM_URL="" \
   SONDA_EXTRA_ARGS="--dry-run" SONDA_INVOKE_LOG="$TMP/invoked.log" \
