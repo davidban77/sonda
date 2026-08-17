@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.21.0](https://github.com/davidban77/sonda/compare/v1.20.0...v1.21.0) (2026-08-17)
+
+
+### Features
+
+* **ci:** sonda-action — run alert expectations as a GitHub Action ([#554](https://github.com/davidban77/sonda/issues/554)) ([597993b](https://github.com/davidban77/sonda/commit/597993b52f9df58e0d6f53ea7a2c8226caedfedb))
+* **test:** verify alerts against Alertmanager, not just the rule evaluator ([#552](https://github.com/davidban77/sonda/issues/552)) ([ed5951f](https://github.com/davidban77/sonda/commit/ed5951f87950b7dee1879000a2b79468ba7094c2))
+
+
+### CI/CD
+
+* bump actions/setup-node from 6 to 7 ([#558](https://github.com/davidban77/sonda/issues/558)) ([22a9b71](https://github.com/davidban77/sonda/commit/22a9b71dbabfd16a1c4796310264c4a97bbb943b))
+* bump grafana/grafana from 13.1.2 to 13.1.3 in /examples ([#555](https://github.com/davidban77/sonda/issues/555)) ([3c7cb17](https://github.com/davidban77/sonda/commit/3c7cb17e2dd65123fe366efee5109ecd0ec4b83c))
+* bump taiki-e/install-action from 2.85.9 to 2.85.13 ([#562](https://github.com/davidban77/sonda/issues/562)) ([bf66635](https://github.com/davidban77/sonda/commit/bf6663587c9cc5b3c6d8ffe4f508b60370e15ca6))
+
 ## [1.20.0](https://github.com/davidban77/sonda/compare/v1.19.0...v1.20.0) (2026-08-15)
 
 
