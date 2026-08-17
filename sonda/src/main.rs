@@ -57,6 +57,14 @@ fn run() -> anyhow::Result<()> {
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
     let catalog = cli.catalog.as_deref();
 
+    // Handled before the runtime is built: writing a completion script to
+    // stdout needs no scheduler, and spinning up a multi-thread tokio
+    // runtime to print text would make shell startup pay for it.
+    if let Commands::Completions(ref args) = cli.command {
+        print_completions(args.shell);
+        return Ok(());
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -67,9 +75,21 @@ fn run() -> anyhow::Result<()> {
         Commands::Show(ref args) => show_entry(args, catalog)?,
         Commands::New(ref args) => new::run(args)?,
         Commands::Test(ref args) => test_cmd::run(&rt, args, &cli, catalog, verbosity, &cancel)?,
+        // Returned above, before the runtime exists.
+        Commands::Completions(_) => unreachable!("completions is handled before the runtime"),
     }
 
     Ok(())
+}
+
+/// Write a completion script for `shell` to stdout.
+///
+/// Generated from the same [`Cli`] derive the binary parses with, so a new
+/// subcommand or flag is completable the moment it exists — there is no
+/// second list of commands here to fall behind the first.
+fn print_completions(shell: clap_complete::Shell) {
+    let mut command = <Cli as clap::CommandFactory>::command();
+    clap_complete::generate(shell, &mut command, "sonda", &mut std::io::stdout());
 }
 
 fn run_scenario(

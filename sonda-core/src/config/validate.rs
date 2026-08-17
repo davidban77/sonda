@@ -3,7 +3,7 @@
 use std::time::{Duration, SystemTime};
 
 use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
-use crate::sink::retry::RetryConfig;
+use crate::sink::retry::{RetryConfig, RetryPolicy};
 use crate::sink::SinkConfig;
 use crate::{ConfigError, SondaError};
 
@@ -839,8 +839,18 @@ fn validate_max_buffer_age(s: Option<&str>) -> Result<(), SondaError> {
 
 fn validate_retry_config_opt(retry: Option<&RetryConfig>) -> Result<(), SondaError> {
     if let Some(r) = retry {
-        parse_duration(&r.initial_backoff)?;
-        parse_duration(&r.max_backoff)?;
+        // Validate by *constructing* the policy the runtime will construct,
+        // rather than re-listing its rules here. Two lists drift, and these
+        // two had: this one parsed the two duration strings and stopped, so
+        // `--dry-run` answered "Validation: OK" for `max_attempts: 0` and
+        // for `max_backoff` below `initial_backoff` — both of which
+        // `RetryPolicy::from_config` refuses moments later at sink
+        // construction. A dry run that passes what the next real run
+        // rejects is worse than no dry run: it is a check that reports on
+        // something other than what it claims to check.
+        //
+        // The policy is discarded; only its refusals are wanted here.
+        RetryPolicy::from_config(r)?;
     }
     Ok(())
 }
@@ -3045,6 +3055,61 @@ generator:
             msg.contains("garbage"),
             "error must mention the offending value, got: {msg}"
         );
+    }
+
+    // `RetryPolicy::from_config` has always refused these two, but only at
+    // sink construction. Config validation — the thing `--dry-run` runs —
+    // checked the duration strings and nothing else, so `--dry-run` printed
+    // "Validation: OK" for a file the next real run refused. These assert
+    // the two layers now agree.
+    #[test]
+    fn validate_sink_config_rejects_zero_max_attempts() {
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: Some(RetryConfig {
+                max_attempts: 0,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        let msg = err_msg(validate_sink_config(&sink));
+        assert!(
+            msg.contains("max_attempts"),
+            "error must name the offending field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_sink_config_rejects_backoff_ceiling_below_its_floor() {
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "30s".to_string(),
+                max_backoff: "1s".to_string(),
+            }),
+        };
+        let msg = err_msg(validate_sink_config(&sink));
+        assert!(
+            msg.contains("max_backoff") && msg.contains("initial_backoff"),
+            "error must name both bounds so the reader can see which way round, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn one_retry_attempt_is_the_documented_minimum_and_is_accepted() {
+        // The boundary itself, in the direction that would break users: the
+        // doc comment promises "at least 1", so 1 must pass. A guard written
+        // as `<= 1` would reject the value its own documentation blesses.
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: Some(RetryConfig {
+                max_attempts: 1,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
     }
 
     #[cfg(feature = "http")]

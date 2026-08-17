@@ -35,7 +35,9 @@ DOCS_GLOB_ROOT = Path("docs/site/docs")
 # `mkdocs build` emits site output under `docs/site/site/`; skip it.
 DOCS_GLOB_EXCLUDE = (Path("docs/site/site"),)
 
-KNOWN_SUBCOMMANDS: frozenset[str] = frozenset({"run", "list", "show", "new", "test"})
+KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"run", "list", "show", "new", "test", "completions"}
+)
 
 # Verbs that were real once and are not any more. Docs may still show them
 # when describing a migration, so they are dropped rather than failed.
