@@ -3949,7 +3949,7 @@
 <p><abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>'s plain-text format for metrics scraped from an HTTP endpoint:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a># HELP cpu_usage CPU usage percent
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a># TYPE cpu_usage gauge
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cpu_usage{host=&quot;web-01&quot;} 42.0 1700000000000
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cpu_usage{host="web-01"} 42.0 1700000000000
 </span></code></pre></div>
 <p>Sonda's <code>prometheus_text</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> emits this format — the default for metric scenarios. See <a href="../../build/encoders/#prometheus_text">Encoders — <code>prometheus_text</code></a>.</p>
 <h2 id="r">R<a class="headerlink" href="#r" title="Permanent link">&para;</a></h2>

@@ -2368,10 +2368,10 @@
 </span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">      </span><span class="nt">offset</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50.0</span>
 </span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">      </span><span class="nt">period_secs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
 </span></code></pre></div>
-<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cpu_usage{host=&quot;web-01&quot;} 50 1777243958972
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cpu_usage{host=&quot;web-01&quot;} 85.35533905932738 1777243959525
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>cpu_usage{host=&quot;web-01&quot;} 100 1777243959982
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>cpu_usage{host=&quot;web-01&quot;} 85.35533905932738 1777243960481
+<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cpu_usage{host="web-01"} 50 1777243958972
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cpu_usage{host="web-01"} 85.35533905932738 1777243959525
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>cpu_usage{host="web-01"} 100 1777243959982
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 </span></code></pre></div>
 <p>Sonda includes a CLI (<code>sonda</code>) and an optional HTTP server (<code>sonda-server</code>). The CLI is enough for laptop and CI use. The server accepts scenarios over a REST API. The same <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file runs from your laptop, from CI, or from <a href="deploy/server/"><code>sonda-server</code></a>. For a guided walkthrough that pushes to <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> or <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>, see <a href="get-started/quickstart/">Getting Started</a>.</p>
 <h2 id="no-install-required">No install required<a class="headerlink" href="#no-install-required" title="Permanent link">&para;</a></h2>

@@ -2346,7 +2346,7 @@
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│           encoder:   ...
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│           sink:      ...
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>└── snmp-pack.yaml             &lt;-- scenario file (kind: composable, i.e. a &quot;pack&quot;)
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>└── snmp-pack.yaml             &lt;-- scenario file (kind: composable, i.e. a "pack")
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    └── metrics:
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        - name: ifHCInOctets     a reusable bundle of metric names
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        - name: ifHCOutOctets    referenced from other scenarios by name
@@ -2557,7 +2557,7 @@
 </span><span id="__span-7-28"><a id="__codelineno-7-28" name="__codelineno-7-28" href="#__codelineno-7-28"></a><span class="w">    </span><span class="nt">log_generator</span><span class="p">:</span>
 </span><span id="__span-7-29"><a id="__codelineno-7-29" name="__codelineno-7-29" href="#__codelineno-7-29"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">template</span>
 </span><span id="__span-7-30"><a id="__codelineno-7-30" name="__codelineno-7-30" href="#__codelineno-7-30"></a><span class="w">      </span><span class="nt">templates</span><span class="p">:</span>
-</span><span id="__span-7-31"><a id="__codelineno-7-31" name="__codelineno-7-31" href="#__codelineno-7-31"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">message</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;request</span><span class="nv"> </span><span class="s">handled&quot;</span>
+</span><span id="__span-7-31"><a id="__codelineno-7-31" name="__codelineno-7-31" href="#__codelineno-7-31"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">message</span><span class="p">:</span><span class="w"> </span><span class="s">"request</span><span class="nv"> </span><span class="s">handled"</span>
 </span></code></pre></div>
 <p>Three signal types and two sinks, all from one <code>sonda run</code>. The metric and <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr> reach <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>; the logs reach <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>.</p>
 <p>For entries that depend on each other in time, see <code>after:</code> and <code>while:</code> on the <a href="../scenario-files/#temporal-chains-with-after">Scenario Files</a> page. The <code>after:</code> clause starts an entry once another crosses a threshold. The <code>while:</code> clause emits only while another entry is in a given state.</p>

@@ -2425,7 +2425,7 @@
 <p>The default per-series view writes one CSV file per series. The "Series joined by time" option produces a single file with one time column and one data column per series. This is the format Sonda's auto-discovery expects.</p>
 </div>
 <p>The exported CSV looks like this:</p>
-<div class="language-text highlight"><span class="filename">grafana-export.csv</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&quot;Time&quot;,&quot;{__name__=&quot;&quot;up&quot;&quot;, instance=&quot;&quot;localhost:9090&quot;&quot;, job=&quot;&quot;prometheus&quot;&quot;}&quot;,&quot;{__name__=&quot;&quot;up&quot;&quot;, instance=&quot;&quot;localhost:9100&quot;&quot;, job=&quot;&quot;node&quot;&quot;}&quot;
+<div class="language-text highlight"><span class="filename">grafana-export.csv</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>"Time","{__name__=""up"", instance=""localhost:9090"", job=""prometheus""}","{__name__=""up"", instance=""localhost:9100"", job=""node""}"
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>1704067200000,1,1
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>1704067215000,1,1
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>1704067230000,0,1
@@ -2437,13 +2437,13 @@
 <h2 id="replay-speed-is-driven-by-the-csv-not-by-rate">Replay Speed Is Driven By The CSV, Not By <code>rate:</code><a class="headerlink" href="#replay-speed-is-driven-by-the-csv-not-by-rate" title="Permanent link">&para;</a></h2>
 <p>Sonda reads the first column of the CSV as a timestamp series. It measures the median interval between samples and uses that value to compute the replay rate. The <code>rate:</code> field on a <code>csv_replay</code> <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <strong>always replaced</strong> by this derived value. The value in YAML does not matter.</p>
 <p>This is the most common point of confusion when moving from earlier releases. Before, you had to set <code>rate: 0.1</code> by hand to match a 10-second Grafana <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> interval. If the rate was wrong, a 5-minute incident would replay in 30 seconds.</p>
-<div class="language-text highlight"><span class="filename">Grafana export with 15s scrape interval</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&quot;Time&quot;,&quot;{__name__=&quot;&quot;cpu&quot;&quot;, instance=&quot;&quot;prod-01&quot;&quot;}&quot;
+<div class="language-text highlight"><span class="filename">Grafana export with 15s scrape interval</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>"Time","{__name__=""cpu"", instance=""prod-01""}"
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>1704067200000,42.1
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>1704067215000,43.5
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>1704067230000,45.8
 </span></code></pre></div>
 <div class="language-yaml highlight"><span class="filename">examples/csv-replay-grafana-auto.yaml</span><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">      </span><span class="c1"># ignored for csv_replay -- the CSV&#39;s 15s step wins</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">      </span><span class="c1"># ignored for csv_replay -- the CSV's 15s step wins</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nt">scenarios</span><span class="p">:</span>
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">incident_replay</span>
@@ -2501,7 +2501,7 @@
 </span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">      </span><span class="nt">timescale</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">12.0</span><span class="w">      </span><span class="c1"># 60 min CSV / 12 = 5 min replay</span>
 </span></code></pre></div>
 <p><code>timescale</code> must be a positive finite number. A value of <code>0</code> or a negative value is rejected at config load:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>csv_replay: &#39;timescale&#39; must be a positive finite number, got 0
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>csv_replay: 'timescale' must be a positive finite number, got 0
 </span></code></pre></div>
 <hr />
 <h2 id="replay-with-auto-discovery">Replay With Auto-Discovery<a class="headerlink" href="#replay-with-auto-discovery" title="Permanent link">&para;</a></h2>
@@ -2533,10 +2533,10 @@
 </span></code></pre></div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/csv-replay-grafana-auto.yaml
 </span></code></pre></div>
-<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>up{env=&quot;production&quot;,instance=&quot;localhost:9090&quot;,job=&quot;prometheus&quot;} 1 1775505698611
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>up{env=&quot;production&quot;,instance=&quot;localhost:9100&quot;,job=&quot;node&quot;} 1 1775505698611
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>up{env=&quot;production&quot;,instance=&quot;localhost:9090&quot;,job=&quot;prometheus&quot;} 1 1775505699621
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>up{env=&quot;production&quot;,instance=&quot;localhost:9100&quot;,job=&quot;node&quot;} 1 1775505699621
+<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>up{env="production",instance="localhost:9090",job="prometheus"} 1 1775505698611
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>up{env="production",instance="localhost:9100",job="node"} 1 1775505698611
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>up{env="production",instance="localhost:9090",job="prometheus"} 1 1775505699621
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>up{env="production",instance="localhost:9100",job="node"} 1 1775505699621
 </span></code></pre></div>
 <p>Each CSV data column becomes its own <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. The <code>name</code> field in your YAML is ignored. Sonda uses the metric name extracted from each column header.</p>
 <h3 id="how-labels-merge">How labels merge<a class="headerlink" href="#how-labels-merge" title="Permanent link">&para;</a></h3>
@@ -2574,7 +2574,7 @@
 </span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">index</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
 </span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cpu_percent</span>
 </span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="w">          </span><span class="nt">labels</span><span class="p">:</span>
-</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="w">            </span><span class="nt">core</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;0&quot;</span>
+</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="w">            </span><span class="nt">core</span><span class="p">:</span><span class="w"> </span><span class="s">"0"</span>
 </span><span id="__span-9-23"><a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">index</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
 </span><span id="__span-9-24"><a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a><span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mem_percent</span>
 </span><span id="__span-9-25"><a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="w">          </span><span class="nt">labels</span><span class="p">:</span>
@@ -2587,9 +2587,9 @@
 </span></code></pre></div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/csv-replay-explicit-labels.yaml
 </span></code></pre></div>
-<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>cpu_percent{core=&quot;0&quot;,instance=&quot;prod-server-42&quot;,job=&quot;node&quot;} 12.3 1775505711361
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>mem_percent{instance=&quot;prod-server-42&quot;,job=&quot;node&quot;,type=&quot;physical&quot;} 45.2 1775505711361
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>disk_io_mbps{instance=&quot;prod-server-42&quot;,job=&quot;node&quot;} 5.1 1775505711361
+<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>cpu_percent{core="0",instance="prod-server-42",job="node"} 12.3 1775505711361
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>mem_percent{instance="prod-server-42",job="node",type="physical"} 45.2 1775505711361
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>disk_io_mbps{instance="prod-server-42",job="node"} 5.1 1775505711361
 </span></code></pre></div>
 <p>Per-column labels merge with <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>-level labels, and column labels override on conflict. The <code>disk_io_mbps</code> column has no per-column labels, so it gets only the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>-level ones.</p>
 <hr />
@@ -2640,7 +2640,7 @@
 <p>Format 1 is the default Grafana export when you use <strong>Series joined by time</strong>. Format 2 appears when a Grafana panel uses a custom <code>legendFormat</code> that places the metric name outside the braces. Format 3 appears when <code>legendFormat</code> removes the metric name entirely, for example <code>{{instance}}</code> only. Format 3 needs <a href="#labels-only-headers-default_metric_name"><code>default_metric_name</code></a>.</p>
 <h3 id="labels-only-headers-default_metric_name">Labels-only headers: <code>default_metric_name</code><a class="headerlink" href="#labels-only-headers-default_metric_name" title="Permanent link">&para;</a></h3>
 <p>When a Grafana panel uses a <code>legendFormat</code> that omits <code>__name__</code>, the export looks like this:</p>
-<div class="language-text highlight"><span class="filename">labels-only export</span><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Time,&quot;{instance=&quot;&quot;prod-01&quot;&quot;,job=&quot;&quot;node&quot;&quot;}&quot;,&quot;{instance=&quot;&quot;prod-02&quot;&quot;,job=&quot;&quot;node&quot;&quot;}&quot;
+<div class="language-text highlight"><span class="filename">labels-only export</span><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Time,"{instance=""prod-01"",job=""node""}","{instance=""prod-02"",job=""node""}"
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>1704067200000,42.1,38.5
 </span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>1704067210000,43.2,39.0
 </span></code></pre></div>
@@ -2653,8 +2653,8 @@
 </span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">      </span><span class="nt">file</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cpu-export.csv</span>
 </span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">      </span><span class="nt">default_metric_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node_cpu_usage</span>
 </span></code></pre></div>
-<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>node_cpu_usage_1{instance=&quot;prod-01&quot;,job=&quot;node&quot;} 42.1 1778847012268
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>node_cpu_usage_2{instance=&quot;prod-02&quot;,job=&quot;node&quot;} 38.5 1778847012268
+<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>node_cpu_usage_1{instance="prod-01",job="node"} 42.1 1778847012268
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>node_cpu_usage_2{instance="prod-02",job="node"} 38.5 1778847012268
 </span></code></pre></div>
 <p>Naming rules:</p>
 <ul>

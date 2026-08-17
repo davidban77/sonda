@@ -2514,7 +2514,7 @@
 </div>
 <div class="tabbed-block">
 <p>You send a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> body to <code>sonda-server</code> running inside a container. The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is validated and runs <strong>inside that container's network namespace</strong>. <code>http://localhost:8428</code> resolves to the container's own loopback. Nothing is there, so the request fails.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: text/yaml&quot;</span><span class="w"> </span><span class="se">\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--data-binary<span class="w"> </span>@file.yaml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>http://localhost:8080/scenarios
 </span></code></pre></div>
@@ -2591,16 +2591,16 @@
 <p>The recommended fix is <code>${VAR:-default}</code> interpolation inside the YAML. The same file then runs from your host CLI on the defaults and from a containerized <code>sonda-server</code> on the overrides. No edit, no <code>sed</code>, no second copy.</p>
 <div class="language-yaml highlight"><span class="filename">A sink URL that works from both paths</span><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">sink</span><span class="p">:</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}"</span>
 </span></code></pre></div>
 <p>The bundled <code>examples/docker-compose-victoriametrics.yml</code> sets the in-network overrides on the <code>sonda-server</code> container. Every <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> under <code>examples/</code> works untouched in both places. See the <a href="../../build/scenario-files/#environment-variable-interpolation">full reference</a> for the syntax and the seven built-in variable names every example honours.</p>
 <h3 id="rewriting-urls-before-posting">Rewriting URLs before posting<a class="headerlink" href="#rewriting-urls-before-posting" title="Permanent link">&para;</a></h3>
 <p>If a YAML file hardcodes <code>http://localhost:&lt;port&gt;</code> and you prefer not to add interpolation, rewrite the URL before posting it:</p>
-<div class="language-bash highlight"><span class="filename">Swap localhost for Compose service names</span><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sed<span class="w"> </span><span class="s1">&#39;s|http://localhost:8428|http://victoriametrics:8428|g; \</span>
+<div class="language-bash highlight"><span class="filename">Swap localhost for Compose service names</span><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sed<span class="w"> </span><span class="s1">'s|http://localhost:8428|http://victoriametrics:8428|g; \</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="s1">     s|http://localhost:3100|http://loki:3100|g; \</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="s1">     s|http://localhost:9094|http://kafka:9092|g&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="s1">     s|http://localhost:9094|http://kafka:9092|g'</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>examples/http-push-retry.yaml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: text/yaml&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">      </span>--data-binary<span class="w"> </span>@-<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">      </span>http://localhost:8080/scenarios
 </span></code></pre></div>
@@ -2634,7 +2634,7 @@
 <p>Service names come from <code>examples/docker-compose-victoriametrics.yml</code>. Match the <code>sed</code> substitutions to your service names if you change the compose file.</p>
 <div class="admonition tip">
 <p class="admonition-title">Diff before you POST</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sed<span class="w"> </span><span class="s1">&#39;s|http://localhost:8428|http://victoriametrics:8428|g&#39;</span><span class="w"> </span><span class="se">\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sed<span class="w"> </span><span class="s1">'s|http://localhost:8428|http://victoriametrics:8428|g'</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>examples/http-push-retry.yaml<span class="w"> </span><span class="p">|</span><span class="w"> </span>diff<span class="w"> </span>examples/http-push-retry.yaml<span class="w"> </span>-
 </span></code></pre></div>
 </div>
@@ -2645,8 +2645,8 @@
 <p><code>sonda</code> runs on your host. The Compose stack exposes <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> on <code>localhost:8428</code>. The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s <code>url:</code> uses host loopback.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">sink</span><span class="p">:</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://localhost:8428/api/v1/import/prometheus&quot;</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="nt">content_type</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;text/plain&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://localhost:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="nt">content_type</span><span class="p">:</span><span class="w"> </span><span class="s">"text/plain"</span>
 </span></code></pre></div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/vm-push-scenario.yaml
 </span></code></pre></div>
@@ -2655,10 +2655,10 @@
 <p>Both services run in the same Compose network. The <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> URL uses the <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> service name -- <strong>not</strong> <code>localhost</code>.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">sink</span><span class="p">:</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://victoriametrics:8428/api/v1/import/prometheus&quot;</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">content_type</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;text/plain&quot;</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">content_type</span><span class="p">:</span><span class="w"> </span><span class="s">"text/plain"</span>
 </span></code></pre></div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: text/yaml&quot;</span><span class="w"> </span><span class="se">\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--data-binary<span class="w"> </span>@examples/victoriametrics-metrics.yaml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>http://localhost:8080/scenarios
 </span></code></pre></div>
@@ -2667,13 +2667,13 @@
 <p>Both workloads run in the same namespace. Use the Kubernetes Service short name.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">sink</span><span class="p">:</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://vmsingle:8428/api/v1/import/prometheus&quot;</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">content_type</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;text/plain&quot;</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://vmsingle:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">content_type</span><span class="p">:</span><span class="w"> </span><span class="s">"text/plain"</span>
 </span></code></pre></div>
 <p>For a Service in a different namespace, use the fully qualified name:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">sink</span><span class="p">:</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://vmsingle.monitoring.svc.cluster.local:8428/api/v1/import/prometheus&quot;</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://vmsingle.monitoring.svc.cluster.local:8428/api/v1/import/prometheus"</span>
 </span></code></pre></div>
 </div>
 </div>
@@ -2691,7 +2691,7 @@
 </span></code></pre></div>
 </div>
 <div class="tabbed-block">
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># The image&#39;s default entrypoint is sonda-server</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># The image's default entrypoint is sonda-server</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>run<span class="w"> </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span>ghcr.io/davidban77/sonda:latest
 </span></code></pre></div>
 </div>
@@ -2706,11 +2706,11 @@
 <p>With the server running, you can drive its full lifecycle from <code>curl</code> in three steps. Start the server, send a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, then confirm it is running:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># 1. Confirm the server is up</span>
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>curl<span class="w"> </span>http://localhost:8080/health
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1"># {&quot;status&quot;:&quot;ok&quot;}</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1"># {"status":"ok"}</span>
 </span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
 </span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="c1"># 2. POST a scenario — the server validates it and starts emitting</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: text/yaml&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span>--data-binary<span class="w"> </span>@-<span class="w"> </span>http://localhost:8080/scenarios<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span>--data-binary<span class="w"> </span>@-<span class="w"> </span>http://localhost:8080/scenarios<span class="w"> </span><span class="s">&lt;&lt;'EOF'</span>
 </span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="s">version: 2</span>
 </span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="s">kind: runnable</span>
 </span><span id="__span-14-10"><a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="s">defaults:</span>
@@ -2728,7 +2728,7 @@
 </span><span id="__span-14-22"><a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a><span class="s">      type: constant</span>
 </span><span id="__span-14-23"><a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a><span class="s">      value: 1.0</span>
 </span><span id="__span-14-24"><a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a><span class="s">EOF</span>
-</span><span id="__span-14-25"><a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a><span class="c1"># {&quot;id&quot;:&quot;a1b2c3d4-...&quot;,&quot;name&quot;:&quot;up&quot;,&quot;state&quot;:&quot;running&quot;}</span>
+</span><span id="__span-14-25"><a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a><span class="c1"># {"id":"a1b2c3d4-...","name":"up","state":"running"}</span>
 </span><span id="__span-14-26"><a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a>
 </span><span id="__span-14-27"><a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a><span class="c1"># 3. List running scenarios — your scenario appears with its live state</span>
 </span><span id="__span-14-28"><a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>curl<span class="w"> </span>http://localhost:8080/scenarios

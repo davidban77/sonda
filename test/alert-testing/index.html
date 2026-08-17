@@ -2785,11 +2785,11 @@
 </tbody>
 </table>
 <p>Verify the stack is up:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;http://localhost:8428/health&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">"http://localhost:8428/health"</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># OK</span>
 </span></code></pre></div>
 <p>After running any <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, query <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> to confirm the metric arrived. Wait about 15 seconds for ingestion.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;http://localhost:8428/api/v1/query?query=&lt;metric_name&gt;&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.data.result | length&#39;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">"http://localhost:8428/api/v1/query?query=&lt;metric_name&gt;"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">'.data.result | length'</span>
 </span></code></pre></div>
 <p>Stop the stack when finished:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>down<span class="w"> </span>-v
@@ -2801,7 +2801,7 @@
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/vm-push-scenario.yaml
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Verify the metric exists</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8428/api/v1/query?query=cpu_usage&quot;</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>curl<span class="w"> </span><span class="s2">"http://localhost:8428/api/v1/query?query=cpu_usage"</span>
 </span></code></pre></div>
 <div class="admonition tip">
 <p class="admonition-title">Complete the alert path</p>
@@ -2812,7 +2812,7 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># In another terminal:</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: text/yaml&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--data-binary<span class="w"> </span>@examples/sine-threshold-test.yaml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>http://localhost:8080/scenarios
 </span></code></pre></div>
@@ -2821,7 +2821,7 @@
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda</span>
 </span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">scrape_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15s</span>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="nt">static_configs</span><span class="p">:</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&#39;localhost:8080&#39;</span><span class="p p-Indicator">]</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">'localhost:8080'</span><span class="p p-Indicator">]</span>
 </span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="nt">metrics_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/scenarios/&lt;scenario-id&gt;/metrics</span>
 </span></code></pre></div>
 <p>See <a href="../../deploy/server/">Server API</a> for the full API reference.</p>
@@ -3103,7 +3103,7 @@
 </span><span id="__span-19-20"><a id="__codelineno-19-20" name="__codelineno-19-20" href="#__codelineno-19-20"></a>
 </span><span id="__span-19-21"><a id="__codelineno-19-21" name="__codelineno-19-21" href="#__codelineno-19-21"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
 </span><span id="__span-19-22"><a id="__codelineno-19-22" name="__codelineno-19-22" href="#__codelineno-19-22"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">memory_usage_percent</span>
-</span><span id="__span-19-23"><a id="__codelineno-19-23" name="__codelineno-19-23" href="#__codelineno-19-23"></a><span class="w">    </span><span class="nt">phase_offset</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;3s&quot;</span>
+</span><span id="__span-19-23"><a id="__codelineno-19-23" name="__codelineno-19-23" href="#__codelineno-19-23"></a><span class="w">    </span><span class="nt">phase_offset</span><span class="p">:</span><span class="w"> </span><span class="s">"3s"</span>
 </span><span id="__span-19-24"><a id="__codelineno-19-24" name="__codelineno-19-24" href="#__codelineno-19-24"></a><span class="w">    </span><span class="nt">clock_group</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">alert-test</span>
 </span><span id="__span-19-25"><a id="__codelineno-19-25" name="__codelineno-19-25" href="#__codelineno-19-25"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span>
 </span><span id="__span-19-26"><a id="__codelineno-19-26" name="__codelineno-19-26" href="#__codelineno-19-26"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sequence</span>
@@ -3142,7 +3142,7 @@
 </span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">    </span><span class="nt">for</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10s</span>
 </span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">    </span><span class="nt">cardinality</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span>
 </span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="w">    </span><span class="nt">strategy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">counter</span>
-</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="w">    </span><span class="nt">prefix</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pod-&quot;</span>
+</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="w">    </span><span class="nt">prefix</span><span class="p">:</span><span class="w"> </span><span class="s">"pod-"</span>
 </span></code></pre></div>
 <p>During the 10-second spike window, each tick attaches a <code>pod_name</code> label from a pool of up to 500 unique values (<code>pod-0</code> through <code>pod-499</code>). The actual series count per spike is <code>min(cardinality, ticks_in_window)</code>. At <code>rate: 10, for: 10s</code> that is 100 ticks per spike. Each spike adds up to 100 new <code>pod-N</code> values until the 500-value pool fills across recurrences. Outside the spike window the label is absent and only one series is emitted. This on-and-off pattern tests both the firing and resolution paths of the <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> rule.</p>
 <h3 id="tuning-the-spike">Tuning the spike<a class="headerlink" href="#tuning-the-spike" title="Permanent link">&para;</a></h3>
@@ -3253,12 +3253,12 @@
 </div>
 <details class="info">
 <summary>Exporting values from <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr></summary>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;http://your-vm:8428/api/v1/query_range?\</span>
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="s2">query=cpu_usage{instance=&#39;prod-01&#39;}&amp;\</span>
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="s2">start=</span><span class="k">$(</span>date<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%s<span class="k">)</span><span class="s2">&amp;\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">"http://your-vm:8428/api/v1/query_range?\</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="s2">query=cpu_usage{instance='prod-01'}&amp;\</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="s2">start=</span><span class="k">$(</span>date<span class="w"> </span>-d<span class="w"> </span><span class="s1">'1 hour ago'</span><span class="w"> </span>+%s<span class="k">)</span><span class="s2">&amp;\</span>
 </span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="s2">end=</span><span class="k">$(</span>date<span class="w"> </span>+%s<span class="k">)</span><span class="s2">&amp;\</span>
-</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="s2">step=10s&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;[&quot;timestamp&quot;,&quot;cpu_percent&quot;], (.data.result[0].values[] | [.[0], .[1]]) | @csv&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="s2">step=10s"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">'["timestamp","cpu_percent"], (.data.result[0].values[] | [.[0], .[1]]) | @csv'</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="w">  </span>&gt;<span class="w"> </span>incident-values.csv
 </span></code></pre></div>
 </details>
@@ -3318,20 +3318,20 @@
 </div>
 <h4 id="concrete-example">Concrete example<a class="headerlink" href="#concrete-example" title="Permanent link">&para;</a></h4>
 <p>Suppose 100 requests arrive in one second with these latencies: 60 requests under 100ms, 30 between 100ms and 250ms, and 10 between 250ms and 500ms. The bucket counters after that second:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>http_request_duration_seconds_bucket{le=&quot;0.1&quot;}   60
-</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>http_request_duration_seconds_bucket{le=&quot;0.25&quot;}  90   # 60 + 30
-</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>http_request_duration_seconds_bucket{le=&quot;0.5&quot;}   100  # 60 + 30 + 10
-</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>http_request_duration_seconds_bucket{le=&quot;+Inf&quot;}  100
+<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>http_request_duration_seconds_bucket{le="0.1"}   60
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>http_request_duration_seconds_bucket{le="0.25"}  90   # 60 + 30
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>http_request_duration_seconds_bucket{le="0.5"}   100  # 60 + 30 + 10
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>http_request_duration_seconds_bucket{le="+Inf"}  100
 </span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>http_request_duration_seconds_count              100
 </span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>http_request_duration_seconds_sum                12.5
 </span></code></pre></div>
 <p>From this, <code>histogram_quantile(0.99, ...)</code> estimates the 99<sup>th</sup> percentile by interpolating between bucket boundaries.</p>
 <h3 id="what-is-a-summary">What is a <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr><a class="headerlink" href="#what-is-a-summary" title="Permanent link">&para;</a></h3>
 <p>A <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> also tracks a value distribution. Instead of counting observations per bucket, it pre-computes quantile values on the client side. For a metric named <code>rpc_duration_seconds</code> with quantiles <code>[0.5, 0.9, 0.95, 0.99]</code>, each <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> produces:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>rpc_duration_seconds{quantile=&quot;0.5&quot;}   0.098
-</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>rpc_duration_seconds{quantile=&quot;0.9&quot;}   0.125
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>rpc_duration_seconds{quantile=&quot;0.95&quot;}  0.131
-</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>rpc_duration_seconds{quantile=&quot;0.99&quot;}  0.148
+<div class="language-text highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>rpc_duration_seconds{quantile="0.5"}   0.098
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>rpc_duration_seconds{quantile="0.9"}   0.125
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>rpc_duration_seconds{quantile="0.95"}  0.131
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>rpc_duration_seconds{quantile="0.99"}  0.148
 </span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>rpc_duration_seconds_count             1000
 </span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>rpc_duration_seconds_sum               99.44
 </span></code></pre></div>
@@ -3407,17 +3407,17 @@
 <p>Run it:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/histogram.yaml
 </span></code></pre></div>
-<div class="language-text highlight"><span class="filename">Output (first tick)</span><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.005&quot;,method=&quot;GET&quot;} 3 1775409497421
-</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.01&quot;,method=&quot;GET&quot;} 11 1775409497421
-</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.025&quot;,method=&quot;GET&quot;} 26 1775409497421
-</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.05&quot;,method=&quot;GET&quot;} 46 1775409497421
-</span><span id="__span-32-5"><a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.1&quot;,method=&quot;GET&quot;} 66 1775409497421
-</span><span id="__span-32-6"><a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.25&quot;,method=&quot;GET&quot;} 90 1775409497421
-</span><span id="__span-32-7"><a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;0.5&quot;,method=&quot;GET&quot;} 100 1775409497421
+<div class="language-text highlight"><span class="filename">Output (first tick)</span><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.005",method="GET"} 3 1775409497421
+</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.01",method="GET"} 11 1775409497421
+</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.025",method="GET"} 26 1775409497421
+</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.05",method="GET"} 46 1775409497421
+</span><span id="__span-32-5"><a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.1",method="GET"} 66 1775409497421
+</span><span id="__span-32-6"><a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.25",method="GET"} 90 1775409497421
+</span><span id="__span-32-7"><a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.5",method="GET"} 100 1775409497421
 </span><span id="__span-32-8"><a id="__codelineno-32-8" name="__codelineno-32-8" href="#__codelineno-32-8"></a>...
-</span><span id="__span-32-9"><a id="__codelineno-32-9" name="__codelineno-32-9" href="#__codelineno-32-9"></a>http_request_duration_seconds_bucket{handler=&quot;/api/v1/query&quot;,le=&quot;+Inf&quot;,method=&quot;GET&quot;} 100 1775409497421
-</span><span id="__span-32-10"><a id="__codelineno-32-10" name="__codelineno-32-10" href="#__codelineno-32-10"></a>http_request_duration_seconds_count{handler=&quot;/api/v1/query&quot;,method=&quot;GET&quot;} 100 1775409497421
-</span><span id="__span-32-11"><a id="__codelineno-32-11" name="__codelineno-32-11" href="#__codelineno-32-11"></a>http_request_duration_seconds_sum{handler=&quot;/api/v1/query&quot;,method=&quot;GET&quot;} 9.505 1775409497421
+</span><span id="__span-32-9"><a id="__codelineno-32-9" name="__codelineno-32-9" href="#__codelineno-32-9"></a>http_request_duration_seconds_bucket{handler="/api/v1/query",le="+Inf",method="GET"} 100 1775409497421
+</span><span id="__span-32-10"><a id="__codelineno-32-10" name="__codelineno-32-10" href="#__codelineno-32-10"></a>http_request_duration_seconds_count{handler="/api/v1/query",method="GET"} 100 1775409497421
+</span><span id="__span-32-11"><a id="__codelineno-32-11" name="__codelineno-32-11" href="#__codelineno-32-11"></a>http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 9.505 1775409497421
 </span></code></pre></div>
 <p>The bucket counts are cumulative: 3 requests under 5ms, 11 under 10ms (which includes the 3 from the previous bucket), and so on. The <code>+Inf</code> bucket equals <code>_count</code> because every observation falls within infinity.</p>
 <h3 id="test-a-histogram_quantile-alert-with-sonda">Test a histogram_quantile() alert with Sonda<a class="headerlink" href="#test-a-histogram_quantile-alert-with-sonda" title="Permanent link">&para;</a></h3>
@@ -3435,7 +3435,7 @@
 </span><span id="__span-33-10"><a id="__codelineno-33-10" name="__codelineno-33-10" href="#__codelineno-33-10"></a><span class="w">        </span><span class="nt">labels</span><span class="p">:</span>
 </span><span id="__span-33-11"><a id="__codelineno-33-11" name="__codelineno-33-11" href="#__codelineno-33-11"></a><span class="w">          </span><span class="nt">severity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">critical</span>
 </span><span id="__span-33-12"><a id="__codelineno-33-12" name="__codelineno-33-12" href="#__codelineno-33-12"></a><span class="w">        </span><span class="nt">annotations</span><span class="p">:</span>
-</span><span id="__span-33-13"><a id="__codelineno-33-13" name="__codelineno-33-13" href="#__codelineno-33-13"></a><span class="w">          </span><span class="nt">summary</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;P99</span><span class="nv"> </span><span class="s">latency</span><span class="nv"> </span><span class="s">exceeds</span><span class="nv"> </span><span class="s">500ms&quot;</span>
+</span><span id="__span-33-13"><a id="__codelineno-33-13" name="__codelineno-33-13" href="#__codelineno-33-13"></a><span class="w">          </span><span class="nt">summary</span><span class="p">:</span><span class="w"> </span><span class="s">"P99</span><span class="nv"> </span><span class="s">latency</span><span class="nv"> </span><span class="s">exceeds</span><span class="nv"> </span><span class="s">500ms"</span>
 </span></code></pre></div>
 <p>The rule fires when the estimated 99<sup>th</sup> percentile of request latency exceeds 500ms for 2 minutes.</p>
 <h4 id="simulate-latency-degradation">Simulate latency degradation<a class="headerlink" href="#simulate-latency-degradation" title="Permanent link">&para;</a></h4>
@@ -3474,14 +3474,14 @@
 </div>
 <h4 id="verify-the-alert">Verify the alert<a class="headerlink" href="#verify-the-alert" title="Permanent link">&para;</a></h4>
 <p>After starting Sonda, query your <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> or <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> instance:</p>
-<div class="language-promql highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.99</span><span class="p">,</span><span class="w"> </span><span class="kr">rate</span><span class="o">(</span><span class="nv">http_request_duration_seconds_bucket</span><span class="p">{</span><span class="nl">method</span><span class="o">=</span><span class="p">&quot;</span><span class="s">GET</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+<div class="language-promql highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.99</span><span class="p">,</span><span class="w"> </span><span class="kr">rate</span><span class="o">(</span><span class="nv">http_request_duration_seconds_bucket</span><span class="p">{</span><span class="nl">method</span><span class="o">=</span><span class="p">"</span><span class="s">GET</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
 </span></code></pre></div>
 <p>The p99 value should climb steadily from about 0.2s past 0.5s. Once the <code>for: 2m</code> condition holds, check the alerts endpoint.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a><span class="c1"># Prometheus</span>
-</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:9090/api/v1/alerts<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.data.alerts[] | select(.labels.alertname == &quot;HighP99Latency&quot;)&#39;</span>
+</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:9090/api/v1/alerts<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">'.data.alerts[] | select(.labels.alertname == "HighP99Latency")'</span>
 </span><span id="__span-37-3"><a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>
 </span><span id="__span-37-4"><a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a><span class="c1"># VictoriaMetrics</span>
-</span><span id="__span-37-5"><a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8428/api/v1/alerts<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.data.alerts[] | select(.labels.alertname == &quot;HighP99Latency&quot;)&#39;</span>
+</span><span id="__span-37-5"><a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8428/api/v1/alerts<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">'.data.alerts[] | select(.labels.alertname == "HighP99Latency")'</span>
 </span></code></pre></div>
 <h3 id="summary-example">Summary example<a class="headerlink" href="#summary-example" title="Permanent link">&para;</a></h3>
 <p>A <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> is simpler to generate and query. Remember that quantile values are computed per tick and cannot be aggregated across instances.</p>
@@ -3511,12 +3511,12 @@
 </span></code></pre></div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/summary.yaml
 </span></code></pre></div>
-<div class="language-text highlight"><span class="filename">Output (first tick)</span><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>rpc_duration_seconds{method=&quot;GetUser&quot;,quantile=&quot;0.5&quot;,service=&quot;auth&quot;} 0.098 1775409507904
-</span><span id="__span-40-2"><a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a>rpc_duration_seconds{method=&quot;GetUser&quot;,quantile=&quot;0.9&quot;,service=&quot;auth&quot;} 0.128 1775409507904
-</span><span id="__span-40-3"><a id="__codelineno-40-3" name="__codelineno-40-3" href="#__codelineno-40-3"></a>rpc_duration_seconds{method=&quot;GetUser&quot;,quantile=&quot;0.95&quot;,service=&quot;auth&quot;} 0.136 1775409507904
-</span><span id="__span-40-4"><a id="__codelineno-40-4" name="__codelineno-40-4" href="#__codelineno-40-4"></a>rpc_duration_seconds{method=&quot;GetUser&quot;,quantile=&quot;0.99&quot;,service=&quot;auth&quot;} 0.148 1775409507904
-</span><span id="__span-40-5"><a id="__codelineno-40-5" name="__codelineno-40-5" href="#__codelineno-40-5"></a>rpc_duration_seconds_count{method=&quot;GetUser&quot;,service=&quot;auth&quot;} 100 1775409507904
-</span><span id="__span-40-6"><a id="__codelineno-40-6" name="__codelineno-40-6" href="#__codelineno-40-6"></a>rpc_duration_seconds_sum{method=&quot;GetUser&quot;,service=&quot;auth&quot;} 9.802 1775409507904
+<div class="language-text highlight"><span class="filename">Output (first tick)</span><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>rpc_duration_seconds{method="GetUser",quantile="0.5",service="auth"} 0.098 1775409507904
+</span><span id="__span-40-2"><a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a>rpc_duration_seconds{method="GetUser",quantile="0.9",service="auth"} 0.128 1775409507904
+</span><span id="__span-40-3"><a id="__codelineno-40-3" name="__codelineno-40-3" href="#__codelineno-40-3"></a>rpc_duration_seconds{method="GetUser",quantile="0.95",service="auth"} 0.136 1775409507904
+</span><span id="__span-40-4"><a id="__codelineno-40-4" name="__codelineno-40-4" href="#__codelineno-40-4"></a>rpc_duration_seconds{method="GetUser",quantile="0.99",service="auth"} 0.148 1775409507904
+</span><span id="__span-40-5"><a id="__codelineno-40-5" name="__codelineno-40-5" href="#__codelineno-40-5"></a>rpc_duration_seconds_count{method="GetUser",service="auth"} 100 1775409507904
+</span><span id="__span-40-6"><a id="__codelineno-40-6" name="__codelineno-40-6" href="#__codelineno-40-6"></a>rpc_duration_seconds_sum{method="GetUser",service="auth"} 9.802 1775409507904
 </span></code></pre></div>
 <p>The p50 is near the configured mean (0.1s). The spread matches the configured standard deviation (0.02s). The <code>_count</code> and <code>_sum</code> series increase across ticks. Quantile values are fresh per-tick snapshots.</p>
 <div class="admonition warning">
@@ -3708,7 +3708,7 @@ arrive?</em> Same <abbr title="Sonda's unit of work -- a YAML file describing wh
 <div class="language-text highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>  PASS HighCpuUsage firing after 40s (within 90s)
 </span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>  PASS HighCpuUsage resolved after 10s (within 2m of scenario end)
 </span><span id="__span-48-3"><a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>
-</span><span id="__span-48-4"><a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>  note: Alertmanager keeps no queryable history, so these times come from live polling every 5s, sharpened by each alert&#39;s own startsAt stamp (~1s clock resolution) — not from stored samples
+</span><span id="__span-48-4"><a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>  note: Alertmanager keeps no queryable history, so these times come from live polling every 5s, sharpened by each alert's own startsAt stamp (~1s clock resolution) — not from stored samples
 </span><span id="__span-48-5"><a id="__codelineno-48-5" name="__codelineno-48-5" href="#__codelineno-48-5"></a>  PASS 1 alert expectation(s) verified via Alertmanager (scenario ran 90s)
 </span></code></pre></div>
 <p>The alert shows up later here than on the <code>--prometheus-url</code> run of the same
