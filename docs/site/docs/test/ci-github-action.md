@@ -39,11 +39,12 @@ Passing both is an error: they verify different hops of the alerting path,
 so there is no sensible way to merge their verdicts. To cover both, add two
 steps — and the one that fails tells you which hop broke.
 
-!!! note "`alertmanager-url` has a version floor"
-    That input needs a Sonda release that has it. If you pin an older
-    version, the action refuses **before** downloading anything and names
-    the floor, rather than installing a binary that would reject the flag
-    with a confusing `unexpected argument`.
+!!! note "`alertmanager-url` needs v1.21.0 or newer"
+    That input first shipped in `v1.21.0`, so `@v1` and `latest` both serve
+    it. Only an explicit older pin cannot. In that case the action refuses
+    **before** downloading anything and names the floor, rather than
+    installing a binary that would reject the flag with a confusing
+    `unexpected argument`.
 
 ## What the action does
 

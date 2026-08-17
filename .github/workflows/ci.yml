@@ -481,10 +481,11 @@ jobs:
     # reaching a shell, and a moving tag resolving to the wrong release.
     # Cheap enough to run on every PR, so they do.
     #
-    # One step makes a single GitHub API call (the floor-staleness check).
-    # It cannot fail this job on an unreachable or rate-limited API — only
-    # on a genuinely stale constant — because every other PR in the repo
-    # would otherwise go red on a question none of them asked.
+    # No step here touches the network. A floor-staleness probe used to,
+    # and it did its job: it went red on v1.21.0, the release that shipped
+    # `--alertmanager-url` and so made the constant a settled fact. With
+    # nothing left to ask it would have reddened every future PR in the
+    # repo, so it was removed rather than muted.
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -499,13 +500,3 @@ jobs:
       # release-please no-assets window, missing checksums, version floors.
       - name: Release resolver unit tests
         run: python3 scripts/resolve_release.py --self-test
-
-      # The alertmanager-url version floor is a constant someone must
-      # remember to revisit. This goes red on the release that makes it
-      # stale, which is exactly when it needs revisiting — and stays green
-      # when the API is simply unreachable, since "could not ask" is not
-      # "is stale".
-      - name: Version floor is not stale
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/resolve_release.py --check-floor-staleness

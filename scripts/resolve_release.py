@@ -46,11 +46,18 @@ FULL_TAG = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 # A moving major tag: v1, v2 — the shape Actions users expect to pin.
 MAJOR_TAG = re.compile(r"^v(\d+)$")
 
-# `sonda test --alertmanager-url` landed in #552, after v1.20.0 shipped. The
-# action installs *released* binaries, so an older pin cannot serve that
-# input — and the failure it would otherwise produce is clap's "unexpected
-# argument", which reads like a bug in the action rather than a version
-# floor. Bump this when the flag's release changes.
+# `sonda test --alertmanager-url` landed in #552 and first shipped in
+# v1.21.0. The action installs *released* binaries, so an older pin cannot
+# serve that input — and the failure it would otherwise produce is clap's
+# "unexpected argument", which reads like a bug in the action rather than a
+# version floor.
+#
+# This is now a historical fact rather than a pending decision: the release
+# that introduced the flag has happened, so the value is fixed and there is
+# nothing left to bump. It was accompanied by a `--check-floor-staleness`
+# probe that went red on the release making it stale — that release was
+# v1.21.0, the probe fired exactly as designed, and it has been removed
+# because a check with no remaining question to ask is noise on every PR.
 MIN_ALERTMANAGER_VERSION = (1, 21, 0)
 
 
@@ -293,22 +300,34 @@ def resolve(
     return tag
 
 
+def alertmanager_floor_error(tag: str) -> str | None:
+    """Why ``tag`` cannot serve ``alertmanager-url``, or None if it can.
+
+    Pure, so the refusal itself is testable rather than only the comparison
+    underneath it. Previously the floor's only tests were on
+    :func:`at_least`, with the refusal — the message a user actually reads,
+    and the branch that decides whether a run proceeds — covered by nothing.
+    That is the shape #554 round 1 found in the selection path: a guard
+    placed on the helper beside the decision instead of on the decision.
+    """
+    if at_least(tag, MIN_ALERTMANAGER_VERSION):
+        return None
+    floor = "v" + ".".join(str(p) for p in MIN_ALERTMANAGER_VERSION)
+    return (
+        f"the alertmanager-url input needs sonda {floor} or newer, but this "
+        f"run resolved to {tag}. `sonda test --alertmanager-url` does not "
+        f"exist in {tag}, so the run would fail with an 'unexpected argument' "
+        f"error that looks like an action bug. Pin version: {floor} or newer, "
+        "or use prometheus-url."
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Resolve a sonda-action version reference to a concrete release tag.",
     )
     parser.add_argument("--ref", default="", help="Version input, or github.action_ref.")
     parser.add_argument("--repo", default=DEFAULT_REPO, help="owner/repo to resolve against.")
-    parser.add_argument(
-        "--check-floor-staleness",
-        action="store_true",
-        help=(
-            "Network check for CI: fail once MIN_ALERTMANAGER_VERSION is "
-            "stale — i.e. once a release at or above the floor exists, at "
-            "which point the constant no longer needs to gate anything and "
-            "someone must revisit it."
-        ),
-    )
     parser.add_argument(
         "--needs-alertmanager",
         action="store_true",
@@ -328,58 +347,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
 
-    if args.check_floor_staleness:
-        # The floor is a constant someone has to remember to revisit. This
-        # turns that into a red check at exactly the moment it matters —
-        # the release that makes it stale — rather than relying on memory
-        # (#554 review, question 3). Deriving it from the binary is not an
-        # option: the only honest source is the installed `--help`, which
-        # means downloading first, which is the thing the floor exists to
-        # avoid.
-        floor = "v" + ".".join(str(p) for p in MIN_ALERTMANAGER_VERSION)
-        # Deliberately NOT via resolve(): that ends in check_downloadable,
-        # so during the release-please window — tag created, assets still
-        # uploading, which this module documents as normal and transient —
-        # every open PR in the repo would go red on a question about a
-        # constant (#554 round 2, W3). Staleness needs the newest published
-        # *tag*, not something downloadable.
-        try:
-            token = os.environ.get("GITHUB_TOKEN")
-            newest = newest_published(_api_get(f"{GITHUB_API}/repos/{args.repo}/releases", token))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-            # "Could not ask" is not "is stale". Failing here would take
-            # every open PR down with a GitHub 5xx or a rate limit, and
-            # protect nothing: the constant is either stale or it is not,
-            # and this run simply does not know.
-            print(f"note: could not check floor staleness ({e}); skipping", file=sys.stderr)
-            return 0
-        if newest is None:
-            print("note: no published releases to compare the floor against; skipping")
-            return 0
-        if at_least(newest, MIN_ALERTMANAGER_VERSION):
-            print(
-                f"error: MIN_ALERTMANAGER_VERSION ({floor}) is stale — {newest} is "
-                "released and at or above it, so the floor no longer gates "
-                "anything. Confirm `--alertmanager-url` shipped in that release "
-                "and either drop the guard or move the floor.",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"floor {floor} still ahead of the newest release ({newest})")
-        return 0
-
     try:
         tag = resolve(args.ref, args.repo, os.environ.get("GITHUB_TOKEN"))
-        if args.needs_alertmanager and not at_least(tag, MIN_ALERTMANAGER_VERSION):
-            floor = "v" + ".".join(str(p) for p in MIN_ALERTMANAGER_VERSION)
-            raise ResolveError(
-                f"the alertmanager-url input needs sonda {floor} or newer, but "
-                f"this run resolved to {tag}. `sonda test --alertmanager-url` "
-                f"does not exist in {tag}, so the run would fail with an "
-                "'unexpected argument' error that looks like an action bug. "
-                f"Pin version: {floor} once it is released, or use "
-                "prometheus-url."
-            )
+        if args.needs_alertmanager:
+            refusal = alertmanager_floor_error(tag)
+            if refusal is not None:
+                raise ResolveError(refusal)
         print(tag)
     except ResolveError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -447,6 +420,48 @@ class VersionFloorTests(unittest.TestCase):
         # Fail open against the user, not closed: the tag already resolved
         # to something installable.
         self.assertTrue(at_least("weird", (1, 21, 0)))
+
+
+class AlertmanagerRefusalTests(unittest.TestCase):
+    """The refusal itself, not just the comparison it rests on.
+
+    These are the tests that go red if the floor guard is deleted along
+    with the staleness probe it shipped beside — the two were introduced
+    together, and only one of them had a reason to be removed.
+    """
+
+    def test_a_release_below_the_floor_is_refused(self):
+        message = alertmanager_floor_error("v1.20.0")
+        self.assertIsNotNone(message)
+        assert message is not None
+        # The message must name BOTH the floor and what this run actually
+        # resolved to. Naming only the floor leaves the reader guessing
+        # which of their pins produced it.
+        self.assertIn("v1.21.0", message)
+        self.assertIn("v1.20.0", message)
+        self.assertIn("prometheus-url", message)
+
+    def test_the_floor_release_itself_is_accepted(self):
+        self.assertIsNone(alertmanager_floor_error("v1.21.0"))
+
+    def test_a_newer_release_is_accepted(self):
+        for tag in ("v1.22.0", "v1.21.1", "v2.0.0"):
+            self.assertIsNone(alertmanager_floor_error(tag))
+
+    def test_an_unrecognized_shape_is_not_refused(self):
+        # parse_version returns None for anything that is not vX.Y.Z, and
+        # at_least treats that as satisfying the floor. Refusing here would
+        # block resolution on a shape this module does not understand,
+        # which is a worse failure than letting clap report the truth.
+        self.assertIsNone(alertmanager_floor_error("nightly"))
+
+    def test_the_message_no_longer_promises_a_future_release(self):
+        # The old wording said "Pin version: v1.21.0 once it is released".
+        # It is released; telling someone to wait for it sends them after a
+        # cause that no longer exists.
+        message = alertmanager_floor_error("v1.20.0")
+        assert message is not None
+        self.assertNotIn("once it is released", message)
 
 
 class SelectionTests(unittest.TestCase):
