@@ -342,6 +342,35 @@ jobs:
         env:
           SONDA_BIN: ./target/release/sonda
 
+      # The generator waveform SVGs on build/generators.md are a committed
+      # build output of `sonda-core/examples/waveform_gallery.rs`, and until
+      # now the only committed build output with no drift gate — the editor
+      # bundle has one here, the wasm bundle has its own workflow, these had
+      # nothing. A change to a generator's shape, or to the renderer, left the
+      # published pictures showing the old curve with nothing to say so.
+      #
+      # Unlike the wasm bundle this needs no platform precondition: the
+      # example is pure Rust writing text, and all 13 files reproduce
+      # byte-identically from a plain `cargo run`.
+      #
+      # THE DELETION IS THE POINT. Regenerating over the top and diffing would
+      # pass vacuously if the example ever stopped writing — no output, no
+      # difference, green. Removing the files first makes the check depend on
+      # the generator actually producing them: silence now shows up as 13
+      # deletions rather than as success.
+      - name: Committed waveform SVGs match their generator
+        run: |
+          set -euo pipefail
+          rm -f docs/site/docs/build/img/generators/*.svg
+          cargo run -q -p sonda-core --example waveform_gallery
+          if ! git diff --exit-code --stat -- docs/site/docs/build/img/generators/; then
+            echo "::error::the committed waveform SVGs do not match a fresh run of" \
+              "the waveform_gallery example. Run 'task site:waveforms' and commit" \
+              "the result. If files are shown as deleted rather than modified, the" \
+              "example did not write them at all."
+            exit 1
+          fi
+
   # The docs site's JS is exercised here and nowhere else. The pure-helper
   # harness covers functions that are plain functions of their arguments; this
   # job covers what only a browser can: the wasm engine actually loading, the
