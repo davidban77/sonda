@@ -274,13 +274,15 @@ The CLI crate is intentionally thin. Its only responsibilities are:
 - Instantiate the appropriate generator, encoder, and sink from `sonda-core`.
 - Hand control to the `sonda-core` scenario runner.
 
-Primary CLI surface (four verbs):
+Primary CLI surface (six verbs):
 
 ```
 sonda run <file-or-@name> [OPTIONS]              # launch a v2 scenario
 sonda list --catalog <dir> [--kind ...] [--tag ...]
 sonda show <@name> --catalog <dir>               # print the raw YAML
 sonda new [--template | --from <csv>] [-o <path>]
+sonda test <file-or-@name> --prometheus-url ...  # verify expect: alerts
+sonda completions <shell>                        # shell completion script
 ```
 
 `sonda run` accepts either a filesystem path to a YAML file or a `@name` shorthand that resolves through `--catalog <dir>`. The CLI does not contain signal generation logic. Any behavior that is tested or benchmarked belongs in `sonda-core`.
@@ -342,7 +344,7 @@ Portability is a primary constraint. Sonda must run on bare metal, in Docker, an
 
 ## 11. MVP Scope
 
-The MVP is complete when the following criteria are met. (Historical wording — the CLI surface collapsed to the four verbs documented in §7 for 1.9; today the equivalent is `sonda run <file>` against a v2 YAML.)
+The MVP is complete when the following criteria are met. <!-- verbs:historical --> (Historical wording — the CLI surface collapsed to the four verbs documented in §7 for 1.9; today the equivalent is `sonda run <file>` against a v2 YAML.)
 
 - `sonda metrics --name <n> --rate <r> --duration <d>` generates valid Prometheus text to stdout.
 - Value generators: constant, uniform random (seeded), sine, sawtooth.

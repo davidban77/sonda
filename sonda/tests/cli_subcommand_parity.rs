@@ -1,6 +1,16 @@
 //! Every copy of "which verbs does the CLI have" must agree with the parser.
 //!
-//! There are three, and the `Commands` enum is the only one that is real:
+//! The `Commands` enum is the only one that is real. Two machine-readable
+//! copies and an open-ended set of prose claims are checked against it here.
+//!
+//! Deliberately no count is stated in this sentence. An earlier version said
+//! "there are three", `sonda-server`'s comment said "a fourth", and #565's PR
+//! body said "a fifth" — three hand-maintained tallies of the hand-maintained
+//! copies, disagreeing with each other, in the file arguing that hand-
+//! maintained lists drift (#565 review M2). The tests below enumerate; this
+//! comment does not.
+//!
+//! The machine-readable copies:
 //!
 //! * `sonda-server`'s `SONDA_SUBCOMMANDS` — it shells out to the sibling
 //!   `sonda` binary for anything in that list, so a verb missing from it is
@@ -22,11 +32,137 @@
 //! either constant is restructured, this fails loudly — which is correct. A
 //! silent pass on a constant it can no longer find would be the exact failure
 //! it exists to prevent, so both parses assert they found something.
+//!
+//! The prose claims are handled differently, and the difference is the point.
+//! #565 enumerated the copies BY HAND and missed one: `docs/architecture.md`
+//! had said "four verbs" since `sonda test` shipped, unnoticed because it sits
+//! outside the docs gate's root. Naming three files here would repeat that
+//! mistake with a larger three. So the prose check does not take a file list:
+//! it walks every tracked Markdown file and holds any file making a
+//! "<number> verbs" claim to the parser's count. A new document inherits the
+//! gate by existing.
 
 mod common;
 
 use common::sonda_bin;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Number words a prose verb-count claim might spell out, plus digits.
+fn spelled_number(word: &str) -> Option<usize> {
+    const WORDS: [&str; 13] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
+    let lower = word.to_ascii_lowercase();
+    if let Some(index) = WORDS.iter().position(|w| *w == lower) {
+        return Some(index);
+    }
+    lower.parse::<usize>().ok()
+}
+
+/// Repo root, derived from this crate's manifest directory.
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the sonda crate must live inside the workspace")
+        .to_path_buf()
+}
+
+/// Every Markdown file in the repository, skipping build and vendor trees.
+fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            // Build output, vendored JS, git internals and virtualenvs are not
+            // ours to gate.
+            //
+            // Note `docs/site/site/` — mkdocs' build output per .gitignore —
+            // and NOT any directory merely named `site`: excluding that name
+            // outright silently swallowed `docs/site/docs/**`, which is where
+            // the user-facing reference lives. The guard test below caught it
+            // on the first run by naming a file it expects to find, which is
+            // the whole reason that guard exists.
+            let is_mkdocs_output = name == "site" && dir.file_name().is_some_and(|d| d == "site");
+            if is_mkdocs_output
+                || matches!(name.as_ref(), "target" | "node_modules" | ".git" | ".venv")
+            {
+                continue;
+            }
+            markdown_files(&path, out);
+        } else if name.ends_with(".md") {
+            out.push(path);
+        }
+    }
+}
+
+/// A prose claim of the form "<number> verbs", with where it was found.
+struct VerbCountClaim {
+    path: PathBuf,
+    line_number: usize,
+    claimed: usize,
+    line: String,
+}
+
+/// Every unexempted "<number> verbs" claim in the repository's Markdown.
+///
+/// Two exemptions, both narrow and both visible in the source they exempt:
+///
+/// * `CHANGELOG.md` — an append-only record of what was true at each release.
+///   Rewriting past entries to match today would falsify history, so the file
+///   is skipped wholesale rather than line by line.
+/// * Any line carrying `<!-- verbs:historical -->` — prose that deliberately
+///   describes an earlier surface. This is an opt-out a human must type, and
+///   it is visible in the diff when they do; it is not a silent exemption.
+fn verb_count_claims() -> Vec<VerbCountClaim> {
+    let root = repo_root();
+    let mut files = Vec::new();
+    markdown_files(&root, &mut files);
+    assert!(
+        !files.is_empty(),
+        "found no Markdown files under {} — the walk is broken, and an empty \
+         set would make this gate pass vacuously",
+        root.display()
+    );
+
+    let mut claims = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "CHANGELOG.md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if line.contains("<!-- verbs:historical -->") {
+                continue;
+            }
+            let mut words = line.split_whitespace().peekable();
+            while let Some(word) = words.next() {
+                let next_is_verbs = words
+                    .peek()
+                    .is_some_and(|w| w.trim_end_matches([':', '.', ',', ')']) == "verbs");
+                if !next_is_verbs {
+                    continue;
+                }
+                if let Some(claimed) = spelled_number(word.trim_start_matches('(')) {
+                    claims.push(VerbCountClaim {
+                        path: path.clone(),
+                        line_number: index + 1,
+                        claimed,
+                        line: line.trim().to_string(),
+                    });
+                }
+            }
+        }
+    }
+    claims
+}
 
 /// The verbs `sonda --help` advertises, read from the live parser.
 fn parser_subcommands() -> Vec<String> {
@@ -191,4 +327,91 @@ fn the_docs_validator_accepts_every_verb_the_cli_defines() {
          that is actually correct; a verb here that the CLI does not define \
          lets a typo through as a real command."
     );
+}
+
+#[test]
+fn the_walk_finds_the_claims_this_test_expects_to_check() {
+    // Guards the walk itself, for the same reason `help_lists_the_verbs…`
+    // guards the help parse: if the traversal or the phrase match silently
+    // stops finding anything, every assertion below passes on an empty set.
+    let claims = verb_count_claims();
+    assert!(
+        !claims.is_empty(),
+        "found no '<number> verbs' claims anywhere in the repo's Markdown. \
+         Either the walk broke or the phrasing changed — both make the gate \
+         below vacuous."
+    );
+    let files: Vec<String> = claims
+        .iter()
+        .map(|c| {
+            c.path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    for expected in ["cli-flags.md", "CLAUDE.md", "architecture.md"] {
+        assert!(
+            files.iter().any(|f| f == expected),
+            "expected a verb-count claim in {expected}; found claims in {files:?}"
+        );
+    }
+}
+
+#[test]
+fn every_prose_verb_count_matches_the_parser() {
+    let mut parser = parser_subcommands();
+    parser.retain(|v| v != "help");
+    parser.sort();
+    parser.dedup();
+
+    let mut wrong = Vec::new();
+    for claim in verb_count_claims() {
+        if claim.claimed != parser.len() {
+            wrong.push(format!(
+                "{}:{} claims {} verbs, parser has {} — {:?}",
+                claim.path.display(),
+                claim.line_number,
+                claim.claimed,
+                parser.len(),
+                claim.line
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "prose verb counts have drifted from the CLI.\n{}\n\nThis is what \
+         #565 missed: docs/architecture.md had said \"four verbs\" since \
+         `sonda test` shipped, because nothing checked it and it sits outside \
+         the docs gate's root. If a claim is deliberately describing an older \
+         surface, mark that line `<!-- verbs:historical -->`.",
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn a_document_that_counts_the_verbs_also_names_them() {
+    // A correct count with a stale list is the same defect one level down:
+    // `cli-flags.md` would have said "six verbs" while listing four.
+    let mut parser = parser_subcommands();
+    parser.retain(|v| v != "help");
+
+    let mut missing = Vec::new();
+    for claim in verb_count_claims() {
+        let Ok(text) = std::fs::read_to_string(&claim.path) else {
+            continue;
+        };
+        for verb in &parser {
+            if !text.contains(verb.as_str()) {
+                missing.push(format!(
+                    "{} counts the verbs but never names `{verb}`",
+                    claim.path.display()
+                ));
+            }
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
 }
