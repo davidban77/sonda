@@ -155,6 +155,11 @@ fn claim_block(lines: &[&str], claim_index: usize) -> String {
             }
             continue;
         }
+        // Reset on content: the comment above says CONSECUTIVE blanks end the
+        // block, and until this line the counter never reset, so two blank
+        // lines anywhere did — one ordinary sentence between a claim and the
+        // fence it introduces was enough to lose the fence (#567 r2 W1).
+        blanks = 0;
         block.push(line);
     }
     block.join("\n")
@@ -522,7 +527,7 @@ fn enumerated_verbs(claim_line: &str, block: &str, known: &[String]) -> Option<V
             .filter(|verb| block_names_verb(list, verb))
             .cloned()
             .collect();
-        if !named.is_empty() {
+        if is_enumeration(&named, known) {
             return Some(named);
         }
     }
@@ -536,11 +541,27 @@ fn enumerated_verbs(claim_line: &str, block: &str, known: &[String]) -> Option<V
         .filter(|token| known.iter().any(|verb| verb == token))
         .map(|token| token.to_string())
         .collect();
-    if !fenced.is_empty() {
+    if is_enumeration(&fenced, known) {
         return Some(fenced);
     }
 
     None
+}
+
+/// Whether a set of named verbs is an enumeration of the surface.
+///
+/// A majority means the text is listing the verbs, so it must list all of
+/// them. Fewer means a passing mention with an example or two, and demanding
+/// a full recitation there is the check being wrong in the other direction.
+///
+/// #567 r2 M1: this rule was stated in a doc comment and implemented as
+/// `!named.is_empty()` — so a passing mention followed by a single
+/// `sonda run scenario.yaml` example was compelled to recite all six. The
+/// rule now lives in one function that both the prose and the callers point
+/// at, because a claim in a comment that the code does not implement is the
+/// defect this repo keeps naming.
+fn is_enumeration(named: &[String], known: &[String]) -> bool {
+    named.len() * 2 > known.len()
 }
 
 /// Whether `block` names `verb` as a verb rather than as a substring.
