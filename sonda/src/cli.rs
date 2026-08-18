@@ -62,6 +62,15 @@ pub enum Commands {
     New(NewArgs),
     /// Run a scenario and verify its `expect:` alert expectations.
     Test(TestArgs),
+    /// Print a shell completion script to stdout.
+    Completions(CompletionsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for.
+    #[arg(value_enum)]
+    pub shell: clap_complete::Shell,
 }
 
 #[derive(Debug, Args)]

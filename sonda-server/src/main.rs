@@ -30,7 +30,7 @@ use crate::state::AppState;
 
 /// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
 /// Mirror of `sonda`'s clap definition.
-const SONDA_SUBCOMMANDS: &[&str] = &["run", "list", "show", "new", "test"];
+const SONDA_SUBCOMMANDS: &[&str] = &["run", "list", "show", "new", "test", "completions"];
 
 /// Command-line arguments for sonda-server.
 ///
@@ -324,9 +324,15 @@ async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signa
 mod tests {
     use super::*;
 
+    // NOTE: this list is a *fourth* copy of the CLI's verbs, and it is the one
+    // that has to be updated by hand alongside SONDA_SUBCOMMANDS itself — it
+    // cannot reach the `sonda` crate's parser from here. The authoritative
+    // comparison against `sonda --help` lives in
+    // `sonda/tests/cli_subcommand_parity.rs`; this one keeps the server's own
+    // suite honest about its own constant.
     #[test]
     fn dispatch_list_covers_all_known_subcommands() {
-        let expected = ["run", "list", "show", "new", "test"];
+        let expected = ["run", "list", "show", "new", "test", "completions"];
         assert_eq!(SONDA_SUBCOMMANDS.len(), expected.len());
         for name in expected {
             assert!(

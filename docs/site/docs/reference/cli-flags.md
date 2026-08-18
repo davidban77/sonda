@@ -5,7 +5,7 @@ description: Every flag, argument, exit code, and progress line for the sonda bi
 
 # CLI Reference
 
-The `sonda` binary has four verbs: `run`, `list`, `show`, and `new`. `run` executes a [scenario YAML file](../build/scenario-files.md). `list` and `show` browse a catalog directory of scenarios and composable packs. `new` creates a starter file.
+The `sonda` binary has six verbs: `run`, `list`, `show`, `new`, `test`, and `completions`. `run` executes a [scenario YAML file](../build/scenario-files.md). `list` and `show` browse a catalog directory of scenarios and composable packs. `new` creates a starter file. `test` runs a scenario and verifies its `expect:` alert expectations. `completions` prints a shell completion script.
 
 Earlier releases used per-signal subcommands (`metrics`, `logs`, `histogram`, `summary`). These were removed in 1.9. Every signal type is now declared inside the scenario YAML, then run with `sonda run`.
 
@@ -322,6 +322,40 @@ query for every expectation. Only the first expectation is retried (3
 attempts, for a backend still starting up in CI); the rest are probed
 once each, so preflight against a dead endpoint fails within about three
 query timeouts regardless of how many expectations the scenario declares.
+
+## `sonda completions`
+
+Prints a shell completion script to stdout. Supported shells: `bash`, `zsh`,
+`fish`, `powershell`, `elvish`.
+
+```bash
+sonda completions bash
+```
+
+The script is generated from the same argument parser the binary runs on, so
+it never falls behind: a flag added to `sonda test` is completable in the same
+release, with no completion list to update separately.
+
+Install it wherever your shell looks for completions. For bash:
+
+```bash
+sonda completions bash > ~/.local/share/bash-completion/completions/sonda
+```
+
+For zsh, write it to a directory on your `$fpath`:
+
+```bash
+sonda completions zsh > "${fpath[1]}/_sonda"
+```
+
+For fish:
+
+```bash
+sonda completions fish > ~/.config/fish/completions/sonda.fish
+```
+
+An unsupported shell name exits `2` and writes nothing to stdout, so a
+mistyped shell cannot silently install an empty completion file.
 
 ## Exit codes
 

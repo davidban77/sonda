@@ -70,6 +70,7 @@ sonda [GLOBAL FLAGS] run <SCENARIO> [OPTIONS]
 sonda [GLOBAL FLAGS] list --catalog <DIR> [--kind <runnable|composable>] [--tag <TAG>] [--json]
 sonda [GLOBAL FLAGS] show <@NAME> --catalog <DIR>
 sonda [GLOBAL FLAGS] new [--template | --from <CSV>] [-o <PATH>]
+sonda completions <bash|zsh|fish|powershell|elvish>
 ```
 
 `<SCENARIO>` is either a path to a v2 YAML file or `@name` for catalog lookup. Every scenario file
@@ -134,9 +135,12 @@ API. No per-signal-type dispatch in main.rs.
 
 ## Adding a New Subcommand
 
-The CLI is intentionally restricted to five verbs (`test` was added as the alert-testing
-entry point — rationale: it composes `run` with verification and cannot be expressed as a
-`run` flag without overloading its exit-code contract). Adding another verb is an architectural decision
+The CLI is intentionally restricted to six verbs. `test` was added as the alert-testing entry
+point — rationale: it composes `run` with verification and cannot be expressed as a `run` flag
+without overloading its exit-code contract. `completions` writes a shell completion script to
+stdout and touches nothing else — rationale: it is the shape every CLI's completions take, and
+it returns before the tokio runtime is built, so shell startup never pays for a scheduler.
+Adding another verb is an architectural decision
 that should be paired with a written rationale — most workflows are better expressed by adding flags
 to `sonda run` or by extending the catalog metadata that `sonda list` / `sonda show` surface. If
 a new verb is genuinely warranted:
@@ -145,7 +149,10 @@ a new verb is genuinely warranted:
 2. Add the corresponding clap derive struct for its flags.
 3. Add a match arm in `main.rs` that calls the appropriate sonda-core API.
 4. Add the verb to `sonda-server/src/main.rs`'s `SONDA_SUBCOMMANDS` so the dispatch shim
-   forwards it to the sibling `sonda` binary.
+   forwards it to the sibling `sonda` binary. `sonda/tests/cli_subcommand_parity.rs` compares
+   that list against `sonda --help` and fails if they drift, so this step is now enforced
+   rather than remembered — but the test tells you *that* they disagree, and step 4 is still
+   how you fix it.
 
 The actual logic stays in sonda-core.
 
