@@ -349,25 +349,54 @@ jobs:
       # nothing. A change to a generator's shape, or to the renderer, left the
       # published pictures showing the old curve with nothing to say so.
       #
-      # Unlike the wasm bundle this needs no platform precondition: the
-      # example is pure Rust writing text, and all 13 files reproduce
-      # byte-identically from a plain `cargo run`.
+      # Unlike the wasm bundle this needs no platform precondition — but the
+      # reason is the ROUNDING, not the language (#567 r3 M2). The gallery
+      # calls `.sin()`, `.ln()` and `.cos()`, whose last ULP is not guaranteed
+      # identical across platforms and libm versions; every coordinate is then
+      # emitted as `{:.1}`, which swamps a ULP difference by orders of
+      # magnitude. Seeded RNGs (42, 7, 11) close the other degree of freedom.
+      # If that precision is ever widened for smoother curves, this claim has
+      # to be re-measured across hosts before it can be repeated.
       #
       # THE DELETION IS THE POINT. Regenerating over the top and diffing would
       # pass vacuously if the example ever stopped writing — no output, no
       # difference, green. Removing the files first makes the check depend on
-      # the generator actually producing them: silence now shows up as 13
+      # the generator actually producing them: silence shows up as 13
       # deletions rather than as success.
       - name: Committed waveform SVGs match their generator
         run: |
           set -euo pipefail
-          rm -f docs/site/docs/build/img/generators/*.svg
+          dir=docs/site/docs/build/img/generators
+
+          # Assert the corpus exists BEFORE deleting it. `rm -f` succeeds on a
+          # glob that matches nothing and git reports nothing for a path it
+          # does not track, so a renamed directory would leave both halves of
+          # this step green forever while checking nothing (#567 r3 M1) —
+          # the same vacuous-pass shape the parity test already guards twice.
+          # `|| true` because pipefail would otherwise kill the step on a
+          # missing directory before the message below can explain why.
+          before=$(find "$dir" -maxdepth 1 -name '*.svg' 2>/dev/null | wc -l || true)
+          if [ "$before" -eq 0 ]; then
+            echo "::error::no SVGs found under ${dir} — the directory moved or" \
+              "the glob is wrong. Refusing to 'verify' an empty corpus."
+            exit 1
+          fi
+
+          rm -f "$dir"/*.svg
           cargo run -q -p sonda-core --example waveform_gallery
-          if ! git diff --exit-code --stat -- docs/site/docs/build/img/generators/; then
+
+          # `git status --porcelain`, not `git diff`: diff compares the worktree
+          # to the index and so cannot see UNTRACKED files. Adding a 14th
+          # generator, regenerating, and forgetting to `git add` the new SVG is
+          # precisely the workflow this gate exists to protect, and it was
+          # invisible to the diff form (#567 r3 W1).
+          drift=$(git status --porcelain -- "$dir")
+          if [ -n "$drift" ]; then
             echo "::error::the committed waveform SVGs do not match a fresh run of" \
               "the waveform_gallery example. Run 'task site:waveforms' and commit" \
-              "the result. If files are shown as deleted rather than modified, the" \
-              "example did not write them at all."
+              "the result. '??' means a generated file is not tracked at all;" \
+              "' D' means the example did not write it."
+            echo "$drift"
             exit 1
           fi
 
