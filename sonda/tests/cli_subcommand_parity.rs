@@ -107,6 +107,57 @@ struct VerbCountClaim {
     line_number: usize,
     claimed: usize,
     line: String,
+    /// The claim's own line plus the block it introduces — see [`claim_block`].
+    block: String,
+}
+
+/// The text a verb-count claim is actually making a claim *about*.
+///
+/// The claim line itself, plus the block it introduces: contiguous following
+/// lines, and a fenced code block if one opens within a line or two (the
+/// `Primary CLI surface (six verbs):` / ```` ``` ```` shape). Bounded, so a
+/// document with no blank lines cannot swallow itself whole.
+///
+/// #567 review W1: the previous version searched the WHOLE FILE for each verb.
+/// Five of the six — run, list, show, new, test — are ordinary English
+/// fragments (runner, listing, shows, newline, latest), so only `completions`
+/// discriminated at all. The red-verification passed by luck of the corpus:
+/// `architecture.md` happened to contain that word exactly once, on the line
+/// the mutation deleted. Applied to `cli-flags.md`, where the word survives in
+/// its own section heading, the identical defect was invisible.
+fn claim_block(lines: &[&str], claim_index: usize) -> String {
+    const MAX_BLOCK_LINES: usize = 40;
+    let mut block = vec![lines[claim_index]];
+    let mut in_fence = false;
+    let mut blanks = 0usize;
+
+    for line in lines.iter().skip(claim_index + 1).take(MAX_BLOCK_LINES) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            block.push(line);
+            if in_fence {
+                break; // the fence this claim introduced has closed
+            }
+            in_fence = true;
+            blanks = 0;
+            continue;
+        }
+        if in_fence {
+            block.push(line);
+            continue;
+        }
+        if line.trim().is_empty() {
+            blanks += 1;
+            // One blank line may separate a claim from the fence it
+            // introduces; two means the block is over.
+            if blanks > 1 {
+                break;
+            }
+            continue;
+        }
+        block.push(line);
+    }
+    block.join("\n")
 }
 
 /// Every unexempted "<number> verbs" claim in the repository's Markdown.
@@ -138,7 +189,8 @@ fn verb_count_claims() -> Vec<VerbCountClaim> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for (index, line) in text.lines().enumerate() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
             if line.contains("<!-- verbs:historical -->") {
                 continue;
             }
@@ -156,6 +208,7 @@ fn verb_count_claims() -> Vec<VerbCountClaim> {
                         line_number: index + 1,
                         claimed,
                         line: line.trim().to_string(),
+                        block: claim_block(&lines, index),
                     });
                 }
             }
@@ -391,27 +444,129 @@ fn every_prose_verb_count_matches_the_parser() {
 }
 
 #[test]
-fn a_document_that_counts_the_verbs_also_names_them() {
-    // A correct count with a stale list is the same defect one level down:
-    // `cli-flags.md` would have said "six verbs" while listing four.
+fn a_block_that_lists_the_verbs_lists_all_of_them() {
+    // A correct count above a stale list is the same defect one level down.
+    //
+    // Scoped to the claim's own block rather than the whole file (#567 review
+    // W1). Whole-file search made this check almost inert: five of the six
+    // verbs are ordinary English fragments, so only `completions` ever
+    // discriminated, and only in a file that happened to contain it once.
+    //
+    // "Is this block a listing?" is decided by how many verbs it already
+    // names. A block naming a MAJORITY of them is enumerating the surface, so
+    // it must name all of them. A block naming few or none is prose that
+    // mentions a count in passing — "the CLI exposes six verbs, all thin
+    // wrappers over sonda-core" is true and useful, and compelling it to
+    // recite the list would be the check being wrong in the other direction
+    // (#567 review M1).
     let mut parser = parser_subcommands();
     parser.retain(|v| v != "help");
 
-    let mut missing = Vec::new();
+    let mut problems = Vec::new();
     for claim in verb_count_claims() {
-        let Ok(text) = std::fs::read_to_string(&claim.path) else {
-            continue;
+        let Some(named) = enumerated_verbs(&claim.line, &claim.block, &parser) else {
+            continue; // a passing mention, not a listing
         };
-        for verb in &parser {
-            if !text.contains(verb.as_str()) {
-                missing.push(format!(
-                    "{} counts the verbs but never names `{verb}`",
-                    claim.path.display()
-                ));
-            }
+        let missing: Vec<&str> = parser
+            .iter()
+            .filter(|verb| !named.contains(verb))
+            .map(|v| v.as_str())
+            .collect();
+        if !missing.is_empty() {
+            problems.push(format!(
+                "{}:{} enumerates {} of the {} verbs, omitting {:?} — {:?}",
+                claim.path.display(),
+                claim.line_number,
+                named.len(),
+                parser.len(),
+                missing,
+                claim.line
+            ));
         }
     }
-    missing.sort();
-    missing.dedup();
-    assert!(missing.is_empty(), "{}", missing.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "a block that enumerates the CLI's verbs is missing some of them:\n{}",
+        problems.join("\n")
+    );
+}
+
+/// The verbs a claim actually *enumerates*, if it enumerates any.
+///
+/// Two shapes occur in this repo, and both attach a list to the count:
+///
+/// ```text
+/// The `sonda` binary has six verbs: `run`, `list`, ... and `completions`.
+///
+/// Primary CLI surface (six verbs):
+/// ```                       <- a fence whose lines are `sonda <verb> ...`
+/// ```
+///
+/// Returns None when the claim carries no enumeration — a passing mention
+/// like "the CLI exposes six verbs, all thin wrappers over sonda-core" has
+/// nothing to be inconsistent with, and demanding a recitation there is the
+/// check being wrong in the other direction (#567 review M1).
+///
+/// This is deliberately narrower than "does the surrounding prose mention the
+/// word somewhere". #567 review W1 defeated that: dropping `completions` from
+/// this very list left the word intact in a later sentence on the same line,
+/// so the paragraph still named all six while the list named five. The count
+/// and the list it introduces have to be compared to each other.
+fn enumerated_verbs(claim_line: &str, block: &str, known: &[String]) -> Option<Vec<String>> {
+    // Shape 1: an inline list introduced by a colon straight after "verbs".
+    if let Some(after) = claim_line.split_once("verbs:").map(|(_, rest)| rest) {
+        // The list ends at the first sentence break.
+        let list = after.split_once(". ").map_or(after, |(head, _)| head);
+        let named: Vec<String> = known
+            .iter()
+            .filter(|verb| block_names_verb(list, verb))
+            .cloned()
+            .collect();
+        if !named.is_empty() {
+            return Some(named);
+        }
+    }
+
+    // Shape 2: a fenced usage block. Its lines invoke the binary by name, so
+    // the verb is the token straight after `sonda`.
+    let fenced: Vec<String> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("sonda "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter(|token| known.iter().any(|verb| verb == token))
+        .map(|token| token.to_string())
+        .collect();
+    if !fenced.is_empty() {
+        return Some(fenced);
+    }
+
+    None
+}
+
+/// Whether `block` names `verb` as a verb rather than as a substring.
+///
+/// `run`, `list`, `show`, `new` and `test` all occur inside ordinary words —
+/// runner, listing, shows, newline, latest — which is exactly why the
+/// whole-file `contains` this replaces could not discriminate. Requiring a
+/// non-alphanumeric boundary on both sides is what makes the check mean
+/// "names the verb".
+fn block_names_verb(block: &str, verb: &str) -> bool {
+    let boundary =
+        |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    let bytes = block.as_bytes();
+    let mut from = 0usize;
+    while let Some(found) = block[from..].find(verb) {
+        let start = from + found;
+        let end = start + verb.len();
+        let before = block[..start].chars().next_back();
+        let after = block[end..].chars().next();
+        if boundary(before) && boundary(after) {
+            return true;
+        }
+        from = start + 1;
+        if from >= bytes.len() {
+            break;
+        }
+    }
+    false
 }
