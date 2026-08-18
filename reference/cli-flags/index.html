@@ -2134,6 +2134,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sonda-completions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda completions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2504,6 +2515,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sonda-completions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda completions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2585,7 +2607,7 @@
 
 
 <h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
-<p>The <code>sonda</code> binary has four verbs: <code>run</code>, <code>list</code>, <code>show</code>, and <code>new</code>. <code>run</code> executes a <a href="../../build/scenario-files/"><abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML file</a>. <code>list</code> and <code>show</code> browse a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory of scenarios and composable packs. <code>new</code> creates a starter file.</p>
+<p>The <code>sonda</code> binary has six verbs: <code>run</code>, <code>list</code>, <code>show</code>, <code>new</code>, <code>test</code>, and <code>completions</code>. <code>run</code> executes a <a href="../../build/scenario-files/"><abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML file</a>. <code>list</code> and <code>show</code> browse a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory of scenarios and composable packs. <code>new</code> creates a starter file. <code>test</code> runs a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and verifies its <code>expect:</code> alert expectations. <code>completions</code> prints a shell completion script.</p>
 <p>Earlier releases used per-signal subcommands (<code>metrics</code>, <code>logs</code>, <code>histogram</code>, <code>summary</code>). These were removed in 1.9. Every signal type is now declared inside the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML, then run with <code>sonda run</code>.</p>
 <h2 id="global-options">Global options<a class="headerlink" href="#global-options" title="Permanent link">&para;</a></h2>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sonda [OPTIONS] &lt;run|list|show|new&gt; [ARGS...]
@@ -2974,6 +2996,25 @@ query for every expectation. Only the first expectation is retried (3
 attempts, for a backend still starting up in CI); the rest are probed
 once each, so preflight against a dead endpoint fails within about three
 query timeouts regardless of how many expectations the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> declares.</p>
+<h2 id="sonda-completions"><code>sonda completions</code><a class="headerlink" href="#sonda-completions" title="Permanent link">&para;</a></h2>
+<p>Prints a shell completion script to stdout. Supported shells: <code>bash</code>, <code>zsh</code>,
+<code>fish</code>, <code>powershell</code>, <code>elvish</code>.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>sonda<span class="w"> </span>completions<span class="w"> </span>bash
+</span></code></pre></div>
+<p>The script is generated from the same argument parser the binary runs on, so
+it never falls behind: a flag added to <code>sonda test</code> is completable in the same
+release, with no completion list to update separately.</p>
+<p>Install it wherever your shell looks for completions. For bash:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>sonda<span class="w"> </span>completions<span class="w"> </span>bash<span class="w"> </span>&gt;<span class="w"> </span>~/.local/share/bash-completion/completions/sonda
+</span></code></pre></div>
+<p>For zsh, write it to a directory on your <code>$fpath</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>sonda<span class="w"> </span>completions<span class="w"> </span>zsh<span class="w"> </span>&gt;<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">fpath</span><span class="p">[1]</span><span class="si">}</span><span class="s2">/_sonda"</span>
+</span></code></pre></div>
+<p>For fish:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>sonda<span class="w"> </span>completions<span class="w"> </span>fish<span class="w"> </span>&gt;<span class="w"> </span>~/.config/fish/completions/sonda.fish
+</span></code></pre></div>
+<p>An unsupported shell name exits <code>2</code> and writes nothing to stdout, so a
+mistyped shell cannot silently install an empty completion file.</p>
 <h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -3000,19 +3041,19 @@ query timeouts regardless of how many expectations the <abbr title="Sonda's unit
 <h2 id="status-output">Status output<a class="headerlink" href="#status-output" title="Permanent link">&para;</a></h2>
 <p>Sonda prints colored lifecycle banners to stderr while a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> runs. Banners go to stderr and data goes to stdout. You can redirect stdout to a file or pipe it without mixing in banner text.</p>
 <h3 id="start-and-stop-banners">Start and stop banners<a class="headerlink" href="#start-and-stop-banners" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>▶ cpu_usage_percent  signal_type: metrics | rate: 10/s | encoder: prometheus_text | sink: stdout | duration: 30s
-</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>...
-</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>■ cpu_usage_percent  completed in 30.0s | events: 300 | bytes: 12.3 KB | errors: 0
+<div class="language-text highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>▶ cpu_usage_percent  signal_type: metrics | rate: 10/s | encoder: prometheus_text | sink: stdout | duration: 30s
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>...
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>■ cpu_usage_percent  completed in 30.0s | events: 300 | bytes: 12.3 KB | errors: 0
 </span></code></pre></div>
 <h3 id="live-progress">Live progress<a class="headerlink" href="#live-progress" title="Permanent link">&para;</a></h3>
 <p>Between the start and stop banners, Sonda updates a progress line every 200ms on TTYs and every 5s on non-TTYs:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>  ~ cpu_usage_percent  events: 1,234 | rate: 9.8/s | bytes: 12.3 KB | elapsed: 5.2s
+<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>  ~ cpu_usage_percent  events: 1,234 | rate: 9.8/s | bytes: 12.3 KB | elapsed: 5.2s
 </span></code></pre></div>
 <p>Colors are automatic. Sonda respects <a href="https://no-color.org"><code>NO_COLOR</code></a> and disables ANSI when stderr is not a terminal.</p>
 <h3 id="verbosity">Verbosity<a class="headerlink" href="#verbosity" title="Permanent link">&para;</a></h3>
 <p><code>--quiet</code> suppresses banners and progress. Errors still print. <code>--verbose</code> prints the resolved <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> config at startup, then runs normally. The two flags are mutually exclusive.</p>
-<div class="language-bash highlight"><span class="filename">examples/cpu-spike.yaml</span><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>sonda<span class="w"> </span>-q<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w"> </span>&gt;<span class="w"> </span>metrics.txt<span class="w">    </span><span class="c1"># quiet for scripts</span>
-</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>sonda<span class="w"> </span>-v<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w">                  </span><span class="c1"># print config first</span>
+<div class="language-bash highlight"><span class="filename">examples/cpu-spike.yaml</span><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>sonda<span class="w"> </span>-q<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w"> </span>&gt;<span class="w"> </span>metrics.txt<span class="w">    </span><span class="c1"># quiet for scripts</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>sonda<span class="w"> </span>-v<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w">                  </span><span class="c1"># print config first</span>
 </span></code></pre></div>
 
 
@@ -3034,7 +3075,7 @@ query timeouts regardless of how many expectations the <abbr title="Sonda's unit
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 16, 2026 08:54:21 UTC">August 16, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 18, 2026 09:15:22 UTC">August 18, 2026</span>
   </span>
 
     
