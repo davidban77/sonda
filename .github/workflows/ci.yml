@@ -18,6 +18,7 @@ jobs:
   ci:
     name: Build, Test, Clippy, Fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -62,6 +63,7 @@ jobs:
   sonda-server:
     name: sonda-server Build & Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -96,6 +98,7 @@ jobs:
   docker-build:
     name: Docker Build (multi-arch verify)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -116,6 +119,7 @@ jobs:
   no-default-features:
     name: Test sonda-core without default features
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -159,6 +163,7 @@ jobs:
   all-features:
     name: Build, Test, Clippy (all features)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -200,6 +205,7 @@ jobs:
   docs-commands:
     name: Validate sonda commands in user-facing docs
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -410,6 +416,7 @@ jobs:
   docs-browser-smoke:
     name: Docs site browser smoke suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -508,6 +515,7 @@ jobs:
   release-pin-check:
     name: release.yml rust-toolchain pin matches rust-toolchain.toml
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -532,6 +540,7 @@ jobs:
   action-contract:
     name: sonda-action contract (argv safety + release resolution)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     # Deliberately NOT path-filtered, unlike the live self-test. These are
     # seconds of shell and Python with no containers, and they guard the
