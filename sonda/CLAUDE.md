@@ -70,6 +70,7 @@ sonda [GLOBAL FLAGS] run <SCENARIO> [OPTIONS]
 sonda [GLOBAL FLAGS] list --catalog <DIR> [--kind <runnable|composable>] [--tag <TAG>] [--json]
 sonda [GLOBAL FLAGS] show <@NAME> --catalog <DIR>
 sonda [GLOBAL FLAGS] new [--template | --from <CSV>] [-o <PATH>]
+sonda [GLOBAL FLAGS] test <SCENARIO> --prometheus-url <URL> | --alertmanager-url <URL>
 sonda completions <bash|zsh|fish|powershell|elvish>
 ```
 
