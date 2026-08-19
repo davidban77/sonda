@@ -46,10 +46,50 @@ Every commit must pass:
 
 ```bash
 cargo build --workspace
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 cargo clippy --workspace -- -D warnings
 cargo fmt --all -- --check
 ```
+
+`--no-fail-fast` is not optional. `cargo test --workspace` stops at the first failing *binary*,
+so a failure in `sonda-core` means `sonda-server` and the CLI integration tests never run at all.
+A run that aborted early has been reported as "everything passes" more than once. Name the
+failing tests individually; a count is not a result.
+
+## Writing a Check
+
+Most defects this repo has shipped were in its *checks*, not its code. Before adding one, answer
+these four. Each is here because it already went wrong.
+
+1. **Can it pass vacuously?** An empty corpus, a renamed directory, a generator that writes
+   nothing, a parse that returns nothing — all produce "no differences found". Assert the input
+   exists *before* checking it. `cli_subcommand_parity.rs` does this twice; the SVG gate in
+   `ci.yml` deletes its corpus first so silence surfaces as deletions rather than success.
+
+2. **Does the red-verification depend on an accident?** Confirm the mutation is present in the
+   file before trusting its result — a sabotage that silently fails to apply is indistinguishable
+   from a passing gate. Then ask *why* it went red: a check once passed only because the corpus
+   happened to contain the needle exactly once, on the line the mutation deleted. The same defect
+   elsewhere was invisible.
+
+3. **Is the exemption something a human types?** An opt-out that appears in a diff
+   (`<!-- verbs:historical -->`) is honest. Silently skipping anything the check does not
+   recognise is not — it reads as coverage.
+
+4. **Does the comment describe what the code does?** A doc comment claiming a majority rule sat
+   above `!named.is_empty()`; a comment saying "two consecutive blanks" sat above a counter that
+   never reset. If a comment states a rule, the rule belongs in one function both the prose and
+   the callers point at.
+
+Two further rules of thumb, earned the expensive way:
+
+- **Prefer exact checks to heuristic ones.** Comparing a value to its source of truth converges.
+  Pattern-matching over prose or layout has an unbounded tail of shapes: every round finds
+  another, and each fix is genuinely correct. If a check cannot be made exact, ship it with its
+  limitations written down rather than iterating toward completeness.
+- **A test that copies the code it tests will diverge on exactly the line the bug is on.** Drive
+  the real thing — `scripts/tests/extract_run_bodies.py` exists so the action's contract tests
+  execute `action.yml`'s own shell rather than a transcription of it.
 
 ## How to Build
 
