@@ -132,6 +132,41 @@ impl PrometheusClient {
         })
     }
 
+    /// [`Self::alert_state`] plus the label sets of the firing series.
+    ///
+    /// Same request, same parse; the caller keeps the labels so provenance
+    /// survives a fall back to the live poll timeline.
+    pub fn alert_probe(
+        &self,
+        expectation: &AlertExpectation,
+    ) -> Result<(AlertState, Vec<BTreeMap<String, String>>), SondaError> {
+        let query = alerts_query(expectation);
+        let body = self
+            .agent
+            .get(&self.query_url)
+            .query("query", &query)
+            .call()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::Query {
+                    url: self.query_url.clone(),
+                    reason: e.to_string(),
+                })
+            })?
+            .into_string()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::BadResponse {
+                    url: self.query_url.clone(),
+                    reason: format!("response could not be read: {e}"),
+                })
+            })?;
+        parse_alert_probe(&body).map_err(|reason| {
+            SondaError::Verify(VerifyError::BadResponse {
+                url: self.query_url.clone(),
+                reason,
+            })
+        })
+    }
+
     /// Measure the server's clock with an instant `time()` query,
     /// bracketing the request with local readings so the offset is taken
     /// against the request's midpoint.
@@ -379,6 +414,22 @@ fn escape_label_value(value: &str) -> String {
 /// Returns a human-readable reason on failure; the caller wraps it with the
 /// query URL into a [`VerifyError::BadResponse`].
 pub fn parse_alert_state(body: &str) -> Result<AlertState, String> {
+    parse_alert_probe(body).map(|(state, _)| state)
+}
+
+/// An instant query's state **and** the label sets of its firing series.
+///
+/// The labels are in the response either way; returning only the state
+/// discarded them, and the discard had a consequence. The verdict timeline
+/// normally comes from a range query, which collects firing-series labels
+/// for the provenance check — but when no stored sample exists yet (an alert
+/// that fires faster than one `--query-step`) or the range API errors, the
+/// verdict falls back to the live poll timeline, and the provenance check
+/// then had nothing to inspect. The advisory disappeared precisely when the
+/// run was fastest, silently (#567 r4).
+pub fn parse_alert_probe(
+    body: &str,
+) -> Result<(AlertState, Vec<BTreeMap<String, String>>), String> {
     let parsed: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("not valid JSON: {e}"))?;
     if parsed["status"] != "success" {
@@ -387,16 +438,29 @@ pub fn parse_alert_state(body: &str) -> Result<AlertState, String> {
     let empty = Vec::new();
     let results = parsed["data"]["result"].as_array().unwrap_or(&empty);
     if results.is_empty() {
-        return Ok(AlertState::Inactive);
+        return Ok((AlertState::Inactive, Vec::new()));
     }
-    let firing = results
-        .iter()
-        .any(|series| series["metric"]["alertstate"] == "firing");
-    Ok(if firing {
-        AlertState::Firing
-    } else {
+    let mut firing_series = Vec::new();
+    for series in results {
+        if series["metric"]["alertstate"] != "firing" {
+            continue;
+        }
+        let Some(metric) = series["metric"].as_object() else {
+            continue;
+        };
+        firing_series.push(
+            metric
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+                .collect(),
+        );
+    }
+    let state = if firing_series.is_empty() {
         AlertState::Pending
-    })
+    } else {
+        AlertState::Firing
+    };
+    Ok((state, firing_series))
 }
 
 #[cfg(test)]

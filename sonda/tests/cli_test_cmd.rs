@@ -16,7 +16,6 @@ use common::sonda_bin;
 use tempfile::TempDir;
 
 const EMPTY_RESULT: &str = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
-const FIRING_RESULT: &str = r#"{"status":"success","data":{"resultType":"vector","result":[{"metric":{"alertname":"HighCpuUsage","alertstate":"firing"},"value":[1,"1"]}]}}"#;
 
 /// Serve scripted query responses. `respond(n, request_line)` picks the
 /// body and an artificial delay for the n-th request (0-based); the raw
@@ -195,8 +194,16 @@ fn skewed_alert_world(
             let offset = mono0.elapsed().as_secs_f64();
             let firing =
                 fire_at.is_some_and(|f| offset >= f) && resolve_at.is_none_or(|r| offset < r);
+            // Carry the same labels the matrix body does. Real Prometheus
+            // returns a series' full label set on an instant ALERTS query;
+            // a fixture that returns only alertname/alertstate cannot
+            // exercise anything that reads labels off the live poll.
             (
-                (if firing { FIRING_RESULT } else { EMPTY_RESULT }).to_string(),
+                (if firing {
+                    firing_result(host)
+                } else {
+                    EMPTY_RESULT.to_string()
+                }),
                 NO_STALL,
             )
         }
@@ -220,6 +227,13 @@ type RequestLog = Arc<std::sync::Mutex<Vec<String>>>;
 /// response headers + artificial delay out.
 type Responder =
     dyn Fn(usize, &str) -> (String, Vec<(String, String)>, std::time::Duration) + Send + Sync;
+
+/// An instant-query vector for a firing `ALERTS` series carrying `host`.
+fn firing_result(host: &str) -> String {
+    format!(
+        r#"{{"status":"success","data":{{"resultType":"vector","result":[{{"metric":{{"alertname":"HighCpuUsage","alertstate":"firing","severity":"critical","host":"{host}"}},"value":[1,"1"]}}]}}}}"#
+    )
+}
 
 /// Format an instant as Alertmanager renders `startsAt` / `endsAt`.
 fn rfc3339(unix: f64) -> String {
@@ -848,6 +862,72 @@ fn verdicts_survive_a_server_clock_running_behind() {
     assert!(
         stderr.contains("did not fire within 1s"),
         "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn provenance_survives_a_fall_back_to_the_live_poll_timeline() {
+    // #567 r4. The verdict timeline normally comes from a range query, which
+    // collects firing-series labels for the provenance check. When that query
+    // is unusable — no stored sample yet for an alert that fires inside one
+    // --query-step, or an API error — the verdict falls back to the live poll
+    // timeline, and the provenance check used to have nothing to inspect: the
+    // run passed clean while matching an alert from a foreign series.
+    //
+    // Forcing the range query to fail reproduces that state deterministically,
+    // without depending on the race that made it a CI flake.
+    let inner = alert_world(Some(0.0), None, "intruder-host");
+    let (url, _hits) = mock_prometheus(move |n, line| {
+        if line.contains("/api/v1/query_range") {
+            return (
+                "{\"status\":\"error\"}".to_string(),
+                std::time::Duration::ZERO,
+            );
+        }
+        inner(n, line)
+    });
+    let dir = TempDir::new().expect("tempdir");
+    let yaml = "version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 300ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: sonda-test
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 5s
+";
+    let path = write_scenario(&dir, yaml);
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Guards the fixture: if the fallback is not taken, this test proves
+    // nothing about the fallback.
+    assert!(
+        stderr.contains("uses the live poll timeline"),
+        "fixture did not force the fallback: {stderr}"
+    );
+    assert!(
+        stderr.contains("WARN") && stderr.contains("host=\"intruder-host\""),
+        "the provenance advisory must survive the fallback: {stderr}"
     );
 }
 

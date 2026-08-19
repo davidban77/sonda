@@ -103,8 +103,11 @@ enum Source {
 }
 
 /// What one poll of one expectation yielded, in the shape both acquisitions
-/// can produce. The Prometheus path leaves `series` and `started_at` empty
-/// — it recovers matched series from its range query instead.
+/// can produce. Both fill `series`: Prometheus normally recovers matched
+/// series from its range query, but that query can be unusable — no stored
+/// sample yet for an alert that fires inside one `--query-step`, or an API
+/// error — and the poll's own labels are what keep the provenance check
+/// working when it is (#567 r4). `started_at` stays Alertmanager-only.
 #[derive(Default)]
 struct Poll {
     series: Vec<BTreeMap<String, String>>,
@@ -157,10 +160,16 @@ impl Source {
     /// rest is evidence the caller accumulates.
     fn poll(&self, expectation: &AlertExpectation) -> (Result<AlertState, String>, Poll) {
         match self {
-            Source::Prometheus(client) => (
-                client.alert_state(expectation).map_err(|e| e.to_string()),
-                Poll::default(),
-            ),
+            Source::Prometheus(client) => match client.alert_probe(expectation) {
+                Ok((state, series)) => (
+                    Ok(state),
+                    Poll {
+                        series,
+                        ..Poll::default()
+                    },
+                ),
+                Err(e) => (Err(e.to_string()), Poll::default()),
+            },
             Source::Alertmanager(client) => match client.alerts(expectation) {
                 Ok(snapshot) => (
                     Ok(snapshot.state),
@@ -414,7 +423,16 @@ pub fn run(
                 evidence[index].series.clone(),
             ),
         };
-        matched_firing_series.extend(series);
+        // An empty `series` here means the range query produced no verdict
+        // timeline and the live poll one was used instead. The live poll saw
+        // the same alerts, so its labels answer the provenance question just
+        // as well — without this the advisory vanished exactly when the alert
+        // fired fastest (#567 r4).
+        if series.is_empty() {
+            matched_firing_series.extend(evidence[index].series.clone());
+        } else {
+            matched_firing_series.extend(series);
+        }
         firing_outcomes.push(evaluate_firing(&timeline, deadline));
     }
 
