@@ -274,6 +274,8 @@ The CLI crate is intentionally thin. Its only responsibilities are:
 - Instantiate the appropriate generator, encoder, and sink from `sonda-core`.
 - Hand control to the `sonda-core` scenario runner.
 
+<!-- verbs:listing -->
+
 Primary CLI surface (six verbs):
 
 ```
@@ -284,6 +286,8 @@ sonda new [--template | --from <csv>] [-o <path>]
 sonda test <file-or-@name> --prometheus-url ...  # verify expect: alerts
 sonda completions <shell>                        # shell completion script
 ```
+
+<!-- /verbs:listing -->
 
 `sonda run` accepts either a filesystem path to a YAML file or a `@name` shorthand that resolves through `--catalog <dir>`. The CLI does not contain signal generation logic. Any behavior that is tested or benchmarked belongs in `sonda-core`.
 

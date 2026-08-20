@@ -1,0 +1,61 @@
+# Verifies the container image still builds. Moved out of ci.yml so it can be
+# path-filtered on pull requests; unconditional on main, so a break still
+# surfaces within one merge.
+#
+# Cost, measured on the population the filter actually affects — pull_request
+# runs — rather than on all runs mixed together: 16 samples, median 223s,
+# range 12-286s. Thirteen of the sixteen are cold; the gha cache is rarely
+# warm for a PR. An earlier count here said "median 24s, mean ~95s" and was
+# drawn from a 15-run window that mixed main pushes in and happened to be
+# warm-heavy (#569 review M2). Roughly 3.5 minutes per docs PR is the real
+# saving, and none of it can be earned back by a change that cannot reach the
+# image.
+#
+# The filter is the Dockerfile's own input set: the workspace manifests and
+# the four crate directories it COPYs, plus the Dockerfile and this workflow.
+# rust-toolchain.toml is deliberately absent — the image builds `FROM
+# rust:latest` and never reads the pin.
+name: Docker Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["**"]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'sonda-core/**'
+      - 'sonda/**'
+      - 'sonda-server/**'
+      - 'sonda-wasm/**'
+      - '.github/workflows/docker-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    name: Docker Build (multi-arch verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image (amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

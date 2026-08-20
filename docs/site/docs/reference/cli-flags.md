@@ -5,7 +5,13 @@ description: Every flag, argument, exit code, and progress line for the sonda bi
 
 # CLI Reference
 
-The `sonda` binary has six verbs: `run`, `list`, `show`, `new`, `test`, and `completions`. `run` executes a [scenario YAML file](../build/scenario-files.md). `list` and `show` browse a catalog directory of scenarios and composable packs. `new` creates a starter file. `test` runs a scenario and verifies its `expect:` alert expectations. `completions` prints a shell completion script.
+<!-- verbs:listing -->
+
+The `sonda` binary has six verbs: `run`, `list`, `show`, `new`, `test`, and `completions`.
+
+<!-- /verbs:listing -->
+
+`run` executes a [scenario YAML file](../build/scenario-files.md). `list` and `show` browse a catalog directory of scenarios and composable packs. `new` creates a starter file. `test` runs a scenario and verifies its `expect:` alert expectations. `completions` prints a shell completion script.
 
 Earlier releases used per-signal subcommands (`metrics`, `logs`, `histogram`, `summary`). These were removed in 1.9. Every signal type is now declared inside the scenario YAML, then run with `sonda run`.
 

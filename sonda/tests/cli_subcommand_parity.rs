@@ -41,6 +41,45 @@
 //! it walks every tracked Markdown file and holds any file making a
 //! "<number> verbs" claim to the parser's count. A new document inherits the
 //! gate by existing.
+//!
+//! # Counts are checked. Listings are checked where they say so.
+//!
+//! There are two questions here, and only one of them has an exact answer.
+//!
+//! *Does this stated number match the parser?* is exact: both sides are
+//! integers with one right answer.
+//!
+//! *Is this paragraph a listing of the verbs?* is not. An earlier version of
+//! this file answered it by classifying shapes — inline-list-after-a-colon, or
+//! a fence within a line or two, with a majority rule deciding whether enough
+//! verbs were named to count as an enumeration, over a block whose extent was
+//! itself inferred from blank lines and fence tracking. That classifier drew
+//! six review findings across three rounds of #567 and never caught a real
+//! defect; each fix was correct and revealed another shape. The gate audit
+//! named it the only open-ended heuristic in the repo and recommended
+//! deleting it rather than spending a fourth round.
+//!
+//! It is replaced by declaration. A block that enumerates the CLI surface says
+//! so, between `<!-- verbs:listing -->` and `<!-- /verbs:listing -->`, and the
+//! check is exact *over the marked region's text*: the region is delimited
+//! rather than guessed, and every verb must appear in it. Nothing is inferred
+//! from layout.
+//!
+//! That wording is deliberate and was corrected once (#569 review). This is a
+//! **policy** check, not an exact one, in the gate audit's taxonomy: the
+//! parser's verb set is a source of truth, but what it is compared against is
+//! a word-boundary search over prose an author wrote. The vocabulary is closed
+//! and the scope is declared, which is what keeps it from being a classifier —
+//! but "exact" unqualified would be a claim the code does not implement, and
+//! this file is not the place to make one of those. See [`LISTING_OPEN`] for
+//! the authoring convention that carries the difference.
+//!
+//! **The limitation, stated rather than papered over:** a listing nobody
+//! marked is not checked. That is a real gap and it is the deliberate trade —
+//! an unmarked listing is a review concern, where an unbounded shape
+//! classifier was a permanent review cost. The count check above still covers
+//! every claim in every Markdown file, marked or not, so a listing that drifts
+//! *and* restates a number is still caught by the exact half.
 
 mod common;
 
@@ -107,62 +146,111 @@ struct VerbCountClaim {
     line_number: usize,
     claimed: usize,
     line: String,
-    /// The claim's own line plus the block it introduces — see [`claim_block`].
-    block: String,
 }
 
-/// The text a verb-count claim is actually making a claim *about*.
-///
-/// The claim line itself, plus the block it introduces: contiguous following
-/// lines, and a fenced code block if one opens within a line or two (the
-/// `Primary CLI surface (six verbs):` / ```` ``` ```` shape). Bounded, so a
-/// document with no blank lines cannot swallow itself whole.
-///
-/// #567 review W1: the previous version searched the WHOLE FILE for each verb.
-/// Five of the six — run, list, show, new, test — are ordinary English
-/// fragments (runner, listing, shows, newline, latest), so only `completions`
-/// discriminated at all. The red-verification passed by luck of the corpus:
-/// `architecture.md` happened to contain that word exactly once, on the line
-/// the mutation deleted. Applied to `cli-flags.md`, where the word survives in
-/// its own section heading, the identical defect was invisible.
-fn claim_block(lines: &[&str], claim_index: usize) -> String {
-    const MAX_BLOCK_LINES: usize = 40;
-    let mut block = vec![lines[claim_index]];
-    let mut in_fence = false;
-    let mut blanks = 0usize;
+/// A region a document declares to be an enumeration of the CLI's verbs.
+struct ListingBlock {
+    path: PathBuf,
+    line_number: usize,
+    text: String,
+}
 
-    for line in lines.iter().skip(claim_index + 1).take(MAX_BLOCK_LINES) {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            block.push(line);
-            if in_fence {
-                break; // the fence this claim introduced has closed
+/// Opens a declared verb listing.
+///
+/// **Mark the enumeration only.** Any verb name anywhere inside the region
+/// satisfies the check, for any reason — so prose that repeats the verbs, and
+/// paths like `docs/new/getting-started.md` that happen to contain one, belong
+/// *outside* the markers. Draw the region around the list and nothing else.
+///
+/// This is a convention, and stating it is the point. The check is exact over
+/// the marked region's text; it is not exact about whether the author drew the
+/// region correctly. A region stretched to include the per-verb explanations
+/// would let a shortened list pass, because the explanations name every verb —
+/// which is exactly how #567's whole-file search was defeated, reachable again
+/// purely by where someone puts a marker (#569 review W2). The alternative,
+/// inferring the right extent, is the classifier this replaced.
+const LISTING_OPEN: &str = "<!-- verbs:listing -->";
+/// Closes a declared verb listing. See [`LISTING_OPEN`] for how to draw the region.
+const LISTING_CLOSE: &str = "<!-- /verbs:listing -->";
+
+/// Every declared verb listing in the repository's Markdown.
+///
+/// The region is what the document delimited: from the line carrying
+/// [`LISTING_OPEN`] to the line carrying [`LISTING_CLOSE`], inclusive. There is
+/// no line budget, no fence tracking and no blank-line counting, because there
+/// is nothing left to infer — that machinery existed only to guess an extent
+/// the author can simply state.
+///
+/// An unbalanced marker is an error, not a skip. A typo'd or missing closer
+/// would otherwise drop a listing out of coverage silently, which is the
+/// vacuous pass this whole file is built to refuse.
+fn listing_blocks() -> Vec<ListingBlock> {
+    let root = repo_root();
+    let mut files = Vec::new();
+    markdown_files(&root, &mut files);
+
+    let mut blocks = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let mut open_at: Option<usize> = None;
+        for (index, line) in lines.iter().enumerate() {
+            // Each marker must be alone on its line, because the region is
+            // whole lines. A pair written inline around a clause reads as if
+            // it delimits that clause, and would silently cover the entire
+            // line instead — including the per-verb sentences that follow a
+            // list, which is precisely how #567's whole-file search was
+            // defeated. Rejecting the shape is cheaper than supporting it.
+            for marker in [LISTING_OPEN, LISTING_CLOSE] {
+                assert!(
+                    !line.contains(marker) || line.trim() == marker,
+                    "{}:{} places `{marker}` inline. It must be alone on its line: \
+                     the marked region is whole lines, so an inline pair would cover \
+                     more text than it appears to.\n  {line:?}",
+                    path.display(),
+                    index + 1
+                );
             }
-            in_fence = true;
-            blanks = 0;
-            continue;
-        }
-        if in_fence {
-            block.push(line);
-            continue;
-        }
-        if line.trim().is_empty() {
-            blanks += 1;
-            // One blank line may separate a claim from the fence it
-            // introduces; two means the block is over.
-            if blanks > 1 {
-                break;
+            if line.contains(LISTING_OPEN) {
+                assert!(
+                    open_at.is_none(),
+                    "{}:{} opens a verb listing while one opened at line {} is still \
+                     unclosed. Nested listings are not a thing; this is a missing \
+                     `{LISTING_CLOSE}`.",
+                    path.display(),
+                    index + 1,
+                    open_at.unwrap_or_default() + 1
+                );
+                open_at = Some(index);
+                continue;
             }
-            continue;
+            if line.contains(LISTING_CLOSE) {
+                let start = open_at.take().unwrap_or_else(|| {
+                    panic!(
+                        "{}:{} closes a verb listing that was never opened with \
+                         `{LISTING_OPEN}`.",
+                        path.display(),
+                        index + 1
+                    )
+                });
+                blocks.push(ListingBlock {
+                    path: path.clone(),
+                    line_number: start + 1,
+                    text: lines[start..=index].join("\n"),
+                });
+            }
         }
-        // Reset on content: the comment above says CONSECUTIVE blanks end the
-        // block, and until this line the counter never reset, so two blank
-        // lines anywhere did — one ordinary sentence between a claim and the
-        // fence it introduces was enough to lose the fence (#567 r2 W1).
-        blanks = 0;
-        block.push(line);
+        assert!(
+            open_at.is_none(),
+            "{}:{} opens a verb listing that is never closed. Add `{LISTING_CLOSE}`, \
+             or the block silently stops being checked.",
+            path.display(),
+            open_at.unwrap_or_default() + 1
+        );
     }
-    block.join("\n")
+    blocks
 }
 
 /// Every unexempted "<number> verbs" claim in the repository's Markdown.
@@ -213,7 +301,6 @@ fn verb_count_claims() -> Vec<VerbCountClaim> {
                         line_number: index + 1,
                         claimed,
                         line: line.trim().to_string(),
-                        block: claim_block(&lines, index),
                     });
                 }
             }
@@ -449,119 +536,71 @@ fn every_prose_verb_count_matches_the_parser() {
 }
 
 #[test]
-fn a_block_that_lists_the_verbs_lists_all_of_them() {
+fn the_walk_finds_the_listings_this_test_expects_to_check() {
+    // Same guard, same reason as the two above: a marker that stops being
+    // found makes the check below pass over nothing. Named files rather than a
+    // count, so moving a listing out of one of them is loud.
+    let blocks = listing_blocks();
+    assert!(
+        !blocks.is_empty(),
+        "found no `{LISTING_OPEN}` blocks anywhere in the repo's Markdown — \
+         either the walk broke or the marker was renamed, and both make the \
+         check below vacuous."
+    );
+    let files: Vec<String> = blocks
+        .iter()
+        .map(|b| {
+            b.path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    for expected in ["cli-flags.md", "architecture.md"] {
+        assert!(
+            files.iter().any(|f| f == expected),
+            "expected a declared verb listing in {expected}; found listings in {files:?}"
+        );
+    }
+}
+
+#[test]
+fn every_marked_listing_names_every_verb() {
     // A correct count above a stale list is the same defect one level down.
     //
-    // Scoped to the claim's own block rather than the whole file (#567 review
-    // W1). Whole-file search made this check almost inert: five of the six
-    // verbs are ordinary English fragments, so only `completions` ever
-    // discriminated, and only in a file that happened to contain it once.
-    //
-    // "Is this block a listing?" is decided by how many verbs it already
-    // names. A block naming a MAJORITY of them is enumerating the surface, so
-    // it must name all of them. A block naming few or none is prose that
-    // mentions a count in passing — "the CLI exposes six verbs, all thin
-    // wrappers over sonda-core" is true and useful, and compelling it to
-    // recite the list would be the check being wrong in the other direction
-    // (#567 review M1).
+    // The block is the region the document delimited, so this compares a
+    // declared enumeration against the parser and nothing is inferred. What
+    // replaced the classifier is the marker, not a cleverer rule: see this
+    // file's header for why, and for the gap the marker leaves.
     let mut parser = parser_subcommands();
     parser.retain(|v| v != "help");
 
     let mut problems = Vec::new();
-    for claim in verb_count_claims() {
-        let Some(named) = enumerated_verbs(&claim.line, &claim.block, &parser) else {
-            continue; // a passing mention, not a listing
-        };
+    for block in listing_blocks() {
         let missing: Vec<&str> = parser
             .iter()
-            .filter(|verb| !named.contains(verb))
+            .filter(|verb| !block_names_verb(&block.text, verb))
             .map(|v| v.as_str())
             .collect();
         if !missing.is_empty() {
             problems.push(format!(
-                "{}:{} enumerates {} of the {} verbs, omitting {:?} — {:?}",
-                claim.path.display(),
-                claim.line_number,
-                named.len(),
-                parser.len(),
+                "{}:{} is marked `{LISTING_OPEN}` but omits {:?} of the {} verbs",
+                block.path.display(),
+                block.line_number,
                 missing,
-                claim.line
+                parser.len()
             ));
         }
     }
     assert!(
         problems.is_empty(),
-        "a block that enumerates the CLI's verbs is missing some of them:\n{}",
+        "a block that declares itself an enumeration of the CLI's verbs is \
+         missing some of them:\n{}\n\nEither add the missing verbs, or remove \
+         the `{LISTING_OPEN}` marker if the block was never meant to be a \
+         complete listing.",
         problems.join("\n")
     );
-}
-
-/// The verbs a claim actually *enumerates*, if it enumerates any.
-///
-/// Two shapes occur in this repo, and both attach a list to the count:
-///
-/// ```text
-/// The `sonda` binary has six verbs: `run`, `list`, ... and `completions`.
-///
-/// Primary CLI surface (six verbs):
-/// ```                       <- a fence whose lines are `sonda <verb> ...`
-/// ```
-///
-/// Returns None when the claim carries no enumeration — a passing mention
-/// like "the CLI exposes six verbs, all thin wrappers over sonda-core" has
-/// nothing to be inconsistent with, and demanding a recitation there is the
-/// check being wrong in the other direction (#567 review M1).
-///
-/// This is deliberately narrower than "does the surrounding prose mention the
-/// word somewhere". #567 review W1 defeated that: dropping `completions` from
-/// this very list left the word intact in a later sentence on the same line,
-/// so the paragraph still named all six while the list named five. The count
-/// and the list it introduces have to be compared to each other.
-fn enumerated_verbs(claim_line: &str, block: &str, known: &[String]) -> Option<Vec<String>> {
-    // Shape 1: an inline list introduced by a colon straight after "verbs".
-    if let Some(after) = claim_line.split_once("verbs:").map(|(_, rest)| rest) {
-        // The list ends at the first sentence break.
-        let list = after.split_once(". ").map_or(after, |(head, _)| head);
-        let named: Vec<String> = known
-            .iter()
-            .filter(|verb| block_names_verb(list, verb))
-            .cloned()
-            .collect();
-        if is_enumeration(&named, known) {
-            return Some(named);
-        }
-    }
-
-    // Shape 2: a fenced usage block. Its lines invoke the binary by name, so
-    // the verb is the token straight after `sonda`.
-    let fenced: Vec<String> = block
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("sonda "))
-        .filter_map(|rest| rest.split_whitespace().next())
-        .filter(|token| known.iter().any(|verb| verb == token))
-        .map(|token| token.to_string())
-        .collect();
-    if is_enumeration(&fenced, known) {
-        return Some(fenced);
-    }
-
-    None
-}
-
-/// Whether a set of named verbs is an enumeration of the surface.
-///
-/// A majority means the text is listing the verbs, so it must list all of
-/// them. Fewer means a passing mention with an example or two, and demanding
-/// a full recitation there is the check being wrong in the other direction.
-///
-/// #567 r2 M1: this rule was stated in a doc comment and implemented as
-/// `!named.is_empty()` — so a passing mention followed by a single
-/// `sonda run scenario.yaml` example was compelled to recite all six. The
-/// rule now lives in one function that both the prose and the callers point
-/// at, because a claim in a comment that the code does not implement is the
-/// defect this repo keeps naming.
-fn is_enumeration(named: &[String], known: &[String]) -> bool {
-    named.len() * 2 > known.len()
 }
 
 /// Whether `block` names `verb` as a verb rather than as a substring.
