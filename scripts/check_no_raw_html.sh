@@ -26,11 +26,54 @@ PATTERN='\.innerHTML|\.outerHTML|insertAdjacentHTML|document\.write\('
 GENERATED='docs/site/docs/javascripts/sonda-editor.js
 docs/site/docs/javascripts/sonda_wasm.js'
 
+# The roots this gate claims to cover. Keep them here rather than inline in the
+# `find` below, so the corpus assertion and the scan read from one list.
+ROOTS='docs/site/docs/javascripts
+docs/site/tools/editor/src'
+
+# Assert the corpus BEFORE checking it. `find` over a moved or renamed
+# directory prints nothing and exits 0, so without this the gate scans zero
+# files, reports "OK" and reads as coverage — the failure this whole section
+# of CLAUDE.md exists about.
+#
+# Checked per root, not in total: a single count would still be satisfied by
+# one surviving directory while the other had silently stopped being scanned.
+# Counted AFTER the generated-file exemption, because a root holding nothing
+# but build outputs contributes nothing to this gate either.
+corpus=""
+while IFS= read -r root; do
+  [ -n "$root" ] || continue
+  if [ ! -d "$root" ]; then
+    echo "::error::check_no_raw_html.sh: scan root '$root' is not a directory." >&2
+    echo "It was moved, renamed or deleted. Update ROOTS in this script to match —" >&2
+    echo "this gate refuses to pass over a corpus it cannot find." >&2
+    exit 2
+  fi
+  kept=0
+  while IFS= read -r found; do
+    [ -n "$found" ] || continue
+    case "$GENERATED" in
+      *"$found"*) continue ;;
+    esac
+    corpus="$corpus$found
+"
+    kept=$((kept + 1))
+  done < <(find "$root" -name '*.js' -type f | sort)
+  if [ "$kept" -eq 0 ]; then
+    echo "::error::check_no_raw_html.sh: scan root '$root' contributed no hand-written .js files." >&2
+    echo "Either the sources moved, or every file in it is on the GENERATED exemption list." >&2
+    echo "Refusing to report OK over an empty corpus." >&2
+    exit 2
+  fi
+done <<EOF
+$ROOTS
+EOF
+
+checked=0
 status=0
 while IFS= read -r file; do
-  case "$GENERATED" in
-    *"$file"*) continue ;;
-  esac
+  [ -n "$file" ] || continue
+  checked=$((checked + 1))
   if matches=$(grep -nE "$PATTERN" "$file"); then
     if [ "$status" -eq 0 ]; then
       echo "::error::raw-markup assignment found in hand-written docs JS." >&2
@@ -41,9 +84,13 @@ while IFS= read -r file; do
       echo "  $file:$hit" >&2
     done <<<"$matches"
   fi
-done < <(find docs/site/docs/javascripts docs/site/tools/editor/src -name '*.js' -type f | sort)
+done <<EOF
+$corpus
+EOF
 
 if [ "$status" -eq 0 ]; then
-  echo "OK: no raw-markup assignment in hand-written docs JS"
+  # Print the count: a reader can see the corpus was non-empty without
+  # trusting that the assertion above ran.
+  echo "OK: no raw-markup assignment in $checked hand-written docs JS files"
 fi
 exit "$status"

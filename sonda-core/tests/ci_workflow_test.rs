@@ -78,8 +78,9 @@ fn ci_yml_has_test_step() {
     let yaml = load_ci_yaml();
     let steps = ci_steps(&yaml);
     assert!(
-        steps.iter().any(|s| step_run(s).contains("cargo test")),
-        "ci.yml must have a step that runs 'cargo test'"
+        steps.iter().any(runs_tests),
+        "ci.yml's `ci` job must have a step that runs the test suite \
+         ('cargo nextest run' or 'cargo test')"
     );
 }
 
@@ -124,7 +125,10 @@ fn ci_yml_steps_order_build_test_clippy_fmt() {
     };
 
     let build_pos = pos("cargo build");
-    let test_pos = pos("cargo test");
+    let test_pos = steps
+        .iter()
+        .position(runs_tests)
+        .expect("could not find a step running the test suite");
     let clippy_pos = pos("cargo clippy");
     let fmt_pos = pos("cargo fmt");
 
@@ -146,18 +150,40 @@ fn ci_yml_steps_order_build_test_clippy_fmt() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Return the list of steps from the first (and only expected) job.
+/// Return the steps of the `ci` job — the one running the four gates below.
+///
+/// Selected by key, not by position. The comment here used to say "the CI file
+/// should have exactly one job" and the code took `values().next()`, which was
+/// true when this was written for slice 0.0 and has not been true for a long
+/// time: ci.yml now defines several jobs, and this took whichever one happened
+/// to serialize first. Reordering them — or removing the first one, which is
+/// how this surfaced — would silently move these assertions onto a different
+/// job, or pass them over one that never runs cargo at all.
 fn ci_steps(yaml: &Value) -> Vec<Value> {
-    let jobs = &yaml["jobs"];
-    // The CI file should have exactly one job. Grab the first one regardless of its key name.
-    let job = jobs
-        .as_mapping()
-        .and_then(|m| m.values().next())
-        .expect("ci.yml must define at least one job");
+    let job = &yaml["jobs"]["ci"];
+    assert!(
+        !job.is_null(),
+        "ci.yml must define a job keyed `ci` — these tests assert the build/test/\
+         clippy/fmt gates run there. If it was renamed, update this selector \
+         rather than falling back to whichever job comes first."
+    );
     job["steps"]
         .as_sequence()
-        .expect("job must have a 'steps' sequence")
+        .expect("the `ci` job must have a 'steps' sequence")
         .to_vec()
+}
+
+/// Whether a step runs the workspace test suite.
+///
+/// `cargo nextest run` is how this repo runs tests; plain `cargo test` covers
+/// the doctest steps and any job that has not moved to nextest. Matching only
+/// `cargo test` meant the `ci` job's real test step — nextest — never
+/// satisfied this, and the assertion was being met incidentally by a
+/// `cargo test --workspace --doc` line sitting after it. Removing that
+/// duplicate doctest run is what exposed it.
+fn runs_tests(step: &Value) -> bool {
+    let run = step_run(step);
+    run.contains("cargo nextest run") || run.contains("cargo test")
 }
 
 /// Extract the `run:` string from a step, returning empty string for non-run steps.

@@ -30,8 +30,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Prebuilt binary rather than `cargo install cargo-audit --locked`, which
+      # compiled the tool from source on every push and was ~2.5 of this job's
+      # ~3.1 minutes. Same action and pin the four nextest installs use.
+      #
+      # The per-push cadence is deliberate and stays: this job caught
+      # RUSTSEC-2026-0258 (#566), and an advisory should fail on the PR that
+      # introduces the vulnerable dependency, not on a weekly sweep afterwards.
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2.85.13
+        with:
+          tool: cargo-audit
 
       - name: Audit dependencies
         run: cargo audit

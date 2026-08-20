@@ -1,0 +1,58 @@
+# Verifies the container image still builds. Moved out of ci.yml so it can be
+# path-filtered on pull requests; unconditional on main, so a break still
+# surfaces within one merge.
+#
+# Cost, measured across the last 15 CI runs rather than assumed: this job is
+# bimodal — 12-25s on a warm GitHub Actions cache (9 runs) and 172-241s on a
+# cold one (6 runs), for a mean near 95s. It is not the ~3.5 minutes a single
+# cold sample suggests, but it is not free either, and none of it can be
+# earned back by a docs-only change.
+#
+# The filter is the Dockerfile's own input set: the workspace manifests and
+# the four crate directories it COPYs, plus the Dockerfile and this workflow.
+# rust-toolchain.toml is deliberately absent — the image builds `FROM
+# rust:latest` and never reads the pin.
+name: Docker Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["**"]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'sonda-core/**'
+      - 'sonda/**'
+      - 'sonda-server/**'
+      - 'sonda-wasm/**'
+      - '.github/workflows/docker-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    name: Docker Build (multi-arch verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image (amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

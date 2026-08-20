@@ -51,8 +51,14 @@ jobs:
       - name: Test (nextest)
         run: cargo nextest run --workspace
 
-      - name: Doctests
-        run: cargo test --workspace --doc
+      # No doctest step here on purpose. Measured: this job's default-feature
+      # run and the all-features job's run enumerate the SAME four doctests, so
+      # the default-feature one proved nothing the all-features one does not.
+      #
+      # The no-default-features job's doctest run is NOT redundant and stays —
+      # it is the only thing asserting those examples compile with no features
+      # at all, which is the boundary sonda-wasm depends on. Same reason the
+      # `schema`-only build next to it exists.
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -95,26 +101,9 @@ jobs:
         run: cargo nextest run -p sonda-server --test integration --no-capture
         timeout-minutes: 5
 
-  docker-build:
-    name: Docker Build (multi-arch verify)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build Docker image (amd64)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+# docker-build moved to .github/workflows/docker-build.yml so it can be
+# path-filtered on pull requests. Every job in this file runs on every push;
+# a workflow-level filter here would have skipped all of them.
 
   no-default-features:
     name: Test sonda-core without default features
