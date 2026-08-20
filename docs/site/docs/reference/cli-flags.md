@@ -17,9 +17,13 @@ Earlier releases used per-signal subcommands (`metrics`, `logs`, `histogram`, `s
 
 ## Global options
 
+<!-- verbs:listing -->
+
 ```
-sonda [OPTIONS] <run|list|show|new> [ARGS...]
+sonda [OPTIONS] <run|list|show|new|test|completions> [ARGS...]
 ```
+
+<!-- /verbs:listing -->
 
 | Flag | Short | Description |
 |------|-------|-------------|
