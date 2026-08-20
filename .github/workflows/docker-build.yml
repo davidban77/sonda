@@ -2,11 +2,14 @@
 # path-filtered on pull requests; unconditional on main, so a break still
 # surfaces within one merge.
 #
-# Cost, measured across the last 15 CI runs rather than assumed: this job is
-# bimodal — 12-25s on a warm GitHub Actions cache (9 runs) and 172-241s on a
-# cold one (6 runs), for a mean near 95s. It is not the ~3.5 minutes a single
-# cold sample suggests, but it is not free either, and none of it can be
-# earned back by a docs-only change.
+# Cost, measured on the population the filter actually affects — pull_request
+# runs — rather than on all runs mixed together: 16 samples, median 223s,
+# range 12-286s. Thirteen of the sixteen are cold; the gha cache is rarely
+# warm for a PR. An earlier count here said "median 24s, mean ~95s" and was
+# drawn from a 15-run window that mixed main pushes in and happened to be
+# warm-heavy (#569 review M2). Roughly 3.5 minutes per docs PR is the real
+# saving, and none of it can be earned back by a change that cannot reach the
+# image.
 #
 # The filter is the Dockerfile's own input set: the workspace manifests and
 # the four crate directories it COPYs, plus the Dockerfile and this workflow.

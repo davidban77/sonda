@@ -22,6 +22,14 @@ name: Live Infra UAT
 # examples/ (which mounts ../docker/ for Grafana provisioning), and runs
 # scenarios from examples/ and tests/e2e/.
 #
+# Dockerfile and .dockerignore are in the list because the compose stack's
+# `sonda-server` service builds from them (`context: ..`, no `profiles:` key,
+# so it is on the default profile and built on every run). docker-build also
+# lists them, but that job answers "does the image build" — this one answers
+# "does the server come up and serve", which a bad ENTRYPOINT or a dropped
+# runtime file breaks while still building clean. (#569 review W1: this was
+# the one input the derivation missed.)
+#
 # Deliberately NOT listed: docs/site/docs/guides/e2e-testing.md. The matrix is
 # hardcoded in live_infra_uat.py and that page is a hand-maintained parallel
 # copy, so editing the page cannot change what this job does.
@@ -36,6 +44,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      - 'Dockerfile'
+      - '.dockerignore'
       - 'examples/**'
       - 'docker/**'
       - 'tests/e2e/**'

@@ -61,8 +61,18 @@
 //!
 //! It is replaced by declaration. A block that enumerates the CLI surface says
 //! so, between `<!-- verbs:listing -->` and `<!-- /verbs:listing -->`, and the
-//! check over marked blocks is exact: the region is delimited rather than
-//! guessed, and it must name every verb. Nothing is inferred from layout.
+//! check is exact *over the marked region's text*: the region is delimited
+//! rather than guessed, and every verb must appear in it. Nothing is inferred
+//! from layout.
+//!
+//! That wording is deliberate and was corrected once (#569 review). This is a
+//! **policy** check, not an exact one, in the gate audit's taxonomy: the
+//! parser's verb set is a source of truth, but what it is compared against is
+//! a word-boundary search over prose an author wrote. The vocabulary is closed
+//! and the scope is declared, which is what keeps it from being a classifier —
+//! but "exact" unqualified would be a claim the code does not implement, and
+//! this file is not the place to make one of those. See [`LISTING_OPEN`] for
+//! the authoring convention that carries the difference.
 //!
 //! **The limitation, stated rather than papered over:** a listing nobody
 //! marked is not checked. That is a real gap and it is the deliberate trade —
@@ -146,8 +156,21 @@ struct ListingBlock {
 }
 
 /// Opens a declared verb listing.
+///
+/// **Mark the enumeration only.** Any verb name anywhere inside the region
+/// satisfies the check, for any reason — so prose that repeats the verbs, and
+/// paths like `docs/new/getting-started.md` that happen to contain one, belong
+/// *outside* the markers. Draw the region around the list and nothing else.
+///
+/// This is a convention, and stating it is the point. The check is exact over
+/// the marked region's text; it is not exact about whether the author drew the
+/// region correctly. A region stretched to include the per-verb explanations
+/// would let a shortened list pass, because the explanations name every verb —
+/// which is exactly how #567's whole-file search was defeated, reachable again
+/// purely by where someone puts a marker (#569 review W2). The alternative,
+/// inferring the right extent, is the classifier this replaced.
 const LISTING_OPEN: &str = "<!-- verbs:listing -->";
-/// Closes a declared verb listing.
+/// Closes a declared verb listing. See [`LISTING_OPEN`] for how to draw the region.
 const LISTING_CLOSE: &str = "<!-- /verbs:listing -->";
 
 /// Every declared verb listing in the repository's Markdown.

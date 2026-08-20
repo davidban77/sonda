@@ -173,16 +173,25 @@ fn ci_steps(yaml: &Value) -> Vec<Value> {
         .to_vec()
 }
 
-/// Whether a step runs the workspace test suite.
+/// Whether a step runs the unit and integration test suite.
 ///
 /// `cargo nextest run` is how this repo runs tests; plain `cargo test` covers
-/// the doctest steps and any job that has not moved to nextest. Matching only
-/// `cargo test` meant the `ci` job's real test step — nextest — never
-/// satisfied this, and the assertion was being met incidentally by a
-/// `cargo test --workspace --doc` line sitting after it. Removing that
-/// duplicate doctest run is what exposed it.
+/// any job that has not moved to nextest. Matching only `cargo test` meant the
+/// `ci` job's real test step — nextest — never satisfied this, and the
+/// assertion was being met incidentally by a `cargo test --workspace --doc`
+/// line sitting after it. Removing that duplicate doctest run is what exposed
+/// it.
+///
+/// A `--doc` run is explicitly NOT a test run for this purpose. Fixing only
+/// today's instance would have left the mechanism in place: re-adding a
+/// doctest step while dropping nextest passed a check whose message says the
+/// job "must have a step that runs the test suite" (#569 review W3). Doctests
+/// compile examples; they execute no unit or integration test.
 fn runs_tests(step: &Value) -> bool {
     let run = step_run(step);
+    if run.contains("--doc") {
+        return false;
+    }
     run.contains("cargo nextest run") || run.contains("cargo test")
 }
 
