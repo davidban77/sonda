@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.22.0](https://github.com/davidban77/sonda/compare/v1.21.0...v1.22.0) (2026-08-21)
+
+
+### Features
+
+* **cli:** shell completions, and make --dry-run agree with the runtime ([#565](https://github.com/davidban77/sonda/issues/565)) ([c92b756](https://github.com/davidban77/sonda/commit/c92b7567b6d1f846fae41153837d612d581326fa))
+
+
+### Bug Fixes
+
+* **ci:** retire the floor-staleness probe now that v1.21.0 answered it ([#563](https://github.com/davidban77/sonda/issues/563)) ([f78fbfa](https://github.com/davidban77/sonda/commit/f78fbfa52fb2a7657896ff5db3174babc346465e))
+* **deps:** bump h2 to 0.4.16 for RUSTSEC-2026-0258 ([#566](https://github.com/davidban77/sonda/issues/566)) ([9e077cd](https://github.com/davidban77/sonda/commit/9e077cd997c739a0c8d03b9c91b53b77c25c8703))
+* **docs:** gate prose verb counts and waveform SVG drift ([#567](https://github.com/davidban77/sonda/issues/567)) ([ac99fb1](https://github.com/davidban77/sonda/commit/ac99fb1af47d6926f15624ffd012122c139ac2ac))
+
+
+### Documentation
+
+* complete the stale verb list in the CLI usage line ([#570](https://github.com/davidban77/sonda/issues/570)) ([dbff48d](https://github.com/davidban77/sonda/commit/dbff48db05039014d04eae355ba1f3556c449cb2))
+* how to add a check, and a timeout on every CI job ([#568](https://github.com/davidban77/sonda/issues/568)) ([9befa29](https://github.com/davidban77/sonda/commit/9befa2927ff8053dfa9cad2568fc42d2d65495be))
+
+
+### CI/CD
+
+* prune the check surface using the gate audit ([#569](https://github.com/davidban77/sonda/issues/569)) ([b6dc2ed](https://github.com/davidban77/sonda/commit/b6dc2ed8fdee73f66bbb33318a09a6a63b218e5e))
+
 ## [1.21.0](https://github.com/davidban77/sonda/compare/v1.20.0...v1.21.0) (2026-08-17)
 
 
