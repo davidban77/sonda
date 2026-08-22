@@ -125,15 +125,58 @@ impl CsvReplayGenerator {
 
     /// Parse numeric values from CSV content.
     ///
-    /// Skips comment lines (starting with `#`), empty lines, and lines where
-    /// the target column cannot be parsed as `f64`. The first data line is
-    /// auto-detected as a header and skipped when it contains non-numeric
-    /// fields.
+    /// Thin wrapper over [`Self::parse_values_and_gaps`] for callers that do
+    /// not need to know which rows were blank.
     fn parse_values(content: &str, column: usize) -> Result<Vec<f64>, SondaError> {
+        Self::parse_values_and_gaps(content, column).map(|(values, _)| values)
+    }
+
+    /// Parse one column, returning its values and the rows that were blank.
+    ///
+    /// Comment lines (`#`) and blank *lines* are skipped; the first data line
+    /// is auto-detected as a header and skipped when it contains non-numeric
+    /// fields. Everything after that is a data row, and every data row
+    /// contributes exactly one slot — which is the whole point.
+    ///
+    /// # Rows and slots line up, and that is load-bearing
+    ///
+    /// This function used to silently skip any cell it could not parse, with
+    /// the comment "Unparseable values are silently skipped". That shortened
+    /// the value vector, so a single junk or blank cell made **every later
+    /// sample replay one step early** — a whole timeline quietly shifted by
+    /// one bad character, with no diagnostic. Replay is meaningless if the
+    /// grid can slide, so the rule is now:
+    ///
+    /// * **blank cell** → `NaN` placeholder, and the row index is reported as
+    ///   a gap. The slot is held so nothing after it moves.
+    /// * **non-blank cell that will not parse** → hard error naming the row
+    ///   and column. There is no reading of `x` that belongs in a timeline.
+    /// * **row too short to have this column** → hard error, same reasoning:
+    ///   a ragged row is a truncated file, not a gap someone meant.
+    ///
+    /// # Blank is not `NaN`
+    ///
+    /// A cell containing the literal text `NaN` is a *present* sample whose
+    /// value is NaN — Prometheus returns those, and they replay as data. A
+    /// *blank* cell is an absent sample. They are both `f64::NAN` in the
+    /// values vector and cannot be told apart there, which is why the blank
+    /// rows are returned separately rather than recovered later with
+    /// `is_nan()`. Only blanks require a declared gap window.
+    ///
+    /// Returns `(values, blank_row_indices)`, where the indices are 0-based
+    /// positions into `values` (i.e. data rows, not file lines).
+    fn parse_values_and_gaps(
+        content: &str,
+        column: usize,
+    ) -> Result<(Vec<f64>, Vec<usize>), SondaError> {
         let mut values = Vec::new();
+        let mut blanks = Vec::new();
         let mut first_data_line = true;
 
-        for line in content.lines() {
+        for (index, line) in content.lines().enumerate() {
+            // 1-based, and counted over the raw file so the number in an error
+            // message is the line a text editor will jump to.
+            let line_no = index + 1;
             let trimmed = line.trim();
 
             // Skip empty lines.
@@ -156,17 +199,131 @@ impl CsvReplayGenerator {
 
             // Split by comma and extract the target column.
             let fields: Vec<&str> = trimmed.split(',').collect();
-            if let Some(field) = fields.get(column) {
-                if let Ok(v) = field.trim().parse::<f64>() {
-                    values.push(v);
-                }
-                // Unparseable values are silently skipped.
+            let field = fields.get(column).ok_or_else(|| {
+                SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: line {line_no} has {} column(s), so column {column} is missing. \
+                     Every data row must carry every column — a short row would otherwise drop a \
+                     slot and shift the rest of the timeline earlier.",
+                    fields.len()
+                )))
+            })?;
+
+            let cell = field.trim();
+            if cell.is_empty() {
+                // Absent sample: hold the slot, record the gap.
+                blanks.push(values.len());
+                values.push(f64::NAN);
+                continue;
             }
-            // Rows where the column index is out of bounds are silently skipped.
+
+            let parsed = cell.parse::<f64>().map_err(|_| {
+                SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: line {line_no}, column {column}: {cell:?} is not a number. \
+                     Leave the cell empty to mark an absent sample (and declare the matching \
+                     `gap_windows:` entry); anything else is a typo that would otherwise be \
+                     dropped, shifting every later sample one step earlier."
+                )))
+            })?;
+            values.push(parsed);
         }
 
-        Ok(values)
+        Ok((values, blanks))
     }
+}
+
+/// Parse one column of CSV text into values plus the rows that were blank.
+///
+/// The crate-internal entry point to
+/// [`CsvReplayGenerator::parse_values_and_gaps`], for callers that need the
+/// blank rows without building a generator — notably the config expansion that
+/// cross-checks them against `gap_windows:`.
+pub(crate) fn column_values_and_gaps(
+    content: &str,
+    column: usize,
+) -> Result<(Vec<f64>, Vec<usize>), SondaError> {
+    CsvReplayGenerator::parse_values_and_gaps(content, column)
+}
+
+/// Check that blank CSV cells and declared gap windows describe the same silence.
+///
+/// The CSV and the scenario each carry half a claim about an outage: the file
+/// leaves a slot empty, and the YAML declares a `gap_windows:` entry covering
+/// it. Neither is derived from the other, so either can be edited into
+/// disagreement — and both ways of disagreeing are wrong in a way the user
+/// would never see at runtime:
+///
+/// * a **blank with no window** would replay as a `NaN` sample, which is a
+///   present value where production had none;
+/// * a **window over present data** would suppress a sample that was really
+///   recorded, inventing silence that never happened.
+///
+/// So the two are compared exactly, in both directions, at load. This is
+/// cheap: one pass over the rows.
+///
+/// Row `n` stands for the instant `n * step_secs` after scenario start;
+/// windows are half-open `[start, end)`, matching
+/// [`is_in_gap_window`](crate::schedule::is_in_gap_window).
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] naming the offending rows, capped so a
+/// wholly mismatched file reports a readable summary rather than thousands of
+/// indices.
+pub(crate) fn cross_check_gap_windows(
+    blanks: &[usize],
+    row_count: usize,
+    windows: &[(f64, f64)],
+    step_secs: f64,
+) -> Result<(), SondaError> {
+    /// How many row numbers to name before summarising.
+    const MAX_NAMED: usize = 8;
+
+    let covered = |row: usize| -> bool {
+        let t = row as f64 * step_secs;
+        windows.iter().any(|&(start, end)| t >= start && t < end)
+    };
+
+    let format_rows = |rows: &[usize]| -> String {
+        let shown: Vec<String> = rows
+            .iter()
+            .take(MAX_NAMED)
+            .map(|r| (r + 1).to_string())
+            .collect();
+        if rows.len() > MAX_NAMED {
+            format!("{} … and {} more", shown.join(", "), rows.len() - MAX_NAMED)
+        } else {
+            shown.join(", ")
+        }
+    };
+
+    let uncovered: Vec<usize> = blanks.iter().copied().filter(|&r| !covered(r)).collect();
+    if !uncovered.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: {} blank cell(s) are not covered by any `gap_windows:` entry \
+             (data row(s) {}). A blank cell means the sample was absent, which only \
+             reproduces as silence if the scenario declares the window — otherwise it \
+             would replay as a NaN sample, which is a present value. Add the window, or \
+             put the value back in the cell.",
+            uncovered.len(),
+            format_rows(&uncovered),
+        ))));
+    }
+
+    let present_but_silenced: Vec<usize> = (0..row_count)
+        .filter(|&r| covered(r) && !blanks.contains(&r))
+        .collect();
+    if !present_but_silenced.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: {} recorded sample(s) fall inside a `gap_windows:` entry \
+             (data row(s) {}). The window would suppress data the capture actually has, \
+             inventing silence that did not happen. Narrow the window, or blank the cells \
+             it covers.",
+            present_but_silenced.len(),
+            format_rows(&present_but_silenced),
+        ))));
+    }
+
+    Ok(())
 }
 
 impl ValueGenerator for CsvReplayGenerator {
@@ -782,14 +939,66 @@ sink:
     // ---- Unparseable rows are silently skipped --------------------------------
 
     #[test]
-    fn unparseable_rows_are_skipped() {
-        // "1.0" is all-numeric → not a header → data. "not_a_number" is skipped (not parseable).
+    fn unparseable_rows_are_refused_naming_the_line() {
+        // This test used to be called `unparseable_rows_are_skipped` and asserted
+        // that "1.0\nnot_a_number\n2.0\n???\n3.0\n" replayed as 1.0, 2.0, 3.0 —
+        // i.e. it pinned the defect. Skipping the junk shortened the vector, so
+        // 2.0 played at the instant that belonged to `not_a_number` and every
+        // later sample moved up with it. A timeline that silently slides is
+        // worse than a file that refuses to load.
         let content = "1.0\nnot_a_number\n2.0\n???\n3.0\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 0, true).expect("should skip unparseable rows");
-        assert_eq!(gen.value(0), 1.0);
-        assert_eq!(gen.value(1), 2.0);
-        assert_eq!(gen.value(2), 3.0);
+        let msg = match CsvReplayGenerator::from_str(content, 0, true) {
+            Ok(_) => panic!("junk must be refused, not skipped"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("line 2"), "names the offending line: {msg}");
+        assert!(msg.contains("not_a_number"), "quotes the cell: {msg}");
+    }
+
+    #[test]
+    fn a_blank_cell_holds_its_slot_rather_than_shrinking_the_column() {
+        // The other half of the same rule: blank means absent, and absent still
+        // occupies its instant. Four data rows must yield four slots.
+        let content = "1.0\n\n3.0\n";
+        let (values, blanks) =
+            CsvReplayGenerator::parse_values_and_gaps(content, 0).expect("blank cells are legal");
+        assert_eq!(values.len(), 2, "a blank LINE is skipped, not a blank cell");
+        assert!(blanks.is_empty(), "no blank cells here — just a blank line");
+
+        // A blank *cell* in a real row is the case that matters.
+        let content = "0,1.0\n1,\n2,3.0\n";
+        let (values, blanks) =
+            CsvReplayGenerator::parse_values_and_gaps(content, 1).expect("blank cells are legal");
+        assert_eq!(values.len(), 3, "three rows, three slots");
+        assert_eq!(values[0], 1.0);
+        assert!(values[1].is_nan(), "the blank holds its slot");
+        assert_eq!(values[2], 3.0, "3.0 did not move up into the hole");
+        assert_eq!(blanks, vec![1], "row 1 is reported as a gap");
+    }
+
+    #[test]
+    fn a_row_too_short_for_its_column_is_refused() {
+        let content = "0,1.0\n1\n2,3.0\n";
+        let msg = match CsvReplayGenerator::from_str(content, 1, true) {
+            Ok(_) => panic!("a ragged row must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("line 2"), "names the line: {msg}");
+    }
+
+    #[test]
+    fn a_literal_nan_cell_is_a_present_sample_not_a_gap() {
+        // Prometheus really does return NaN values. They replay as data, and
+        // must NOT be reported as gaps — otherwise the cross-check would demand
+        // a gap window over a sample that was genuinely recorded.
+        let content = "0,1.0\n1,NaN\n2,3.0\n";
+        let (values, blanks) =
+            CsvReplayGenerator::parse_values_and_gaps(content, 1).expect("NaN is a legal value");
+        assert!(values[1].is_nan());
+        assert!(
+            blanks.is_empty(),
+            "a literal NaN is present data, not an absent sample"
+        );
     }
 
     // ---- Mixed: comments, empty lines, header, unparseable --------------------
@@ -804,17 +1013,22 @@ timestamp,cpu_percent
 1700000000,12.3
 
 # spike starts here
-1700000010,bad_data
+1700000010,
 1700000020,95.5
 
 ";
         let gen =
             CsvReplayGenerator::from_str(content, 1, true).expect("mixed content should load");
-        // After skipping comments, empty lines, header, and unparseable "bad_data":
-        // Values are: 12.3, 95.5
+        // Comments, blank lines and the header are still skipped. The middle
+        // row's cell is now blank rather than "bad_data": it holds its slot, so
+        // 95.5 stays at index 2 instead of moving up to index 1. That shift is
+        // the defect this file used to encode.
         assert_eq!(gen.value(0), 12.3);
-        assert_eq!(gen.value(1), 95.5);
-        assert_eq!(gen.value(2), 12.3, "should cycle");
+        assert!(gen.value(1).is_nan(), "the blank holds index 1");
+        assert_eq!(gen.value(2), 95.5, "95.5 did not move up");
+        // The cycle wraps at 3 now, not 2 — the blank is a slot, so the column
+        // is one longer than it was when a bad cell vanished from it.
+        assert_eq!(gen.value(3), 12.3, "should cycle");
     }
 
     // ---- Fields with whitespace trim correctly --------------------------------

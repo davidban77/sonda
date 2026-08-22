@@ -991,6 +991,55 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
 
     let delta = compute_csv_delta_seconds(&file, 0)?;
     let derived_rate = timescale / delta;
+
+    // Blank cells and `gap_windows:` must describe the same silence. Checked
+    // here rather than in the generator because this is the one place that
+    // knows both halves: the file, and the schedule config that declares the
+    // windows. Every column is checked — a blank in the third series is as
+    // wrong as a blank in the first.
+    //
+    // The replay clock runs at `derived_rate`, so data row n stands for the
+    // instant n / derived_rate. That is the same number the scheduler will
+    // compute from elapsed time, which is why the two agree about where a
+    // window falls.
+    // Run unconditionally, NOT only when `gap_windows:` is present. Guarding
+    // this on the windows existing would skip the check in exactly the case it
+    // most needs to fire — a CSV with blank cells and no windows declared at
+    // all, which is the shape a hand-edited capture takes. An absent list is
+    // an empty list here, so "blank with no window" is caught rather than
+    // waved through.
+    let windows: Vec<(f64, f64)> = config
+        .base
+        .gap_windows
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|w| -> Result<(f64, f64), SondaError> {
+            let at = crate::config::validate::parse_duration(&w.at)?.as_secs_f64();
+            let dur = crate::config::validate::parse_duration(&w.r#for)?.as_secs_f64();
+            Ok((at, at + dur))
+        })
+        .collect::<Result<_, _>>()?;
+    {
+        let content = std::fs::read_to_string(&file).map_err(|e| {
+            SondaError::Generator(crate::GeneratorError::FileRead {
+                path: file.clone(),
+                source: e,
+            })
+        })?;
+        let step_secs = 1.0 / derived_rate;
+        for spec in &specs {
+            let (values, blanks) =
+                crate::generator::csv_replay::column_values_and_gaps(&content, spec.index)?;
+            crate::generator::csv_replay::cross_check_gap_windows(
+                &blanks,
+                values.len(),
+                &windows,
+                step_secs,
+            )?;
+        }
+    }
+
     let user_rate = config.base.rate;
     if (user_rate - derived_rate).abs() > 1e-9 {
         tracing::warn!(
