@@ -29,6 +29,27 @@ pub struct GapConfig {
     pub r#for: String,
 }
 
+/// One non-recurring silent window at a known offset from scenario start.
+///
+/// The sibling of [`GapConfig`] for silence that *happened* rather than
+/// silence that *recurs*. A periodic gap answers "simulate a scrape gap every
+/// 60s"; this answers "the exporter was down from 04:12 to 04:19", which has
+/// no period to speak of.
+///
+/// It is a separate field rather than a new shape on `gaps:` deliberately: an
+/// untagged enum on an existing public config key risks silently
+/// reinterpreting YAML that already parses, and a sibling field is additive
+/// and boring.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GapWindowConfig {
+    /// Offset from scenario start at which the silence begins (e.g. `"60s"`).
+    pub at: String,
+    /// How long the silence lasts (e.g. `"90s"`).
+    pub r#for: String,
+}
+
 /// Strategy for generating unique label values during a cardinality spike.
 ///
 /// Determines how the spike window produces distinct values for the injected
@@ -289,6 +310,13 @@ pub struct BaseScheduleConfig {
     /// Optional gap window: recurring silent periods in the event stream.
     #[cfg_attr(feature = "config", serde(default))]
     pub gaps: Option<GapConfig>,
+    /// Optional one-shot silent windows at fixed offsets from scenario start.
+    ///
+    /// Coexists with [`Self::gaps`]: both suppress emission and either may be
+    /// absent. Where `gaps` describes silence that recurs, this describes
+    /// silence that happened — the shape a captured incident has.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub gap_windows: Option<Vec<GapWindowConfig>>,
     /// Optional burst window: recurring high-rate periods in the event stream.
     ///
     /// When both a gap and a burst overlap in time, the gap takes priority.
@@ -1658,6 +1686,7 @@ clock_group: compound-alert
     fn scenario_entry_phase_offset_returns_value_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "accessor_test".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1688,6 +1717,7 @@ clock_group: compound-alert
     fn scenario_entry_phase_offset_returns_none_for_metrics_without_offset() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_offset".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1718,6 +1748,7 @@ clock_group: compound-alert
     fn scenario_entry_phase_offset_returns_value_for_logs() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_accessor".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1757,6 +1788,7 @@ clock_group: compound-alert
     fn scenario_entry_clock_group_returns_value_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "group_accessor".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1787,6 +1819,7 @@ clock_group: compound-alert
     fn scenario_entry_clock_group_returns_none_when_absent() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_group_acc".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1821,6 +1854,7 @@ clock_group: compound-alert
     fn scenario_entry_base_returns_shared_config_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "base_test".to_string(),
                 rate: 42.0,
                 duration: Some("5s".to_string()),
@@ -1852,6 +1886,7 @@ clock_group: compound-alert
     fn scenario_entry_base_returns_shared_config_for_logs() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_base".to_string(),
                 rate: 99.0,
                 duration: None,
@@ -2038,6 +2073,7 @@ gaps:
     #[test]
     fn base_schedule_config_is_clone_and_debug() {
         let base = BaseScheduleConfig {
+            gap_windows: None,
             name: "test".to_string(),
             rate: 42.0,
             duration: Some("10s".to_string()),
@@ -2074,6 +2110,7 @@ gaps:
     fn scenario_config_deref_accesses_base_fields() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "deref_test".to_string(),
                 rate: 99.0,
                 duration: Some("5s".to_string()),
@@ -2110,6 +2147,7 @@ gaps:
     fn log_scenario_config_deref_accesses_base_fields() {
         let config = LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_deref".to_string(),
                 rate: 50.0,
                 duration: None,
@@ -2151,6 +2189,7 @@ gaps:
     fn scenario_config_deref_mut_allows_base_field_mutation() {
         let mut config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "original".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2628,6 +2667,7 @@ mod expand_tests {
     fn csv_replay_config(name: &str, columns: Option<Vec<CsvColumnSpec>>) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 10.0,
                 duration: Some("30s".to_string()),
@@ -2739,6 +2779,7 @@ mod expand_tests {
     fn non_csv_replay_passes_through() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "const_metric".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3112,6 +3153,7 @@ mod expand_tests {
 
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "app_logs".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -3252,6 +3294,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "auto_test".to_string(),
                 rate: 1.0,
                 duration: Some("60s".to_string()),
@@ -3332,6 +3375,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "grafana_auto".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3404,6 +3448,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_data_cols".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3457,6 +3502,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "single_data_col".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3501,6 +3547,7 @@ mod expand_tests {
     fn auto_discovery_missing_file_returns_generator_error() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "missing_file".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3549,6 +3596,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_header".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3810,6 +3858,7 @@ distribution:
     fn expand_entry_passes_through_histogram() {
         let entry = ScenarioEntry::Histogram(HistogramScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_hist".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3846,6 +3895,7 @@ distribution:
     fn expand_entry_passes_through_summary() {
         let entry = ScenarioEntry::Summary(SummaryScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_sum".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3903,6 +3953,7 @@ distribution:
     ) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "ts_test".to_string(),
                 rate,
                 duration: Some("60s".to_string()),
@@ -4252,6 +4303,7 @@ generator:
     fn build_log_scenario(file: String, timescale: Option<f64>) -> LogScenarioConfig {
         LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_replay".to_string(),
                 rate: 1.0,
                 duration: None,

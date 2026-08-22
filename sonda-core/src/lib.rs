@@ -635,6 +635,7 @@ mod tests {
 
         let _config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test".to_string(),
                 rate: 10.0,
                 duration: None,

@@ -111,6 +111,63 @@ pub fn is_in_gap(elapsed: Duration, gap: &GapWindow) -> bool {
     cycle_pos >= every_secs - duration_secs
 }
 
+/// A single silent window at a fixed offset from scenario start.
+///
+/// The one-shot counterpart to [`GapWindow`]. Built from
+/// [`GapWindowConfig`](crate::config::GapWindowConfig) at runner
+/// initialization, after durations have been parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OneShotGap {
+    /// Offset from scenario start at which the silence begins, inclusive.
+    pub at: Duration,
+    /// How long the silence lasts.
+    pub duration: Duration,
+}
+
+impl OneShotGap {
+    /// The offset at which the window ends, exclusive.
+    pub fn end(&self) -> Duration {
+        self.at.saturating_add(self.duration)
+    }
+}
+
+/// Whether `elapsed` falls inside any window in a sorted one-shot list.
+///
+/// Windows are half-open — `[at, at + for)` — so a window starting exactly
+/// where another ends produces continuous silence with no emitting instant
+/// between them, and a window of zero duration suppresses nothing.
+///
+/// This is the same containment question [`is_in_gap`] answers for the
+/// periodic form; the two are checked together by the scheduler, and a gap
+/// from either source suppresses emission.
+pub fn is_in_gap_window(elapsed: Duration, windows: &[OneShotGap]) -> bool {
+    windows.iter().any(|w| elapsed >= w.at && elapsed < w.end())
+}
+
+/// How long until the current one-shot window ends.
+///
+/// Returns [`Duration::ZERO`] when `elapsed` is not inside any window. When
+/// windows are adjacent or overlapping the result runs to the end of the
+/// contiguous silence, so the scheduler sleeps once rather than waking between
+/// two touching windows only to sleep again.
+pub fn time_until_gap_window_end(elapsed: Duration, windows: &[OneShotGap]) -> Duration {
+    let mut cursor = elapsed;
+    let mut moved = true;
+    // Walk forward through any windows that contain the cursor. Overlapping
+    // and adjacent windows chain; the loop ends at the first instant no window
+    // covers.
+    while moved {
+        moved = false;
+        for w in windows {
+            if cursor >= w.at && cursor < w.end() {
+                cursor = w.end();
+                moved = true;
+            }
+        }
+    }
+    cursor.saturating_sub(elapsed)
+}
+
 /// Resolved configuration for a cardinality spike window.
 ///
 /// Built from a [`CardinalitySpikeConfig`](crate::config::CardinalitySpikeConfig)
@@ -210,6 +267,11 @@ pub(crate) struct ParsedSchedule {
     pub total_duration: Option<Duration>,
     /// Optional recurring gap window.
     pub gap_window: Option<GapWindow>,
+    /// Resolved one-shot gap windows, sorted by start offset.
+    ///
+    /// Sorted at construction so the scheduler's scan is over an ordered list;
+    /// empty when the scenario declares none.
+    pub gap_windows: Vec<OneShotGap>,
     /// Optional recurring burst window.
     pub burst_window: Option<BurstWindow>,
     /// Resolved cardinality spike windows.
@@ -252,6 +314,23 @@ impl ParsedSchedule {
                 })
             })
             .transpose()?;
+
+        let mut gap_windows: Vec<OneShotGap> = config
+            .gap_windows
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|w| -> Result<OneShotGap, crate::SondaError> {
+                Ok(OneShotGap {
+                    at: parse_duration(&w.at)?,
+                    duration: parse_duration(&w.r#for)?,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        // Sorted so the scheduler scans an ordered list, and so the chaining
+        // in time_until_gap_window_end walks forward rather than in whatever
+        // order the YAML happened to list.
+        gap_windows.sort_by_key(|w| w.at);
 
         let burst_window: Option<BurstWindow> = config
             .bursts
@@ -321,6 +400,7 @@ impl ParsedSchedule {
         Ok(Self {
             total_duration,
             gap_window,
+            gap_windows,
             burst_window,
             spike_windows,
             dynamic_labels,
@@ -989,6 +1069,7 @@ mod tests {
     /// Helper to build a minimal `BaseScheduleConfig` for testing.
     fn base_config() -> crate::config::BaseScheduleConfig {
         crate::config::BaseScheduleConfig {
+            gap_windows: None,
             name: "test".to_string(),
             rate: 10.0,
             duration: None,

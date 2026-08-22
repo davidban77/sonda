@@ -13,7 +13,10 @@ use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
 use crate::schedule::gate_bus::{GateEdge, GateReceiver, InitialState};
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
-use crate::schedule::{is_in_burst, is_in_gap, is_in_spike, time_until_gap_end};
+use crate::schedule::{
+    is_in_burst, is_in_gap, is_in_gap_window, is_in_spike, time_until_gap_end,
+    time_until_gap_window_end,
+};
 use crate::sink::Sink;
 use crate::SondaError;
 
@@ -275,30 +278,52 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             }
         }
 
-        // Check gap window — sleep through it rather than busy-wait.
+        // Check gap windows — sleep through them rather than busy-wait.
         // Gap always takes priority over burst: no events during a gap.
-        if let Some(ref gap) = schedule.gap_window {
-            if is_in_gap(elapsed, gap) {
-                // Update stats to reflect gap state before sleeping.
-                if let Some(ref s) = stats {
-                    if let Ok(mut st) = s.write() {
-                        st.in_gap = true;
-                        st.in_burst = false;
-                    }
+        //
+        // Two sources of silence, one branch. `gaps:` recurs; `gap_windows:`
+        // are one-shot windows at fixed offsets, which is the shape a captured
+        // incident has. Silence from either suppresses emission identically —
+        // there is no ordering between them to get wrong, because "in a gap"
+        // is a boolean either can set.
+        //
+        // When both apply at once the sleep is the longer of the two, so an
+        // overlap is covered to the end of whichever silence runs later rather
+        // than waking inside the other one.
+        let periodic_gap = schedule
+            .gap_window
+            .as_ref()
+            .filter(|gap| is_in_gap(elapsed, gap));
+        let in_one_shot = is_in_gap_window(elapsed, &schedule.gap_windows);
+        if periodic_gap.is_some() || in_one_shot {
+            // Update stats to reflect gap state before sleeping.
+            if let Some(ref s) = stats {
+                if let Ok(mut st) = s.write() {
+                    st.in_gap = true;
+                    st.in_burst = false;
                 }
-                let sleep_for = time_until_gap_end(elapsed, gap);
-                if sleep_for > Duration::ZERO {
-                    tokio::time::sleep(sleep_for).await;
-                }
-                // After sleeping through the gap, reset the deadline so we
-                // don't try to catch up for suppressed events. Re-derive
-                // tick from elapsed time at base rate.
-                let now = Instant::now();
-                next_deadline = now;
-                tick = initial_tick
-                    + (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
-                continue;
             }
+            let periodic_sleep = periodic_gap
+                .map(|gap| time_until_gap_end(elapsed, gap))
+                .unwrap_or(Duration::ZERO);
+            let one_shot_sleep = time_until_gap_window_end(elapsed, &schedule.gap_windows);
+            let sleep_for = periodic_sleep.max(one_shot_sleep);
+            if sleep_for > Duration::ZERO {
+                tokio::time::sleep(sleep_for).await;
+            }
+            // After sleeping through the gap, reset the deadline so we
+            // don't try to catch up for suppressed events. Re-derive
+            // tick from elapsed time at base rate.
+            //
+            // This is what keeps a dense CSV aligned across a gap for free:
+            // the generator's index tracks the wall grid rather than counting
+            // emitted events, so the sample after the silence is the sample
+            // that belongs at that instant.
+            let now = Instant::now();
+            next_deadline = now;
+            tick =
+                initial_tick + (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
+            continue;
         }
 
         // We are not in a gap — `currently_in_gap` is always false here because
@@ -1497,6 +1522,7 @@ mod tests {
     /// Build a minimal ParsedSchedule for testing.
     fn minimal_schedule(duration: Option<Duration>) -> ParsedSchedule {
         ParsedSchedule {
+            gap_windows: Vec::new(),
             total_duration: duration,
             gap_window: None,
             burst_window: None,
@@ -1591,6 +1617,7 @@ mod tests {
     #[tokio::test]
     async fn loop_suppresses_events_during_gap() {
         let schedule = ParsedSchedule {
+            gap_windows: Vec::new(),
             total_duration: Some(Duration::from_secs(2)),
             gap_window: Some(GapWindow {
                 every: Duration::from_secs(10),
@@ -1641,6 +1668,7 @@ mod tests {
     #[tokio::test]
     async fn loop_increases_rate_during_burst() {
         let schedule = ParsedSchedule {
+            gap_windows: Vec::new(),
             total_duration: Some(Duration::from_secs(1)),
             gap_window: None,
             burst_window: Some(BurstWindow {
@@ -1780,6 +1808,7 @@ mod tests {
         use crate::schedule::CardinalitySpikeWindow;
 
         let schedule = ParsedSchedule {
+            gap_windows: Vec::new(),
             total_duration: Some(Duration::from_millis(100)),
             gap_window: None,
             burst_window: None,

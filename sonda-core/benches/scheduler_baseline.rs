@@ -127,6 +127,7 @@ struct Sample {
 fn metrics_entry(name: String, rate_hz: f64, sink: SinkConfig) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name,
             rate: rate_hz,
             duration: None,

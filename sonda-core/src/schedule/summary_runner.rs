@@ -245,6 +245,7 @@ mod tests {
     ) -> SummaryScenarioConfig {
         SummaryScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "rpc_duration_seconds".to_string(),
                 rate,
                 duration: Some(duration.to_string()),

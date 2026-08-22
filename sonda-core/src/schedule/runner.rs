@@ -278,6 +278,7 @@ mod tests {
     fn make_config(rate: f64, duration: &str, gaps: Option<GapConfig>) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "up".to_string(),
                 rate,
                 duration: Some(duration.to_string()),
@@ -459,6 +460,7 @@ mod tests {
     ) -> crate::config::ScenarioConfig {
         crate::config::ScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "up".to_string(),
                 rate,
                 duration: Some(duration.to_string()),
@@ -841,6 +843,7 @@ mod tests {
     ) -> crate::config::ScenarioConfig {
         crate::config::ScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "up".to_string(),
                 rate,
                 duration: Some(duration.to_string()),
@@ -1032,6 +1035,7 @@ mod tests {
     async fn invalid_metric_name_returns_config_error_before_loop() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "123-invalid".to_string(),
                 rate: 10.0,
                 duration: Some("100ms".to_string()),
@@ -1073,6 +1077,7 @@ mod tests {
     ) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "up".to_string(),
                 rate,
                 duration: Some(duration.to_string()),

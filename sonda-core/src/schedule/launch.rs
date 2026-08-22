@@ -458,6 +458,7 @@ mod tests {
     fn metrics_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 50.0,
                 duration: Some("200ms".to_string()),
@@ -486,6 +487,7 @@ mod tests {
     fn logs_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 50.0,
                 duration: Some("200ms".to_string()),
@@ -519,6 +521,7 @@ mod tests {
     fn metrics_entry_indefinite(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 100.0,
                 duration: None,
@@ -547,6 +550,7 @@ mod tests {
     fn logs_entry_indefinite(name: &str) -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 100.0,
                 duration: None,
@@ -605,6 +609,7 @@ mod tests {
     fn validate_entry_rejects_metrics_entry_with_zero_rate() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "bad_metrics".to_string(),
                 rate: 0.0, // invalid
                 duration: Some("1s".to_string()),
@@ -639,6 +644,7 @@ mod tests {
     fn validate_entry_rejects_metrics_entry_with_negative_rate() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "neg_rate".to_string(),
                 rate: -5.0,
                 duration: Some("1s".to_string()),
@@ -673,6 +679,7 @@ mod tests {
     fn validate_entry_rejects_logs_entry_with_zero_rate() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "bad_logs".to_string(),
                 rate: 0.0, // invalid
                 duration: Some("1s".to_string()),
@@ -712,6 +719,7 @@ mod tests {
     fn validate_entry_rejects_metrics_entry_with_bad_duration() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "bad_dur".to_string(),
                 rate: 10.0,
                 duration: Some("not_a_duration".to_string()),
@@ -860,6 +868,7 @@ mod tests {
         // High rate so events accumulate quickly.
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "stats_test".to_string(),
                 rate: 500.0,
                 duration: None, // indefinite — we stop it manually
@@ -914,6 +923,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "logs_stats_test".to_string(),
                 rate: 500.0,
                 duration: None,
@@ -990,6 +1000,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_delay_test".to_string(),
                 rate: 500.0,
                 duration: None,
@@ -1041,6 +1052,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "delay_test".to_string(),
                 rate: 500.0,
                 duration: Some("1s".to_string()),
@@ -1153,6 +1165,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_delay_test".to_string(),
                 rate: 500.0,
                 duration: Some("1s".to_string()),
@@ -1219,6 +1232,7 @@ mod tests {
     fn histogram_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Histogram(HistogramScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 50.0,
                 duration: Some("200ms".to_string()),
@@ -1251,6 +1265,7 @@ mod tests {
     fn summary_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Summary(SummaryScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 50.0,
                 duration: Some("200ms".to_string()),
@@ -1386,6 +1401,7 @@ mod tests {
     fn prepare_entries_rejects_invalid_entry() {
         let invalid = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "invalid_rate".to_string(),
                 rate: 0.0, // invalid
                 duration: Some("1s".to_string()),
@@ -1424,6 +1440,7 @@ mod tests {
     fn prepare_entries_resolves_phase_offset() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "offset_test".to_string(),
                 rate: 10.0,
                 duration: Some("200ms".to_string()),
@@ -1462,6 +1479,7 @@ mod tests {
     fn prepare_entries_zero_phase_offset_is_none() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "zero_offset".to_string(),
                 rate: 10.0,
                 duration: Some("200ms".to_string()),
@@ -1499,6 +1517,7 @@ mod tests {
     fn prepare_entries_rejects_invalid_phase_offset() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "bad_offset".to_string(),
                 rate: 10.0,
                 duration: Some("200ms".to_string()),
@@ -1701,6 +1720,7 @@ mod tests {
         let valid = metrics_entry("valid_a");
         let invalid = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "invalid_b".to_string(),
                 rate: 0.0, // invalid
                 duration: Some("1s".to_string()),
@@ -1744,6 +1764,7 @@ mod tests {
         let valid = metrics_entry("valid_first");
         let bad_offset = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "bad_offset".to_string(),
                 rate: 10.0,
                 duration: Some("1s".to_string()),
@@ -1794,6 +1815,7 @@ mod tests {
     fn step_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 50.0,
                 duration: Some("200ms".to_string()),
@@ -1944,6 +1966,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "cancel_during_gap_sleep".to_string(),
                 rate: 100.0,
                 duration: None,

@@ -422,6 +422,7 @@ mod tests {
     fn metrics_entry_stdout(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 10.0,
                 duration: Some("100ms".to_string()),
@@ -451,6 +452,7 @@ mod tests {
     fn logs_entry_stdout(name: &str) -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 10.0,
                 duration: Some("100ms".to_string()),
@@ -556,6 +558,7 @@ mod tests {
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "shutdown_test_metric".to_string(),
                     rate: 10.0,
                     duration: None, // indefinite
@@ -580,6 +583,7 @@ mod tests {
             }),
             ScenarioEntry::Logs(LogScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "shutdown_test_logs".to_string(),
                     rate: 10.0,
                     duration: None, // indefinite
@@ -639,6 +643,7 @@ mod tests {
         // during sink construction inside the thread.
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "error_test".to_string(),
                 rate: 10.0,
                 duration: Some("100ms".to_string()),
@@ -682,6 +687,7 @@ mod tests {
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "err_a".to_string(),
                     rate: 10.0,
                     duration: Some("100ms".to_string()),
@@ -708,6 +714,7 @@ mod tests {
             }),
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "err_b".to_string(),
                     rate: 10.0,
                     duration: Some("100ms".to_string()),
@@ -750,6 +757,7 @@ mod tests {
         // The collected error must be Runtime::ScenariosFailed, not Config.
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "variant_test".to_string(),
                 rate: 10.0,
                 duration: Some("100ms".to_string()),
@@ -796,6 +804,7 @@ mod tests {
     async fn run_multi_with_minimal_phase_offset_emits_almost_immediately() {
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "minimal_offset".to_string(),
                 rate: 10.0,
                 duration: Some("200ms".to_string()),
@@ -837,6 +846,7 @@ mod tests {
     async fn run_multi_accepts_zero_phase_offset() {
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "zero_offset".to_string(),
                 rate: 10.0,
                 duration: Some("200ms".to_string()),
@@ -888,6 +898,7 @@ mod tests {
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "first_immediate".to_string(),
                     rate: 10.0,
                     duration: Some("100ms".to_string()),
@@ -912,6 +923,7 @@ mod tests {
             }),
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "second_delayed".to_string(),
                     rate: 10.0,
                     duration: Some("100ms".to_string()),
@@ -957,6 +969,7 @@ mod tests {
             // First scenario runs indefinitely.
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "immediate_indef".to_string(),
                     rate: 10.0,
                     duration: None,
@@ -982,6 +995,7 @@ mod tests {
             // Second scenario has a long delay — we'll shut down before it starts.
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "long_delay".to_string(),
                     rate: 10.0,
                     duration: None,
@@ -1032,6 +1046,7 @@ mod tests {
     async fn run_multi_rejects_invalid_phase_offset() {
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "bad_offset".to_string(),
                 rate: 10.0,
                 duration: Some("100ms".to_string()),
@@ -1073,6 +1088,7 @@ mod tests {
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "grouped_a".to_string(),
                     rate: 10.0,
                     duration: Some("100ms".to_string()),
@@ -1097,6 +1113,7 @@ mod tests {
             }),
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
+                    gap_windows: None,
                     name: "grouped_b".to_string(),
                     rate: 10.0,
                     duration: Some("100ms".to_string()),

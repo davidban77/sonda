@@ -2007,6 +2007,7 @@ generator:
     fn minimal_config_with_rate(rate: f64) -> ScenarioConfig {
         ScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "up".to_string(),
                 rate,
                 duration: None,
@@ -2370,6 +2371,7 @@ generator:
     fn validate_log_config_jitter_nan_returns_err() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "logs".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2413,6 +2415,7 @@ generator:
     fn validate_log_config_jitter_negative_returns_err() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "logs".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2583,6 +2586,7 @@ generator:
     fn validate_log_config_with_valid_dynamic_labels_returns_ok() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "test".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2622,6 +2626,7 @@ generator:
     fn validate_log_config_with_invalid_dynamic_label_returns_error() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "test".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2839,6 +2844,7 @@ generator:
     fn make_histogram_config() -> HistogramScenarioConfig {
         HistogramScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "http_request_duration_seconds".to_string(),
                 rate: 10.0,
                 duration: Some("1s".to_string()),
@@ -2906,6 +2912,7 @@ generator:
     fn make_summary_config() -> SummaryScenarioConfig {
         SummaryScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "rpc_duration_seconds".to_string(),
                 rate: 10.0,
                 duration: Some("1s".to_string()),

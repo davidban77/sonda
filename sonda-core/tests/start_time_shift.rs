@@ -48,6 +48,7 @@ fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
 
 fn base(name: &str, rate: f64, duration: &str, start_time: Option<&str>) -> BaseScheduleConfig {
     BaseScheduleConfig {
+        gap_windows: None,
         name: name.to_string(),
         rate,
         duration: Some(duration.to_string()),
