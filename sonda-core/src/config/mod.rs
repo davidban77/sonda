@@ -976,21 +976,24 @@ fn compute_csv_delta_seconds(path: &str, ts_col_idx: usize) -> Result<f64, Sonda
 /// `rate` from the CSV's column-0 timestamps (`rate = timescale / median Δt`).
 /// Non-`csv_replay` configs pass through unchanged.
 pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, SondaError> {
-    let (file, columns_field, timescale_opt, default_name_opt) = match &config.generator {
-        GeneratorConfig::CsvReplay {
-            file,
-            columns,
-            timescale,
-            default_metric_name,
-            ..
-        } => (
-            file.clone(),
-            columns.clone(),
-            *timescale,
-            default_metric_name.clone(),
-        ),
-        _ => return Ok(vec![config]),
-    };
+    let (file, columns_field, timescale_opt, default_name_opt, repeat_field) =
+        match &config.generator {
+            GeneratorConfig::CsvReplay {
+                file,
+                columns,
+                timescale,
+                default_metric_name,
+                repeat,
+                ..
+            } => (
+                file.clone(),
+                columns.clone(),
+                *timescale,
+                default_metric_name.clone(),
+                *repeat,
+            ),
+            _ => return Ok(vec![config]),
+        };
 
     validate_csv_columns(&columns_field)?;
     let timescale = validate_csv_timescale(timescale_opt)?;
@@ -1056,12 +1059,43 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
             })
         })?;
         let step_secs = 1.0 / derived_rate;
+
+        // The rows alone do not say which instants get played — `repeat` loops
+        // the column and `repeat: false` clamps past its end — so the check is
+        // given the playback, resolved here where both the generator's `repeat`
+        // and the schedule's `duration:` are in hand.
+        //
+        // `repeat` is resolved through the SAME `unwrap_or(true)` the generator
+        // factory applies. Reading the Option here and defaulting differently
+        // is how a check ends up disagreeing with the thing it checks.
+        let repeat = repeat_field.unwrap_or(true);
+        let last_tick = config
+            .base
+            .duration
+            .as_deref()
+            .map(crate::config::validate::parse_duration)
+            .transpose()?
+            .map(|d| {
+                // Ticks land at 0, step, 2*step, … while t < duration, so the
+                // count is ceil(duration / step) and the last index is one
+                // below it. `parse_duration` refuses zero, so a positive
+                // duration always yields at least one tick — `map`, not
+                // `and_then`, because `None` here means "unbounded" and must
+                // not double as "no ticks played".
+                let ticks = (d.as_secs_f64() / step_secs).ceil() as u64;
+                ticks.saturating_sub(1)
+            });
+
         for spec in &specs {
             let (values, blanks) =
                 crate::generator::csv_replay::column_values_and_gaps(&content, spec.index)?;
             crate::generator::csv_replay::cross_check_gap_windows(
                 &blanks,
-                values.len(),
+                &crate::generator::csv_replay::Playback {
+                    row_count: values.len(),
+                    repeat,
+                    last_tick,
+                },
                 &windows,
                 step_secs,
             )?;
@@ -4232,15 +4266,33 @@ distribution:
     /// Build the scenario and attach the windows under test.
     ///
     /// Rows are 10s apart, so the derived rate is 0.1/s and data row *n*
-    /// stands for the instant 10n seconds.
+    /// stands for the instant 10n seconds. `duration: 60s` covers ticks 0..=5.
+    ///
+    /// `repeat: false` throughout, because a capture containing silence cannot
+    /// loop and is refused before the coverage question is reached — that rule
+    /// has its own cases below.
     fn expand_with_windows(
         values: &[Option<f64>],
         windows: Option<Vec<GapWindowConfig>>,
+    ) -> Result<Vec<ScenarioConfig>, SondaError> {
+        expand_with_playback(values, windows, Some(false), Some("60s"))
+    }
+
+    /// The same, with `repeat` and `duration` under the caller's control.
+    fn expand_with_playback(
+        values: &[Option<f64>],
+        windows: Option<Vec<GapWindowConfig>>,
+        repeat: Option<bool>,
+        duration: Option<&str>,
     ) -> Result<Vec<ScenarioConfig>, SondaError> {
         let tmp = write_csv_with_blanks(values);
         let path = tmp.path().to_string_lossy().into_owned();
         let mut config = build_csv_replay_scenario(path, 1.0, None, None);
         config.base.gap_windows = windows;
+        config.base.duration = duration.map(str::to_string);
+        if let GeneratorConfig::CsvReplay { repeat: r, .. } = &mut config.generator {
+            *r = repeat;
+        }
         expand_scenario(config)
     }
 
@@ -4372,6 +4424,161 @@ distribution:
             msg.contains("and 4 more"),
             "12 offenders should name 8 and summarise 4, got: {msg}"
         );
+    }
+
+    // ---- the playback, not just the file ----------------------------------
+    //
+    // The row list says nothing about the instants a run actually reaches:
+    // `repeat` loops it and `repeat: false` clamps past its end. Both leaked a
+    // NaN past a green cross-check, and both are reachable from a default.
+
+    /// A capture containing silence cannot loop, and `repeat` defaults to true.
+    ///
+    /// This is the reachable-by-default case: nothing in the YAML says
+    /// `repeat`, the file has a blank, the window covers it on the first pass,
+    /// and on the second cycle the same row replays where no window is.
+    #[test]
+    fn blanks_are_refused_when_repeat_is_left_to_its_default() {
+        let err = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            None,
+            Some("60s"),
+        )
+        .expect_err("a looping capture with silence must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot loop") && msg.contains("repeat"),
+            "error should name the looping rule, got: {msg}"
+        );
+    }
+
+    /// The same file with `repeat: true` written out, so the rule is not an
+    /// artefact of the default resolving.
+    #[test]
+    fn blanks_are_refused_when_repeat_is_explicitly_true() {
+        let err = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(true),
+            Some("60s"),
+        )
+        .expect_err("a looping capture with silence must be refused");
+        assert!(err.to_string().contains("cannot loop"), "got: {err}");
+    }
+
+    /// The other direction: the identical file loops fine once the blank is
+    /// gone, so the rule is about silence and not about `repeat` itself.
+    #[test]
+    fn a_capture_without_silence_may_still_loop() {
+        let result = expand_with_playback(
+            &[Some(1.0), Some(2.0), Some(3.0)],
+            None,
+            Some(true),
+            Some("60s"),
+        )
+        .expect("a capture with no blanks must still be allowed to loop");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// And with `repeat: false` the same blank-carrying file is accepted.
+    #[test]
+    fn blanks_are_accepted_once_the_capture_stops_looping() {
+        let result = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect("`repeat: false` must accept the same file");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A capture that ends during the outage, replayed past its own length.
+    ///
+    /// `repeat: false` holds the final slot for every remaining tick, so a
+    /// blank last row keeps emitting — as `NaN`, outside every window, with the
+    /// per-row check green because the file has no row for those instants.
+    #[test]
+    fn a_blank_last_row_held_past_the_data_is_refused() {
+        // Rows at 0s, 10s, 20s; the run goes to 60s, so ticks 3..=5 hold row 2.
+        let err = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "10s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect_err("held silence past the data must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outlives its data"),
+            "error should name the clamp, got: {msg}"
+        );
+        assert!(
+            msg.contains("tick(s) 3, 4, 5"),
+            "error should name the uncovered ticks, got: {msg}"
+        );
+    }
+
+    /// The fix the error suggests works: a window reaching the end of the run.
+    ///
+    /// This is a real capture shape — the exporter went down and had not come
+    /// back when the capture ended — so it must stay expressible.
+    #[test]
+    fn a_blank_last_row_is_accepted_when_the_window_reaches_the_end() {
+        let result = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "45s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect("a window covering the held tail must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// The other suggested fix: stop the run at the data.
+    #[test]
+    fn a_blank_last_row_is_accepted_when_the_run_ends_with_the_data() {
+        let result = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "10s")]),
+            Some(false),
+            Some("30s"),
+        )
+        .expect("a run that ends with its data must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// With no `duration:` the held silence never ends, and no finite window
+    /// reaches it — so the error says that rather than naming a window to add.
+    #[test]
+    fn a_blank_last_row_on_an_unbounded_run_is_refused() {
+        let err = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "10s")]),
+            Some(false),
+            None,
+        )
+        .expect_err("unbounded held silence must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no `duration:`") && msg.contains("forever"),
+            "error should explain why no window helps, got: {msg}"
+        );
+    }
+
+    /// A present last row is not subject to the clamp rule: what the run holds
+    /// past the data is a value, not silence.
+    #[test]
+    fn a_present_last_row_held_past_the_data_is_fine() {
+        let result = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect("holding a present value past the data is not silence");
+        assert_eq!(result.len(), 1);
     }
 
     // -----------------------------------------------------------------------

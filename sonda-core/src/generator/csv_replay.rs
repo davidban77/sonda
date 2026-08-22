@@ -264,6 +264,26 @@ pub(crate) fn column_values_and_gaps(
 /// windows are half-open `[start, end)`, matching
 /// [`is_in_gap_window`](crate::schedule::is_in_gap_window).
 ///
+/// # The check follows the playback, not just the file
+///
+/// Comparing the file's rows against the windows is only the whole answer when
+/// the scenario plays each row exactly once. It does not, by default. Two ways
+/// a run reaches an instant the row list does not describe, both of which
+/// leaked a `NaN` past a green check before this was written:
+///
+/// * **`repeat` loops the column.** Row `n` replays at `(k * len + n) *
+///   step_secs` for every cycle `k`, and one-shot windows cover the first pass
+///   only. Refused outright — see [`Playback::repeat`].
+/// * **`repeat: false` clamps.** Past the end of the data the generator holds
+///   the final slot for every remaining tick. If that slot is blank, the
+///   silence continues for the rest of the run and needs a window that reaches
+///   it.
+///
+/// The clamp check asks only whether a *blank* escapes. A window lying over the
+/// clamped tail of a present value is not refused: what it silences is a value
+/// the generator is holding, not a sample the capture recorded, so
+/// "inventing silence that did not happen" does not apply there.
+///
 /// # Errors
 ///
 /// Returns [`SondaError::Config`] naming the offending rows, capped so a
@@ -271,12 +291,29 @@ pub(crate) fn column_values_and_gaps(
 /// indices.
 pub(crate) fn cross_check_gap_windows(
     blanks: &[usize],
-    row_count: usize,
+    playback: &Playback,
     windows: &[(f64, f64)],
     step_secs: f64,
 ) -> Result<(), SondaError> {
     /// How many row numbers to name before summarising.
     const MAX_NAMED: usize = 8;
+
+    let row_count = playback.row_count;
+
+    // A capture containing silence cannot loop. Every one-shot window sits on
+    // the first pass, so the second cycle replays the same blank rows at
+    // instants no window covers — validation green, `NaN` on the wire. There is
+    // no window list that fixes this, because the run is unbounded in cycles,
+    // so the answer is a different setting rather than a different window.
+    if playback.repeat && !blanks.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: this capture contains {} blank cell(s) and `repeat` is true. \
+             A capture containing silence cannot loop: `gap_windows:` describe one pass, \
+             so on the second cycle those rows would replay at instants no window covers \
+             and emit as NaN samples. Set `repeat: false`.",
+            blanks.len(),
+        ))));
+    }
 
     let covered = |row: usize| -> bool {
         let t = row as f64 * step_secs;
@@ -323,7 +360,85 @@ pub(crate) fn cross_check_gap_windows(
         ))));
     }
 
+    // Past the end of the data the generator holds the final slot. If that slot
+    // is blank, every remaining tick is silence the windows still have to
+    // account for — the file has no row to hang those instants on, so the
+    // per-row pass above cannot see them.
+    let last_row = match row_count.checked_sub(1) {
+        Some(r) if blanks.contains(&r) => r,
+        _ => return Ok(()),
+    };
+    match playback.last_tick {
+        // Unbounded: the held silence never ends, so no finite window reaches
+        // it. Say that, rather than naming a window the user could add.
+        None => {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "csv_replay: the capture's last row (data row {}) is blank and the scenario \
+                 has no `duration:`. With `repeat: false` the final slot is held for every \
+                 later tick, so that silence would run forever and no `gap_windows:` entry \
+                 can cover it. Set a `duration:` the windows reach, or put a value in the \
+                 last row.",
+                last_row + 1,
+            ))));
+        }
+        Some(last_tick) => {
+            let held: Vec<usize> = ((last_row + 1)..=(last_tick as usize))
+                .filter(|&t| !covered(t))
+                .collect();
+            if !held.is_empty() {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: the capture's last row (data row {}) is blank and the \
+                     scenario outlives its data. With `repeat: false` that slot is held for \
+                     every later tick, and {} of them fall outside every `gap_windows:` entry \
+                     (tick(s) {}), where the silence would emit as NaN samples. Extend the \
+                     window to the end of the run, shorten `duration:`, or put a value in the \
+                     last row.",
+                    last_row + 1,
+                    held.len(),
+                    format_rows_zero_based(&held, MAX_NAMED),
+                ))));
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// How a scenario will walk the rows of its capture.
+///
+/// The cross-check needs this because the row list alone does not say which
+/// instants get played: `repeat` loops it and `repeat: false` clamps past its
+/// end. Both reach instants no row describes.
+pub(crate) struct Playback {
+    /// Rows in the column, blanks included — blanks hold their slot.
+    pub row_count: usize,
+    /// Resolved `repeat`, after the `unwrap_or(true)` default is applied.
+    ///
+    /// The default matters: it is the reason a hand-written capture with blanks
+    /// looped silently before this check existed.
+    pub repeat: bool,
+    /// Index of the last tick the scenario plays, or `None` when it has no
+    /// `duration:` and runs unbounded.
+    pub last_tick: Option<u64>,
+}
+
+/// Render tick indices for an error message. Ticks are 0-based on the wire, so
+/// unlike data rows they are named as they are.
+fn format_rows_zero_based(ticks: &[usize], max_named: usize) -> String {
+    let shown: Vec<String> = ticks
+        .iter()
+        .take(max_named)
+        .map(|t| t.to_string())
+        .collect();
+    if ticks.len() > max_named {
+        format!(
+            "{} … and {} more",
+            shown.join(", "),
+            ticks.len() - max_named
+        )
+    } else {
+        shown.join(", ")
+    }
 }
 
 impl ValueGenerator for CsvReplayGenerator {

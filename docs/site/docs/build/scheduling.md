@@ -97,6 +97,24 @@ This is the shape [`sonda new --from-prometheus`](../import/from-csv.md) emits, 
 
 For the field reference, see [Scenario fields — One-shot gap windows](../reference/scenario-fields.md#one-shot-gap-windows).
 
+### Replaying a capture that contains silence
+
+A blank cell in a replayed CSV means the sample was **absent**. Sonda refuses a scenario where the blanks and the windows disagree — a blank no window covers, or a window over a row that has a value — and two further rules follow from how a replay walks its rows:
+
+- **A capture containing silence cannot loop.** `gap_windows:` describe one pass, so on a second cycle those rows would replay where no window is. Set `repeat: false`. This bites by default, because `repeat` defaults to `true`.
+- **A capture whose last row is blank cannot outlive its data unattended.** With `repeat: false` the final slot is held for every remaining tick, so the silence continues past the capture. Either extend the window to the end of the run, or end the run with the data.
+
+Both are validation errors naming the rows or ticks at fault.
+
+!!! note "Release note — scheduling accuracy, shipped alongside `gap_windows:`"
+    Fixing where a gap falls corrected a timing error the scheduler had carried for every generator: each tick's gap, burst, duration and timestamp decisions were being made against the *previous* tick's instant. Three behaviours change together, and all three are the same fix seen from different angles. This is a bugfix inside a minor release, not a breaking change — but if you assert on event counts or timestamps, read this.
+
+    - **The first tick of a gap window is now suppressed.** It used to emit. The scenario said not to emit it, so depending on it was depending on a bug.
+    - **A run ends one tick earlier at the boundary.** A 5-second scenario at `rate: 10` now emits 50 events; it emitted 51, with the last one at 5.1 seconds — past the declared duration. The new count is what `rate` × `duration` always claimed. (The [sink batching](sink-batching.md#practical-implications) page already documented 50; the runtime is now what the docs said.)
+    - **Timestamps carry the tick's own instant.** Each event used to be stamped with the previous tick's time, one interval early. Consumers parsing timestamps get truer data, never worse.
+
+    Scenarios that do not use gaps and do not assert exact event counts are unaffected in any way you can observe.
+
 ## Dynamic labels
 
 Dynamic labels attach a rotating label value to every emitted event. Use them when the label you care about (`hostname`, `pod_name`, `region`) belongs on every data point, and you need the values to cycle through a bounded, predictable set.
