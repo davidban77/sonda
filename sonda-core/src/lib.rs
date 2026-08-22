@@ -21,6 +21,7 @@
 //! sonda-core add new variants and fields in a minor release without a
 //! semver-major bump.
 
+pub mod acquire;
 pub mod analysis;
 #[cfg(feature = "config")]
 pub mod catalog;
