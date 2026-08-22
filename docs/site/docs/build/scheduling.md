@@ -64,6 +64,39 @@ That last sentence is also why `multiplier` is the one slider whose effect you w
 
 For the full field reference (every option on `gaps:` and `bursts:`, including jitter and offset), see [Scenario fields — Gap window](../reference/scenario-fields.md#gap-window) and [Burst window](../reference/scenario-fields.md#burst-window). To test alert resolution behavior with gaps, see the [Resolution and recovery tab](../test/alert-testing.md#resolution-and-recovery) on Alert testing.
 
+## Silence that happened once
+
+`gaps:` describes silence with a period. Real outages do not have one — an exporter was down from 04:12 to 04:19, and that is the whole story. `gap_windows:` takes a list of one-shot windows at fixed offsets from scenario start:
+
+```yaml title="An exporter that was down twice, once briefly"
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_seconds_total
+    rate: 1
+    generator:
+      type: constant
+      value: 42.0
+    gap_windows:
+      - at: 4m
+        for: 7m
+      - at: 22m
+        for: 2m
+```
+
+```text
+Time:  0s        4m         11m              22m    24m
+       |---------|xxxxxxxxxx|----------------|xxxxx|------
+       emitting    down 7m      emitting      down   emitting
+```
+
+Windows are half-open: the instant at `at` is silent, the instant at `at + for` is not. Two windows that touch make one continuous silence rather than one sample between them, and `at: 0s` is a scenario that starts inside the outage — which is what a capture taken during one looks like.
+
+Emission resumes on the sample that belongs at the instant the silence ends, not on the sample the run was interrupted at. Nothing is caught up: a scenario replaying a capture stays on its original clock across the window, so what plays after the gap is what really came after it.
+
+This is the shape [`sonda new --from-prometheus`](../import/from-csv.md) emits, and it pairs with `csv_replay`: a blank cell in the CSV means the sample was absent, and the window is what turns that absence back into silence. Sonda refuses a scenario where the two disagree in either direction — a blank cell with no window over it, or a window over a row that has a value.
+
+For the field reference, see [Scenario fields — One-shot gap windows](../reference/scenario-fields.md#one-shot-gap-windows).
+
 ## Dynamic labels
 
 Dynamic labels attach a rotating label value to every emitted event. Use them when the label you care about (`hostname`, `pod_name`, `region`) belongs on every data point, and you need the values to cycle through a bounded, predictable set.

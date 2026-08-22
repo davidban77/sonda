@@ -811,6 +811,17 @@
           ],
           "default": null
         },
+        "gap_windows": {
+          "description": "One-shot silent windows at fixed offsets from scenario start.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/GapWindowConfig"
+          }
+        },
         "gaps": {
           "description": "Recurring silent-period configuration.",
           "anyOf": [
@@ -1206,6 +1217,16 @@
           ],
           "default": null
         },
+        "gap_windows": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/GapWindowConfig"
+          }
+        },
         "gaps": {
           "anyOf": [
             {
@@ -1488,6 +1509,32 @@
       },
       "required": [
         "every",
+        "for"
+      ]
+    },
+    "GapWindowConfig": {
+      "description": "One non-recurring silent window at a known offset from scenario start.\n\nThe sibling of [`GapConfig`] for silence that *happened* rather than\nsilence that *recurs*. A periodic gap answers \"simulate a scrape gap every\n60s\"; this answers \"the exporter was down from 04:12 to 04:19\", which has\nno period to speak of.\n\nIt is a separate field rather than a new shape on `gaps:` deliberately: an\nuntagged enum on an existing public config key risks silently\nreinterpreting YAML that already parses, and a sibling field is additive\nand boring.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "Offset from scenario start at which the silence begins (e.g. `\"60s\"`).\n\nAn offset, not a length: `\"0s\"` is a scenario that begins already\ninside the silence, which is what a capture taken during an outage\nlooks like.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "for": {
+          "description": "How long the silence lasts (e.g. `\"90s\"`).",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "at",
         "for"
       ]
     },

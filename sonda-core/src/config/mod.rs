@@ -45,9 +45,37 @@ pub struct GapConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GapWindowConfig {
     /// Offset from scenario start at which the silence begins (e.g. `"60s"`).
+    ///
+    /// An offset, not a length: `"0s"` is a scenario that begins already
+    /// inside the silence, which is what a capture taken during an outage
+    /// looks like.
     pub at: String,
     /// How long the silence lasts (e.g. `"90s"`).
     pub r#for: String,
+}
+
+impl GapWindowConfig {
+    /// Resolve this window into `(offset from start, length)`.
+    ///
+    /// One definition because two callers ask the same question and must get
+    /// the same answer: the scheduler, which suppresses emission inside the
+    /// window, and the csv_replay cross-check, which asks whether that window
+    /// covers a blank cell. If the two parsed these fields differently, the
+    /// cross-check would bless a file the scheduler then replays wrongly —
+    /// exactly the divergence that makes a check worse than no check.
+    ///
+    /// `at` accepts zero; `for` does not, because a window that silences
+    /// nothing is a mistake worth surfacing rather than a no-op to absorb.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError::Config`] if either field is not a valid duration.
+    pub fn resolve(&self) -> Result<(std::time::Duration, std::time::Duration), SondaError> {
+        Ok((
+            validate::parse_offset_duration(&self.at)?,
+            validate::parse_duration(&self.r#for)?,
+        ))
+    }
 }
 
 /// Strategy for generating unique label values during a cardinality spike.
@@ -1015,9 +1043,9 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
         .unwrap_or_default()
         .iter()
         .map(|w| -> Result<(f64, f64), SondaError> {
-            let at = crate::config::validate::parse_duration(&w.at)?.as_secs_f64();
-            let dur = crate::config::validate::parse_duration(&w.r#for)?.as_secs_f64();
-            Ok((at, at + dur))
+            let (at, dur) = w.resolve()?;
+            let at = at.as_secs_f64();
+            Ok((at, at + dur.as_secs_f64()))
         })
         .collect::<Result<_, _>>()?;
     {
@@ -4170,6 +4198,179 @@ distribution:
         assert!(
             logs_contain("overriding rate"),
             "tracing warn should contain 'overriding rate'"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // blank-cell / gap_windows cross-check
+    //
+    // Driven through `expand_scenario` rather than by calling
+    // `cross_check_gap_windows` directly, because the defect this guards
+    // against is the two halves disagreeing: the window offsets the scheduler
+    // resolves, and the row-to-instant mapping the check computes from the
+    // derived rate. Calling the checker with hand-computed windows would test
+    // the half that was never in doubt.
+    // -----------------------------------------------------------------------
+
+    /// A CSV whose rows are 10s apart, with `None` writing a blank cell.
+    fn write_csv_with_blanks(values: &[Option<f64>]) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "Time,cpu_usage").expect("write header");
+        for (i, v) in values.iter().enumerate() {
+            let ts = 1_700_000_000 + (i as u64) * 10;
+            match v {
+                Some(v) => writeln!(tmp, "{ts},{v}"),
+                None => writeln!(tmp, "{ts},"),
+            }
+            .expect("write row");
+        }
+        tmp.flush().expect("flush");
+        tmp
+    }
+
+    /// Build the scenario and attach the windows under test.
+    ///
+    /// Rows are 10s apart, so the derived rate is 0.1/s and data row *n*
+    /// stands for the instant 10n seconds.
+    fn expand_with_windows(
+        values: &[Option<f64>],
+        windows: Option<Vec<GapWindowConfig>>,
+    ) -> Result<Vec<ScenarioConfig>, SondaError> {
+        let tmp = write_csv_with_blanks(values);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let mut config = build_csv_replay_scenario(path, 1.0, None, None);
+        config.base.gap_windows = windows;
+        expand_scenario(config)
+    }
+
+    fn window(at: &str, r#for: &str) -> GapWindowConfig {
+        GapWindowConfig {
+            at: at.to_string(),
+            r#for: r#for.to_string(),
+        }
+    }
+
+    /// Blanks covered by a declared window are the case the feature exists for.
+    #[test]
+    fn blanks_inside_a_declared_window_are_accepted() {
+        // Rows 2 and 3 -> instants 20s and 30s; the window covers [20s, 40s).
+        let result = expand_with_windows(
+            &[Some(1.0), Some(2.0), None, None, Some(5.0)],
+            Some(vec![window("20s", "20s")]),
+        )
+        .expect("blanks covered by a window must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A blank with no window declared at all is the shape a hand-edited
+    /// capture takes, and the case a check guarded on `gap_windows.is_some()`
+    /// would have skipped.
+    #[test]
+    fn a_blank_with_no_windows_declared_is_refused() {
+        let err = expand_with_windows(&[Some(1.0), None, Some(3.0)], None)
+            .expect_err("a blank with no declared window must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not covered by any `gap_windows:` entry"),
+            "error should name the uncovered blank, got: {msg}"
+        );
+        assert!(
+            msg.contains("data row(s) 2"),
+            "error should name data row 2, got: {msg}"
+        );
+    }
+
+    /// A blank outside every declared window is refused even though windows
+    /// exist — presence of a window is not coverage of this blank.
+    #[test]
+    fn a_blank_outside_the_declared_window_is_refused() {
+        // Blank at row 1 -> 10s; the window covers [30s, 40s).
+        let err = expand_with_windows(
+            &[Some(1.0), None, Some(3.0), Some(4.0), Some(5.0)],
+            Some(vec![window("30s", "10s")]),
+        )
+        .expect_err("a blank outside the window must be refused");
+        assert!(
+            err.to_string().contains("data row(s) 2"),
+            "error should name data row 2, got: {err}"
+        );
+    }
+
+    /// The other direction: a window over rows that *have* values would invent
+    /// silence the capture does not contain.
+    #[test]
+    fn a_window_over_recorded_samples_is_refused() {
+        let err = expand_with_windows(
+            &[Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
+            Some(vec![window("10s", "20s")]),
+        )
+        .expect_err("a window over present samples must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fall inside a `gap_windows:` entry"),
+            "error should describe silencing recorded data, got: {msg}"
+        );
+        assert!(
+            msg.contains("data row(s) 2, 3"),
+            "error should name rows 2 and 3, got: {msg}"
+        );
+    }
+
+    /// A capture that begins during the outage: row 0 is blank, and `at: 0s`
+    /// is the only window that can cover it.
+    #[test]
+    fn a_window_at_zero_covers_a_blank_first_row() {
+        let result = expand_with_windows(
+            &[None, None, Some(3.0), Some(4.0)],
+            Some(vec![window("0s", "20s")]),
+        )
+        .expect("`at: 0s` must cover the first rows");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// Windows are half-open, so the row at the closing instant is outside.
+    ///
+    /// This is the boundary both halves have to agree on: the scheduler stops
+    /// suppressing at `at + for`, so a blank there would replay as a NaN.
+    #[test]
+    fn the_row_at_the_window_end_is_not_covered() {
+        // Blank at row 2 -> 20s; the window is [0s, 20s), which ends there.
+        let err = expand_with_windows(
+            &[None, None, None, Some(4.0)],
+            Some(vec![window("0s", "20s")]),
+        )
+        .expect_err("the row at the window's closing instant must not be covered");
+        assert!(
+            err.to_string().contains("data row(s) 3"),
+            "error should name data row 3, got: {err}"
+        );
+    }
+
+    /// A file whose blanks all sit in separate declared windows is accepted —
+    /// coverage is per-row, not "some window exists somewhere".
+    #[test]
+    fn several_windows_each_cover_their_own_blanks() {
+        let result = expand_with_windows(
+            &[Some(1.0), None, Some(3.0), None, Some(5.0)],
+            Some(vec![window("10s", "10s"), window("30s", "10s")]),
+        )
+        .expect("each blank covered by its own window must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A wholly mismatched file summarises rather than printing every row.
+    #[test]
+    fn a_long_run_of_uncovered_blanks_is_summarised() {
+        let values: Vec<Option<f64>> = std::iter::once(Some(1.0))
+            .chain(std::iter::repeat_n(None, 12))
+            .collect();
+        let err = expand_with_windows(&values, None)
+            .expect_err("uncovered blanks must be refused whatever the count");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("and 4 more"),
+            "12 offenders should name 8 and summarise 4, got: {msg}"
         );
     }
 
