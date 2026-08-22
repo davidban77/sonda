@@ -89,10 +89,26 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
 
 /// Parse a `delay:` open/close duration, accepting zero as `Duration::ZERO`.
 ///
-/// `parse_duration` rejects zero values because a zero rate or zero scenario
-/// duration is meaningless. The `delay:` clause has the opposite semantics:
-/// `0s` / `0ms` / `0` are valid and mean "no debounce on this transition".
+/// Retained name for the `delay:` clause; [`parse_offset_duration`] is the
+/// same parser under the name that describes the whole class of fields it
+/// serves.
 pub fn parse_delay_duration(s: &str) -> Result<Duration, SondaError> {
+    parse_offset_duration(s)
+}
+
+/// Parse a duration for which zero is a meaningful value, rather than an error.
+///
+/// [`parse_duration`] rejects zero, and must: a zero rate or a zero scenario
+/// duration describes nothing that can run. Offsets are the opposite case —
+/// they measure *from* somewhere, so zero means "at that point", not "absent":
+///
+/// - `delay:` — `0s` is no debounce on the transition.
+/// - `gap_windows[].at` — `0s` is a scenario that begins inside the silence,
+///   which is what a capture taken during an outage looks like.
+///
+/// Accepts `0`, `0s`, `0ms`, `0m`, `0h`; rejects negatives and garbage exactly
+/// as `parse_duration` does.
+pub fn parse_offset_duration(s: &str) -> Result<Duration, SondaError> {
     match parse_duration(s) {
         Ok(d) => Ok(d),
         Err(e) => {
@@ -1156,6 +1172,64 @@ mod tests {
         assert!(result.is_err(), "non-duration string must be rejected");
     }
 
+    // ---- parse_offset_duration -----------------------------------------------
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // Zero is a value, not an absence: an offset of zero means "at the start".
+    #[case::bare_zero("0", Some(0))]
+    #[case::zero_seconds("0s", Some(0))]
+    #[case::zero_millis("0ms", Some(0))]
+    #[case::zero_minutes("0m", Some(0))]
+    #[case::zero_hours("0h", Some(0))]
+    // Positive values behave exactly as `parse_duration` does.
+    #[case::positive_seconds("5s", Some(5_000))]
+    #[case::positive_millis("250ms", Some(250))]
+    #[case::positive_minutes("2m", Some(120_000))]
+    // Everything `parse_duration` rejects stays rejected.
+    #[case::negative("-1s", None)]
+    #[case::negative_zero_suffix("-0s", None)]
+    #[case::garbage("not_a_duration", None)]
+    #[case::empty("", None)]
+    #[case::unknown_unit("10d", None)]
+    #[case::no_numeric_part("s", None)]
+    fn parse_offset_duration_cases(#[case] input: &str, #[case] expected_ms: Option<u64>) {
+        match (parse_offset_duration(input), expected_ms) {
+            (Ok(d), Some(ms)) => assert_eq!(d.as_millis() as u64, ms, "input {input:?}"),
+            (Err(_), None) => {}
+            (Ok(d), None) => panic!("{input:?} must be rejected, parsed as {d:?}"),
+            (Err(e), Some(_)) => panic!("{input:?} must parse, got {e}"),
+        }
+    }
+
+    /// `parse_delay_duration` is the retained name for the same parser, and
+    /// must stay that way.
+    ///
+    /// Two names for one rule is how the two `gap_windows` callers came to
+    /// disagree in the first place. This fails the moment the wrapper grows
+    /// behaviour of its own rather than delegating.
+    #[test]
+    fn parse_delay_duration_agrees_with_parse_offset_duration() {
+        for input in [
+            "0",
+            "0s",
+            "0ms",
+            "0m",
+            "0h",
+            "5s",
+            "250ms",
+            "2m",
+            "-1s",
+            "not_a_duration",
+            "",
+            "10d",
+        ] {
+            let delay = parse_delay_duration(input).map_err(|e| e.to_string());
+            let offset = parse_offset_duration(input).map_err(|e| e.to_string());
+            assert_eq!(delay, offset, "the two names disagreed on {input:?}");
+        }
+    }
+
     // ---- parse_optional_duration ---------------------------------------------
 
     #[test]
@@ -2007,6 +2081,7 @@ generator:
     fn minimal_config_with_rate(rate: f64) -> ScenarioConfig {
         ScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "up".to_string(),
                 rate,
                 duration: None,
@@ -2370,6 +2445,7 @@ generator:
     fn validate_log_config_jitter_nan_returns_err() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "logs".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2413,6 +2489,7 @@ generator:
     fn validate_log_config_jitter_negative_returns_err() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "logs".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2583,6 +2660,7 @@ generator:
     fn validate_log_config_with_valid_dynamic_labels_returns_ok() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "test".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2622,6 +2700,7 @@ generator:
     fn validate_log_config_with_invalid_dynamic_label_returns_error() {
         let log_config = crate::config::LogScenarioConfig {
             base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
                 name: "test".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2839,6 +2918,7 @@ generator:
     fn make_histogram_config() -> HistogramScenarioConfig {
         HistogramScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "http_request_duration_seconds".to_string(),
                 rate: 10.0,
                 duration: Some("1s".to_string()),
@@ -2906,6 +2986,7 @@ generator:
     fn make_summary_config() -> SummaryScenarioConfig {
         SummaryScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "rpc_duration_seconds".to_string(),
                 rate: 10.0,
                 duration: Some("1s".to_string()),

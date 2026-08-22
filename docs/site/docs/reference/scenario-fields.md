@@ -194,6 +194,32 @@ This emits events for 1m40s, then is silent for 20s, then repeats.
 
     The same approach works for `bursts:` (the rate rises during a burst window) and for any other rate-shaping field. The rule: when checking short-window behavior, set your evaluation step *below* the window you want to see.
 
+### One-shot gap windows
+
+`gap_windows:` declares silence that *happened*, where `gaps:` declares silence that *recurs*. Each entry is one window at a fixed offset from scenario start, and a scenario may declare any number of them. They are independent of `gaps:` — a scenario may use either, both, or neither, and silence from either source suppresses emission identically.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `gap_windows[].at` | string | yes | Offset from scenario start at which the silence begins. `"0s"` is valid and means the scenario starts inside the silence. |
+| `gap_windows[].for` | string | yes | How long the silence lasts. Must be greater than zero. |
+
+```yaml title="An exporter that was down twice"
+gap_windows:
+  - at: 4m
+    for: 7m
+  - at: 22m
+    for: 2m
+```
+
+Windows are half-open — `[at, at + for)`. The instant at `at` is silent; the instant at `at + for` is not. Two windows that touch (`at: 10s, for: 5s` followed by `at: 15s, for: 5s`) produce one continuous 10-second silence with no sample in between. Windows may also overlap; they may be listed in any order.
+
+The tick that would have played inside a window is the tick that is suppressed, and emission resumes on the sample that belongs at the instant the silence ends — not on the sample the run was interrupted at. A replay does not catch up for what it skipped, so row *n* of a CSV plays at instant *n* × step whether or not a window sits before it.
+
+!!! warning "With `csv_replay`, blank cells and windows must agree"
+    A blank cell in a replayed CSV means the sample was **absent**. That only reproduces as silence if the scenario declares a window covering it — otherwise it would replay as a `NaN` sample, which is a *present* value with a special payload, and downstream alerting treats the two very differently.
+
+    Sonda refuses the scenario in both directions: a blank cell no window covers, and a window covering a row that has a value. Both errors name the offending data rows.
+
 ### Burst window
 
 Bursts create recurring high-rate periods. All three fields must be provided together. If a gap and a burst overlap, the gap takes priority.

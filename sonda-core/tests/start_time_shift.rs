@@ -48,6 +48,7 @@ fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
 
 fn base(name: &str, rate: f64, duration: &str, start_time: Option<&str>) -> BaseScheduleConfig {
     BaseScheduleConfig {
+        gap_windows: None,
         name: name.to_string(),
         rate,
         duration: Some(duration.to_string()),
@@ -139,9 +140,9 @@ async fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() 
     );
 
     // Subsequent ticks advance forward from the anchor, never re-anchoring to
-    // real now. The loop snapshots `elapsed` at the top of each iteration
-    // before the rate-limiting sleep, so the first ticks cluster near 0ms;
-    // the span across the whole run reflects the elapsed scenario time.
+    // real now. Each tick's timestamp is its own emission instant — the loop
+    // resolves that instant before sleeping to it — so the stamps step across
+    // the run at the configured interval rather than clustering.
     for w in timestamps.windows(2) {
         assert!(
             w[1] >= w[0],
@@ -150,10 +151,16 @@ async fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() 
             w[1]
         );
     }
+    // 5 events per second is a 200ms step, so N stamps span (N-1) x 200ms.
+    // Asserted as a span rather than per-step, because a single tick that
+    // overran its slot is absorbed by the next one's deadline and shows up as
+    // one short step followed by one long one, not as accumulated drift.
     let span = timestamps[timestamps.len() - 1] - timestamps[0];
+    let expected_span = (timestamps.len() as i128 - 1) * 200;
     assert!(
-        span > 300,
-        "events must advance forward across the ~1s run from the past anchor, span={span}ms"
+        (span - expected_span).abs() <= 60,
+        "{} events must span {expected_span}ms at the configured 200ms step, got {span}ms",
+        timestamps.len()
     );
     assert!(
         timestamps[timestamps.len() - 1] < now_ms() - 86_400_000,

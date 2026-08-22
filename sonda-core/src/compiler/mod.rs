@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
-    OnSinkError, PromMetricType,
+    GapWindowConfig, OnSinkError, PromMetricType,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -247,6 +247,9 @@ pub struct Entry {
     /// Recurring silent-period configuration.
     #[cfg_attr(feature = "config", serde(default))]
     pub gaps: Option<GapConfig>,
+    /// One-shot silent windows at fixed offsets from scenario start.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub gap_windows: Option<Vec<GapWindowConfig>>,
     /// Recurring high-rate burst configuration.
     #[cfg_attr(feature = "config", serde(default))]
     pub bursts: Option<BurstConfig>,

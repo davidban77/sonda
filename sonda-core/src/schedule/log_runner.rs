@@ -165,6 +165,7 @@ mod tests {
     fn make_config(rate: f64, duration: Option<&str>) -> LogScenarioConfig {
         LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_logs".to_string(),
                 rate,
                 duration: duration.map(|s| s.to_string()),

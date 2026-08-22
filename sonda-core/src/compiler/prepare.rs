@@ -230,6 +230,7 @@ fn build_base(entry: &mut CompiledEntry) -> BaseScheduleConfig {
         duration: entry.duration.take(),
         start_time: entry.start_time.take(),
         gaps: entry.gaps.take(),
+        gap_windows: entry.gap_windows.take(),
         bursts: entry.bursts.take(),
         cardinality_spikes: entry.cardinality_spikes.take(),
         dynamic_labels: entry.dynamic_labels.take(),
@@ -387,6 +388,7 @@ mod tests {
     /// absent so tests can pick which ones to set.
     fn bare(signal_type: &str, name: &str) -> CompiledEntry {
         CompiledEntry {
+            gap_windows: None,
             id: None,
             signal_type: signal_type.to_string(),
             name: name.to_string(),

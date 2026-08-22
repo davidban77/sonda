@@ -310,6 +310,7 @@ pub fn expand_pack(
                 rate: config.rate,
                 duration: config.duration.clone(),
                 gaps: None,
+                gap_windows: None,
                 bursts: None,
                 cardinality_spikes: None,
                 dynamic_labels: None,

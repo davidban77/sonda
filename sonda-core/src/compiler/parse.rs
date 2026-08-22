@@ -249,6 +249,8 @@ struct FlatFile {
     #[serde(default)]
     gaps: Option<crate::config::GapConfig>,
     #[serde(default)]
+    gap_windows: Option<Vec<crate::config::GapWindowConfig>>,
+    #[serde(default)]
     bursts: Option<crate::config::BurstConfig>,
     #[serde(default)]
     cardinality_spikes: Option<Vec<crate::config::CardinalitySpikeConfig>>,
@@ -328,6 +330,7 @@ impl FlatFile {
             jitter: self.jitter,
             jitter_seed: self.jitter_seed,
             gaps: self.gaps,
+            gap_windows: self.gap_windows,
             bursts: self.bursts,
             cardinality_spikes: self.cardinality_spikes,
             phase_offset: self.phase_offset,

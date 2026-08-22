@@ -26,6 +26,7 @@ use sonda_core::CancellationToken;
 fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: name.to_string(),
             rate,
             duration: Some(format!("{duration_ms}ms")),
@@ -53,6 +54,7 @@ fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
 fn logs_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     ScenarioEntry::Logs(LogScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: name.to_string(),
             rate,
             duration: Some(format!("{duration_ms}ms")),
@@ -279,6 +281,7 @@ fn metrics_entry_with_generator(
 ) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: name.to_string(),
             rate,
             duration: Some(format!("{duration_ms}ms")),

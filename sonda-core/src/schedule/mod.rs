@@ -111,6 +111,63 @@ pub fn is_in_gap(elapsed: Duration, gap: &GapWindow) -> bool {
     cycle_pos >= every_secs - duration_secs
 }
 
+/// A single silent window at a fixed offset from scenario start.
+///
+/// The one-shot counterpart to [`GapWindow`]. Built from
+/// [`GapWindowConfig`](crate::config::GapWindowConfig) at runner
+/// initialization, after durations have been parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OneShotGap {
+    /// Offset from scenario start at which the silence begins, inclusive.
+    pub at: Duration,
+    /// How long the silence lasts.
+    pub duration: Duration,
+}
+
+impl OneShotGap {
+    /// The offset at which the window ends, exclusive.
+    pub fn end(&self) -> Duration {
+        self.at.saturating_add(self.duration)
+    }
+}
+
+/// Whether `elapsed` falls inside any window in a sorted one-shot list.
+///
+/// Windows are half-open — `[at, at + for)` — so a window starting exactly
+/// where another ends produces continuous silence with no emitting instant
+/// between them, and a window of zero duration suppresses nothing.
+///
+/// This is the same containment question [`is_in_gap`] answers for the
+/// periodic form; the two are checked together by the scheduler, and a gap
+/// from either source suppresses emission.
+pub fn is_in_gap_window(elapsed: Duration, windows: &[OneShotGap]) -> bool {
+    windows.iter().any(|w| elapsed >= w.at && elapsed < w.end())
+}
+
+/// How long until the current one-shot window ends.
+///
+/// Returns [`Duration::ZERO`] when `elapsed` is not inside any window. When
+/// windows are adjacent or overlapping the result runs to the end of the
+/// contiguous silence, so the scheduler sleeps once rather than waking between
+/// two touching windows only to sleep again.
+pub fn time_until_gap_window_end(elapsed: Duration, windows: &[OneShotGap]) -> Duration {
+    let mut cursor = elapsed;
+    let mut moved = true;
+    // Walk forward through any windows that contain the cursor. Overlapping
+    // and adjacent windows chain; the loop ends at the first instant no window
+    // covers.
+    while moved {
+        moved = false;
+        for w in windows {
+            if cursor >= w.at && cursor < w.end() {
+                cursor = w.end();
+                moved = true;
+            }
+        }
+    }
+    cursor.saturating_sub(elapsed)
+}
+
 /// Resolved configuration for a cardinality spike window.
 ///
 /// Built from a [`CardinalitySpikeConfig`](crate::config::CardinalitySpikeConfig)
@@ -210,6 +267,11 @@ pub(crate) struct ParsedSchedule {
     pub total_duration: Option<Duration>,
     /// Optional recurring gap window.
     pub gap_window: Option<GapWindow>,
+    /// Resolved one-shot gap windows, sorted by start offset.
+    ///
+    /// Sorted at construction so the scheduler's scan is over an ordered list;
+    /// empty when the scenario declares none.
+    pub gap_windows: Vec<OneShotGap>,
     /// Optional recurring burst window.
     pub burst_window: Option<BurstWindow>,
     /// Resolved cardinality spike windows.
@@ -252,6 +314,24 @@ impl ParsedSchedule {
                 })
             })
             .transpose()?;
+
+        let mut gap_windows: Vec<OneShotGap> = config
+            .gap_windows
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|w| -> Result<OneShotGap, crate::SondaError> {
+                // Resolved through `GapWindowConfig::resolve` so the scheduler
+                // and the csv_replay cross-check read the same window from the
+                // same YAML.
+                let (at, duration) = w.resolve()?;
+                Ok(OneShotGap { at, duration })
+            })
+            .collect::<Result<_, _>>()?;
+        // Sorted so the scheduler scans an ordered list, and so the chaining
+        // in time_until_gap_window_end walks forward rather than in whatever
+        // order the YAML happened to list.
+        gap_windows.sort_by_key(|w| w.at);
 
         let burst_window: Option<BurstWindow> = config
             .bursts
@@ -321,6 +401,7 @@ impl ParsedSchedule {
         Ok(Self {
             total_duration,
             gap_window,
+            gap_windows,
             burst_window,
             spike_windows,
             dynamic_labels,
@@ -518,6 +599,173 @@ mod tests {
             diff < 0.001,
             "expected ~2s remaining in second cycle, got {remaining:?}"
         );
+    }
+
+    // ---- One-shot gap windows ------------------------------------------------
+
+    /// Build a one-shot window from whole seconds.
+    fn window(at_secs: u64, for_secs: u64) -> OneShotGap {
+        OneShotGap {
+            at: Duration::from_secs(at_secs),
+            duration: Duration::from_secs(for_secs),
+        }
+    }
+
+    fn secs(s: f64) -> Duration {
+        Duration::from_secs_f64(s)
+    }
+
+    /// The windows the scheduler sees are sorted by `at`; these mirror that.
+    fn two_windows() -> Vec<OneShotGap> {
+        vec![window(10, 5), window(30, 2)]
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // Before the first window.
+    #[case::at_zero(0.0, false)]
+    #[case::just_before_first(9.999, false)]
+    // Half-open: the opening instant is silent, the closing instant is not.
+    #[case::exact_start(10.0, true)]
+    #[case::inside_first(12.5, true)]
+    #[case::just_before_first_end(14.999, true)]
+    #[case::exact_end(15.0, false)]
+    // Between the two windows.
+    #[case::between(20.0, false)]
+    // Second window, same boundary rule.
+    #[case::second_start(30.0, true)]
+    #[case::second_end(32.0, false)]
+    // Past every window: a declared window never means "silent from here on".
+    #[case::after_all(90.0, false)]
+    fn is_in_gap_window_boundaries(#[case] elapsed_secs: f64, #[case] expected: bool) {
+        assert_eq!(
+            is_in_gap_window(secs(elapsed_secs), &two_windows()),
+            expected,
+            "elapsed {elapsed_secs}s"
+        );
+    }
+
+    /// An empty list silences nothing — the shape every scenario that declares
+    /// no windows takes.
+    #[test]
+    fn is_in_gap_window_empty_list_is_never_in_a_gap() {
+        assert!(!is_in_gap_window(secs(0.0), &[]));
+        assert!(!is_in_gap_window(secs(1_000.0), &[]));
+    }
+
+    /// A zero-length window suppresses nothing, because `[at, at)` is empty.
+    ///
+    /// Not a degenerate case to guard against: it is what the half-open rule
+    /// implies, and stating it here keeps a future "round up to one tick"
+    /// convenience from being added silently.
+    #[test]
+    fn is_in_gap_window_zero_length_window_suppresses_nothing() {
+        let w = [window(10, 0)];
+        assert!(!is_in_gap_window(secs(10.0), &w));
+        assert!(!is_in_gap_window(secs(9.999), &w));
+    }
+
+    /// Inside a window, the wait runs to that window's end.
+    #[test]
+    fn time_until_gap_window_end_inside_returns_remaining() {
+        let remaining = time_until_gap_window_end(secs(12.0), &two_windows());
+        assert_eq!(remaining, secs(3.0));
+    }
+
+    /// Outside every window there is nothing to wait for.
+    ///
+    /// The scheduler only calls this when it has already decided it is inside
+    /// a gap, so a non-zero answer here would be a wait for silence that is
+    /// not happening.
+    #[test]
+    fn time_until_gap_window_end_outside_returns_zero() {
+        assert_eq!(
+            time_until_gap_window_end(secs(20.0), &two_windows()),
+            Duration::ZERO
+        );
+        assert_eq!(
+            time_until_gap_window_end(secs(90.0), &two_windows()),
+            Duration::ZERO
+        );
+    }
+
+    /// Adjacent windows are one silence: the wait runs to the end of the
+    /// second, not to the seam between them.
+    ///
+    /// Waking at the seam would emit exactly one sample in the middle of a
+    /// silence the capture recorded as continuous.
+    #[test]
+    fn time_until_gap_window_end_chains_adjacent_windows() {
+        let w = [window(10, 5), window(15, 5)];
+        assert_eq!(time_until_gap_window_end(secs(12.0), &w), secs(8.0));
+    }
+
+    /// Overlapping windows chain the same way, including when the later one is
+    /// wholly contained in the earlier.
+    #[test]
+    fn time_until_gap_window_end_chains_overlapping_windows() {
+        let w = [window(10, 10), window(15, 10)];
+        assert_eq!(time_until_gap_window_end(secs(12.0), &w), secs(13.0));
+
+        let contained = [window(10, 20), window(12, 2)];
+        assert_eq!(
+            time_until_gap_window_end(secs(13.0), &contained),
+            secs(17.0)
+        );
+    }
+
+    /// `at` is an offset, so zero is a real value: the scenario starts inside
+    /// the silence.
+    ///
+    /// This is not hypothetical for replay — a capture taken during an outage
+    /// has a blank first row, and rejecting `at: "0s"` would leave that file
+    /// with no legal window to declare.
+    #[test]
+    fn parsed_schedule_accepts_a_window_at_zero() {
+        let mut config = base_config();
+        config.gap_windows = Some(vec![crate::config::GapWindowConfig {
+            at: "0s".to_string(),
+            r#for: "30s".to_string(),
+        }]);
+        let parsed = ParsedSchedule::from_base_config(&config).expect("`at: 0s` must parse");
+        assert_eq!(parsed.gap_windows.len(), 1);
+        assert_eq!(parsed.gap_windows[0].at, Duration::ZERO);
+        assert_eq!(parsed.gap_windows[0].duration, Duration::from_secs(30));
+    }
+
+    /// `for` is a length, and a zero-length window silences nothing — a
+    /// mistake worth an error rather than a no-op to absorb.
+    #[test]
+    fn parsed_schedule_rejects_a_zero_length_window() {
+        let mut config = base_config();
+        config.gap_windows = Some(vec![crate::config::GapWindowConfig {
+            at: "10s".to_string(),
+            r#for: "0s".to_string(),
+        }]);
+        assert!(
+            ParsedSchedule::from_base_config(&config).is_err(),
+            "`for: 0s` must be rejected"
+        );
+    }
+
+    /// Windows are sorted by `at` at construction regardless of YAML order, so
+    /// the forward walk in `time_until_gap_window_end` sees them in order.
+    #[test]
+    fn parsed_schedule_sorts_windows_by_offset() {
+        let mut config = base_config();
+        config.gap_windows = Some(vec![
+            crate::config::GapWindowConfig {
+                at: "30s".to_string(),
+                r#for: "2s".to_string(),
+            },
+            crate::config::GapWindowConfig {
+                at: "10s".to_string(),
+                r#for: "5s".to_string(),
+            },
+        ]);
+        let parsed = ParsedSchedule::from_base_config(&config).expect("windows must parse");
+        let offsets: Vec<u64> = parsed.gap_windows.iter().map(|w| w.at.as_secs()).collect();
+        assert_eq!(offsets, vec![10, 30]);
     }
 
     // ---- Rate math -----------------------------------------------------------
@@ -989,6 +1237,7 @@ mod tests {
     /// Helper to build a minimal `BaseScheduleConfig` for testing.
     fn base_config() -> crate::config::BaseScheduleConfig {
         crate::config::BaseScheduleConfig {
+            gap_windows: None,
             name: "test".to_string(),
             rate: 10.0,
             duration: None,

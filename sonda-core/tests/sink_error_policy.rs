@@ -77,6 +77,7 @@ fn always_500_listener_thread(listener: TcpListener, stop: Arc<AtomicBool>) {
 fn build_log_entry(name: &str, sink: SinkConfig, policy: OnSinkError) -> ScenarioEntry {
     ScenarioEntry::Logs(LogScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: name.to_string(),
             rate: 50.0,
             duration: Some("1500ms".to_string()),

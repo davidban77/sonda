@@ -34,6 +34,7 @@ fn make_sine_csv(samples: usize, step_secs: u64) -> tempfile::NamedTempFile {
 fn build_scenario(file: String, timescale: Option<f64>) -> ScenarioConfig {
     ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "roundtrip".to_string(),
             rate: 1.0,
             duration: Some("60s".to_string()),
