@@ -24,9 +24,19 @@ use std::time::Duration;
 
 /// How to authenticate to the TSDB.
 ///
-/// `Debug` is implemented by hand so a token can never reach a log line, a
-/// panic message, or an error report through a derived formatter.
+/// The secret is protected structurally rather than by convention: `Debug` is
+/// written by hand so a token cannot reach a log line, a panic message, or an
+/// error report through a derived formatter, and there is deliberately no
+/// `Serialize`, so it cannot reach an emitted CSV or YAML even by accident.
+///
+/// `#[non_exhaustive]` is here for the remaining hole. The variants are public,
+/// so `if let Auth::Bearer(t) = auth` is an accessor any future caller could
+/// write — the type had no method returning the token, but destructuring did
+/// not need one. Outside this crate the enum can no longer be matched
+/// exhaustively, so reaching the secret is a deliberate act rather than the
+/// obvious one.
 #[derive(Clone, Default)]
+#[non_exhaustive]
 pub enum Auth {
     /// No credentials.
     #[default]

@@ -228,6 +228,9 @@ The tick that would have played inside a window is the tick that is suppressed, 
 
     `phase_offset:`, `start_time:`, `cardinality_spikes:` and `dynamic_labels:` are unaffected — none of them moves a row relative to its window.
 
+    !!! warning "`--dry-run` does not check these"
+        `sonda --dry-run run` stops before the step that expands a `csv_replay` scenario, so it reports `Validation: OK` for a file these rules would refuse. Run `sonda run` to check them. This is the one class of error `--dry-run` currently cannot see.
+
 ### Burst window
 
 Bursts create recurring high-rate periods. All three fields must be provided together. If a gap and a burst overlap, the gap takes priority.

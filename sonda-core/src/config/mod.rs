@@ -4534,7 +4534,7 @@ distribution:
         // tens of millions of ticks, and enumerating them is what the interval
         // walk exists to avoid.
         assert!(
-            msg.contains("from tick 3 onward"),
+            msg.contains("the first such instant is tick 3"),
             "error should name the first uncovered tick, got: {msg}"
         );
     }

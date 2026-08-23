@@ -353,10 +353,11 @@ pub(crate) fn cross_check_gap_windows(
         ))));
     }
 
-    let covered = |row: usize| -> bool {
-        let t = row as f64 * step_secs;
-        windows.iter().any(|&(start, end)| t >= start && t < end)
-    };
+    // One definition of containment, shared with the interval walk. Two
+    // expressions that agree until a float boundary is exactly how the walk
+    // came to skip an uncovered tick.
+    let covered =
+        |row: usize| -> bool { windows.iter().any(|&w| tick_in_window(row, step_secs, w)) };
 
     let format_rows = |rows: &[usize]| -> String {
         let shown: Vec<String> = rows
@@ -439,8 +440,9 @@ pub(crate) fn cross_check_gap_windows(
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "csv_replay: the capture's last row (data row {}) is blank and the \
                      scenario outlives its data. With `repeat: false` that slot is held for \
-                     every later tick, and from tick {} onward those instants fall outside \
-                     every `gap_windows:` entry, where the silence would emit as NaN samples. \
+                     every later tick, and the first such instant is tick {}, which falls \
+                     outside every `gap_windows:` entry, where the silence would emit as a \
+                     NaN sample. \
                      Extend the window to the end of the run, shorten `duration:`, or put a \
                      value in the last row.",
                     last_row + 1,
@@ -478,25 +480,50 @@ pub(crate) struct Playback {
     pub bursts: bool,
 }
 
+/// Whether tick `t` falls inside one window.
+///
+/// The single definition of containment in this file. `covered` is this over
+/// every window, and the interval walk uses it as its only oracle — deriving a
+/// tick index from a window edge by arithmetic is what let the walk and the
+/// predicate disagree (see [`first_uncovered_tick`]).
+fn tick_in_window(t: usize, step_secs: f64, window: (f64, f64)) -> bool {
+    let at = t as f64 * step_secs;
+    at >= window.0 && at < window.1
+}
+
 /// The first tick in `[from, to]` whose instant no window covers, or `None`
 /// when the whole range is covered.
 ///
 /// Walks the windows rather than the ticks. The tick range is `duration * rate`
 /// and both come from config, so it is unbounded in practice; the window list
-/// is written by hand. Cost is `O(w log w)` in the number of windows and
-/// independent of how long the run is.
+/// is written by hand. Cost is `O(w log n)` — one binary search per window —
+/// and enumerating the range is what this exists to avoid.
 ///
-/// Tick `t` sits at instant `t * step_secs`, and a window `[s, e)` covers it
-/// when `s <= t * step_secs < e` — the same rule the per-row pass applies. The
-/// first tick at or past a window's end is therefore `ceil(e / step_secs)`,
-/// which is what lets the walk skip a covered stretch in one step.
+/// # The jump is measured, not computed
+///
+/// This originally advanced past a window with `ceil(end / step_secs)`, which
+/// is float arithmetic reasoning about float arithmetic, and the two disagree
+/// at representable boundaries. `at: 100ms, for: 200ms` on a 10 Hz capture —
+/// an ordinary thing to write — builds `end = 0.1 + 0.2 = 0.30000000000000004`,
+/// and `ceil(end / 0.1)` is `4`, while tick `3` sits exactly *on* `end` and is
+/// therefore **not** covered. The walk stepped over an uncovered tick and
+/// returned `None`, so the clamp rule accepted a config whose held silence
+/// emits `NaN` — the failure the rule exists to refuse, with validation green.
+///
+/// So there is no arithmetic shortcut here at all. Containment in one window is
+/// monotone once inside it — `t * step_secs` only increases, so the covered
+/// ticks form one contiguous run — and binary search finds where that run ends
+/// by asking [`tick_in_window`] and nothing else.
 fn first_uncovered_tick(
     from: usize,
     to: u64,
     windows: &[(f64, f64)],
     step_secs: f64,
 ) -> Option<usize> {
-    let to = to as usize;
+    // Saturate rather than truncate: `usize` is 32 bits on wasm32, where
+    // `as usize` would wrap a large tick count down to a small one and make the
+    // walk report an uncovered tick that is past the end of the run.
+    let to = usize::try_from(to).unwrap_or(usize::MAX);
     if from > to {
         return None;
     }
@@ -507,23 +534,31 @@ fn first_uncovered_tick(
     sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut cursor = from;
-    for (start, end) in sorted {
-        let at = cursor as f64 * step_secs;
-        if at < start {
+    for window in sorted {
+        if (cursor as f64 * step_secs) < window.0 {
+            // Before this window, and past every earlier one.
             return Some(cursor);
         }
-        if at < end {
-            // Covered. Jump to the first tick at or past this window's end; a
-            // later window may pick up from there.
-            let next = (end / step_secs).ceil();
-            if !next.is_finite() || next < 0.0 {
-                return Some(cursor);
-            }
-            cursor = cursor.max(next as usize);
-            if cursor > to {
-                return None;
+        if !tick_in_window(cursor, step_secs, window) {
+            continue;
+        }
+        // Inside. If the window also contains the far end, everything in range
+        // is covered by it.
+        if tick_in_window(to, step_secs, window) {
+            return None;
+        }
+        // Binary search for the boundary: `lo` is always covered by this
+        // window, `hi` never is, and they close on the first tick past it.
+        let (mut lo, mut hi) = (cursor, to);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if tick_in_window(mid, step_secs, window) {
+                lo = mid;
+            } else {
+                hi = mid;
             }
         }
+        cursor = hi;
     }
     if cursor <= to {
         Some(cursor)
@@ -1221,23 +1256,60 @@ sink:
         assert_eq!(first_uncovered_tick(from, to, windows, 1.0), expected);
     }
 
-    /// The walk must agree with the per-row `covered` rule everywhere, not just
-    /// at the tick it reports.
+    /// The window `at: 100ms, for: 200ms` on a 10 Hz capture — ordinary YAML,
+    /// not a constructed float.
     ///
-    /// Two definitions of "covered" that agree on the common cases and diverge
-    /// at a boundary is the defect this whole file keeps producing, so this
-    /// brute-forces a small range against the same predicate the other branches
-    /// use and asserts the walk found the earliest uncovered tick.
+    /// `config/mod.rs` builds the window as `(at, at + dur)` in f64, giving
+    /// `end = 0.1 + 0.2 = 0.30000000000000004`. Tick 3 sits exactly ON that
+    /// end, so it is NOT covered. The walk used to advance with
+    /// `ceil(end / step)` = 4, step over tick 3, and return `None` — "nothing
+    /// uncovered, config is fine" — so the clamp rule accepted a scenario whose
+    /// held silence emits NaN. Found independently by both reviewers; this is
+    /// the reviewer's construction, because it is the one a user can type.
+    #[test]
+    fn a_window_end_that_lands_between_floats_does_not_hide_an_uncovered_tick() {
+        let step = 0.1;
+        let end = 0.1 + 0.2;
+        assert_ne!(end, 0.3, "the premise: at + dur is not the decimal 0.3");
+        let windows: &[(f64, f64)] = &[(0.1, end)];
+
+        // The cursor must START inside the window, or the walk never reaches
+        // the jump and the case proves nothing — the void probe the reviewer
+        // reported against himself.
+        assert!(
+            tick_in_window(2, step, windows[0]),
+            "tick 2 must be covered"
+        );
+        assert!(!tick_in_window(3, step, windows[0]), "tick 3 sits on `end`");
+
+        assert_eq!(
+            first_uncovered_tick(2, 3, windows, step),
+            Some(3),
+            "tick 3 is uncovered and within range"
+        );
+    }
+
+    /// The walk must agree with `covered` in BOTH directions: the tick it
+    /// reports is uncovered, AND it skipped no earlier one.
+    ///
+    /// `assert_eq!` against the brute-force `find` is what makes it
+    /// two-directional — a walk that returns `None` where the scan finds a tick
+    /// fails just as loudly as a wrong tick. The first version of this test was
+    /// two-directional already and still missed the defect, because its windows
+    /// were round decimals. These are built the way `config/mod.rs` builds
+    /// them, `at + dur` in f64, which is where the disagreement lives.
     #[test]
     fn first_uncovered_tick_agrees_with_a_brute_force_scan() {
-        let step = 0.25;
-        let windows: &[(f64, f64)] = &[(0.5, 1.0), (1.25, 2.0), (3.0, 3.5)];
-        let covered = |t: usize| -> bool {
-            let at = t as f64 * step;
-            windows.iter().any(|&(s, e)| at >= s && at < e)
-        };
-        for from in 0..16usize {
-            for to in from..16usize {
+        let step = 0.1;
+        // Every window here is `(at, at + dur)`, the shape config produces.
+        let windows: &[(f64, f64)] = &[
+            (0.1, 0.1 + 0.2),
+            (0.5, 0.5 + 0.1),
+            (0.7, 0.7 + 0.30000000000000004),
+        ];
+        let covered = |t: usize| windows.iter().any(|&w| tick_in_window(t, step, w));
+        for from in 0..24usize {
+            for to in from..24usize {
                 let brute = (from..=to).find(|&t| !covered(t));
                 let walked = first_uncovered_tick(from, to as u64, windows, step);
                 assert_eq!(
