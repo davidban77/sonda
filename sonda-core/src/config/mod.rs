@@ -4651,10 +4651,25 @@ distribution:
     ///
     /// It delays the whole scenario before the loop's clock starts, so the tick
     /// grid and the windows shift together and nothing moves relative to
-    /// anything else. That was measured through the CLI rather than derived —
-    /// `phase_offset: 2s` on a four-row capture with a blank at row 1 still
-    /// suppresses exactly row 1 — because reading the call chain is how the
-    /// clamp case was got wrong.
+    /// anything else. That was measured through the CLI rather than derived,
+    /// because reading the call chain is how the clamp case was got wrong.
+    ///
+    /// The measurement has to answer two questions, and the first one is the
+    /// one a single run cannot: **is `phase_offset` applied on this path at
+    /// all?** If it were silently ignored, the suppressed row would be right
+    /// for the wrong reason. Wall time across a sweep says it is —
+    /// `none/1500ms/2s/5s/7s` on a four-row capture ran in
+    /// `3.21/4.62/5.22/8.22/10.02` seconds, tracking the offset. The rows
+    /// emitted stayed `[0, 2, 3]` throughout, with row 1 — the blank —
+    /// suppressed every time.
+    ///
+    /// Those offsets are chosen to exclude the failure they would otherwise
+    /// hide. Had the loop's clock started *before* the delay, an offset of 5s
+    /// or 7s would have consumed the whole `[1s, 2s)` window during the wait
+    /// and suppressed nothing (four rows), and 7s exceeds the 4s duration, so
+    /// the run would have emitted nothing at all. Both counterfactuals are
+    /// excluded by the same table. `1500ms` is there so the result cannot be an
+    /// artefact of the offset being a whole number of steps.
     ///
     /// What this test pins is the narrower claim it can actually make: the
     /// check does not reject the combination. It would not notice a future
