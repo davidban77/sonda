@@ -39,11 +39,45 @@ fn run_while_cascade_gates_downstream_emission() {
         "primary_flap must emit a meaningful number of events, got {primary_count}\n\
          stdout:\n{stdout}"
     );
+
+    // The bound comes from the fixture rather than from a round number.
+    //
+    // `primary_flap` is `up_duration: 1s, down_duration: 500ms`, and the gate
+    // is `while primary < 1`, so the downstream is entitled to emit for the
+    // down third of each cycle: 500ms / 1500ms = 1/3 of the ticks.
+    //
+    // Gate transitions are not free — the downstream learns about an edge on
+    // its own next tick — so each of the ~3 cycles in a 4s run can carry an
+    // extra tick either side. Observed 40% locally and 50% on a loaded CI
+    // runner, against the 33% the duty cycle implies.
+    //
+    // The old bound was a bare `< 50%`, which had ten points of headroom over
+    // the observed range and none at all over the worst case. It failed the
+    // moment the scheduler stopped emitting one tick past the declared
+    // duration: `rate: 5` for `4s` is 20 ticks, not 21, and the correction
+    // moved the threshold from `< 10.5` to `< 10.0` onto an observed 10.
+    // The denominator had been inflated by the bug.
+    //
+    // 2/3 keeps this loud where it matters — an ungated run emits on every
+    // tick, which is 100% — while leaving room for the latency the fixture
+    // actually produces.
+    let duty_cycle = 500.0 / 1500.0;
+    let ceiling = duty_cycle * 2.0;
     assert!(
-        (backup_count as f64) < (primary_count as f64) * 0.5,
+        (backup_count as f64) < (primary_count as f64) * ceiling,
         "while: gate must suppress downstream events; \
          backup_saturation={backup_count}, primary_flap={primary_count}, \
-         expected backup < 50% of primary\nstdout:\n{stdout}"
+         expected backup below {:.0}% of primary (duty cycle {:.0}%, doubled for \
+         gate-transition latency)\nstdout:\n{stdout}",
+        ceiling * 100.0,
+        duty_cycle * 100.0,
+    );
+    // And the other direction: a gate that suppressed everything would sail
+    // through the bound above, so the downstream must actually run.
+    assert!(
+        backup_count > 0,
+        "while: gate must let the downstream emit during the down phase; \
+         backup_saturation=0\nstdout:\n{stdout}"
     );
 }
 
