@@ -282,6 +282,40 @@ async fn a_window_at_zero_suppresses_the_first_tick() {
     assert_ladder(&seen, &[2, 3, 4, 5, 6]);
 }
 
+/// A window whose end does not land on a grid slot must not resurrect the tick
+/// it was still covering.
+///
+/// `[200ms, 500ms)` on a 200ms grid covers ticks 1 and 2 — tick 2's slot is
+/// 400ms, inside the window. The silence ends at 500ms, and the loop resumes by
+/// re-deriving the tick from elapsed time: `floor(500ms / 200ms)` is 2. So the
+/// arithmetic points back at a tick the window had already suppressed, and
+/// emitting it would put a sample inside a declared silence — at 500ms, an
+/// instant that is not on the grid either.
+///
+/// Every other case in this file ends its windows on a slot, where truncation
+/// and the window boundary agree. Both reviewers flagged this re-anchor as the
+/// one boundary neither round had verified; this is the shape that separates
+/// them.
+#[tokio::test]
+async fn a_window_ending_off_grid_does_not_replay_the_tick_it_covered() {
+    let config = ladder_scenario(
+        "1.3s",
+        None,
+        Some(vec![GapWindowConfig {
+            at: "200ms".to_string(),
+            r#for: "300ms".to_string(),
+        }]),
+    );
+
+    let (mut sink, seen) = timing_sink();
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+
+    let seen = seen.lock().expect("timing sink mutex poisoned").clone();
+    assert_ladder(&seen, &[0, 3, 4, 5, 6]);
+}
+
 /// A window past the end of the run suppresses nothing.
 ///
 /// Guards the direction the other cases cannot: a scheduler that treated any

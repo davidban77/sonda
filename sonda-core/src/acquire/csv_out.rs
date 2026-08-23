@@ -46,7 +46,8 @@ use std::fmt::Write as _;
 /// # Errors
 ///
 /// Returns [`SondaError::Config`] when a label key or value contains a
-/// newline, which this grammar cannot represent.
+/// newline, or when a key contains `=`. Neither is representable in this
+/// grammar — see below for why `=` is the only delimiter that needs refusing.
 pub fn column_header(labels: &BTreeMap<String, String>) -> Result<String, SondaError> {
     for (k, v) in labels {
         for (what, s) in [("key", k), ("value", v)] {
@@ -57,6 +58,34 @@ pub fn column_header(labels: &BTreeMap<String, String>) -> Result<String, SondaE
                      with a PromQL `label_replace` before capturing."
                 ))));
             }
+        }
+
+        // Values are escaped on the way out; keys are not, because the `{k="v"}`
+        // grammar has nowhere to put an escape on the left of the `=`. So a key
+        // containing the delimiter writes a header the parser reads back as a
+        // different label: key `a=b` with value `v` emits `a=b="v"`, and
+        // `parse_column_header` splits on the first `=` and returns a label
+        // named `a` whose value is `b="v"`. Silent, and wrong data in the
+        // captured file.
+        //
+        // Only `=` needs this. Measured against the real parser, keys containing
+        // `"`, `{`, `}`, a space or a comma all round-trip unharmed, so refusing
+        // them "for symmetry" would reject captures that work today. The tests
+        // below pin that, so the narrowness of this guard is checked rather than
+        // asserted.
+        //
+        // Refused rather than escaped: a conforming Prometheus label name is
+        // `[a-zA-Z_][a-zA-Z0-9_]*`, so this cannot arrive from a well-behaved
+        // server — but acquisition reads a remote TSDB, which is the trust
+        // boundary this whole module polices, and failing at capture time is
+        // more honest than writing a header that reads back as something else.
+        if k.contains('=') {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "csv capture: label key {k:?} contains '=', which is the delimiter this \
+                 column-header grammar uses to separate a label key from its value. A key \
+                 containing it would be read back as a different label. Drop or rewrite the \
+                 label with a PromQL `label_replace` before capturing."
+            ))));
         }
     }
 
@@ -191,7 +220,92 @@ mod tests {
         assert_eq!(got, labels(&[("job", "api")]));
     }
 
-    // ---- Law 4: hostile values, one row per shape, each round-tripped ----
+    // ---- Law 4: hostile input, one row per shape, each round-tripped ----
+    //
+    // The value table below was the whole of this coverage for a while, and
+    // that was the gap: `{key="value"}` has three positions and only one of
+    // them was ever varied. The key and name tables came after a review
+    // pointed out that eighteen shapes of one dimension is still one
+    // dimension — and the key path had a real hole.
+
+    /// Keys are NOT escaped on the way out, so they get their own table.
+    ///
+    /// `=` is refused because it is the delimiter (see `column_header`).
+    /// Everything else here round-trips, and that is asserted rather than
+    /// assumed: the guard is deliberately narrow, and a future "harden the
+    /// keys" change that started refusing these would fail this test rather
+    /// than silently reject captures that work.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::quote(          "a\"b")]
+    #[case::backslash(      "a\\b")]
+    #[case::close_brace(    "a}b")]
+    #[case::open_brace(     "a{b")]
+    #[case::space(          "a b")]
+    #[case::comma(          "a,b")]
+    #[case::colon(          "a:b")]
+    #[case::unicode(        "café_ünïcode")]
+    #[case::leading_digit(  "0abc")]
+    #[case::plain(          "job")]
+    fn hostile_label_keys_survive_the_round_trip(#[case] key: &str) {
+        let (name, got) = roundtrip(&[("__name__", "m"), (key, "v")]);
+        assert_eq!(name.as_deref(), Some("m"));
+        assert_eq!(
+            got,
+            labels(&[(key, "v")]),
+            "key {key:?} must come back as the same key"
+        );
+    }
+
+    /// A key containing the delimiter is refused at capture, not mangled.
+    ///
+    /// Before this guard, key `a=b` with value `v` wrote `a=b="v"`, which the
+    /// real parser split on the first `=` and read back as a label named `a`
+    /// whose value was `b="v"` — no error, wrong data in the captured file.
+    #[test]
+    fn a_label_key_containing_the_delimiter_is_refused_rather_than_mangled() {
+        let err = column_header(&labels(&[("__name__", "m"), ("a=b", "v")]))
+            .expect_err("a key containing '=' must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("a=b"), "error names the key: {msg}");
+        assert!(msg.contains('='), "error names the delimiter: {msg}");
+    }
+
+    /// An empty key is refused by the parser rather than accepted silently —
+    /// pinned here so the capture path keeps failing loudly on it.
+    #[test]
+    fn an_empty_label_key_is_refused_somewhere_in_the_path() {
+        let header = column_header(&labels(&[("__name__", "m"), ("", "v")]))
+            .expect("column_header does not police empty keys");
+        let line = format!("timestamp,{}", csv_quote_field(&header));
+        let err = parse_header_row(&line).expect_err("the parser must refuse an empty key");
+        assert!(
+            err.to_string().contains("empty label key"),
+            "parser names the fault: {err}"
+        );
+    }
+
+    /// The metric name is the third position, and it was never varied either.
+    ///
+    /// It rides in `__name__`, which `column_header` writes first and without
+    /// escaping the key — so these exercise the value-escaping layer on a
+    /// label the parser treats specially.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::quote(       "m\"x")]
+    #[case::brace(       "m}x")]
+    #[case::comma(       "m,x")]
+    #[case::equals(      "m=x")]
+    #[case::space(       "m x")]
+    #[case::unicode(     "café_metric")]
+    #[case::plain(       "http_requests_total")]
+    fn hostile_metric_names_survive_the_round_trip(#[case] name: &str) {
+        let (got_name, got) = roundtrip(&[("__name__", name), ("job", "api")]);
+        assert_eq!(got_name.as_deref(), Some(name), "name {name:?} must survive");
+        assert_eq!(got, labels(&[("job", "api")]));
+    }
+
+    // ---- Law 4: hostile VALUES — the original dimension ----
 
     #[test]
     fn hostile_label_values_survive_both_escaping_layers() {

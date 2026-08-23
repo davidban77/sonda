@@ -352,8 +352,43 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             // the instant the sleep happened to return, so every tick after
             // the gap stays on the grid instead of inheriting the wakeup
             // overshoot for the rest of the run.
-            let ticks_elapsed =
-                (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
+            // Which tick resumes is asked, not computed.
+            //
+            // Truncating `elapsed / base_interval` picks the slot at or before
+            // the current instant, and when a window ends off-grid that slot is
+            // one the window was still covering. `[200ms, 500ms)` on a 200ms
+            // grid covers ticks 1 and 2; the silence ends at 500ms;
+            // `floor(500/200)` is 2 — so the loop resurrected a tick it had
+            // just suppressed and emitted a sample inside a declared silence.
+            //
+            // So truncation is only a lower bound now, and the answer is found
+            // by walking forward while either reason to skip still holds: a
+            // slot before the silence ended has not happened yet, and a slot
+            // still inside a window is one the window covers. Both use the same
+            // predicates the suppression branch above uses, which is the lesson
+            // the interval walk in csv_replay paid for — a boundary computed
+            // from a float and a boundary decided by a predicate disagree
+            // exactly where it matters.
+            //
+            // Bounded by construction: truncation lands at most one slot low,
+            // and `resumed_at` is already past the end of any contiguous
+            // silence, so this advances at most twice.
+            let resumed_at = elapsed + sleep_for;
+            let mut ticks_elapsed = (resumed_at.as_secs_f64() / base_interval.as_secs_f64()) as u64;
+            loop {
+                let slot = base_interval.mul_f64(ticks_elapsed as f64);
+                let not_yet = slot < resumed_at;
+                let still_silent = schedule
+                    .gap_window
+                    .as_ref()
+                    .is_some_and(|g| is_in_gap(slot, g))
+                    || is_in_gap_window(slot, &schedule.gap_windows);
+                if not_yet || still_silent {
+                    ticks_elapsed += 1;
+                } else {
+                    break;
+                }
+            }
             tick = initial_tick + ticks_elapsed;
             next_deadline = start + base_interval.mul_f64(ticks_elapsed as f64);
             continue;
