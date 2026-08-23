@@ -72,6 +72,52 @@ impl Sink for TimingSink {
     }
 }
 
+/// A [`TimingSink`] that blocks for `stall` after its `stall_after`-th write.
+///
+/// Models the one input that moves a played instant and cannot be refused at
+/// config time: a sink that stops accepting for a while. Everything else that
+/// shifts a tick relative to its window — `repeat`, `bursts:`, a blank last
+/// row — is caught by the cross-check before the run starts.
+struct StallingSink {
+    inner: TimingSink,
+    writes: usize,
+    stall_after: usize,
+    stall: Duration,
+}
+
+#[async_trait::async_trait]
+impl Sink for StallingSink {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+        self.inner.write(data).await?;
+        self.writes += 1;
+        if self.writes == self.stall_after {
+            tokio::time::sleep(self.stall).await;
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), SondaError> {
+        Ok(())
+    }
+}
+
+fn stalling_sink(
+    stall_after: usize,
+    stall: Duration,
+) -> (Box<dyn Sink>, Arc<Mutex<Vec<Emission>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink: Box<dyn Sink> = Box::new(StallingSink {
+        inner: TimingSink {
+            start: Instant::now(),
+            seen: Arc::clone(&seen),
+        },
+        writes: 0,
+        stall_after,
+        stall,
+    });
+    (sink, seen)
+}
+
 fn timing_sink() -> (Box<dyn Sink>, Arc<Mutex<Vec<Emission>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink: Box<dyn Sink> = Box::new(TimingSink {
@@ -338,4 +384,134 @@ async fn a_window_after_the_run_suppresses_nothing() {
 
     let seen = seen.lock().expect("timing sink mutex poisoned").clone();
     assert_ladder(&seen, &[0, 1, 2, 3, 4, 5, 6]);
+}
+
+/// A stalled sink must not make a tick answer for a window its own slot never
+/// entered.
+///
+/// This settles the one open question from the adversarial review. Gap windows
+/// are evaluated in `elapsed`, and `elapsed` is `max(next_deadline, now)`,
+/// which jumps to real time while the loop is catching up. So during catch-up
+/// a tick is judged at an instant later than its own slot — and if a window
+/// has opened in between, the tick is suppressed for a silence that belongs to
+/// a later row.
+///
+/// The window here is `[600ms, 1000ms)`, covering ticks 3 and 4. The sink
+/// blocks for 600ms after the second write, so the loop returns around 800ms
+/// with ticks 2 onward still owed. Tick 2's slot is 400ms — comfortably
+/// outside the window — but it is reached while `elapsed` reads ~800ms, which
+/// is inside it.
+///
+/// For `gaps:` this is a cosmetic misattribution. For csv_replay it is the
+/// failure the whole cross-check exists to prevent, arriving from the one
+/// direction config validation cannot see: the file and the windows agree, the
+/// scenario is accepted, and a row is dropped anyway because the sink was slow.
+/// **Currently FAILS — this is the open decision, not a regression.**
+///
+/// Measured: with the window `[600ms, 1000ms)` and a 600ms stall after the
+/// second write, the ladder plays `[0, 1, 5, 6, 7]`. Ticks 3 and 4 are
+/// correctly suppressed. Tick 2 is not — its slot is 400ms, nowhere near the
+/// window — but it is reached while `elapsed` reads ~800ms and is deleted.
+///
+/// Fixing it means deciding which frame a gap belongs to, and the two kinds
+/// pull opposite ways:
+///
+/// * `gaps:` is a wall-clock interval — "the scrape endpoint is down from
+///   here to here". A run that has fallen behind genuinely *is* inside it, so
+///   evaluating in `elapsed` is right.
+/// * `gap_windows:` belongs to the row — row *n*'s silence is row *n*'s, and a
+///   slow sink is not a reason to drop a recorded sample.
+///
+/// That is a scheduler-semantics decision affecting every generator, so it is
+/// marked rather than made here. The companion measurement
+/// (`stall_drift_is_bounded_by_the_stall_and_does_not_accumulate`) shows the
+/// timing side self-corrects within one tick, so this is the only half that
+/// needs a ruling.
+#[ignore = "open design decision: which frame gap_windows are evaluated in under sink backpressure"]
+#[tokio::test]
+async fn a_stalled_sink_does_not_make_a_tick_answer_for_a_later_window() {
+    let config = ladder_scenario(
+        "1.6s",
+        None,
+        Some(vec![GapWindowConfig {
+            at: "600ms".to_string(),
+            r#for: "400ms".to_string(),
+        }]),
+    );
+
+    let (mut sink, seen) = stalling_sink(2, Duration::from_millis(600));
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+
+    let seen = seen.lock().expect("timing sink mutex poisoned").clone();
+    let played: Vec<u64> = seen.iter().map(|e| e.value as u64).collect();
+
+    // Only the tick set is asserted. Instants are deliberately not checked:
+    // after a stall the loop is behind by construction, so drift from the grid
+    // is expected and is not what this is about.
+    assert!(
+        played.contains(&2),
+        "tick 2's slot (400ms) is outside the window [600ms, 1000ms), so the stall \
+         must not suppress it; played {played:?}"
+    );
+    assert!(
+        !played.contains(&3) && !played.contains(&4),
+        "ticks 3 and 4 sit inside the window and must stay suppressed; played {played:?}"
+    );
+}
+
+/// Does the divergence stay bounded by the stall, or accumulate across stalls?
+///
+/// The adversarial reviewer's question, and it decides whether the honest
+/// resolution is a documented degradation or a re-anchor on the catch-up path.
+/// No window at all here — this measures only how far each tick's emission
+/// instant sits from its own grid slot, before and after two separate stalls.
+#[tokio::test]
+async fn stall_drift_is_bounded_by_the_stall_and_does_not_accumulate() {
+    let config = ladder_scenario("2.4s", None, None);
+
+    // Two stalls of 400ms each, at the 2nd and 7th write.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    struct TwoStalls {
+        inner: TimingSink,
+        writes: usize,
+    }
+    #[async_trait::async_trait]
+    impl Sink for TwoStalls {
+        async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            self.inner.write(data).await?;
+            self.writes += 1;
+            if self.writes == 2 || self.writes == 7 {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            Ok(())
+        }
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+    let mut sink: Box<dyn Sink> = Box::new(TwoStalls {
+        inner: TimingSink {
+            start: Instant::now(),
+            seen: Arc::clone(&seen),
+        },
+        writes: 0,
+    });
+
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+
+    let seen = seen.lock().expect("timing sink mutex poisoned").clone();
+    for e in &seen {
+        let slot_ms = STEP.mul_f64(e.value).as_secs_f64() * 1000.0;
+        eprintln!(
+            "DRIFT tick {:>2}  slot {:>6.0}ms  emitted {:>6.0}ms  drift {:>+7.0}ms",
+            e.value,
+            slot_ms,
+            e.at.as_secs_f64() * 1000.0,
+            e.at.as_secs_f64() * 1000.0 - slot_ms
+        );
+    }
 }
