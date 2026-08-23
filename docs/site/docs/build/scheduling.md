@@ -103,8 +103,11 @@ A blank cell in a replayed CSV means the sample was **absent**. Sonda refuses a 
 
 - **A capture containing silence cannot loop.** `gap_windows:` describe one pass, so on a second cycle those rows would replay where no window is. Set `repeat: false`. This bites by default, because `repeat` defaults to `true`.
 - **A capture whose last row is blank cannot outlive its data unattended.** With `repeat: false` the final slot is held for every remaining tick, so the silence continues past the capture. Either extend the window to the end of the run, or end the run with the data.
+- **A capture containing silence cannot burst.** `bursts:` emit at `rate × multiplier` inside the burst window, which compresses the tick grid — row *n* stops landing at *n* × step, and the windows would fall on the wrong rows. Bursts on a capture with no blanks stay legal: the grid still slides, but nothing depends on where a particular row lands.
 
-Both are validation errors naming the rows or ticks at fault.
+All three are validation errors naming the rows, ticks, or setting at fault.
+
+`phase_offset:` is fine, and so are `start_time:`, `cardinality_spikes:` and `dynamic_labels:`. A phase offset delays the whole scenario before its clock starts, so the grid and the windows move together; `start_time:` re-anchors the emitted timestamp without touching the schedule; the label fields do not change the interval.
 
 !!! note "Release note — scheduling accuracy, shipped alongside `gap_windows:`"
     Fixing where a gap falls corrected a timing error the scheduler had carried for every generator: each tick's gap, burst, duration and timestamp decisions were being made against the *previous* tick's instant. Three behaviours change together, and all three are the same fix seen from different angles. This is a bugfix inside a minor release, not a breaking change — but if you assert on event counts or timestamps, read this.

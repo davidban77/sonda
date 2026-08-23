@@ -220,6 +220,14 @@ The tick that would have played inside a window is the tick that is suppressed, 
 
     Sonda refuses the scenario in both directions: a blank cell no window covers, and a window covering a row that has a value. Both errors name the offending data rows.
 
+    Three further rules follow from how a replay walks its rows, because the row list alone does not say which instants the run reaches:
+
+    - **`repeat` must be `false`.** It defaults to `true`, and a looping capture replays its blanks on the second cycle where no window is.
+    - **A blank last row must not outlive its data.** `repeat: false` holds the final slot for every remaining tick; extend the window to the end of the run, or end the run with the data.
+    - **`bursts:` and blanks cannot be combined.** A burst compresses the tick grid, so row *n* stops landing at *n* × step.
+
+    `phase_offset:`, `start_time:`, `cardinality_spikes:` and `dynamic_labels:` are unaffected — none of them moves a row relative to its window.
+
 ### Burst window
 
 Bursts create recurring high-rate periods. All three fields must be provided together. If a gap and a burst overlap, the gap takes priority.

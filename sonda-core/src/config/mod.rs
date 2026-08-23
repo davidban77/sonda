@@ -1095,6 +1095,7 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
                     row_count: values.len(),
                     repeat,
                     last_tick,
+                    bursts: config.base.bursts.is_some(),
                 },
                 &windows,
                 step_secs,
@@ -4285,11 +4286,25 @@ distribution:
         repeat: Option<bool>,
         duration: Option<&str>,
     ) -> Result<Vec<ScenarioConfig>, SondaError> {
+        expand_full(values, windows, repeat, duration, None, None)
+    }
+
+    /// Every input the check consults, under the caller's control.
+    fn expand_full(
+        values: &[Option<f64>],
+        windows: Option<Vec<GapWindowConfig>>,
+        repeat: Option<bool>,
+        duration: Option<&str>,
+        bursts: Option<BurstConfig>,
+        phase_offset: Option<&str>,
+    ) -> Result<Vec<ScenarioConfig>, SondaError> {
         let tmp = write_csv_with_blanks(values);
         let path = tmp.path().to_string_lossy().into_owned();
         let mut config = build_csv_replay_scenario(path, 1.0, None, None);
         config.base.gap_windows = windows;
         config.base.duration = duration.map(str::to_string);
+        config.base.bursts = bursts;
+        config.base.phase_offset = phase_offset.map(str::to_string);
         if let GeneratorConfig::CsvReplay { repeat: r, .. } = &mut config.generator {
             *r = repeat;
         }
@@ -4578,6 +4593,85 @@ distribution:
             Some("60s"),
         )
         .expect("holding a present value past the data is not silence");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A burst compresses the tick grid, so no row lands on `n x step` any
+    /// more and the windows would fall on the wrong rows.
+    ///
+    /// Measured before this rule existed: `every: 4s, for: 2s, multiplier: 4`
+    /// on a 1/s eight-row capture played every row inside the first two
+    /// seconds — the burst occupies the head of the cycle, so the compression
+    /// is not confined to the rows "inside" it.
+    #[test]
+    fn blanks_are_refused_when_the_scenario_bursts() {
+        let err = expand_full(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+            Some(BurstConfig {
+                every: "40s".to_string(),
+                r#for: "20s".to_string(),
+                multiplier: 4.0,
+            }),
+            None,
+        )
+        .expect_err("blanks under a compressed grid must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bursts:") && msg.contains("compresses the tick grid"),
+            "error should name the burst and why it matters, got: {msg}"
+        );
+    }
+
+    /// The other direction: bursts stay legal on a capture with no silence.
+    ///
+    /// The grid still slides — nothing depends on where a particular row lands
+    /// when no row has to line up with a declared window.
+    #[test]
+    fn a_capture_without_silence_may_still_burst() {
+        let result = expand_full(
+            &[Some(1.0), Some(2.0), Some(3.0)],
+            None,
+            Some(false),
+            Some("60s"),
+            Some(BurstConfig {
+                every: "40s".to_string(),
+                r#for: "20s".to_string(),
+                multiplier: 4.0,
+            }),
+            None,
+        )
+        .expect("a blank-free capture must still be allowed to burst");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// `phase_offset:` is deliberately *not* refused alongside `bursts:`.
+    ///
+    /// It delays the whole scenario before the loop's clock starts, so the tick
+    /// grid and the windows shift together and nothing moves relative to
+    /// anything else. That was measured through the CLI rather than derived —
+    /// `phase_offset: 2s` on a four-row capture with a blank at row 1 still
+    /// suppresses exactly row 1 — because reading the call chain is how the
+    /// clamp case was got wrong.
+    ///
+    /// What this test pins is the narrower claim it can actually make: the
+    /// check does not reject the combination. It would not notice a future
+    /// change that started the loop's clock before the delay; that is what the
+    /// measurement above covers, and it is worth re-running if the launch path
+    /// moves.
+    #[test]
+    fn phase_offset_is_not_refused_alongside_blanks() {
+        let result = expand_full(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+            None,
+            Some("20s"),
+        )
+        .expect("phase_offset shifts grid and windows together");
         assert_eq!(result.len(), 1);
     }
 

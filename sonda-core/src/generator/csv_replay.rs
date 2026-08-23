@@ -278,11 +278,26 @@ pub(crate) fn column_values_and_gaps(
 ///   the final slot for every remaining tick. If that slot is blank, the
 ///   silence continues for the rest of the run and needs a window that reaches
 ///   it.
+/// * **`bursts:` compress the grid.** Inside a burst window events emit at
+///   `rate * multiplier`, so `step_secs` is not constant across the run and row
+///   `n` stops landing at `n * step_secs` at all. Refused outright — see
+///   [`Playback::bursts`].
 ///
 /// The clamp check asks only whether a *blank* escapes. A window lying over the
 /// clamped tail of a present value is not refused: what it silences is a value
 /// the generator is holding, not a sample the capture recorded, so
 /// "inventing silence that did not happen" does not apply there.
+///
+/// # What is *not* in this list, and why
+///
+/// `phase_offset:` (and the `clock_group` chains that compile down to it)
+/// delays the whole scenario before the loop's clock starts, so the tick grid
+/// and the windows shift together and nothing moves relative to anything else
+/// — measured, not assumed. `start_time:` re-anchors the emitted timestamp
+/// only; the loop still decides gaps from `elapsed`. `cardinality_spikes:` and
+/// `dynamic_labels:` add labels without touching the interval. `jitter:`
+/// perturbs the value, not the schedule — it breaks round-trip *equality*,
+/// which is the importer's problem, not this one's.
 ///
 /// # Errors
 ///
@@ -311,6 +326,29 @@ pub(crate) fn cross_check_gap_windows(
              A capture containing silence cannot loop: `gap_windows:` describe one pass, \
              so on the second cycle those rows would replay at instants no window covers \
              and emit as NaN samples. Set `repeat: false`.",
+            blanks.len(),
+        ))));
+    }
+
+    // A burst compresses the tick grid. Inside a burst window the loop emits at
+    // `rate * multiplier`, so `step_secs` is not one number across the run and
+    // "row n plays at n * step_secs" — the assumption every line below rests on
+    // — stops holding for every row after the first burst, not just the ones
+    // inside it. Measured: `bursts: {every: 4s, for: 2s, multiplier: 4}` on a
+    // 1/s capture played all eight rows inside the first two seconds.
+    //
+    // Refused rather than accounted for, because the windows would have to be
+    // recomputed against a grid the user cannot see, and a capture is a record
+    // of what happened at the cadence it happened at. Bursts on a capture with
+    // no silence stay legal: the grid still slides, but nothing depends on
+    // where a particular row lands.
+    if playback.bursts && !blanks.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: this capture contains {} blank cell(s) and the scenario declares \
+             `bursts:`. A burst emits at `rate * multiplier` inside its window, which \
+             compresses the tick grid, so row n no longer plays at n x step and the \
+             `gap_windows:` entries would fall on the wrong rows. Remove `bursts:`, or \
+             replay a capture that contains no silence.",
             blanks.len(),
         ))));
     }
@@ -420,6 +458,13 @@ pub(crate) struct Playback {
     /// Index of the last tick the scenario plays, or `None` when it has no
     /// `duration:` and runs unbounded.
     pub last_tick: Option<u64>,
+    /// Whether the scenario declares `bursts:`.
+    ///
+    /// A burst changes the emission interval part-way through the run, so there
+    /// is no single `step_secs` for a row index to be multiplied by. It is a
+    /// flag rather than the window itself because the check refuses the
+    /// combination outright — it never needs to know where the burst falls.
+    pub bursts: bool,
 }
 
 /// Render tick indices for an error message. Ticks are 0-based on the wire, so
