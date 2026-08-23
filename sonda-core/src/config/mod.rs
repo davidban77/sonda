@@ -4529,9 +4529,13 @@ distribution:
             msg.contains("outlives its data"),
             "error should name the clamp, got: {msg}"
         );
+        // Tick 3 is the first instant past the data that no window covers.
+        // Named as a starting point rather than a list: the held tail can be
+        // tens of millions of ticks, and enumerating them is what the interval
+        // walk exists to avoid.
         assert!(
-            msg.contains("tick(s) 3, 4, 5"),
-            "error should name the uncovered ticks, got: {msg}"
+            msg.contains("from tick 3 onward"),
+            "error should name the first uncovered tick, got: {msg}"
         );
     }
 

@@ -420,20 +420,31 @@ pub(crate) fn cross_check_gap_windows(
             ))));
         }
         Some(last_tick) => {
-            let held: Vec<usize> = ((last_row + 1)..=(last_tick as usize))
-                .filter(|&t| !covered(t))
-                .collect();
-            if !held.is_empty() {
+            // Asked as an interval question, not by visiting every tick. The
+            // held tail is `duration * rate` long and config drives both:
+            // measured, a 24h run at a timescale-multiplied replay rate reaches
+            // 86.4M ticks, and enumerating them took 8 seconds and allocated a
+            // ~700 MB Vec before reporting a config that was invalid anyway.
+            // The windows are hand-written and few, so walking those is
+            // bounded by something a human typed.
+            if let Some(first) = first_uncovered_tick(last_row + 1, last_tick, windows, step_secs) {
+                // The walk computes tick indices from window edges; `covered`
+                // is the rule every other branch here uses. Checking the answer
+                // against it keeps one definition rather than two that agree
+                // until a boundary.
+                debug_assert!(
+                    !covered(first),
+                    "first_uncovered_tick returned tick {first}, which `covered` says is covered"
+                );
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "csv_replay: the capture's last row (data row {}) is blank and the \
                      scenario outlives its data. With `repeat: false` that slot is held for \
-                     every later tick, and {} of them fall outside every `gap_windows:` entry \
-                     (tick(s) {}), where the silence would emit as NaN samples. Extend the \
-                     window to the end of the run, shorten `duration:`, or put a value in the \
-                     last row.",
+                     every later tick, and from tick {} onward those instants fall outside \
+                     every `gap_windows:` entry, where the silence would emit as NaN samples. \
+                     Extend the window to the end of the run, shorten `duration:`, or put a \
+                     value in the last row.",
                     last_row + 1,
-                    held.len(),
-                    format_rows_zero_based(&held, MAX_NAMED),
+                    first,
                 ))));
             }
         }
@@ -467,22 +478,57 @@ pub(crate) struct Playback {
     pub bursts: bool,
 }
 
-/// Render tick indices for an error message. Ticks are 0-based on the wire, so
-/// unlike data rows they are named as they are.
-fn format_rows_zero_based(ticks: &[usize], max_named: usize) -> String {
-    let shown: Vec<String> = ticks
-        .iter()
-        .take(max_named)
-        .map(|t| t.to_string())
-        .collect();
-    if ticks.len() > max_named {
-        format!(
-            "{} … and {} more",
-            shown.join(", "),
-            ticks.len() - max_named
-        )
+/// The first tick in `[from, to]` whose instant no window covers, or `None`
+/// when the whole range is covered.
+///
+/// Walks the windows rather than the ticks. The tick range is `duration * rate`
+/// and both come from config, so it is unbounded in practice; the window list
+/// is written by hand. Cost is `O(w log w)` in the number of windows and
+/// independent of how long the run is.
+///
+/// Tick `t` sits at instant `t * step_secs`, and a window `[s, e)` covers it
+/// when `s <= t * step_secs < e` — the same rule the per-row pass applies. The
+/// first tick at or past a window's end is therefore `ceil(e / step_secs)`,
+/// which is what lets the walk skip a covered stretch in one step.
+fn first_uncovered_tick(
+    from: usize,
+    to: u64,
+    windows: &[(f64, f64)],
+    step_secs: f64,
+) -> Option<usize> {
+    let to = to as usize;
+    if from > to {
+        return None;
+    }
+
+    // Sorted by start, so reaching a window that begins after the cursor proves
+    // no later window covers the cursor either.
+    let mut sorted: Vec<(f64, f64)> = windows.to_vec();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut cursor = from;
+    for (start, end) in sorted {
+        let at = cursor as f64 * step_secs;
+        if at < start {
+            return Some(cursor);
+        }
+        if at < end {
+            // Covered. Jump to the first tick at or past this window's end; a
+            // later window may pick up from there.
+            let next = (end / step_secs).ceil();
+            if !next.is_finite() || next < 0.0 {
+                return Some(cursor);
+            }
+            cursor = cursor.max(next as usize);
+            if cursor > to {
+                return None;
+            }
+        }
+    }
+    if cursor <= to {
+        Some(cursor)
     } else {
-        shown.join(", ")
+        None
     }
 }
 
@@ -1134,6 +1180,72 @@ sink:
         assert!(values[1].is_nan(), "the blank holds its slot");
         assert_eq!(values[2], 3.0, "3.0 did not move up into the hole");
         assert_eq!(blanks, vec![1], "row 1 is reported as a gap");
+    }
+
+    // ---- first_uncovered_tick ---------------------------------------------
+    //
+    // The interval walk that replaced enumerating the held tail. It exists for
+    // cost — 86.4M ticks took 8 seconds and a ~700 MB Vec — so the cases below
+    // pin the answer it has to keep giving, including at the half-open edges
+    // where a cheaper formulation would drift from `covered`.
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // No windows at all: the first tick asked about is the answer.
+    #[case::no_windows(5, 9, &[], Some(5))]
+    // Fully covered range -> nothing to report.
+    #[case::fully_covered(5, 9, &[(5.0, 10.0)], None)]
+    // Window ends mid-range: the first tick at or past its end.
+    #[case::covers_prefix(5, 9, &[(5.0, 8.0)], Some(8))]
+    // Window starts after the cursor: the cursor itself is uncovered.
+    #[case::window_starts_later(5, 9, &[(7.0, 12.0)], Some(5))]
+    // Half-open at the far edge: a window ending exactly on a tick does NOT
+    // cover it, because coverage is `t * step < end`.
+    #[case::end_is_exclusive(5, 9, &[(5.0, 9.0)], Some(9))]
+    // Two windows with a hole between them.
+    #[case::hole_between(0, 9, &[(0.0, 3.0), (5.0, 10.0)], Some(3))]
+    // Adjacent windows chain into continuous coverage.
+    #[case::adjacent_chain(0, 9, &[(0.0, 5.0), (5.0, 10.0)], None)]
+    // Order in the list must not matter — the walk sorts.
+    #[case::unsorted_input(0, 9, &[(5.0, 10.0), (0.0, 5.0)], None)]
+    // Overlapping windows also chain.
+    #[case::overlapping(0, 9, &[(0.0, 6.0), (4.0, 10.0)], None)]
+    // Empty range: nothing is held, so nothing escapes.
+    #[case::empty_range(9, 8, &[], None)]
+    fn first_uncovered_tick_cases(
+        #[case] from: usize,
+        #[case] to: u64,
+        #[case] windows: &[(f64, f64)],
+        #[case] expected: Option<usize>,
+    ) {
+        assert_eq!(first_uncovered_tick(from, to, windows, 1.0), expected);
+    }
+
+    /// The walk must agree with the per-row `covered` rule everywhere, not just
+    /// at the tick it reports.
+    ///
+    /// Two definitions of "covered" that agree on the common cases and diverge
+    /// at a boundary is the defect this whole file keeps producing, so this
+    /// brute-forces a small range against the same predicate the other branches
+    /// use and asserts the walk found the earliest uncovered tick.
+    #[test]
+    fn first_uncovered_tick_agrees_with_a_brute_force_scan() {
+        let step = 0.25;
+        let windows: &[(f64, f64)] = &[(0.5, 1.0), (1.25, 2.0), (3.0, 3.5)];
+        let covered = |t: usize| -> bool {
+            let at = t as f64 * step;
+            windows.iter().any(|&(s, e)| at >= s && at < e)
+        };
+        for from in 0..16usize {
+            for to in from..16usize {
+                let brute = (from..=to).find(|&t| !covered(t));
+                let walked = first_uncovered_tick(from, to as u64, windows, step);
+                assert_eq!(
+                    walked, brute,
+                    "from={from} to={to}: walk said {walked:?}, scan said {brute:?}"
+                );
+            }
+        }
     }
 
     #[test]
