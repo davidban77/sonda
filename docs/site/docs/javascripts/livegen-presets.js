@@ -193,20 +193,33 @@ export const WIDGETS = {
    * the same sine underneath for exactly that reason: hold the signal still
    * and the schedule becomes the only variable.
    *
-   * `for` reaches past `every` on purpose. The engine accepts that (verified:
-   * `sonda --dry-run run` compiles gaps and bursts at every corner of these
-   * ranges, including for=15s against every=5s), and the compile gate proves
-   * it on every CI run; the shading stays legible because scheduleWindows
-   * clips each window to its own cycle rather than painting one long band.
-   * Ranges chosen so the default shows three or four whole cycles in the
-   * 60-second sample — a period the eye can count.
+   * `for` never reaches `every`. The engine refuses `for >= every` for gaps
+   * and bursts alike (`gaps.for (..) must be less than gaps.every (..)`,
+   * config/validate.rs) — an open window that outlives its own cycle has no
+   * meaning to the scheduler. These are two INDEPENDENT range inputs, so the
+   * widget has no way to express a constraint that couples them; the ranges
+   * are therefore chosen DISJOINT instead: max(`for`) = 9 < min(`every`) = 10,
+   * which makes every point in the space runnable rather than only the
+   * corners the compile gate samples. `PAIR_RULES` in pure.test.mjs asserts
+   * that disjointness against the ranges, because a corner grid over
+   * {min, value, max} cannot see an interior pair that violates it.
+   *
+   * An earlier version of this comment claimed the opposite ("the engine
+   * accepts that, verified") and cited the compile gate as proof. The gate was
+   * running `sonda --dry-run run`, which at the time returned before
+   * validation ran — so it compiled nothing and agreed with whatever it was
+   * told. Do not restore the wider ranges without a run that actually fails.
+   *
+   * The shading stays legible because scheduleWindows clips each window to its
+   * own cycle rather than painting one long band. Ranges keep the default at
+   * four whole cycles in the 60-second sample — a period the eye can count.
    */
   gaps: {
     rate: 4,
     durationSecs: 60,
     sliders: [
-      { key: "every", min: 5, max: 30, step: 1, value: 15, unit: "s" },
-      { key: "for", min: 1, max: 15, step: 1, value: 5, unit: "s" },
+      { key: "every", min: 10, max: 30, step: 1, value: 15, unit: "s" },
+      { key: "for", min: 1, max: 9, step: 1, value: 5, unit: "s" },
     ],
     yaml(p) {
       return `${head(this.rate, this.durationSecs)}
@@ -222,8 +235,8 @@ export const WIDGETS = {
     rate: 4,
     durationSecs: 60,
     sliders: [
-      { key: "every", min: 5, max: 30, step: 1, value: 15, unit: "s" },
-      { key: "for", min: 1, max: 15, step: 1, value: 4, unit: "s" },
+      { key: "every", min: 10, max: 30, step: 1, value: 15, unit: "s" },
+      { key: "for", min: 1, max: 9, step: 1, value: 4, unit: "s" },
       { key: "multiplier", min: 1, max: 10, step: 0.5, value: 3, unit: "x" },
     ],
     yaml(p) {

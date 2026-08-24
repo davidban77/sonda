@@ -508,19 +508,59 @@ test("duration-coupled slider floors cover the scenario duration (review #534 M1
   }
 });
 
-test("every min/max slider pair is non-crossable by range construction", () => {
-  // Generalises the baseline/ceiling rule above to the pairs WP13 added.
-  // The engine rejects `min >= max`, so a pair whose ranges OVERLAP ships a
-  // widget that compiles at rest and throws under the reader's hand — the
-  // failure only appears for the readers who actually play with it, which is
-  // everyone the widget is for. Disjoint ranges make it unreachable rather
-  // than merely untested.
-  for (const [gen, widget] of Object.entries(WIDGETS)) {
-    const lo = (widget.sliders || []).find((s) => s.key === "min");
-    const hi = (widget.sliders || []).find((s) => s.key === "max");
-    if (lo && hi) {
-      assert.ok(lo.max < hi.min, `${gen}: min range [${lo.min},${lo.max}] must sit below max range [${hi.min},${hi.max}]`);
+/* The cross-slider constraints the ENGINE enforces, checked against the slider
+ * RANGES rather than against sampled points.
+ *
+ * `lo` must stay strictly below `hi` for every combination a reader can drag
+ * to. Two sliders move independently, so the widget has no way to express that
+ * coupling — the only way to make it unreachable is to keep the two ranges
+ * disjoint, and disjointness is a property of the ranges themselves.
+ *
+ * Checking the ranges rather than sampling is the whole point. Every other
+ * gate over these presets samples: `cornerParams` takes each slider at
+ * {min, value, max} INDEPENDENTLY, so a pair that violates its constraint only
+ * at an interior combination is invisible to the corner grid and to the
+ * compile gate built on it. Comparing max(lo) to min(hi) covers the entire
+ * space in one comparison.
+ *
+ * `expected` is the anti-vacuity half. A renamed slider key, or a widget
+ * dropped from WIDGETS, would otherwise leave the loop matching nothing and
+ * reporting success — a check that covers zero widgets reads exactly like a
+ * check that covers all of them. Update the count deliberately.
+ */
+const PAIR_RULES = [
+  { lo: "min", hi: "max", expected: 2, engine: "the engine rejects min >= max" },
+  {
+    lo: "for",
+    hi: "every",
+    expected: 2,
+    engine: "the engine rejects for >= every for gaps, bursts and cardinality_spikes (config/validate.rs)",
+  },
+];
+
+test("cross-slider constraints are unreachable by range construction", () => {
+  // A pair whose ranges OVERLAP ships a widget that compiles at rest and
+  // throws under the reader's hand — the failure only appears for the readers
+  // who actually play with it, which is everyone the widget is for.
+  for (const rule of PAIR_RULES) {
+    let matched = 0;
+    for (const [gen, widget] of Object.entries(WIDGETS)) {
+      const lo = (widget.sliders || []).find((s) => s.key === rule.lo);
+      const hi = (widget.sliders || []).find((s) => s.key === rule.hi);
+      if (!lo || !hi) continue;
+      matched += 1;
+      assert.ok(
+        lo.max < hi.min,
+        `${gen}: ${rule.lo} range [${lo.min},${lo.max}] must sit below ` +
+          `${rule.hi} range [${hi.min},${hi.max}] — ${rule.engine}`
+      );
     }
+    assert.equal(
+      matched,
+      rule.expected,
+      `expected ${rule.expected} widgets pairing ${rule.lo}/${rule.hi}, found ${matched} — ` +
+        `a slider was renamed or a widget removed and this rule stopped covering it`
+    );
   }
 });
 
