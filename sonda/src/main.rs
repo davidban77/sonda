@@ -135,15 +135,48 @@ fn run_scenario(
         //
         // The clone is because both pipelines consume the file and the printer
         // still needs it. It happens once, on a path that is about to exit.
-        if has_gates {
+        //
+        // And what it prints is what came BACK from that pipeline, not the file
+        // that went in. Validating and then rendering the pre-expansion view
+        // fixed the refusal half of parity and left the reporting half wrong:
+        // a multi-column `csv_replay` launches one series per column, so
+        // "Validation: OK (2 scenarios)" for a file that runs three is the same
+        // flag telling the same CI job the same kind of untruth.
+        let runnable: Vec<(usize, sonda_core::config::ScenarioEntry)> = if has_gates {
             sonda_core::schedule::multi_runner::validate_compiled_gated(compiled.clone())
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
             let entries = sonda_core::compiler::prepare::prepare(compiled.clone())
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
-            sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
-        }
-        dry_run::print_dry_run_compiled(&args.scenario, &compiled, format)?;
+            sonda_core::prepare_entries(entries)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+                .into_iter()
+                .map(|p| (p.source_index, p.entry))
+                .collect()
+        };
+
+        // Pair each runnable entry with the entry that authored it. `while:`,
+        // `after:`, `clock_group` and `phase_offset` are resolved by the
+        // compiler and do not survive translation, so they can only be read
+        // from the compiled side.
+        let views: Vec<dry_run::RunnableView<'_>> = runnable
+            .iter()
+            .map(|(source_index, entry)| {
+                let source = compiled.entries.get(*source_index).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "internal: expanded entry reports source index {source_index}, \
+                         but the compiled file has {} entries",
+                        compiled.entries.len()
+                    )
+                })?;
+                Ok(dry_run::RunnableView {
+                    runnable: entry,
+                    source,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        dry_run::print_dry_run_compiled(&args.scenario, &compiled, &views, format)?;
         return Ok(());
     }
 

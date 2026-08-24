@@ -75,6 +75,16 @@ pub struct PreparedEntry {
     pub while_clause: Option<WhileClause>,
     /// Open / close debounce windows applied to `while:` transitions.
     pub delay_clause: Option<DelayClause>,
+    /// Index of the AUTHORED entry this one came from, into the slice passed to
+    /// [`prepare_entries`].
+    ///
+    /// Not always 1:1: a multi-column `csv_replay` fans one authored entry out
+    /// into one entry per series, and every one of them reports the same index.
+    /// `sonda --dry-run run` needs that mapping to show what will actually run
+    /// while still rendering the authored-only fields (`while:`, `after:`,
+    /// `clock_group`) that live on the compiled entry and do not survive
+    /// expansion.
+    pub source_index: usize,
 }
 
 /// Expand, validate, and resolve phase offsets for a batch of scenario entries.
@@ -158,6 +168,7 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
             id: None,
             while_clause: None,
             delay_clause: None,
+            source_index: orig_idx,
         });
     }
 

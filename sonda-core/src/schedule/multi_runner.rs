@@ -109,11 +109,18 @@ fn prepare_gated_entry(
     Ok(Some(translated))
 }
 
-/// Validate a compiled file through the **gated** pipeline without launching it.
+/// Validate a compiled file through the **gated** pipeline without launching it,
+/// returning the entries that would run.
 ///
-/// Runs the same per-entry preparation [`launch_multi_compiled`] runs, and
-/// discards the result. `sonda --dry-run run` calls this for any file carrying a
-/// `while:` clause, so the two verbs decide from one rulebook rather than two.
+/// Runs the same per-entry preparation [`launch_multi_compiled`] runs.
+/// `sonda --dry-run run` calls this for any file carrying a `while:` clause, so
+/// the two verbs decide from one rulebook rather than two — and prints what
+/// comes back, so the view it shows is post-expansion rather than as-authored.
+///
+/// Each returned entry is paired with the index of the authored entry it came
+/// from. On this path that is always 1:1 (fan-out is refused above), but the
+/// pairing is what lets a caller render the authored-only fields — `while:`,
+/// `after:`, `clock_group` — which do not survive translation.
 ///
 /// Scope, stated because a validator that looks broader than it is would be
 /// worse than none: this covers per-entry preparation only. Gate-bus wiring and
@@ -122,11 +129,16 @@ fn prepare_gated_entry(
 /// naming an id that does not exist is refused at `compile_after`, so both
 /// already reach `--dry-run` through the compile step.
 #[cfg(feature = "config")]
-pub fn validate_compiled_gated(file: CompiledFile) -> Result<(), SondaError> {
-    for compiled_entry in file.entries.into_iter() {
-        prepare_gated_entry(compiled_entry)?;
+pub fn validate_compiled_gated(
+    file: CompiledFile,
+) -> Result<Vec<(usize, ScenarioEntry)>, SondaError> {
+    let mut out = Vec::with_capacity(file.entries.len());
+    for (index, compiled_entry) in file.entries.into_iter().enumerate() {
+        if let Some(entry) = prepare_gated_entry(compiled_entry)? {
+            out.push((index, entry));
+        }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in.
