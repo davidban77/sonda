@@ -106,6 +106,29 @@ fn run_scenario(
 
     if cli_opts.dry_run {
         let format = dry_run::parse_format(cli_opts.format.as_deref())?;
+        // Validate through the pipeline the runtime uses, not a second list of
+        // its rules.
+        //
+        // `--dry-run` returned here before doing this, which meant it never ran
+        // `prepare_entries` — and therefore never ran `expand_scenario`, where
+        // csv_replay derives its rate from the file's timestamps, fans a
+        // multi-column capture out into one entry per series, and rejects a
+        // file it cannot replay. So a scenario `sonda run` refuses printed
+        // "Validation: OK", which is worse than saying nothing: the whole point
+        // of the flag is to answer "would this run?" without running it, and CI
+        // users reach for it precisely to catch this class before a deploy.
+        //
+        // The fix is to call the real thing rather than teach this path to
+        // recognise the same failures — a transcription would diverge on
+        // exactly the rule that was added last. `prepare` and `prepare_entries`
+        // are the same two calls the non-dry-run path makes immediately below;
+        // the only difference is that nothing is launched afterwards.
+        //
+        // The clone is because `prepare` consumes the file and the printer
+        // still needs it. It happens once, on a path that is about to exit.
+        let entries = sonda_core::compiler::prepare::prepare(compiled.clone())
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
         dry_run::print_dry_run_compiled(&args.scenario, &compiled, format)?;
         return Ok(());
     }
