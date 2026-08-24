@@ -9,38 +9,38 @@
 //! sample, neither does the replay. That is what makes this path exact rather
 //! than a fit.
 //!
-//! # Why gaps become `NaN` and not absent rows
-//!
-//! The spec offered two representations for a staleness gap: absent CSV
-//! samples, or the scenario's `gaps:` config. Both were measured against the
-//! engine and both are wrong.
-//!
-//! *Absent samples are disqualifying.* `CsvReplayGenerator::load_column`
-//! silently skips any cell that does not parse as `f64`, so a hole in the data
-//! shortens the value vector rather than leaving a space in it. Measured: a
-//! four-row CSV with one empty cell replays three values, and every sample
-//! after the hole arrives one step early. A capture that shifts its own
-//! incident is not a replay of anything.
-//!
-//! *`gaps:` cannot express the shape.* [`crate::schedule::GapWindow`] is
-//! `every` + `duration` — strictly periodic. Real staleness is irregular: one
-//! outage at t+120, another at t+400. A periodic window cannot represent that
-//! without lying about when the silence happened.
+//! # Why gaps become `NaN` here, and why that is now only half the story
 //!
 //! `NaN` parses through `f64::from_str`, so the generator pushes it like any
-//! other value and the grid stays aligned. It is the only one of the three
-//! that preserves *when* things happened, which is the property the whole
-//! feature exists to deliver.
+//! other value and the grid stays aligned. That preserves *when* things
+//! happened, which is the property the whole feature exists to deliver.
 //!
-//! # The limitation this leaves, stated plainly
+//! Read the rest of this section as a record of a decision that has since been
+//! overtaken, not as a live argument. Two of the three reasons this module
+//! originally gave for rejecting absent rows no longer hold:
 //!
-//! A `NaN` sample is still a *sample*. The replay emits a point at that
-//! instant carrying `NaN`, where production emitted nothing at all. Value
-//! fidelity and timing are exact; **absence is not reproduced**. An
-//! `absent()`-style alert that fired against the original silence will not
-//! fire against the replay. Reproducing true silence needs per-series gap
-//! windows at arbitrary offsets, which the schedule layer does not have — a
-//! core engine change, out of scope here and recorded rather than guessed at.
+//! * *"A blank shortens the value vector."* It did. `parse_column` now writes
+//!   a `NaN` placeholder for a blank cell and reports its row index instead of
+//!   skipping it, so the grid no longer shifts and later samples no longer
+//!   arrive a step early. Fixed in 1857aa5.
+//! * *"`gaps:` cannot express the shape."* True of `gaps:`, which is `every` +
+//!   `duration` and strictly periodic — but `gap_windows:` was added in
+//!   5c2bdce precisely for irregular one-shot silences at arbitrary offsets,
+//!   which is the shape real staleness has.
+//!
+//! # What that changes, and what it does not
+//!
+//! The engine can now reproduce absence: a blank cell plus a declared
+//! `gap_windows:` entry replays as real silence, and `cross_check_gap_windows`
+//! refuses a capture whose blanks and windows disagree. **This module still
+//! writes `NaN`**, so a capture taken through this path today reproduces value
+//! and timing exactly and absence not at all — an `absent()`-style alert that
+//! fired against the original silence will not fire against the replay.
+//!
+//! That gap is a wiring job, not a missing capability, and it belongs to the
+//! importer (WP18b): emit blanks for absent grid points and the matching
+//! `gap_windows:` alongside them. It is recorded here so whoever picks that up
+//! does not read the paragraphs above as a settled decision against blanks.
 
 use super::FetchedSeries;
 use std::collections::BTreeMap;

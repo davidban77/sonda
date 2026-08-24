@@ -160,9 +160,18 @@ pub fn write_csv(grid: Grid, series: &[NormalizedSeries]) -> Result<String, Sond
         for s in series {
             out.push(',');
             match s.values.get(n) {
-                // Display for f64 round-trips through parse, and prints NaN as
-                // "NaN" — which is exactly what the reader turns back into a
-                // gap. No formatting decision is made about the value itself.
+                // Display for f64 round-trips through parse. No formatting
+                // decision is made about the value itself.
+                //
+                // What a literal "NaN" MEANS on the way back in is the
+                // opposite of what this comment used to claim: the reader
+                // treats it as a sample that is present and happens to be NaN.
+                // Only a BLANK cell is absence, and only a blank is
+                // cross-checked against a declared `gap_windows:` entry
+                // (`csv_replay::parse_column`). Emitting "NaN" here therefore
+                // reproduces the value and the timing but NOT the silence.
+                // Wiring this side to emit blanks plus the matching windows is
+                // WP18b's job; until then this is the honest half.
                 Some(v) => {
                     let _ = write!(out, "{v}");
                 }

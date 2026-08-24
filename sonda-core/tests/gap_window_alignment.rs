@@ -184,6 +184,18 @@ fn ladder_scenario(
 /// event fired at once, and the instants alone would accept a run that skipped
 /// the right number of events at the wrong offsets.
 fn assert_ladder(seen: &[Emission], expected_ticks: &[u64]) {
+    // Refuse an empty expectation before comparing against one.
+    //
+    // Every call site today passes a non-empty ladder, so this is latent
+    // rather than live — but `assert_eq!(vec![], vec![])` is how a case
+    // written for a run that emits nothing would report success, and this is
+    // the one corpus in the repo that was not asserting it found something.
+    assert!(
+        !expected_ticks.is_empty(),
+        "assert_ladder was given an empty expectation — a run that emitted nothing \
+         would satisfy it. Assert the absence directly instead."
+    );
+
     let values: Vec<f64> = seen.iter().map(|e| e.value).collect();
     let expected: Vec<f64> = expected_ticks.iter().map(|t| *t as f64).collect();
     assert_eq!(
@@ -505,6 +517,66 @@ async fn stall_drift_is_bounded_by_the_stall_and_does_not_accumulate() {
             e.at.as_secs_f64() * 1000.0 - slot_ms
         );
     }
+}
+
+/// Both silences at once: a recorded row whose own slot is in neither of them
+/// must survive a stall.
+///
+/// The scoped re-review's B1. The frame split routes on which silence is
+/// *active*, not on which construct is being judged — so the moment a periodic
+/// gap is open, the whole tick lands in the wall branch, one-shot windows
+/// included. Before the fix the wall branch re-derived the tick from where the
+/// clock ended up, and every row owed in between was deleted:
+///
+/// ```text
+/// played = [0, 1, 6, 7, 8, 10, 11]
+///   tick 2  slot 400ms  deleted   # outside [800,1000) and outside [700,1100)
+///   tick 3  slot 600ms  deleted   # outside both
+/// ```
+///
+/// A capture replayed with a simulated outage layered over it is an ordinary
+/// config, and the cross-check refuses `repeat` and `bursts:` but says nothing
+/// about `gaps:`. So this is the row-frame guarantee failing from the one
+/// direction validation cannot see.
+///
+/// Ticks 4, 5 and 9 are NOT asserted here: their slots really do sit inside one
+/// of the two silences, and a row whose own slot the user covered is covered.
+/// The claim is narrower than "nothing is ever suppressed" — it is that
+/// falling behind is not itself a reason to drop a row.
+#[tokio::test]
+async fn a_stall_under_both_silences_still_owes_every_row_outside_them() {
+    let config = ladder_scenario(
+        "2.4s",
+        Some(GapConfig {
+            every: "1s".to_string(),
+            r#for: "200ms".to_string(),
+        }),
+        Some(vec![GapWindowConfig {
+            at: "700ms".to_string(),
+            r#for: "400ms".to_string(),
+        }]),
+    );
+
+    let (mut sink, seen) = stalling_sink(2, Duration::from_millis(600));
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+
+    let seen = seen.lock().expect("timing sink mutex poisoned").clone();
+    let played: Vec<u64> = seen.iter().map(|e| e.value as u64).collect();
+
+    // Instants are deliberately not asserted: after a stall the loop is behind
+    // by construction, and emitting the backlog late is the point.
+    assert!(
+        played.contains(&2),
+        "tick 2's slot (400ms) is outside the periodic gap [800ms, 1000ms) and outside \
+         the window [700ms, 1100ms), so a stall must not delete it; played {played:?}"
+    );
+    assert!(
+        played.contains(&3),
+        "tick 3's slot (600ms) is outside both silences, so a stall must not delete it; \
+         played {played:?}"
+    );
 }
 
 /// WALL FRAME: the same stall, and `gaps:` deliberately behaves the other way.

@@ -331,6 +331,17 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         // When both apply at once the periodic path runs, and its re-anchor
         // walk skips one-shot windows too, so an overlap still lands on a slot
         // no window covers.
+        //
+        // THE RULING, AND WHAT IT COSTS `gaps:`. Routing on which silence is
+        // *active* means an open periodic gap drags one-shot windows into wall
+        // frame with it, and the wall used to delete every row owed during the
+        // catch-up. David ruled that a recorded row always wins: deleting one
+        // is a defect wherever it happens, `gaps:` included. So on a run that
+        // declared `gap_windows:`, a recurring gap no longer deletes ticks
+        // under backpressure — it suppresses the rows whose own slots it
+        // covers, and the rest are emitted late. A run with no `gap_windows:`
+        // is unchanged: there are no recorded rows there for the wall to
+        // outrank, and suppressed events are still not caught up.
         let row_at = next_deadline.saturating_duration_since(start);
         let periodic_gap = schedule
             .gap_window
@@ -390,27 +401,63 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             if gap_end > now {
                 tokio::time::sleep(gap_end - now).await;
             }
-            // Suppressed events are not caught up: re-derive the tick from
-            // elapsed time at the base rate rather than resuming the count
-            // where the silence interrupted it.
+            // WHERE THE WALK STARTS DECIDES WHETHER A LATE ROW IS EMITTED OR
+            // DELETED, and under the ruling those are not interchangeable.
             //
-            // Which tick resumes is asked, not computed. Truncating
-            // `elapsed / base_interval` picks the slot at or before the current
-            // instant, and when a window ends off-grid that slot is one the
-            // window was still covering — `[200ms, 500ms)` on a 200ms grid
-            // covers ticks 1 and 2, the silence ends at 500ms, and
-            // `floor(500/200)` is 2, so the loop resurrected a tick it had just
-            // suppressed. Truncation is a lower bound; the walk finds the
-            // answer by asking the same predicates the suppression above uses.
+            // Starting from the clock (`resumed_at`) abandons every tick owed
+            // between where the loop was and where the clock ended up. That is
+            // right for a synthetic run — a recurring gap simulates an outage
+            // happening *now*, suppressed events are not caught up, and tick
+            // 2 of a sine is not a thing anyone recorded.
             //
-            // Bounded by construction: truncation lands at most one slot low,
-            // and `resumed_at` is already past the end of any contiguous
-            // silence, so this advances at most twice.
+            // It is wrong the moment the run is replaying a capture. Review of
+            // #571 measured it: `gaps:` and `gap_windows:` together, a 600ms
+            // stall, and rows whose own slots sat in neither silence were
+            // deleted — because the branch routes on which silence is *active*,
+            // so an open periodic gap pulls the one-shot windows into wall
+            // frame with it. David ruled: a recorded row always wins. Deleting
+            // one is a defect wherever it happens, `gaps:` included.
+            //
+            // So a run that declared recorded absence starts the walk at the
+            // owed ROW and emits the backlog late; a run that did not starts at
+            // the CLOCK and drops it. `gap_windows:` is the declaration — it is
+            // what a capture emits for the silence it recorded, and its absence
+            // means there are no recorded rows for the wall to outrank.
+            //
+            // Known limit, stated rather than papered over: a capture with no
+            // recorded absence emits no `gap_windows:`, so its rows get the
+            // synthetic treatment. Closing that needs the scheduler to know the
+            // generator is a replay, which it does not today.
+            let replaying_capture = !schedule.gap_windows.is_empty();
             let resumed_at = elapsed + sleep_for;
-            let mut ticks_elapsed = (resumed_at.as_secs_f64() / base_interval.as_secs_f64()) as u64;
+            let mut ticks_elapsed = if replaying_capture {
+                tick - initial_tick
+            } else {
+                // Truncation is a LOWER bound, not the answer. When a window
+                // ends off-grid the truncated slot is one the window was still
+                // covering — `[200ms, 500ms)` on a 200ms grid covers ticks 1
+                // and 2, the silence ends at 500ms, and `floor(500/200)` is 2,
+                // so the loop resurrected a tick it had just suppressed. The
+                // walk below corrects it by asking the same predicates the
+                // suppression used.
+                (resumed_at.as_secs_f64() / base_interval.as_secs_f64()) as u64
+            };
+            // Which tick resumes is asked, not computed.
+            //
+            // Iterations: for a synthetic run this is normally one or two —
+            // truncation lands at most one slot low, and `resumed_at` is past
+            // the end of the silence that was slept through. NOT "at most
+            // twice", though: `sleep_for` is `max(periodic, one_shot)`, and a
+            // one-shot window starting at or after the periodic gap's end
+            // contributes zero to that max because `elapsed` is not yet inside
+            // it, so `resumed_at` can land inside a window the walk then steps
+            // across one slot at a time. For a capture replay it walks the
+            // backlog, which is O(rows owed) in one burst — the same shape as
+            // the enumeration this branch already paid to remove once, at a
+            // smaller constant, and bounded by the stall rather than by config.
             loop {
                 let slot = base_interval.mul_f64(ticks_elapsed as f64);
-                let not_yet = slot < resumed_at;
+                let not_yet = !replaying_capture && slot < resumed_at;
                 let still_silent = schedule
                     .gap_window
                     .as_ref()
