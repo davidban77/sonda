@@ -103,7 +103,7 @@ The two kinds of silence are judged against different clocks, and the difference
 
 **When a scenario declares both**, the recurring gap is still judged by the wall — but a row it did not cover is emitted late rather than dropped. A recorded row outranks a simulated outage. Rows whose own slot really does sit inside either silence stay suppressed; only rows the run merely owes are caught up.
 
-This is the shape [`sonda new --from-prometheus`](../import/from-csv.md) emits, and it pairs with `csv_replay`: a blank cell in the CSV means the sample was absent, and the window is what turns that absence back into silence. Sonda refuses a scenario where the two disagree in either direction — a blank cell with no window over it, or a window over a row that has a value.
+This pairs with `csv_replay`: a blank cell in the CSV means the sample was absent, and the window is what turns that absence back into silence. Sonda refuses a scenario where the two disagree in either direction — a blank cell with no window over it, or a window over a row that has a value. Today you write both by hand, or emit them from your own tooling; a `sonda new` importer that captures a Prometheus range and emits the pair is in progress, and this page will say so when it ships.
 
 For the field reference, see [Scenario fields — One-shot gap windows](../reference/scenario-fields.md#one-shot-gap-windows).
 
