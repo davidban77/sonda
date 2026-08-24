@@ -201,16 +201,7 @@ fn dry_run_refuses_what_run_refuses() {
     .expect("write YAML");
     yaml.flush().expect("flush");
 
-    let run = Command::new(sonda_bin())
-        .args(["--quiet", "run"])
-        .arg(yaml.path())
-        .output()
-        .expect("must spawn sonda");
-    let dry = Command::new(sonda_bin())
-        .args(["--quiet", "--dry-run", "run"])
-        .arg(yaml.path())
-        .output()
-        .expect("must spawn sonda");
+    let (run, dry) = both_verdicts(yaml.path());
 
     // The premise: if `run` ever stops refusing this file, the comparison below
     // would pass vacuously with both succeeding.
@@ -219,7 +210,117 @@ fn dry_run_refuses_what_run_refuses() {
         "premise: `run` must refuse a non-monotonic capture; stderr:\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
+    assert_verdicts_agree(&run, &dry);
+}
 
+/// The other direction: a scenario `run` accepts must still dry-run cleanly.
+///
+/// Without this, the parity above could be satisfied by making `--dry-run`
+/// refuse everything.
+///
+/// The fixture is gated (`while:`), so this is also the accept-side coverage of
+/// the gated dispatch — but only because it spawns BOTH verbs. It did not, and
+/// that is precisely how the gated branch shipped unvalidated: a test named for
+/// a comparison it never made, asserting that one verb exits 0.
+#[test]
+fn dry_run_still_accepts_what_run_accepts() {
+    let fixture = cli_fixtures_dir().join("while-cascade.v2.yaml");
+    let (run, dry) = both_verdicts(&fixture);
+
+    assert!(
+        run.status.success(),
+        "premise: `run` must accept this fixture, or the comparison below is \
+         vacuous; stderr:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_verdicts_agree(&run, &dry);
+}
+
+/// The gated launch path has its own rulebook, and `--dry-run` must ask it.
+///
+/// `run` dispatches a file carrying a `while:` clause to `launch_multi_compiled`,
+/// whose per-entry preparation refuses things the ungated `prepare_entries`
+/// accepts. Multi-column `csv_replay` fan-out is the sharpest case: legal
+/// ungated, refused here because a gate needs one entry per gated signal.
+///
+/// Measured before the dispatch fix, both binaries at the PR head:
+///
+/// ```text
+/// $ sonda run gated-multicol.yaml
+/// error: configuration error: scenario id "replay": csv_replay multi-column
+///        expansion is not supported when `while:` is in use; ...
+/// exit=1
+/// $ sonda --dry-run run gated-multicol.yaml
+/// Validation: OK (2 scenarios)
+/// exit=0
+/// ```
+///
+/// The premise assertion matters more than usual here: if the gated runner ever
+/// starts accepting the fan-out, this test must fail loudly rather than quietly
+/// comparing two zeros.
+#[test]
+fn dry_run_refuses_what_the_gated_run_refuses() {
+    use std::io::Write;
+
+    let mut csv = tempfile::Builder::new()
+        .prefix("gated_multicol_")
+        .suffix(".csv")
+        .tempfile()
+        .expect("create temp CSV");
+    writeln!(csv, "timestamp,cpu,mem").expect("write header");
+    writeln!(csv, "0.000,10,50").expect("write row");
+    writeln!(csv, "1.000,20,60").expect("write row");
+    writeln!(csv, "2.000,30,70").expect("write row");
+    csv.flush().expect("flush");
+
+    let mut yaml = tempfile::Builder::new()
+        .prefix("gated_parity_")
+        .suffix(".v2.yaml")
+        .tempfile()
+        .expect("create temp YAML");
+    write!(
+        yaml,
+        "version: 2\nkind: runnable\ndefaults:\n  duration: 2s\n  encoder:\n    \
+         type: prometheus_text\n  sink:\n    type: stdout\nscenarios:\n  \
+         - id: src\n    signal_type: metrics\n    name: src\n    rate: 1\n    \
+         generator:\n      type: constant\n      value: 1\n  \
+         - id: replay\n    signal_type: metrics\n    name: capture\n    rate: 1\n    \
+         generator:\n      type: csv_replay\n      file: {}\n      columns:\n        \
+         - index: 1\n          name: cpu_percent\n        - index: 2\n          \
+         name: mem_percent\n    while:\n      ref: src\n      op: '>'\n      value: 0\n",
+        csv.path().display()
+    )
+    .expect("write YAML");
+    yaml.flush().expect("flush");
+
+    let (run, dry) = both_verdicts(yaml.path());
+
+    assert!(
+        !run.status.success(),
+        "premise: the gated runner must refuse multi-column fan-out, or this \
+         comparison is vacuous; stderr:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_verdicts_agree(&run, &dry);
+}
+
+/// Drive both verbs over one file. The comparison has one definition so a test
+/// cannot accidentally be named for a comparison it does not make.
+fn both_verdicts(path: &std::path::Path) -> (std::process::Output, std::process::Output) {
+    let run = Command::new(sonda_bin())
+        .args(["--quiet", "run"])
+        .arg(path)
+        .output()
+        .expect("must spawn sonda");
+    let dry = Command::new(sonda_bin())
+        .args(["--quiet", "--dry-run", "run"])
+        .arg(path)
+        .output()
+        .expect("must spawn sonda");
+    (run, dry)
+}
+
+fn assert_verdicts_agree(run: &std::process::Output, dry: &std::process::Output) {
     assert_eq!(
         dry.status.success(),
         run.status.success(),
@@ -230,25 +331,5 @@ fn dry_run_refuses_what_run_refuses() {
         String::from_utf8_lossy(&run.stderr),
         String::from_utf8_lossy(&dry.stderr),
         String::from_utf8_lossy(&dry.stdout),
-    );
-}
-
-/// The other direction: a scenario `run` accepts must still dry-run cleanly.
-///
-/// Without this, the parity above could be satisfied by making `--dry-run`
-/// refuse everything.
-#[test]
-fn dry_run_still_accepts_what_run_accepts() {
-    let fixture = cli_fixtures_dir().join("while-cascade.v2.yaml");
-    let output = Command::new(sonda_bin())
-        .args(["--quiet", "--dry-run", "run"])
-        .arg(&fixture)
-        .output()
-        .expect("must spawn sonda");
-
-    assert!(
-        output.status.success(),
-        "a valid scenario must still dry-run cleanly; stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
     );
 }

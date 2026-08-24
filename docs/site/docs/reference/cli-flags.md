@@ -71,6 +71,9 @@ sonda [--catalog <DIR>] [--dry-run] [--format text|json] run <SCENARIO> [OVERRID
 | `--label k=v` | Add a static label. Repeatable. |
 | `--on-sink-error warn\|fail` | Override `defaults.on_sink_error`. |
 
+!!! info "`--dry-run` reads the data files your scenario references"
+    Validation runs the same pipeline `run` does, and some rules are facts about the data rather than the YAML — a `csv_replay` derives its rate from the capture's own timestamps, and cross-checks blank cells against declared `gap_windows:`. So a dry-run opens the CSV. If you validate in CI on a machine that has the scenario but not the capture, `--dry-run` will fail there. That is the check working: a config pointing at data that is not present is a finding, not a false alarm.
+
 ### Run a file
 
 ```bash title="examples/cpu-spike.yaml"

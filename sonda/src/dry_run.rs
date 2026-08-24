@@ -61,10 +61,19 @@ pub fn print_dry_run_compiled(
     Ok(())
 }
 
-/// Surface alias-validation and sink-config errors that would otherwise only
-/// fire inside `prepare_entries` (which dry-run never calls) or the sink
-/// factory at run time. Extend here for any future invariant that should
-/// reach operators at dry-run time.
+/// Surface alias-validation and sink-config errors that fire late — inside the
+/// sink factory at run time, or in a shape `prepare_entries` reports less
+/// clearly.
+///
+/// **Do not extend this with engine rules.** The sentence that used to be here
+/// said "which dry-run never calls" and invited exactly that; dry-run now calls
+/// the real pipelines (`prepare_entries`, or `validate_compiled_gated` for a
+/// gated file), so every invariant they enforce already reaches operators here
+/// without being written down twice. A transcribed rule diverges on whichever
+/// rule someone adds last, which is the failure this file's callers argue
+/// against four files away. What is left below earns its place only by
+/// producing a better message than the engine does, for a check the engine
+/// makes anyway or makes too late.
 fn validate_alias_invariants(compiled: &CompiledFile) -> anyhow::Result<()> {
     for entry in &compiled.entries {
         if let Some(GeneratorConfig::Flap {

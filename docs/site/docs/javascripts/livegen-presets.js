@@ -199,10 +199,10 @@ export const WIDGETS = {
    * meaning to the scheduler. These are two INDEPENDENT range inputs, so the
    * widget has no way to express a constraint that couples them; the ranges
    * are therefore chosen DISJOINT instead: max(`for`) = 9 < min(`every`) = 10,
-   * which makes every point in the space runnable rather than only the
-   * corners the compile gate samples. `PAIR_RULES` in pure.test.mjs asserts
-   * that disjointness against the ranges, because a corner grid over
-   * {min, value, max} cannot see an interior pair that violates it.
+   * which makes every point in the space runnable. `PAIR_RULES` in
+   * pure.test.mjs asserts that disjointness against the ranges; the compile
+   * gate catches it too, because `cornerParams` crosses the sliders and so
+   * always contains the worst pair.
    *
    * An earlier version of this comment claimed the opposite ("the engine
    * accepts that, verified") and cited the compile gate as proof. The gate was

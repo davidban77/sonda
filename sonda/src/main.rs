@@ -120,15 +120,29 @@ fn run_scenario(
         //
         // The fix is to call the real thing rather than teach this path to
         // recognise the same failures — a transcription would diverge on
-        // exactly the rule that was added last. `prepare` and `prepare_entries`
-        // are the same two calls the non-dry-run path makes immediately below;
-        // the only difference is that nothing is launched afterwards.
+        // exactly the rule that was added last.
         //
-        // The clone is because `prepare` consumes the file and the printer
+        // AND IT HAS TO BE THE RIGHT REAL THING. `run` has two launch paths and
+        // they do not share a rulebook: a file with a `while:` clause goes to
+        // `launch_multi_compiled`, whose per-entry preparation refuses things
+        // the ungated `prepare_entries` accepts — multi-column `csv_replay`
+        // fan-out most of all, because a gate needs one entry per gated signal.
+        // Calling only the ungated pipeline restored most of parity and left
+        // the gated branch blessing files `run` refuses, which is worse than
+        // the original bug: the flag now looks trustworthy. So dry-run
+        // dispatches on `has_gates` exactly as the launch below does, and the
+        // two branches call the two pipelines.
+        //
+        // The clone is because both pipelines consume the file and the printer
         // still needs it. It happens once, on a path that is about to exit.
-        let entries = sonda_core::compiler::prepare::prepare(compiled.clone())
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+        if has_gates {
+            sonda_core::schedule::multi_runner::validate_compiled_gated(compiled.clone())
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+        } else {
+            let entries = sonda_core::compiler::prepare::prepare(compiled.clone())
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
         dry_run::print_dry_run_compiled(&args.scenario, &compiled, format)?;
         return Ok(());
     }
@@ -145,7 +159,7 @@ fn run_scenario(
         sonda_core::compiler::prepare::prepare(compiled).map_err(|e| anyhow::anyhow!("{}", e))?;
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
+    if handle_pre_launch(&prepared, verbosity) {
         return Ok(());
     }
 
@@ -225,19 +239,18 @@ fn show_entry(args: &cli::ShowArgs, catalog: Option<&std::path::Path>) -> anyhow
     Ok(())
 }
 
-fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: bool) -> bool {
+/// Print the pre-launch banner, and report whether the caller should stop.
+///
+/// It always returns `false` now. It used to carry a second `--dry-run`
+/// implementation — printing the entries and a second "Validation: OK" — which
+/// became unreachable when the dry-run branch in `run_scenario` started
+/// returning before this call. `dry_run.rs` owns that output and is the only
+/// thing that prints it. The `bool` stays because the shape is the useful one:
+/// a future pre-launch check that should abort has somewhere to say so.
+fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity) -> bool {
     if verbosity == Verbosity::Verbose {
         status::print_version();
-    }
-    let total = prepared.len();
-    if dry_run {
-        for (i, p) in prepared.iter().enumerate() {
-            status::print_config(&p.entry, i + 1, total);
-        }
-        status::print_dry_run_ok(total);
-        return true;
-    }
-    if verbosity == Verbosity::Verbose {
+        let total = prepared.len();
         for (i, p) in prepared.iter().enumerate() {
             status::print_config(&p.entry, i + 1, total);
         }

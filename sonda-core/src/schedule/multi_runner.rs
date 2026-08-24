@@ -62,6 +62,73 @@ pub async fn run_multi(
     }
 }
 
+/// Prepare one compiled entry for the **gated** launch path: translate, expand,
+/// desugar, validate.
+///
+/// This is the gated counterpart to [`prepare_entries`], and the single
+/// definition of what [`launch_multi_compiled`] will accept. It is not the same
+/// rulebook: multi-column `csv_replay` fan-out is legal in the ungated pipeline
+/// and refused here, because a gate needs one entry per gated signal and the
+/// fan-out produces several.
+///
+/// That difference is why this is a function rather than a loop body.
+/// [`validate_compiled_gated`] calls it so `sonda --dry-run run` asks the gated
+/// question about a gated file instead of the ungated one — a dry-run that
+/// validated against the wrong rulebook would bless a file `run` refuses, which
+/// is the defect the flag exists to catch.
+///
+/// `Ok(None)` means the entry expanded to nothing and the caller should skip it.
+#[cfg(feature = "config")]
+fn prepare_gated_entry(
+    compiled_entry: crate::compiler::compile_after::CompiledEntry,
+) -> Result<Option<ScenarioEntry>, SondaError> {
+    let id = compiled_entry.id.clone();
+
+    let translated = translate_entry(compiled_entry).map_err(|e| {
+        SondaError::Config(crate::ConfigError::invalid(format!("compile prepare: {e}")))
+    })?;
+
+    // Mirror the expand → desugar → validate pipeline that `prepare_entries`
+    // runs for non-gated launches. Skipping it here would let operational
+    // aliases (flap, saturation, etc.) reach `create_generator()` un-desugared
+    // and panic at runtime.
+    let mut expanded = expand_entry(translated)?;
+    let translated = match expanded.len() {
+        0 => return Ok(None),
+        1 => expanded.remove(0),
+        _ => {
+            return Err(SondaError::Config(crate::ConfigError::invalid(format!(
+                "scenario id {:?}: csv_replay multi-column expansion is not supported \
+                 when `while:` is in use; specify a single column or remove the gate",
+                id.as_deref().unwrap_or("(anonymous)"),
+            ))));
+        }
+    };
+    let translated = desugar_entry(translated)?;
+    validate_entry(&translated)?;
+    Ok(Some(translated))
+}
+
+/// Validate a compiled file through the **gated** pipeline without launching it.
+///
+/// Runs the same per-entry preparation [`launch_multi_compiled`] runs, and
+/// discards the result. `sonda --dry-run run` calls this for any file carrying a
+/// `while:` clause, so the two verbs decide from one rulebook rather than two.
+///
+/// Scope, stated because a validator that looks broader than it is would be
+/// worse than none: this covers per-entry preparation only. Gate-bus wiring and
+/// cross-POST resolution are not exercised, and do not need to be — a
+/// `while.scenario_name` on the CLI is refused at parse, and a `while.ref`
+/// naming an id that does not exist is refused at `compile_after`, so both
+/// already reach `--dry-run` through the compile step.
+#[cfg(feature = "config")]
+pub fn validate_compiled_gated(file: CompiledFile) -> Result<(), SondaError> {
+    for compiled_entry in file.entries.into_iter() {
+        prepare_gated_entry(compiled_entry)?;
+    }
+    Ok(())
+}
+
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in.
 /// Each handle owns an independent cancellation token; see [`run_multi_compiled`]
 /// for the master-stop-all path.
@@ -111,28 +178,10 @@ pub async fn launch_multi_compiled(
         let delay_clause = compiled_entry.delay_clause.clone();
         let phase_offset = compiled_entry.phase_offset.clone();
 
-        let translated = translate_entry(compiled_entry).map_err(|e| {
-            SondaError::Config(crate::ConfigError::invalid(format!("compile prepare: {e}")))
-        })?;
-
-        // Mirror the expand → desugar → validate pipeline that
-        // `prepare_entries` runs for non-gated launches. Skipping it
-        // here would let operational aliases (flap, saturation, etc.)
-        // reach `create_generator()` un-desugared and panic at runtime.
-        let mut expanded = expand_entry(translated)?;
-        let translated = match expanded.len() {
-            0 => continue,
-            1 => expanded.remove(0),
-            _ => {
-                return Err(SondaError::Config(crate::ConfigError::invalid(format!(
-                    "scenario id {:?}: csv_replay multi-column expansion is not supported \
-                     when `while:` is in use; specify a single column or remove the gate",
-                    id.as_deref().unwrap_or("(anonymous)"),
-                ))));
-            }
+        let translated = match prepare_gated_entry(compiled_entry)? {
+            Some(entry) => entry,
+            None => continue,
         };
-        let translated = desugar_entry(translated)?;
-        validate_entry(&translated)?;
 
         let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
 
