@@ -299,23 +299,44 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             }
         }
 
-        // Check gap windows — sleep through them rather than busy-wait.
+        // Check gap windows — suppress emission rather than busy-wait.
         // Gap always takes priority over burst: no events during a gap.
         //
-        // Two sources of silence, one branch. `gaps:` recurs; `gap_windows:`
-        // are one-shot windows at fixed offsets, which is the shape a captured
-        // incident has. Silence from either suppresses emission identically —
-        // there is no ordering between them to get wrong, because "in a gap"
-        // is a boolean either can set.
+        // TWO SOURCES OF SILENCE, AND THEY ARE JUDGED IN DIFFERENT FRAMES.
+        // That is deliberate, and it is the one place in this loop where two
+        // clocks coexist, so both are named here and again at each use.
         //
-        // When both apply at once the sleep is the longer of the two, so an
-        // overlap is covered to the end of whichever silence runs later rather
-        // than waking inside the other one.
+        //   `gaps:`        WALL FRAME — judged against `elapsed`.
+        //                  A recurring gap simulates an outage happening *now*:
+        //                  "the exporter is down from here to here". A run that
+        //                  has fallen behind genuinely is inside that interval,
+        //                  so real time is the honest question to ask.
+        //
+        //   `gap_windows:` ROW FRAME — judged against this tick's own grid slot.
+        //                  A one-shot window reproduces silence the capture
+        //                  *recorded*, so it belongs to the row, not to the
+        //                  wall. Row n's absence is row n's however late the
+        //                  loop is running.
+        //
+        // The split exists because judging a one-shot window in wall time lost
+        // data. Measured: with `[600ms, 1000ms)` and a sink that blocked for
+        // 600ms, tick 2 — whose slot is 400ms, nowhere near the window — was
+        // reached while `elapsed` read ~800ms and was *deleted*. A slow sink may
+        // delay a recorded sample; it must never remove one.
+        //
+        // On the healthy path the two frames are the same number: `emit_at` is
+        // `next_deadline` whenever the loop is on schedule, so `elapsed` and
+        // `row_at` are equal and this reads exactly as it did before.
+        //
+        // When both apply at once the periodic path runs, and its re-anchor
+        // walk skips one-shot windows too, so an overlap still lands on a slot
+        // no window covers.
+        let row_at = next_deadline.saturating_duration_since(start);
         let periodic_gap = schedule
             .gap_window
             .as_ref()
             .filter(|gap| is_in_gap(elapsed, gap));
-        let in_one_shot = is_in_gap_window(elapsed, &schedule.gap_windows);
+        let in_one_shot = is_in_gap_window(row_at, &schedule.gap_windows);
         if periodic_gap.is_some() || in_one_shot {
             // Update stats to reflect gap state before sleeping.
             if let Some(ref s) = stats {
@@ -324,16 +345,46 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     st.in_burst = false;
                 }
             }
+            // ROW FRAME — `gap_windows:`, and no sleeping happens here.
+            //
+            // Moving the tick past the window IS the action. The deadline sleep
+            // at the top of the next iteration then waits for that tick's own
+            // slot, which is what "sleep to gap end" used to approximate. On
+            // schedule the two are the same instant, so the healthy path is
+            // unchanged; behind schedule the row is emitted late rather than
+            // dropped, which is the whole point of the frame.
+            //
+            // Advanced by asking `is_in_gap_window`, not by computing a
+            // boundary — the same lesson the csv_replay interval walk paid for.
+            if periodic_gap.is_none() {
+                let mut ticks_elapsed = tick - initial_tick;
+                while is_in_gap_window(
+                    base_interval.mul_f64(ticks_elapsed as f64),
+                    &schedule.gap_windows,
+                ) {
+                    ticks_elapsed += 1;
+                }
+                tick = initial_tick + ticks_elapsed;
+                next_deadline = start + base_interval.mul_f64(ticks_elapsed as f64);
+                continue;
+            }
+
+            // WALL FRAME — `gaps:`. A recurring gap is an interval of real
+            // time, so it is slept through in real time and the tick is
+            // re-derived from where the clock actually ended up.
+            //
+            // Reached only when a periodic gap is active. A one-shot window
+            // overlapping it is still honoured: the walk below skips both
+            // kinds, so the resumed slot is covered by neither.
             let periodic_sleep = periodic_gap
                 .map(|gap| time_until_gap_end(elapsed, gap))
                 .unwrap_or(Duration::ZERO);
             let one_shot_sleep = time_until_gap_window_end(elapsed, &schedule.gap_windows);
             let sleep_for = periodic_sleep.max(one_shot_sleep);
             // Sleep to the instant the silence ends, not for its remaining
-            // length: `elapsed` is the tick's grid instant, which is behind
-            // real time whenever the loop is catching up, and sleeping the
-            // difference from *now* would overshoot the end of the gap by
-            // exactly that lag.
+            // length: `elapsed` is behind real time whenever the loop is
+            // catching up, and sleeping the difference from *now* would
+            // overshoot the end of the gap by exactly that lag.
             let gap_end = start + elapsed + sleep_for;
             let now = Instant::now();
             if gap_end > now {
@@ -343,32 +394,14 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             // elapsed time at the base rate rather than resuming the count
             // where the silence interrupted it.
             //
-            // This is what keeps a dense CSV aligned across a gap for free:
-            // the generator's index tracks the wall grid rather than counting
-            // emitted events, so the sample after the silence is the sample
-            // that belongs at that instant.
-            //
-            // The deadline is put back on that same grid slot rather than on
-            // the instant the sleep happened to return, so every tick after
-            // the gap stays on the grid instead of inheriting the wakeup
-            // overshoot for the rest of the run.
-            // Which tick resumes is asked, not computed.
-            //
-            // Truncating `elapsed / base_interval` picks the slot at or before
-            // the current instant, and when a window ends off-grid that slot is
-            // one the window was still covering. `[200ms, 500ms)` on a 200ms
-            // grid covers ticks 1 and 2; the silence ends at 500ms;
-            // `floor(500/200)` is 2 — so the loop resurrected a tick it had
-            // just suppressed and emitted a sample inside a declared silence.
-            //
-            // So truncation is only a lower bound now, and the answer is found
-            // by walking forward while either reason to skip still holds: a
-            // slot before the silence ended has not happened yet, and a slot
-            // still inside a window is one the window covers. Both use the same
-            // predicates the suppression branch above uses, which is the lesson
-            // the interval walk in csv_replay paid for — a boundary computed
-            // from a float and a boundary decided by a predicate disagree
-            // exactly where it matters.
+            // Which tick resumes is asked, not computed. Truncating
+            // `elapsed / base_interval` picks the slot at or before the current
+            // instant, and when a window ends off-grid that slot is one the
+            // window was still covering — `[200ms, 500ms)` on a 200ms grid
+            // covers ticks 1 and 2, the silence ends at 500ms, and
+            // `floor(500/200)` is 2, so the loop resurrected a tick it had just
+            // suppressed. Truncation is a lower bound; the walk finds the
+            // answer by asking the same predicates the suppression above uses.
             //
             // Bounded by construction: truncation lands at most one slot low,
             // and `resumed_at` is already past the end of any contiguous

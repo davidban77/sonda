@@ -406,28 +406,19 @@ async fn a_window_after_the_run_suppresses_nothing() {
 /// failure the whole cross-check exists to prevent, arriving from the one
 /// direction config validation cannot see: the file and the windows agree, the
 /// scenario is accepted, and a row is dropped anyway because the sink was slow.
-/// **Currently FAILS — this is the open decision, not a regression.**
+/// ROW FRAME: a stalled sink may delay a recorded sample, never delete one.
 ///
-/// Measured: with the window `[600ms, 1000ms)` and a 600ms stall after the
-/// second write, the ladder plays `[0, 1, 5, 6, 7]`. Ticks 3 and 4 are
-/// correctly suppressed. Tick 2 is not — its slot is 400ms, nowhere near the
-/// window — but it is reached while `elapsed` reads ~800ms and is deleted.
+/// `gap_windows:` are judged against the tick's own grid slot, so a slow sink
+/// cannot make a row answer for a window its slot never entered.
 ///
-/// Fixing it means deciding which frame a gap belongs to, and the two kinds
-/// pull opposite ways:
+/// The window is `[600ms, 1000ms)`, covering ticks 3 and 4. The sink blocks for
+/// 600ms after the second write, so the loop returns around 800ms with tick 2
+/// still owed. Tick 2's slot is 400ms — outside the window — and in wall frame
+/// it was reached while `elapsed` read ~800ms and was **deleted**, which is the
+/// measurement that produced the ruling. In row frame it is emitted late.
 ///
-/// * `gaps:` is a wall-clock interval — "the scrape endpoint is down from
-///   here to here". A run that has fallen behind genuinely *is* inside it, so
-///   evaluating in `elapsed` is right.
-/// * `gap_windows:` belongs to the row — row *n*'s silence is row *n*'s, and a
-///   slow sink is not a reason to drop a recorded sample.
-///
-/// That is a scheduler-semantics decision affecting every generator, so it is
-/// marked rather than made here. The companion measurement
-/// (`stall_drift_is_bounded_by_the_stall_and_does_not_accumulate`) shows the
-/// timing side self-corrects within one tick, so this is the only half that
-/// needs a ruling.
-#[ignore = "open design decision: which frame gap_windows are evaluated in under sink backpressure"]
+/// Ticks 3 and 4 stay suppressed: their slots really are inside the window, and
+/// backpressure is not a reason to resurrect a silence the capture recorded.
 #[tokio::test]
 async fn a_stalled_sink_does_not_make_a_tick_answer_for_a_later_window() {
     let config = ladder_scenario(
@@ -514,4 +505,46 @@ async fn stall_drift_is_bounded_by_the_stall_and_does_not_accumulate() {
             e.at.as_secs_f64() * 1000.0 - slot_ms
         );
     }
+}
+
+/// WALL FRAME: the same stall, and `gaps:` deliberately behaves the other way.
+///
+/// This is the other half of the split, and it is what makes the pair
+/// discriminating: a change that moved both kinds to row frame would make the
+/// row-frame test above pass and this one fail.
+///
+/// A recurring gap simulates an outage happening *now*. `every: 1s, for: 400ms`
+/// puts the silence at `[600ms, 1000ms)` of each cycle — the same interval as
+/// the row-frame case, on purpose. With the same 600ms stall, the loop reaches
+/// tick 2 while real time reads ~800ms, which genuinely *is* inside the
+/// simulated outage. Suppressing it is correct here: the wall says the exporter
+/// is down, and a run that has fallen behind is still subject to the wall.
+///
+/// So tick 2 is expected to be absent — the exact opposite of the assertion
+/// above, from the same stall and the same interval, differing only in which
+/// key declared it.
+#[tokio::test]
+async fn a_stalled_sink_is_still_judged_by_the_wall_for_a_recurring_gap() {
+    let config = ladder_scenario(
+        "1.6s",
+        Some(GapConfig {
+            every: "1s".to_string(),
+            r#for: "400ms".to_string(),
+        }),
+        None,
+    );
+
+    let (mut sink, seen) = stalling_sink(2, Duration::from_millis(600));
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+
+    let seen = seen.lock().expect("timing sink mutex poisoned").clone();
+    let played: Vec<u64> = seen.iter().map(|e| e.value as u64).collect();
+
+    assert!(
+        !played.contains(&2),
+        "a recurring gap is a wall-clock interval: the loop reached tick 2 while real \
+         time was inside the outage, so it must stay suppressed; played {played:?}"
+    );
 }
