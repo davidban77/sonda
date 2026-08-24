@@ -93,7 +93,15 @@ Windows are half-open: the instant at `at` is silent, the instant at `at + for` 
 
 Emission resumes on the sample that belongs at the instant the silence ends, not on the sample the run was interrupted at. Nothing is caught up: a scenario replaying a capture stays on its original clock across the window, so what plays after the gap is what really came after it.
 
-That applies to rows the window *covered*. A row the window did not cover is a different case: if a slow sink puts the run behind, that row is emitted late rather than dropped. Absence the capture recorded is reproduced; absence caused by backpressure is not invented.
+### Which clock decides a silence
+
+The two kinds of silence are judged against different clocks, and the difference only shows up when a run falls behind — a slow sink, a saturated network, a busy host.
+
+**Recorded silence belongs to the row.** A `gap_windows:` entry is judged against the instant row *n* stands for, `n × step`, not against the wall clock. So a slow sink delays samples and never deletes them, and it never resurrects a silence the capture recorded either. That is what makes a replay reproducible: the same file produces the same silence whether the run kept up or not.
+
+**A recurring `gaps:` is a wall-clock interval.** It simulates an exporter that is down from here to here, so a run that has fallen behind is genuinely inside the outage and stays silent for it.
+
+**When a scenario declares both**, the recurring gap is still judged by the wall — but a row it did not cover is emitted late rather than dropped. A recorded row outranks a simulated outage. Rows whose own slot really does sit inside either silence stay suppressed; only rows the run merely owes are caught up.
 
 This is the shape [`sonda new --from-prometheus`](../import/from-csv.md) emits, and it pairs with `csv_replay`: a blank cell in the CSV means the sample was absent, and the window is what turns that absence back into silence. Sonda refuses a scenario where the two disagree in either direction — a blank cell with no window over it, or a window over a row that has a value.
 
@@ -117,7 +125,6 @@ All three are validation errors naming the rows, ticks, or setting at fault.
     - **The first tick of a gap window is now suppressed.** It used to emit. The scenario said not to emit it, so depending on it was depending on a bug.
     - **A run ends one tick earlier at the boundary.** A 5-second scenario at `rate: 10` now emits 50 events; it emitted 51, with the last one at 5.1 seconds — past the declared duration. The new count is what `rate` × `duration` always claimed. (The [sink batching](sink-batching.md#practical-implications) page already documented 50; the runtime is now what the docs said.)
     - **Timestamps carry the tick's own instant.** Each event used to be stamped with the previous tick's time, one interval early. Consumers parsing timestamps get truer data, never worse.
-    - **A slow sink no longer deletes recorded rows, `gaps:` included.** Silence is judged in two different frames: `gaps:` against real time, because a recurring gap simulates an outage happening *now*; `gap_windows:` against the row's own slot, because absence the capture recorded belongs to the row however late the run is. Where that used to bite is a run declaring both. A stalled sink pushed real time inside the recurring gap, and every row owed in the meantime was dropped — including rows whose own slots were in neither silence. On a scenario that declares `gap_windows:`, those rows are now emitted late instead. Rows whose own slot really is inside a silence stay suppressed, and a scenario with no `gap_windows:` is unchanged: there is nothing recorded there, so suppressed events are still not caught up.
 
     Scenarios that do not use gaps and do not assert exact event counts are unaffected in any way you can observe.
 
