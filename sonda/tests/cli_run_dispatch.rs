@@ -321,15 +321,31 @@ fn both_verdicts(path: &std::path::Path) -> (std::process::Output, std::process:
 }
 
 fn assert_verdicts_agree(run: &std::process::Output, dry: &std::process::Output) {
+    let run_err = String::from_utf8_lossy(&run.stderr);
+    let dry_err = String::from_utf8_lossy(&dry.stderr);
+
     assert_eq!(
         dry.status.success(),
         run.status.success(),
         "`--dry-run` and `run` must agree. run={:?} dry-run={:?}\n\
-         run stderr:\n{}\ndry-run stderr:\n{}\ndry-run stdout:\n{}",
+         run stderr:\n{run_err}\ndry-run stderr:\n{dry_err}\ndry-run stdout:\n{}",
         run.status.code(),
         dry.status.code(),
-        String::from_utf8_lossy(&run.stderr),
-        String::from_utf8_lossy(&dry.stderr),
         String::from_utf8_lossy(&dry.stdout),
     );
+
+    // Agreeing on the exit code is weaker than it looks: two paths could refuse
+    // the same file for DIFFERENT reasons and every parity test would still
+    // pass (review #583 r2). The stronger property held in every divergence
+    // probe either of us ran, so assert it rather than leave it a coincidence.
+    //
+    // Refusal side only. When both accept, `run` goes on to emit events and its
+    // stderr carries banners and a summary `--dry-run` has no reason to print;
+    // requiring those to match would be asserting the wrong thing.
+    if !run.status.success() {
+        assert_eq!(
+            run_err, dry_err,
+            "both verbs refused, so they must refuse for the same stated reason"
+        );
+    }
 }

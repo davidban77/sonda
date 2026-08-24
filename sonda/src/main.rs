@@ -148,10 +148,29 @@ fn run_scenario(
         } else {
             let entries = sonda_core::compiler::prepare::prepare(compiled.clone())
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
-            sonda_core::prepare_entries(entries)
+
+            // The pairing below indexes `compiled.entries` with a position from
+            // the slice handed to `prepare_entries_grouped`. Those are the same
+            // index only because `prepare` is a strict order-preserving 1:1 map.
+            // It is today, and nothing states it — so state it here, where a
+            // future `prepare` that filtered would trip loudly instead of
+            // silently handing one series another entry's `while:` block
+            // (review #583 r2).
+            anyhow::ensure!(
+                entries.len() == compiled.entries.len(),
+                "internal: `prepare` returned {} entries for {} compiled entries. \
+                 The dry-run view pairs them by position and can no longer do so.",
+                entries.len(),
+                compiled.entries.len(),
+            );
+
+            sonda_core::prepare_entries_grouped(entries)
                 .map_err(|e| anyhow::anyhow!("{}", e))?
                 .into_iter()
-                .map(|p| (p.source_index, p.entry))
+                .enumerate()
+                .flat_map(|(source_index, group)| {
+                    group.into_iter().map(move |p| (source_index, p.entry))
+                })
                 .collect()
         };
 
@@ -192,9 +211,7 @@ fn run_scenario(
         sonda_core::compiler::prepare::prepare(compiled).map_err(|e| anyhow::anyhow!("{}", e))?;
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if handle_pre_launch(&prepared, verbosity) {
-        return Ok(());
-    }
+    handle_pre_launch(&prepared, verbosity);
 
     if prepared.len() == 1 {
         let p = prepared.into_iter().next().expect("len checked above");
@@ -272,15 +289,16 @@ fn show_entry(args: &cli::ShowArgs, catalog: Option<&std::path::Path>) -> anyhow
     Ok(())
 }
 
-/// Print the pre-launch banner, and report whether the caller should stop.
+/// Print the pre-launch banner.
 ///
-/// It always returns `false` now. It used to carry a second `--dry-run`
-/// implementation — printing the entries and a second "Validation: OK" — which
-/// became unreachable when the dry-run branch in `run_scenario` started
-/// returning before this call. `dry_run.rs` owns that output and is the only
-/// thing that prints it. The `bool` stays because the shape is the useful one:
-/// a future pre-launch check that should abort has somewhere to say so.
-fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity) -> bool {
+/// It used to return a `bool` saying whether the caller should stop, for a
+/// second `--dry-run` implementation that printed the entries and its own
+/// "Validation: OK". That became unreachable when the dry-run branch in
+/// `run_scenario` started returning above this call, so the flag was always
+/// `false` and the caller's `if … { return }` was dead code that read like a
+/// live branch. `dry_run.rs` owns that output and is the only thing that
+/// prints it.
+fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity) {
     if verbosity == Verbosity::Verbose {
         status::print_version();
         let total = prepared.len();
@@ -288,7 +306,6 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity) -> bool {
             status::print_config(&p.entry, i + 1, total);
         }
     }
-    false
 }
 
 fn run_single_scenario(

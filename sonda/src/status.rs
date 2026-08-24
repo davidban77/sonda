@@ -8,7 +8,6 @@
 //! complete in the `run` subcommand. [`print_version`] displays the crate
 //! version and enabled features. [`print_show_header`] prints a styled header
 //! for the `scenarios show` subcommand.
-//! hint message for contextual help on errors.
 //!
 //! The dry-run validation result is NOT printed from here — `dry_run.rs` owns
 //! that output. This module used to carry a second printer for it, reached

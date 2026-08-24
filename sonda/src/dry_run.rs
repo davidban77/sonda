@@ -796,12 +796,29 @@ mod tests {
     /// shows, and a helper that constructed runnable entries by hand would
     /// diverge from the launch path on exactly the field a bug is in.
     fn runnable_of(compiled: &CompiledFile) -> Vec<(usize, sonda_core::config::ScenarioEntry)> {
+        // Pick the pipeline `main.rs` would pick for this file. Always calling
+        // the ungated one left the gated pairing with no unit coverage at all
+        // (review #583 r2 M2) — and "the two pipelines produce identical
+        // entries for anything the gated one accepts" is exactly the kind of
+        // reasoning this helper's own docstring argues against relying on.
+        let has_gates = compiled.entries.iter().any(|e| e.while_clause.is_some());
+        if has_gates {
+            return sonda_core::schedule::multi_runner::validate_compiled_gated(compiled.clone())
+                .expect("validate_compiled_gated must succeed");
+        }
+
         let entries =
             sonda_core::compiler::prepare::prepare(compiled.clone()).expect("prepare must succeed");
-        sonda_core::prepare_entries(entries)
-            .expect("prepare_entries must succeed")
+        assert_eq!(
+            entries.len(),
+            compiled.entries.len(),
+            "`prepare` must stay a 1:1 order-preserving map for the pairing below"
+        );
+        sonda_core::prepare_entries_grouped(entries)
+            .expect("prepare_entries_grouped must succeed")
             .into_iter()
-            .map(|p| (p.source_index, p.entry))
+            .enumerate()
+            .flat_map(|(i, group)| group.into_iter().map(move |p| (i, p.entry)))
             .collect()
     }
 
