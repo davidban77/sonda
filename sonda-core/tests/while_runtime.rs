@@ -1143,29 +1143,57 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     // alive. One session, 24 spinners on 4 cores, 1s runs, 25 samples per rate,
     // the three rates interleaved so drifting load hits each equally:
     //
-    //   rate 1000  (1000us tick)   base sat 20/25   max ratio 1.0040   worst dev 5.62%
-    //   rate 2000  ( 500us tick)   base sat 16/25   max ratio 1.0106   worst dev 1.20%
-    //   rate 4000  ( 250us tick)   base sat  7/25   max ratio 1.0501   worst dev 5.01%
+    //   rate 1000  (1000us tick)   base sat 20/25   min 0.9438   max 1.0040
+    //   rate 2000  ( 500us tick)   base sat 16/25   min 0.9880   max 1.0106
+    //   rate 4000  ( 250us tick)   base sat  7/25   min 0.9885   max 1.0501
     //
-    // Read the first two columns, not the third. Baseline saturation falls
-    // monotonically and the maximum ratio rises monotonically: that is the
-    // ceiling, and it reproduces on other hardware. Worst deviation does NOT
-    // order consistently — it is a tail statistic over 25 samples, it puts 1000
-    // worse than 2000 here, and on a quieter host it comes out monotonic
-    // instead. An earlier version of this comment drew its conclusion from that
-    // column while also taking one of its three rows from a different session,
-    // which is how it reached the claim that 2000 beats 1000 on every axis. It
-    // does not. What 2000 buys is half the floor at a cost that is still far
-    // inside the band; at 4000 the upper half of the band is demonstrably live.
+    // The two ratio bounds are reported separately and deliberately, because
+    // they measure different things and only one of them trends. `max` is
+    // baseline loss — the systematic ceiling effect, rising with rate. `min` is
+    // a gated-arm hiccup — random, no trend. Saturation falls monotonically and
+    // `max` rises monotonically; that is the ceiling, and it reproduces on
+    // other hardware.
+    //
+    // An earlier version of this comment reported a single "worst deviation"
+    // column instead, which is max(1 - min, max - 1) — the larger of those two
+    // unrelated quantities. It cannot order monotonically because it is not
+    // measuring one thing: the low side wins at 1000 and 2000, the high side
+    // wins at 4000. That comment then drew its conclusion from that column
+    // while also taking one of its rows from a different session, and reached
+    // the claim that 2000 beats 1000 on every axis. It does not. What 2000
+    // buys is half the floor at a cost still far inside the band; at 4000 the
+    // upper half of the band is demonstrably live.
     //
     // Re-measure before moving it again, on the host that will run it, in one
-    // session, and judge by saturation rather than by the tail.
+    // session. Judge by saturation and by `max` — but note the power: at 25
+    // samples per rate, saturation resolves a 4x rate change (2000 vs 4000 here
+    // is p=0.006) and does NOT resolve a 2x one (1000 vs 2000 is p=0.20, on
+    // this host and on a quieter one alike). Comparing adjacent rates needs
+    // roughly 120 samples each, about 24 minutes at this geometry.
+    //
+    // One calibration for how unstable a single session is: the geometry table
+    // fifteen lines above reports 4.4% for rate 1000 at 1s under this same load
+    // on this same box, and the sweep here makes the same measurement 5.62%.
+    // Two sessions, one configuration, 1.2 points apart. That spread is the
+    // reason this table is read by trend rather than by any single figure.
     //
     // Though there is little left to move it to, which is worth knowing before
     // anyone tries. The loop is deadline-paced (`emit_at = max(next_deadline,
-    // now)`), so for ANY per-tick cost below one tick interval it still meets
-    // every deadline and emits exactly rate × duration events — identically,
-    // not approximately. No rate buys sensitivity below one interval, and the
+    // now)`), so for any per-tick cost comfortably below one tick interval it
+    // still meets every deadline and emits exactly rate × duration events —
+    // identically, not approximately. "Comfortably" is doing real work in that
+    // sentence: measured at rate 2000 unloaded, injected cost up to 450us is
+    // indistinguishable from zero injection, and at 500us — exactly one
+    // interval — there is a reproducible ~2% loss, because nothing is left for
+    // the sleep and wake path. So it holds to roughly 90% of the interval and
+    // not at 100% of it.
+    //
+    // Two nearby numbers that are not the same quantity: ~500us is where
+    // degradation begins (the interval), and ~600us is where the assertion
+    // fires (about 1.2x the interval — the same ratio held at rate 1000, which
+    // passed at 1000us and failed at 1200us). "~500us floor" labels the former.
+    //
+    // No rate buys sensitivity below one interval, and the
     // interval cannot go below what the host schedules under load, which is the
     // ceiling above. ~500us is therefore at or near the best this instrument
     // can do here. Timing the run instead would not help either: the pacing is
