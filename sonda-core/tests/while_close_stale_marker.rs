@@ -75,6 +75,7 @@ fn run_with_capture(
 ) -> (Vec<u8>, Vec<sonda_core::schedule::stats::ScenarioState>) {
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: name.to_string(),
             rate,
             duration: Some(format!("{duration_ms}ms")),
@@ -305,6 +306,7 @@ fn non_remote_write_sink_no_close_marker_by_default() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "stdout_metric".to_string(),
             rate: 50.0,
             duration: Some("1500ms".to_string()),
@@ -400,6 +402,7 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "snap_text".to_string(),
             rate: 100.0,
             duration: Some("2000ms".to_string()),
@@ -504,6 +507,7 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "dbnc".to_string(),
             rate: 100.0,
             duration: Some("2000ms".to_string()),
@@ -608,6 +612,7 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "duration_expiry".to_string(),
             rate: 100.0,
             duration: Some("200ms".to_string()),
@@ -693,6 +698,7 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "snap_duration_expiry".to_string(),
             rate: 100.0,
             duration: Some("200ms".to_string()),
@@ -793,6 +799,7 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "paused_finish".to_string(),
             rate: 100.0,
             duration: Some("400ms".to_string()),
@@ -890,6 +897,7 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "never_ran".to_string(),
             rate: 100.0,
             duration: Some("200ms".to_string()),
@@ -977,6 +985,7 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "multi_cycle".to_string(),
             rate: 100.0,
             duration: Some("700ms".to_string()),
@@ -1079,6 +1088,7 @@ fn shutdown_while_gate_open_emits_stale_marker() {
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "shutdown_during_run".to_string(),
             rate: 100.0,
             duration: Some("5000ms".to_string()),

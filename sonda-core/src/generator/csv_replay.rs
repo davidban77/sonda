@@ -125,15 +125,58 @@ impl CsvReplayGenerator {
 
     /// Parse numeric values from CSV content.
     ///
-    /// Skips comment lines (starting with `#`), empty lines, and lines where
-    /// the target column cannot be parsed as `f64`. The first data line is
-    /// auto-detected as a header and skipped when it contains non-numeric
-    /// fields.
+    /// Thin wrapper over [`Self::parse_values_and_gaps`] for callers that do
+    /// not need to know which rows were blank.
     fn parse_values(content: &str, column: usize) -> Result<Vec<f64>, SondaError> {
+        Self::parse_values_and_gaps(content, column).map(|(values, _)| values)
+    }
+
+    /// Parse one column, returning its values and the rows that were blank.
+    ///
+    /// Comment lines (`#`) and blank *lines* are skipped; the first data line
+    /// is auto-detected as a header and skipped when it contains non-numeric
+    /// fields. Everything after that is a data row, and every data row
+    /// contributes exactly one slot — which is the whole point.
+    ///
+    /// # Rows and slots line up, and that is load-bearing
+    ///
+    /// This function used to silently skip any cell it could not parse, with
+    /// the comment "Unparseable values are silently skipped". That shortened
+    /// the value vector, so a single junk or blank cell made **every later
+    /// sample replay one step early** — a whole timeline quietly shifted by
+    /// one bad character, with no diagnostic. Replay is meaningless if the
+    /// grid can slide, so the rule is now:
+    ///
+    /// * **blank cell** → `NaN` placeholder, and the row index is reported as
+    ///   a gap. The slot is held so nothing after it moves.
+    /// * **non-blank cell that will not parse** → hard error naming the row
+    ///   and column. There is no reading of `x` that belongs in a timeline.
+    /// * **row too short to have this column** → hard error, same reasoning:
+    ///   a ragged row is a truncated file, not a gap someone meant.
+    ///
+    /// # Blank is not `NaN`
+    ///
+    /// A cell containing the literal text `NaN` is a *present* sample whose
+    /// value is NaN — Prometheus returns those, and they replay as data. A
+    /// *blank* cell is an absent sample. They are both `f64::NAN` in the
+    /// values vector and cannot be told apart there, which is why the blank
+    /// rows are returned separately rather than recovered later with
+    /// `is_nan()`. Only blanks require a declared gap window.
+    ///
+    /// Returns `(values, blank_row_indices)`, where the indices are 0-based
+    /// positions into `values` (i.e. data rows, not file lines).
+    fn parse_values_and_gaps(
+        content: &str,
+        column: usize,
+    ) -> Result<(Vec<f64>, Vec<usize>), SondaError> {
         let mut values = Vec::new();
+        let mut blanks = Vec::new();
         let mut first_data_line = true;
 
-        for line in content.lines() {
+        for (index, line) in content.lines().enumerate() {
+            // 1-based, and counted over the raw file so the number in an error
+            // message is the line a text editor will jump to.
+            let line_no = index + 1;
             let trimmed = line.trim();
 
             // Skip empty lines.
@@ -156,16 +199,371 @@ impl CsvReplayGenerator {
 
             // Split by comma and extract the target column.
             let fields: Vec<&str> = trimmed.split(',').collect();
-            if let Some(field) = fields.get(column) {
-                if let Ok(v) = field.trim().parse::<f64>() {
-                    values.push(v);
-                }
-                // Unparseable values are silently skipped.
+            let field = fields.get(column).ok_or_else(|| {
+                SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: line {line_no} has {} column(s), so column {column} is missing. \
+                     Every data row must carry every column — a short row would otherwise drop a \
+                     slot and shift the rest of the timeline earlier.",
+                    fields.len()
+                )))
+            })?;
+
+            let cell = field.trim();
+            if cell.is_empty() {
+                // Absent sample: hold the slot, record the gap.
+                blanks.push(values.len());
+                values.push(f64::NAN);
+                continue;
             }
-            // Rows where the column index is out of bounds are silently skipped.
+
+            let parsed = cell.parse::<f64>().map_err(|_| {
+                SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: line {line_no}, column {column}: {cell:?} is not a number. \
+                     Leave the cell empty to mark an absent sample (and declare the matching \
+                     `gap_windows:` entry); anything else is a typo that would otherwise be \
+                     dropped, shifting every later sample one step earlier."
+                )))
+            })?;
+            values.push(parsed);
         }
 
-        Ok(values)
+        Ok((values, blanks))
+    }
+}
+
+/// Parse one column of CSV text into values plus the rows that were blank.
+///
+/// The crate-internal entry point to
+/// [`CsvReplayGenerator::parse_values_and_gaps`], for callers that need the
+/// blank rows without building a generator — notably the config expansion that
+/// cross-checks them against `gap_windows:`.
+pub(crate) fn column_values_and_gaps(
+    content: &str,
+    column: usize,
+) -> Result<(Vec<f64>, Vec<usize>), SondaError> {
+    CsvReplayGenerator::parse_values_and_gaps(content, column)
+}
+
+/// Check that blank CSV cells and declared gap windows describe the same silence.
+///
+/// The CSV and the scenario each carry half a claim about an outage: the file
+/// leaves a slot empty, and the YAML declares a `gap_windows:` entry covering
+/// it. Neither is derived from the other, so either can be edited into
+/// disagreement — and both ways of disagreeing are wrong in a way the user
+/// would never see at runtime:
+///
+/// * a **blank with no window** would replay as a `NaN` sample, which is a
+///   present value where production had none;
+/// * a **window over present data** would suppress a sample that was really
+///   recorded, inventing silence that never happened.
+///
+/// So the two are compared exactly, in both directions, at load. This is
+/// cheap: one pass over the rows.
+///
+/// Row `n` stands for the instant `n * step_secs` after scenario start;
+/// windows are half-open `[start, end)`, matching
+/// [`is_in_gap_window`](crate::schedule::is_in_gap_window).
+///
+/// # The check follows the playback, not just the file
+///
+/// Comparing the file's rows against the windows is only the whole answer when
+/// the scenario plays each row exactly once. It does not, by default. Two ways
+/// a run reaches an instant the row list does not describe, both of which
+/// leaked a `NaN` past a green check before this was written:
+///
+/// * **`repeat` loops the column.** Row `n` replays at `(k * len + n) *
+///   step_secs` for every cycle `k`, and one-shot windows cover the first pass
+///   only. Refused outright — see [`Playback::repeat`].
+/// * **`repeat: false` clamps.** Past the end of the data the generator holds
+///   the final slot for every remaining tick. If that slot is blank, the
+///   silence continues for the rest of the run and needs a window that reaches
+///   it.
+/// * **`bursts:` compress the grid.** Inside a burst window events emit at
+///   `rate * multiplier`, so `step_secs` is not constant across the run and row
+///   `n` stops landing at `n * step_secs` at all. Refused outright — see
+///   [`Playback::bursts`].
+///
+/// The clamp check asks only whether a *blank* escapes. A window lying over the
+/// clamped tail of a present value is not refused: what it silences is a value
+/// the generator is holding, not a sample the capture recorded, so
+/// "inventing silence that did not happen" does not apply there.
+///
+/// # What is *not* in this list, and why
+///
+/// `phase_offset:` (and the `clock_group` chains that compile down to it)
+/// delays the whole scenario before the loop's clock starts, so the tick grid
+/// and the windows shift together and nothing moves relative to anything else
+/// — measured, not assumed. `start_time:` re-anchors the emitted timestamp
+/// only; the loop still decides gaps from `elapsed`. `cardinality_spikes:` and
+/// `dynamic_labels:` add labels without touching the interval. `jitter:`
+/// perturbs the value, not the schedule — it breaks round-trip *equality*,
+/// which is the importer's problem, not this one's.
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] naming the offending rows, capped so a
+/// wholly mismatched file reports a readable summary rather than thousands of
+/// indices.
+pub(crate) fn cross_check_gap_windows(
+    blanks: &[usize],
+    playback: &Playback,
+    windows: &[(f64, f64)],
+    step_secs: f64,
+) -> Result<(), SondaError> {
+    /// How many row numbers to name before summarising.
+    const MAX_NAMED: usize = 8;
+
+    let row_count = playback.row_count;
+
+    // A capture containing silence cannot loop. Every one-shot window sits on
+    // the first pass, so the second cycle replays the same blank rows at
+    // instants no window covers — validation green, `NaN` on the wire. There is
+    // no window list that fixes this, because the run is unbounded in cycles,
+    // so the answer is a different setting rather than a different window.
+    if playback.repeat && !blanks.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: this capture contains {} blank cell(s) and `repeat` is true. \
+             A capture containing silence cannot loop: `gap_windows:` describe one pass, \
+             so on the second cycle those rows would replay at instants no window covers \
+             and emit as NaN samples. Set `repeat: false`.",
+            blanks.len(),
+        ))));
+    }
+
+    // A burst compresses the tick grid. Inside a burst window the loop emits at
+    // `rate * multiplier`, so `step_secs` is not one number across the run and
+    // "row n plays at n * step_secs" — the assumption every line below rests on
+    // — stops holding for every row after the first burst, not just the ones
+    // inside it. Measured: `bursts: {every: 4s, for: 2s, multiplier: 4}` on a
+    // 1/s capture played all eight rows inside the first two seconds.
+    //
+    // Refused rather than accounted for, because the windows would have to be
+    // recomputed against a grid the user cannot see, and a capture is a record
+    // of what happened at the cadence it happened at. Bursts on a capture with
+    // no silence stay legal: the grid still slides, but nothing depends on
+    // where a particular row lands.
+    if playback.bursts && !blanks.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: this capture contains {} blank cell(s) and the scenario declares \
+             `bursts:`. A burst emits at `rate * multiplier` inside its window, which \
+             compresses the tick grid, so row n no longer plays at n x step and the \
+             `gap_windows:` entries would fall on the wrong rows. Remove `bursts:`, or \
+             replay a capture that contains no silence.",
+            blanks.len(),
+        ))));
+    }
+
+    // One definition of containment, shared with the interval walk. Two
+    // expressions that agree until a float boundary is exactly how the walk
+    // came to skip an uncovered tick.
+    let covered =
+        |row: usize| -> bool { windows.iter().any(|&w| tick_in_window(row, step_secs, w)) };
+
+    let format_rows = |rows: &[usize]| -> String {
+        let shown: Vec<String> = rows
+            .iter()
+            .take(MAX_NAMED)
+            .map(|r| (r + 1).to_string())
+            .collect();
+        if rows.len() > MAX_NAMED {
+            format!("{} … and {} more", shown.join(", "), rows.len() - MAX_NAMED)
+        } else {
+            shown.join(", ")
+        }
+    };
+
+    let uncovered: Vec<usize> = blanks.iter().copied().filter(|&r| !covered(r)).collect();
+    if !uncovered.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: {} blank cell(s) are not covered by any `gap_windows:` entry \
+             (data row(s) {}). A blank cell means the sample was absent, which only \
+             reproduces as silence if the scenario declares the window — otherwise it \
+             would replay as a NaN sample, which is a present value. Add the window, or \
+             put the value back in the cell.",
+            uncovered.len(),
+            format_rows(&uncovered),
+        ))));
+    }
+
+    let present_but_silenced: Vec<usize> = (0..row_count)
+        .filter(|&r| covered(r) && !blanks.contains(&r))
+        .collect();
+    if !present_but_silenced.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: {} recorded sample(s) fall inside a `gap_windows:` entry \
+             (data row(s) {}). The window would suppress data the capture actually has, \
+             inventing silence that did not happen. Narrow the window, or blank the cells \
+             it covers.",
+            present_but_silenced.len(),
+            format_rows(&present_but_silenced),
+        ))));
+    }
+
+    // Past the end of the data the generator holds the final slot. If that slot
+    // is blank, every remaining tick is silence the windows still have to
+    // account for — the file has no row to hang those instants on, so the
+    // per-row pass above cannot see them.
+    let last_row = match row_count.checked_sub(1) {
+        Some(r) if blanks.contains(&r) => r,
+        _ => return Ok(()),
+    };
+    match playback.last_tick {
+        // Unbounded: the held silence never ends, so no finite window reaches
+        // it. Say that, rather than naming a window the user could add.
+        None => {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "csv_replay: the capture's last row (data row {}) is blank and the scenario \
+                 has no `duration:`. With `repeat: false` the final slot is held for every \
+                 later tick, so that silence would run forever and no `gap_windows:` entry \
+                 can cover it. Set a `duration:` the windows reach, or put a value in the \
+                 last row.",
+                last_row + 1,
+            ))));
+        }
+        Some(last_tick) => {
+            // Asked as an interval question, not by visiting every tick. The
+            // held tail is `duration * rate` long and config drives both:
+            // measured, a 24h run at a timescale-multiplied replay rate reaches
+            // 86.4M ticks, and enumerating them took 8 seconds and allocated a
+            // ~700 MB Vec before reporting a config that was invalid anyway.
+            // The windows are hand-written and few, so walking those is
+            // bounded by something a human typed.
+            if let Some(first) = first_uncovered_tick(last_row + 1, last_tick, windows, step_secs) {
+                // The walk computes tick indices from window edges; `covered`
+                // is the rule every other branch here uses. Checking the answer
+                // against it keeps one definition rather than two that agree
+                // until a boundary.
+                debug_assert!(
+                    !covered(first),
+                    "first_uncovered_tick returned tick {first}, which `covered` says is covered"
+                );
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: the capture's last row (data row {}) is blank and the \
+                     scenario outlives its data. With `repeat: false` that slot is held for \
+                     every later tick, and the first such instant is tick {}, which falls \
+                     outside every `gap_windows:` entry, where the silence would emit as a \
+                     NaN sample. \
+                     Extend the window to the end of the run, shorten `duration:`, or put a \
+                     value in the last row.",
+                    last_row + 1,
+                    first,
+                ))));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// How a scenario will walk the rows of its capture.
+///
+/// The cross-check needs this because the row list alone does not say which
+/// instants get played: `repeat` loops it and `repeat: false` clamps past its
+/// end. Both reach instants no row describes.
+pub(crate) struct Playback {
+    /// Rows in the column, blanks included — blanks hold their slot.
+    pub row_count: usize,
+    /// Resolved `repeat`, after the `unwrap_or(true)` default is applied.
+    ///
+    /// The default matters: it is the reason a hand-written capture with blanks
+    /// looped silently before this check existed.
+    pub repeat: bool,
+    /// Index of the last tick the scenario plays, or `None` when it has no
+    /// `duration:` and runs unbounded.
+    pub last_tick: Option<u64>,
+    /// Whether the scenario declares `bursts:`.
+    ///
+    /// A burst changes the emission interval part-way through the run, so there
+    /// is no single `step_secs` for a row index to be multiplied by. It is a
+    /// flag rather than the window itself because the check refuses the
+    /// combination outright — it never needs to know where the burst falls.
+    pub bursts: bool,
+}
+
+/// Whether tick `t` falls inside one window.
+///
+/// The single definition of containment in this file. `covered` is this over
+/// every window, and the interval walk uses it as its only oracle — deriving a
+/// tick index from a window edge by arithmetic is what let the walk and the
+/// predicate disagree (see [`first_uncovered_tick`]).
+fn tick_in_window(t: usize, step_secs: f64, window: (f64, f64)) -> bool {
+    let at = t as f64 * step_secs;
+    at >= window.0 && at < window.1
+}
+
+/// The first tick in `[from, to]` whose instant no window covers, or `None`
+/// when the whole range is covered.
+///
+/// Walks the windows rather than the ticks. The tick range is `duration * rate`
+/// and both come from config, so it is unbounded in practice; the window list
+/// is written by hand. Cost is `O(w log n)` — one binary search per window —
+/// and enumerating the range is what this exists to avoid.
+///
+/// # The jump is measured, not computed
+///
+/// This originally advanced past a window with `ceil(end / step_secs)`, which
+/// is float arithmetic reasoning about float arithmetic, and the two disagree
+/// at representable boundaries. `at: 100ms, for: 200ms` on a 10 Hz capture —
+/// an ordinary thing to write — builds `end = 0.1 + 0.2 = 0.30000000000000004`,
+/// and `ceil(end / 0.1)` is `4`, while tick `3` sits exactly *on* `end` and is
+/// therefore **not** covered. The walk stepped over an uncovered tick and
+/// returned `None`, so the clamp rule accepted a config whose held silence
+/// emits `NaN` — the failure the rule exists to refuse, with validation green.
+///
+/// So there is no arithmetic shortcut here at all. Containment in one window is
+/// monotone once inside it — `t * step_secs` only increases, so the covered
+/// ticks form one contiguous run — and binary search finds where that run ends
+/// by asking [`tick_in_window`] and nothing else.
+fn first_uncovered_tick(
+    from: usize,
+    to: u64,
+    windows: &[(f64, f64)],
+    step_secs: f64,
+) -> Option<usize> {
+    // Saturate rather than truncate: `usize` is 32 bits on wasm32, where
+    // `as usize` would wrap a large tick count down to a small one and make the
+    // walk report an uncovered tick that is past the end of the run.
+    let to = usize::try_from(to).unwrap_or(usize::MAX);
+    if from > to {
+        return None;
+    }
+
+    // Sorted by start, so reaching a window that begins after the cursor proves
+    // no later window covers the cursor either.
+    let mut sorted: Vec<(f64, f64)> = windows.to_vec();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut cursor = from;
+    for window in sorted {
+        if (cursor as f64 * step_secs) < window.0 {
+            // Before this window, and past every earlier one.
+            return Some(cursor);
+        }
+        if !tick_in_window(cursor, step_secs, window) {
+            continue;
+        }
+        // Inside. If the window also contains the far end, everything in range
+        // is covered by it.
+        if tick_in_window(to, step_secs, window) {
+            return None;
+        }
+        // Binary search for the boundary: `lo` is always covered by this
+        // window, `hi` never is, and they close on the first tick past it.
+        let (mut lo, mut hi) = (cursor, to);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if tick_in_window(mid, step_secs, window) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        cursor = hi;
+    }
+    if cursor <= to {
+        Some(cursor)
+    } else {
+        None
     }
 }
 
@@ -782,14 +1180,169 @@ sink:
     // ---- Unparseable rows are silently skipped --------------------------------
 
     #[test]
-    fn unparseable_rows_are_skipped() {
-        // "1.0" is all-numeric → not a header → data. "not_a_number" is skipped (not parseable).
+    fn unparseable_rows_are_refused_naming_the_line() {
+        // This test used to be called `unparseable_rows_are_skipped` and asserted
+        // that "1.0\nnot_a_number\n2.0\n???\n3.0\n" replayed as 1.0, 2.0, 3.0 —
+        // i.e. it pinned the defect. Skipping the junk shortened the vector, so
+        // 2.0 played at the instant that belonged to `not_a_number` and every
+        // later sample moved up with it. A timeline that silently slides is
+        // worse than a file that refuses to load.
         let content = "1.0\nnot_a_number\n2.0\n???\n3.0\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 0, true).expect("should skip unparseable rows");
-        assert_eq!(gen.value(0), 1.0);
-        assert_eq!(gen.value(1), 2.0);
-        assert_eq!(gen.value(2), 3.0);
+        let msg = match CsvReplayGenerator::from_str(content, 0, true) {
+            Ok(_) => panic!("junk must be refused, not skipped"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("line 2"), "names the offending line: {msg}");
+        assert!(msg.contains("not_a_number"), "quotes the cell: {msg}");
+    }
+
+    #[test]
+    fn a_blank_cell_holds_its_slot_rather_than_shrinking_the_column() {
+        // The other half of the same rule: blank means absent, and absent still
+        // occupies its instant. Four data rows must yield four slots.
+        let content = "1.0\n\n3.0\n";
+        let (values, blanks) =
+            CsvReplayGenerator::parse_values_and_gaps(content, 0).expect("blank cells are legal");
+        assert_eq!(values.len(), 2, "a blank LINE is skipped, not a blank cell");
+        assert!(blanks.is_empty(), "no blank cells here — just a blank line");
+
+        // A blank *cell* in a real row is the case that matters.
+        let content = "0,1.0\n1,\n2,3.0\n";
+        let (values, blanks) =
+            CsvReplayGenerator::parse_values_and_gaps(content, 1).expect("blank cells are legal");
+        assert_eq!(values.len(), 3, "three rows, three slots");
+        assert_eq!(values[0], 1.0);
+        assert!(values[1].is_nan(), "the blank holds its slot");
+        assert_eq!(values[2], 3.0, "3.0 did not move up into the hole");
+        assert_eq!(blanks, vec![1], "row 1 is reported as a gap");
+    }
+
+    // ---- first_uncovered_tick ---------------------------------------------
+    //
+    // The interval walk that replaced enumerating the held tail. It exists for
+    // cost — 86.4M ticks took 8 seconds and a ~700 MB Vec — so the cases below
+    // pin the answer it has to keep giving, including at the half-open edges
+    // where a cheaper formulation would drift from `covered`.
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // No windows at all: the first tick asked about is the answer.
+    #[case::no_windows(5, 9, &[], Some(5))]
+    // Fully covered range -> nothing to report.
+    #[case::fully_covered(5, 9, &[(5.0, 10.0)], None)]
+    // Window ends mid-range: the first tick at or past its end.
+    #[case::covers_prefix(5, 9, &[(5.0, 8.0)], Some(8))]
+    // Window starts after the cursor: the cursor itself is uncovered.
+    #[case::window_starts_later(5, 9, &[(7.0, 12.0)], Some(5))]
+    // Half-open at the far edge: a window ending exactly on a tick does NOT
+    // cover it, because coverage is `t * step < end`.
+    #[case::end_is_exclusive(5, 9, &[(5.0, 9.0)], Some(9))]
+    // Two windows with a hole between them.
+    #[case::hole_between(0, 9, &[(0.0, 3.0), (5.0, 10.0)], Some(3))]
+    // Adjacent windows chain into continuous coverage.
+    #[case::adjacent_chain(0, 9, &[(0.0, 5.0), (5.0, 10.0)], None)]
+    // Order in the list must not matter — the walk sorts.
+    #[case::unsorted_input(0, 9, &[(5.0, 10.0), (0.0, 5.0)], None)]
+    // Overlapping windows also chain.
+    #[case::overlapping(0, 9, &[(0.0, 6.0), (4.0, 10.0)], None)]
+    // Empty range: nothing is held, so nothing escapes.
+    #[case::empty_range(9, 8, &[], None)]
+    fn first_uncovered_tick_cases(
+        #[case] from: usize,
+        #[case] to: u64,
+        #[case] windows: &[(f64, f64)],
+        #[case] expected: Option<usize>,
+    ) {
+        assert_eq!(first_uncovered_tick(from, to, windows, 1.0), expected);
+    }
+
+    /// The window `at: 100ms, for: 200ms` on a 10 Hz capture — ordinary YAML,
+    /// not a constructed float.
+    ///
+    /// `config/mod.rs` builds the window as `(at, at + dur)` in f64, giving
+    /// `end = 0.1 + 0.2 = 0.30000000000000004`. Tick 3 sits exactly ON that
+    /// end, so it is NOT covered. The walk used to advance with
+    /// `ceil(end / step)` = 4, step over tick 3, and return `None` — "nothing
+    /// uncovered, config is fine" — so the clamp rule accepted a scenario whose
+    /// held silence emits NaN. Found independently by both reviewers; this is
+    /// the reviewer's construction, because it is the one a user can type.
+    #[test]
+    fn a_window_end_that_lands_between_floats_does_not_hide_an_uncovered_tick() {
+        let step = 0.1;
+        let end = 0.1 + 0.2;
+        assert_ne!(end, 0.3, "the premise: at + dur is not the decimal 0.3");
+        let windows: &[(f64, f64)] = &[(0.1, end)];
+
+        // The cursor must START inside the window, or the walk never reaches
+        // the jump and the case proves nothing — the void probe the reviewer
+        // reported against himself.
+        assert!(
+            tick_in_window(2, step, windows[0]),
+            "tick 2 must be covered"
+        );
+        assert!(!tick_in_window(3, step, windows[0]), "tick 3 sits on `end`");
+
+        assert_eq!(
+            first_uncovered_tick(2, 3, windows, step),
+            Some(3),
+            "tick 3 is uncovered and within range"
+        );
+    }
+
+    /// The walk must agree with `covered` in BOTH directions: the tick it
+    /// reports is uncovered, AND it skipped no earlier one.
+    ///
+    /// `assert_eq!` against the brute-force `find` is what makes it
+    /// two-directional — a walk that returns `None` where the scan finds a tick
+    /// fails just as loudly as a wrong tick. The first version of this test was
+    /// two-directional already and still missed the defect, because its windows
+    /// were round decimals. These are built the way `config/mod.rs` builds
+    /// them, `at + dur` in f64, which is where the disagreement lives.
+    #[test]
+    fn first_uncovered_tick_agrees_with_a_brute_force_scan() {
+        let step = 0.1;
+        // Every window here is `(at, at + dur)`, the shape config produces.
+        let windows: &[(f64, f64)] = &[
+            (0.1, 0.1 + 0.2),
+            (0.5, 0.5 + 0.1),
+            (0.7, 0.7 + 0.30000000000000004),
+        ];
+        let covered = |t: usize| windows.iter().any(|&w| tick_in_window(t, step, w));
+        for from in 0..24usize {
+            for to in from..24usize {
+                let brute = (from..=to).find(|&t| !covered(t));
+                let walked = first_uncovered_tick(from, to as u64, windows, step);
+                assert_eq!(
+                    walked, brute,
+                    "from={from} to={to}: walk said {walked:?}, scan said {brute:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_too_short_for_its_column_is_refused() {
+        let content = "0,1.0\n1\n2,3.0\n";
+        let msg = match CsvReplayGenerator::from_str(content, 1, true) {
+            Ok(_) => panic!("a ragged row must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("line 2"), "names the line: {msg}");
+    }
+
+    #[test]
+    fn a_literal_nan_cell_is_a_present_sample_not_a_gap() {
+        // Prometheus really does return NaN values. They replay as data, and
+        // must NOT be reported as gaps — otherwise the cross-check would demand
+        // a gap window over a sample that was genuinely recorded.
+        let content = "0,1.0\n1,NaN\n2,3.0\n";
+        let (values, blanks) =
+            CsvReplayGenerator::parse_values_and_gaps(content, 1).expect("NaN is a legal value");
+        assert!(values[1].is_nan());
+        assert!(
+            blanks.is_empty(),
+            "a literal NaN is present data, not an absent sample"
+        );
     }
 
     // ---- Mixed: comments, empty lines, header, unparseable --------------------
@@ -804,17 +1357,22 @@ timestamp,cpu_percent
 1700000000,12.3
 
 # spike starts here
-1700000010,bad_data
+1700000010,
 1700000020,95.5
 
 ";
         let gen =
             CsvReplayGenerator::from_str(content, 1, true).expect("mixed content should load");
-        // After skipping comments, empty lines, header, and unparseable "bad_data":
-        // Values are: 12.3, 95.5
+        // Comments, blank lines and the header are still skipped. The middle
+        // row's cell is now blank rather than "bad_data": it holds its slot, so
+        // 95.5 stays at index 2 instead of moving up to index 1. That shift is
+        // the defect this file used to encode.
         assert_eq!(gen.value(0), 12.3);
-        assert_eq!(gen.value(1), 95.5);
-        assert_eq!(gen.value(2), 12.3, "should cycle");
+        assert!(gen.value(1).is_nan(), "the blank holds index 1");
+        assert_eq!(gen.value(2), 95.5, "95.5 did not move up");
+        // The cycle wraps at 3 now, not 2 — the blank is a slot, so the column
+        // is one longer than it was when a bad cell vanished from it.
+        assert_eq!(gen.value(3), 12.3, "should cycle");
     }
 
     // ---- Fields with whitespace trim correctly --------------------------------

@@ -29,6 +29,7 @@ fn make_log_csv(rows: &[(&str, &str, &str, &str)], step_secs: u64) -> tempfile::
 fn build_log_scenario(file: String, timescale: Option<f64>) -> LogScenarioConfig {
     LogScenarioConfig {
         base: BaseScheduleConfig {
+            gap_windows: None,
             name: "log_roundtrip".to_string(),
             rate: 1.0,
             duration: Some("60s".to_string()),

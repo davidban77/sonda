@@ -132,7 +132,7 @@ use super::{AfterOp, ClauseKind, DelayClause, WhileClause};
 use crate::config::validate::parse_duration;
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
-    OnSinkError,
+    GapWindowConfig, OnSinkError,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -444,6 +444,8 @@ pub struct CompiledEntry {
     pub jitter_seed: Option<u64>,
     /// Recurring silent-period configuration.
     pub gaps: Option<GapConfig>,
+    /// One-shot silent windows at fixed offsets from scenario start.
+    pub gap_windows: Option<Vec<GapWindowConfig>>,
     /// Recurring high-rate burst configuration.
     pub bursts: Option<BurstConfig>,
     /// Cardinality spike configurations.
@@ -706,6 +708,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             jitter: entry.jitter,
             jitter_seed: entry.jitter_seed,
             gaps: entry.gaps,
+            gap_windows: entry.gap_windows,
             bursts: entry.bursts,
             cardinality_spikes: entry.cardinality_spikes,
             phase_offset,
@@ -2377,6 +2380,7 @@ scenarios:
     fn outgoing_edges_yields_after_then_while() {
         use crate::compiler::{WhileClause, WhileOp};
         let mut e = ExpandedEntry {
+            gap_windows: None,
             id: Some("x".to_string()),
             signal_type: "metrics".to_string(),
             name: "x".to_string(),

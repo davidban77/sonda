@@ -297,6 +297,7 @@ mod tests {
     ) -> HistogramScenarioConfig {
         HistogramScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "http_request_duration_seconds".to_string(),
                 rate,
                 duration: Some(duration.to_string()),

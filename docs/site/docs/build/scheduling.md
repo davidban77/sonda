@@ -64,6 +64,70 @@ That last sentence is also why `multiplier` is the one slider whose effect you w
 
 For the full field reference (every option on `gaps:` and `bursts:`, including jitter and offset), see [Scenario fields — Gap window](../reference/scenario-fields.md#gap-window) and [Burst window](../reference/scenario-fields.md#burst-window). To test alert resolution behavior with gaps, see the [Resolution and recovery tab](../test/alert-testing.md#resolution-and-recovery) on Alert testing.
 
+## Silence that happened once
+
+`gaps:` describes silence with a period. Real outages do not have one — an exporter was down from 04:12 to 04:19, and that is the whole story. `gap_windows:` takes a list of one-shot windows at fixed offsets from scenario start:
+
+```yaml title="An exporter that was down twice, once briefly"
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_seconds_total
+    rate: 1
+    generator:
+      type: constant
+      value: 42.0
+    gap_windows:
+      - at: 4m
+        for: 7m
+      - at: 22m
+        for: 2m
+```
+
+```text
+Time:  0s        4m         11m              22m    24m
+       |---------|xxxxxxxxxx|----------------|xxxxx|------
+       emitting    down 7m      emitting      down   emitting
+```
+
+Windows are half-open: the instant at `at` is silent, the instant at `at + for` is not. Two windows that touch make one continuous silence rather than one sample between them, and `at: 0s` is a scenario that starts inside the outage — which is what a capture taken during one looks like.
+
+Emission resumes on the sample that belongs at the instant the silence ends, not on the sample the run was interrupted at. Nothing is caught up: a scenario replaying a capture stays on its original clock across the window, so what plays after the gap is what really came after it.
+
+### Which clock decides a silence
+
+The two kinds of silence are judged against different clocks, and the difference only shows up when a run falls behind — a slow sink, a saturated network, a busy host.
+
+**Recorded silence belongs to the row.** A `gap_windows:` entry is judged against the instant row *n* stands for, `n × step`, not against the wall clock. So a slow sink delays samples and never deletes them, and it never resurrects a silence the capture recorded either. That is what makes a replay reproducible: the same file produces the same silence whether the run kept up or not.
+
+**A recurring `gaps:` is a wall-clock interval.** It simulates an exporter that is down from here to here, so a run that has fallen behind is genuinely inside the outage and stays silent for it.
+
+**When a scenario declares both**, the recurring gap is still judged by the wall — but a row it did not cover is emitted late rather than dropped. A recorded row outranks a simulated outage. Rows whose own slot really does sit inside either silence stay suppressed; only rows the run merely owes are caught up.
+
+This pairs with `csv_replay`: a blank cell in the CSV means the sample was absent, and the window is what turns that absence back into silence. Sonda refuses a scenario where the two disagree in either direction — a blank cell with no window over it, or a window over a row that has a value. Today you write both by hand, or emit them from your own tooling; a `sonda new` importer that captures a Prometheus range and emits the pair is in progress, and this page will say so when it ships.
+
+For the field reference, see [Scenario fields — One-shot gap windows](../reference/scenario-fields.md#one-shot-gap-windows).
+
+### Replaying a capture that contains silence
+
+A blank cell in a replayed CSV means the sample was **absent**. Sonda refuses a scenario where the blanks and the windows disagree — a blank no window covers, or a window over a row that has a value — and two further rules follow from how a replay walks its rows:
+
+- **A capture containing silence cannot loop.** `gap_windows:` describe one pass, so on a second cycle those rows would replay where no window is. Set `repeat: false`. This bites by default, because `repeat` defaults to `true`.
+- **A capture whose last row is blank cannot outlive its data unattended.** With `repeat: false` the final slot is held for every remaining tick, so the silence continues past the capture. Either extend the window to the end of the run, or end the run with the data.
+- **A capture containing silence cannot burst.** `bursts:` emit at `rate × multiplier` inside the burst window, which compresses the tick grid — row *n* stops landing at *n* × step, and the windows would fall on the wrong rows. Bursts on a capture with no blanks stay legal: the grid still slides, but nothing depends on where a particular row lands.
+
+All three are validation errors naming the rows, ticks, or setting at fault.
+
+`phase_offset:` is fine, and so are `start_time:`, `cardinality_spikes:` and `dynamic_labels:`. A phase offset delays the whole scenario before its clock starts, so the grid and the windows move together; `start_time:` re-anchors the emitted timestamp without touching the schedule; the label fields do not change the interval.
+
+!!! note "Release note — scheduling accuracy, shipped alongside `gap_windows:`"
+    Fixing where a gap falls corrected a timing error the scheduler had carried for every generator: each tick's gap, burst, duration and timestamp decisions were being made against the *previous* tick's instant. Three behaviours change together, and all three are the same fix seen from different angles. This is a bugfix inside a minor release, not a breaking change — but if you assert on event counts or timestamps, read this.
+
+    - **The first tick of a gap window is now suppressed.** It used to emit. The scenario said not to emit it, so depending on it was depending on a bug.
+    - **A run ends one tick earlier at the boundary.** A 5-second scenario at `rate: 10` now emits 50 events; it emitted 51, with the last one at 5.1 seconds — past the declared duration. The new count is what `rate` × `duration` always claimed. (The [sink batching](sink-batching.md#practical-implications) page already documented 50; the runtime is now what the docs said.)
+    - **Timestamps carry the tick's own instant.** Each event used to be stamped with the previous tick's time, one interval early. Consumers parsing timestamps get truer data, never worse.
+
+    Scenarios that do not use gaps and do not assert exact event counts are unaffected in any way you can observe.
+
 ## Dynamic labels
 
 Dynamic labels attach a rotating label value to every emitted event. Use them when the label you care about (`hostname`, `pod_name`, `region`) belongs on every data point, and you need the values to cycle through a bounded, predictable set.

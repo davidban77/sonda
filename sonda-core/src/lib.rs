@@ -21,6 +21,7 @@
 //! sonda-core add new variants and fields in a minor release without a
 //! semver-major bump.
 
+pub mod acquire;
 pub mod analysis;
 #[cfg(feature = "config")]
 pub mod catalog;
@@ -636,6 +637,7 @@ mod tests {
 
         let _config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test".to_string(),
                 rate: 10.0,
                 duration: None,

@@ -144,7 +144,7 @@ use super::normalize::{NormalizedEntry, NormalizedFile};
 use super::{AfterClause, DelayClause, WhileClause};
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
-    OnSinkError,
+    GapWindowConfig, OnSinkError,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -439,6 +439,8 @@ pub struct ExpandedEntry {
     pub jitter_seed: Option<u64>,
     /// Recurring silent-period configuration.
     pub gaps: Option<GapConfig>,
+    /// One-shot silent windows at fixed offsets from scenario start.
+    pub gap_windows: Option<Vec<GapWindowConfig>>,
     /// Recurring high-rate burst configuration.
     pub bursts: Option<BurstConfig>,
     /// Cardinality spike configurations.
@@ -602,6 +604,7 @@ fn expand_inline_entry(entry: NormalizedEntry) -> ExpandedEntry {
         jitter: entry.jitter,
         jitter_seed: entry.jitter_seed,
         gaps: entry.gaps,
+        gap_windows: entry.gap_windows,
         bursts: entry.bursts,
         cardinality_spikes: entry.cardinality_spikes,
         phase_offset: entry.phase_offset,
@@ -748,6 +751,7 @@ fn expand_pack_entry<R: PackResolver>(
             jitter: entry.jitter,
             jitter_seed: entry.jitter_seed,
             gaps: entry.gaps.clone(),
+            gap_windows: entry.gap_windows.clone(),
             bursts: entry.bursts.clone(),
             cardinality_spikes: entry.cardinality_spikes.clone(),
             phase_offset: entry.phase_offset.clone(),

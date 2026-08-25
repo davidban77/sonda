@@ -39,11 +39,45 @@ fn run_while_cascade_gates_downstream_emission() {
         "primary_flap must emit a meaningful number of events, got {primary_count}\n\
          stdout:\n{stdout}"
     );
+
+    // The bound comes from the fixture rather than from a round number, and
+    // it is READ from the fixture rather than transcribed out of it.
+    //
+    // `primary_flap` is a `flap` generator and the gate is `while primary < 1`,
+    // so the downstream is entitled to emit for the down phase of each cycle:
+    // `down_duration / (up_duration + down_duration)`. Writing that fraction as
+    // a literal would be a second copy of the YAML, correct until someone edits
+    // the fixture — the exact shape this repo keeps finding defects in. So the
+    // two durations are parsed out of the file the test already loads.
+    //
+    // Gate transitions are not free: the downstream learns about an edge on its
+    // own next tick, so each cycle can carry an extra tick either side.
+    // Observed 40% locally and 50% on a loaded CI runner against the 33% the
+    // duty cycle implies. Doubling allows that and no more — an ungated run
+    // emits on every tick, which is 100%, and still fails loudly.
+    //
+    // The old bound was a bare `< 50%`, and it broke the moment the scheduler
+    // stopped emitting one tick past the declared duration: `rate: 5` for `4s`
+    // is 20 ticks, not 21, which moved the threshold from `< 10.5` to `< 10.0`
+    // onto an observed 10. The denominator had been inflated by a bug.
+    let (up_secs, down_secs) = flap_phases(&fixture);
+    let duty_cycle = down_secs / (up_secs + down_secs);
+    let ceiling = duty_cycle * 2.0;
     assert!(
-        (backup_count as f64) < (primary_count as f64) * 0.5,
+        (backup_count as f64) < (primary_count as f64) * ceiling,
         "while: gate must suppress downstream events; \
          backup_saturation={backup_count}, primary_flap={primary_count}, \
-         expected backup < 50% of primary\nstdout:\n{stdout}"
+         expected backup below {:.0}% of primary (duty cycle {:.0}%, doubled for \
+         gate-transition latency)\nstdout:\n{stdout}",
+        ceiling * 100.0,
+        duty_cycle * 100.0,
+    );
+    // And the other direction: a gate that suppressed everything would sail
+    // through the bound above, so the downstream must actually run.
+    assert!(
+        backup_count > 0,
+        "while: gate must let the downstream emit during the down phase; \
+         backup_saturation=0\nstdout:\n{stdout}"
     );
 }
 
@@ -215,4 +249,52 @@ fn run_while_cascade_progress_emits_paused_line() {
         "stderr must contain a PAUSED progress line for the gated downstream during a flap close-window\n\
          stderr:\n{stderr}"
     );
+}
+
+/// Read `up_duration` and `down_duration` out of the cascade fixture, in
+/// seconds.
+///
+/// The test's bound is derived from the fixture's own flap timings, so it has
+/// to read them rather than restate them. Both keys are asserted present: if
+/// the fixture is restructured and the walk stops finding them, this panics
+/// instead of handing back a plausible default that would quietly weaken the
+/// assertion it feeds.
+fn flap_phases(fixture: &std::path::Path) -> (f64, f64) {
+    let text = std::fs::read_to_string(fixture).expect("fixture must be readable");
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).expect("fixture must be valid YAML");
+
+    let generator = doc
+        .get("scenarios")
+        .and_then(|s| s.as_sequence())
+        .expect("fixture has a scenarios list")
+        .iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("primary_flap"))
+        .and_then(|e| e.get("generator"))
+        .expect("fixture has a primary_flap entry with a generator");
+
+    let secs = |key: &str| -> f64 {
+        let raw = generator
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("primary_flap generator must declare {key}"));
+        parse_secs(raw)
+            .unwrap_or_else(|| panic!("{key} = {raw:?} is not a duration this test can read"))
+    };
+    (secs("up_duration"), secs("down_duration"))
+}
+
+/// Minimal duration reader for the two fixture fields above (`1s`, `500ms`).
+///
+/// Deliberately narrow: it returns `None` rather than guessing, and every
+/// caller panics on `None`, so an unrecognised unit stops the test instead of
+/// silently changing the bound.
+fn parse_secs(raw: &str) -> Option<f64> {
+    if let Some(ms) = raw.strip_suffix("ms") {
+        return ms.parse::<f64>().ok().map(|v| v / 1000.0);
+    }
+    if let Some(s) = raw.strip_suffix('s') {
+        return s.parse::<f64>().ok();
+    }
+    None
 }

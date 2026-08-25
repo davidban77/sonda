@@ -1309,6 +1309,7 @@ mod tests {
     fn make_metrics_entry() -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_metric".to_string(),
                 rate: 10.0,
                 duration: Some("10s".to_string()),
@@ -1337,6 +1338,7 @@ mod tests {
     fn make_logs_entry() -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_logs".to_string(),
                 rate: 5.0,
                 duration: Some("5s".to_string()),
@@ -1408,6 +1410,7 @@ mod tests {
     fn print_start_metrics_without_duration_does_not_panic() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_dur".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -1547,6 +1550,7 @@ mod tests {
 
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "full_config".to_string(),
                 rate: 1000.0,
                 duration: Some("30s".to_string()),
@@ -1601,6 +1605,7 @@ mod tests {
     fn print_config_logs_with_replay_generator_does_not_panic() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "replay_logs".to_string(),
                 rate: 100.0,
                 duration: None,
@@ -1750,6 +1755,7 @@ mod tests {
     fn print_config_metrics_with_phase_offset_and_clock_group_does_not_panic() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "correlated_metric".to_string(),
                 rate: 10.0,
                 duration: Some("30s".to_string()),
@@ -1779,6 +1785,7 @@ mod tests {
     fn print_config_logs_with_phase_offset_and_clock_group_does_not_panic() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "correlated_logs".to_string(),
                 rate: 5.0,
                 duration: Some("10s".to_string()),
@@ -1905,6 +1912,7 @@ mod tests {
         use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "dyn_labels_metric".to_string(),
                 rate: 10.0,
                 duration: Some("10s".to_string()),
@@ -1941,6 +1949,7 @@ mod tests {
         use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "dyn_labels_logs".to_string(),
                 rate: 5.0,
                 duration: Some("10s".to_string()),

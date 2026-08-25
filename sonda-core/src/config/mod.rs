@@ -29,6 +29,55 @@ pub struct GapConfig {
     pub r#for: String,
 }
 
+/// One non-recurring silent window at a known offset from scenario start.
+///
+/// The sibling of [`GapConfig`] for silence that *happened* rather than
+/// silence that *recurs*. A periodic gap answers "simulate a scrape gap every
+/// 60s"; this answers "the exporter was down from 04:12 to 04:19", which has
+/// no period to speak of.
+///
+/// It is a separate field rather than a new shape on `gaps:` deliberately: an
+/// untagged enum on an existing public config key risks silently
+/// reinterpreting YAML that already parses, and a sibling field is additive
+/// and boring.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GapWindowConfig {
+    /// Offset from scenario start at which the silence begins (e.g. `"60s"`).
+    ///
+    /// An offset, not a length: `"0s"` is a scenario that begins already
+    /// inside the silence, which is what a capture taken during an outage
+    /// looks like.
+    pub at: String,
+    /// How long the silence lasts (e.g. `"90s"`).
+    pub r#for: String,
+}
+
+impl GapWindowConfig {
+    /// Resolve this window into `(offset from start, length)`.
+    ///
+    /// One definition because two callers ask the same question and must get
+    /// the same answer: the scheduler, which suppresses emission inside the
+    /// window, and the csv_replay cross-check, which asks whether that window
+    /// covers a blank cell. If the two parsed these fields differently, the
+    /// cross-check would bless a file the scheduler then replays wrongly —
+    /// exactly the divergence that makes a check worse than no check.
+    ///
+    /// `at` accepts zero; `for` does not, because a window that silences
+    /// nothing is a mistake worth surfacing rather than a no-op to absorb.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError::Config`] if either field is not a valid duration.
+    pub fn resolve(&self) -> Result<(std::time::Duration, std::time::Duration), SondaError> {
+        Ok((
+            validate::parse_offset_duration(&self.at)?,
+            validate::parse_duration(&self.r#for)?,
+        ))
+    }
+}
+
 /// Strategy for generating unique label values during a cardinality spike.
 ///
 /// Determines how the spike window produces distinct values for the injected
@@ -289,6 +338,13 @@ pub struct BaseScheduleConfig {
     /// Optional gap window: recurring silent periods in the event stream.
     #[cfg_attr(feature = "config", serde(default))]
     pub gaps: Option<GapConfig>,
+    /// Optional one-shot silent windows at fixed offsets from scenario start.
+    ///
+    /// Coexists with [`Self::gaps`]: both suppress emission and either may be
+    /// absent. Where `gaps` describes silence that recurs, this describes
+    /// silence that happened — the shape a captured incident has.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub gap_windows: Option<Vec<GapWindowConfig>>,
     /// Optional burst window: recurring high-rate periods in the event stream.
     ///
     /// When both a gap and a burst overlap in time, the gap takes priority.
@@ -920,21 +976,24 @@ fn compute_csv_delta_seconds(path: &str, ts_col_idx: usize) -> Result<f64, Sonda
 /// `rate` from the CSV's column-0 timestamps (`rate = timescale / median Δt`).
 /// Non-`csv_replay` configs pass through unchanged.
 pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, SondaError> {
-    let (file, columns_field, timescale_opt, default_name_opt) = match &config.generator {
-        GeneratorConfig::CsvReplay {
-            file,
-            columns,
-            timescale,
-            default_metric_name,
-            ..
-        } => (
-            file.clone(),
-            columns.clone(),
-            *timescale,
-            default_metric_name.clone(),
-        ),
-        _ => return Ok(vec![config]),
-    };
+    let (file, columns_field, timescale_opt, default_name_opt, repeat_field) =
+        match &config.generator {
+            GeneratorConfig::CsvReplay {
+                file,
+                columns,
+                timescale,
+                default_metric_name,
+                repeat,
+                ..
+            } => (
+                file.clone(),
+                columns.clone(),
+                *timescale,
+                default_metric_name.clone(),
+                *repeat,
+            ),
+            _ => return Ok(vec![config]),
+        };
 
     validate_csv_columns(&columns_field)?;
     let timescale = validate_csv_timescale(timescale_opt)?;
@@ -963,6 +1022,87 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
 
     let delta = compute_csv_delta_seconds(&file, 0)?;
     let derived_rate = timescale / delta;
+
+    // Blank cells and `gap_windows:` must describe the same silence. Checked
+    // here rather than in the generator because this is the one place that
+    // knows both halves: the file, and the schedule config that declares the
+    // windows. Every column is checked — a blank in the third series is as
+    // wrong as a blank in the first.
+    //
+    // The replay clock runs at `derived_rate`, so data row n stands for the
+    // instant n / derived_rate. That is the same number the scheduler will
+    // compute from elapsed time, which is why the two agree about where a
+    // window falls.
+    // Run unconditionally, NOT only when `gap_windows:` is present. Guarding
+    // this on the windows existing would skip the check in exactly the case it
+    // most needs to fire — a CSV with blank cells and no windows declared at
+    // all, which is the shape a hand-edited capture takes. An absent list is
+    // an empty list here, so "blank with no window" is caught rather than
+    // waved through.
+    let windows: Vec<(f64, f64)> = config
+        .base
+        .gap_windows
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|w| -> Result<(f64, f64), SondaError> {
+            let (at, dur) = w.resolve()?;
+            let at = at.as_secs_f64();
+            Ok((at, at + dur.as_secs_f64()))
+        })
+        .collect::<Result<_, _>>()?;
+    {
+        let content = std::fs::read_to_string(&file).map_err(|e| {
+            SondaError::Generator(crate::GeneratorError::FileRead {
+                path: file.clone(),
+                source: e,
+            })
+        })?;
+        let step_secs = 1.0 / derived_rate;
+
+        // The rows alone do not say which instants get played — `repeat` loops
+        // the column and `repeat: false` clamps past its end — so the check is
+        // given the playback, resolved here where both the generator's `repeat`
+        // and the schedule's `duration:` are in hand.
+        //
+        // `repeat` is resolved through the SAME `unwrap_or(true)` the generator
+        // factory applies. Reading the Option here and defaulting differently
+        // is how a check ends up disagreeing with the thing it checks.
+        let repeat = repeat_field.unwrap_or(true);
+        let last_tick = config
+            .base
+            .duration
+            .as_deref()
+            .map(crate::config::validate::parse_duration)
+            .transpose()?
+            .map(|d| {
+                // Ticks land at 0, step, 2*step, … while t < duration, so the
+                // count is ceil(duration / step) and the last index is one
+                // below it. `parse_duration` refuses zero, so a positive
+                // duration always yields at least one tick — `map`, not
+                // `and_then`, because `None` here means "unbounded" and must
+                // not double as "no ticks played".
+                let ticks = (d.as_secs_f64() / step_secs).ceil() as u64;
+                ticks.saturating_sub(1)
+            });
+
+        for spec in &specs {
+            let (values, blanks) =
+                crate::generator::csv_replay::column_values_and_gaps(&content, spec.index)?;
+            crate::generator::csv_replay::cross_check_gap_windows(
+                &blanks,
+                &crate::generator::csv_replay::Playback {
+                    row_count: values.len(),
+                    repeat,
+                    last_tick,
+                    bursts: config.base.bursts.is_some(),
+                },
+                &windows,
+                step_secs,
+            )?;
+        }
+    }
+
     let user_rate = config.base.rate;
     if (user_rate - derived_rate).abs() > 1e-9 {
         tracing::warn!(
@@ -1658,6 +1798,7 @@ clock_group: compound-alert
     fn scenario_entry_phase_offset_returns_value_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "accessor_test".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1688,6 +1829,7 @@ clock_group: compound-alert
     fn scenario_entry_phase_offset_returns_none_for_metrics_without_offset() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_offset".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1718,6 +1860,7 @@ clock_group: compound-alert
     fn scenario_entry_phase_offset_returns_value_for_logs() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_accessor".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1757,6 +1900,7 @@ clock_group: compound-alert
     fn scenario_entry_clock_group_returns_value_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "group_accessor".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1787,6 +1931,7 @@ clock_group: compound-alert
     fn scenario_entry_clock_group_returns_none_when_absent() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_group_acc".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -1821,6 +1966,7 @@ clock_group: compound-alert
     fn scenario_entry_base_returns_shared_config_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "base_test".to_string(),
                 rate: 42.0,
                 duration: Some("5s".to_string()),
@@ -1852,6 +1998,7 @@ clock_group: compound-alert
     fn scenario_entry_base_returns_shared_config_for_logs() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_base".to_string(),
                 rate: 99.0,
                 duration: None,
@@ -2038,6 +2185,7 @@ gaps:
     #[test]
     fn base_schedule_config_is_clone_and_debug() {
         let base = BaseScheduleConfig {
+            gap_windows: None,
             name: "test".to_string(),
             rate: 42.0,
             duration: Some("10s".to_string()),
@@ -2074,6 +2222,7 @@ gaps:
     fn scenario_config_deref_accesses_base_fields() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "deref_test".to_string(),
                 rate: 99.0,
                 duration: Some("5s".to_string()),
@@ -2110,6 +2259,7 @@ gaps:
     fn log_scenario_config_deref_accesses_base_fields() {
         let config = LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_deref".to_string(),
                 rate: 50.0,
                 duration: None,
@@ -2151,6 +2301,7 @@ gaps:
     fn scenario_config_deref_mut_allows_base_field_mutation() {
         let mut config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "original".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -2628,6 +2779,7 @@ mod expand_tests {
     fn csv_replay_config(name: &str, columns: Option<Vec<CsvColumnSpec>>) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: name.to_string(),
                 rate: 10.0,
                 duration: Some("30s".to_string()),
@@ -2739,6 +2891,7 @@ mod expand_tests {
     fn non_csv_replay_passes_through() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "const_metric".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3112,6 +3265,7 @@ mod expand_tests {
 
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "app_logs".to_string(),
                 rate: 10.0,
                 duration: None,
@@ -3252,6 +3406,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "auto_test".to_string(),
                 rate: 1.0,
                 duration: Some("60s".to_string()),
@@ -3332,6 +3487,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "grafana_auto".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3404,6 +3560,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_data_cols".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3457,6 +3614,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "single_data_col".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3501,6 +3659,7 @@ mod expand_tests {
     fn auto_discovery_missing_file_returns_generator_error() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "missing_file".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3549,6 +3708,7 @@ mod expand_tests {
 
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "no_header".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3810,6 +3970,7 @@ distribution:
     fn expand_entry_passes_through_histogram() {
         let entry = ScenarioEntry::Histogram(HistogramScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_hist".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3846,6 +4007,7 @@ distribution:
     fn expand_entry_passes_through_summary() {
         let entry = ScenarioEntry::Summary(SummaryScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "test_sum".to_string(),
                 rate: 1.0,
                 duration: None,
@@ -3903,6 +4065,7 @@ distribution:
     ) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "ts_test".to_string(),
                 rate,
                 duration: Some("60s".to_string()),
@@ -4071,6 +4234,464 @@ distribution:
             logs_contain("overriding rate"),
             "tracing warn should contain 'overriding rate'"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // blank-cell / gap_windows cross-check
+    //
+    // Driven through `expand_scenario` rather than by calling
+    // `cross_check_gap_windows` directly, because the defect this guards
+    // against is the two halves disagreeing: the window offsets the scheduler
+    // resolves, and the row-to-instant mapping the check computes from the
+    // derived rate. Calling the checker with hand-computed windows would test
+    // the half that was never in doubt.
+    // -----------------------------------------------------------------------
+
+    /// A CSV whose rows are 10s apart, with `None` writing a blank cell.
+    fn write_csv_with_blanks(values: &[Option<f64>]) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "Time,cpu_usage").expect("write header");
+        for (i, v) in values.iter().enumerate() {
+            let ts = 1_700_000_000 + (i as u64) * 10;
+            match v {
+                Some(v) => writeln!(tmp, "{ts},{v}"),
+                None => writeln!(tmp, "{ts},"),
+            }
+            .expect("write row");
+        }
+        tmp.flush().expect("flush");
+        tmp
+    }
+
+    /// Build the scenario and attach the windows under test.
+    ///
+    /// Rows are 10s apart, so the derived rate is 0.1/s and data row *n*
+    /// stands for the instant 10n seconds. `duration: 60s` covers ticks 0..=5.
+    ///
+    /// `repeat: false` throughout, because a capture containing silence cannot
+    /// loop and is refused before the coverage question is reached — that rule
+    /// has its own cases below.
+    fn expand_with_windows(
+        values: &[Option<f64>],
+        windows: Option<Vec<GapWindowConfig>>,
+    ) -> Result<Vec<ScenarioConfig>, SondaError> {
+        expand_with_playback(values, windows, Some(false), Some("60s"))
+    }
+
+    /// The same, with `repeat` and `duration` under the caller's control.
+    fn expand_with_playback(
+        values: &[Option<f64>],
+        windows: Option<Vec<GapWindowConfig>>,
+        repeat: Option<bool>,
+        duration: Option<&str>,
+    ) -> Result<Vec<ScenarioConfig>, SondaError> {
+        expand_full(values, windows, repeat, duration, None, None)
+    }
+
+    /// Every input the check consults, under the caller's control.
+    fn expand_full(
+        values: &[Option<f64>],
+        windows: Option<Vec<GapWindowConfig>>,
+        repeat: Option<bool>,
+        duration: Option<&str>,
+        bursts: Option<BurstConfig>,
+        phase_offset: Option<&str>,
+    ) -> Result<Vec<ScenarioConfig>, SondaError> {
+        let tmp = write_csv_with_blanks(values);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let mut config = build_csv_replay_scenario(path, 1.0, None, None);
+        config.base.gap_windows = windows;
+        config.base.duration = duration.map(str::to_string);
+        config.base.bursts = bursts;
+        config.base.phase_offset = phase_offset.map(str::to_string);
+        if let GeneratorConfig::CsvReplay { repeat: r, .. } = &mut config.generator {
+            *r = repeat;
+        }
+        expand_scenario(config)
+    }
+
+    fn window(at: &str, r#for: &str) -> GapWindowConfig {
+        GapWindowConfig {
+            at: at.to_string(),
+            r#for: r#for.to_string(),
+        }
+    }
+
+    /// Blanks covered by a declared window are the case the feature exists for.
+    #[test]
+    fn blanks_inside_a_declared_window_are_accepted() {
+        // Rows 2 and 3 -> instants 20s and 30s; the window covers [20s, 40s).
+        let result = expand_with_windows(
+            &[Some(1.0), Some(2.0), None, None, Some(5.0)],
+            Some(vec![window("20s", "20s")]),
+        )
+        .expect("blanks covered by a window must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A blank with no window declared at all is the shape a hand-edited
+    /// capture takes, and the case a check guarded on `gap_windows.is_some()`
+    /// would have skipped.
+    #[test]
+    fn a_blank_with_no_windows_declared_is_refused() {
+        let err = expand_with_windows(&[Some(1.0), None, Some(3.0)], None)
+            .expect_err("a blank with no declared window must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not covered by any `gap_windows:` entry"),
+            "error should name the uncovered blank, got: {msg}"
+        );
+        assert!(
+            msg.contains("data row(s) 2"),
+            "error should name data row 2, got: {msg}"
+        );
+    }
+
+    /// A blank outside every declared window is refused even though windows
+    /// exist — presence of a window is not coverage of this blank.
+    #[test]
+    fn a_blank_outside_the_declared_window_is_refused() {
+        // Blank at row 1 -> 10s; the window covers [30s, 40s).
+        let err = expand_with_windows(
+            &[Some(1.0), None, Some(3.0), Some(4.0), Some(5.0)],
+            Some(vec![window("30s", "10s")]),
+        )
+        .expect_err("a blank outside the window must be refused");
+        assert!(
+            err.to_string().contains("data row(s) 2"),
+            "error should name data row 2, got: {err}"
+        );
+    }
+
+    /// The other direction: a window over rows that *have* values would invent
+    /// silence the capture does not contain.
+    #[test]
+    fn a_window_over_recorded_samples_is_refused() {
+        let err = expand_with_windows(
+            &[Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
+            Some(vec![window("10s", "20s")]),
+        )
+        .expect_err("a window over present samples must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fall inside a `gap_windows:` entry"),
+            "error should describe silencing recorded data, got: {msg}"
+        );
+        assert!(
+            msg.contains("data row(s) 2, 3"),
+            "error should name rows 2 and 3, got: {msg}"
+        );
+    }
+
+    /// A capture that begins during the outage: row 0 is blank, and `at: 0s`
+    /// is the only window that can cover it.
+    #[test]
+    fn a_window_at_zero_covers_a_blank_first_row() {
+        let result = expand_with_windows(
+            &[None, None, Some(3.0), Some(4.0)],
+            Some(vec![window("0s", "20s")]),
+        )
+        .expect("`at: 0s` must cover the first rows");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// Windows are half-open, so the row at the closing instant is outside.
+    ///
+    /// This is the boundary both halves have to agree on: the scheduler stops
+    /// suppressing at `at + for`, so a blank there would replay as a NaN.
+    #[test]
+    fn the_row_at_the_window_end_is_not_covered() {
+        // Blank at row 2 -> 20s; the window is [0s, 20s), which ends there.
+        let err = expand_with_windows(
+            &[None, None, None, Some(4.0)],
+            Some(vec![window("0s", "20s")]),
+        )
+        .expect_err("the row at the window's closing instant must not be covered");
+        assert!(
+            err.to_string().contains("data row(s) 3"),
+            "error should name data row 3, got: {err}"
+        );
+    }
+
+    /// A file whose blanks all sit in separate declared windows is accepted —
+    /// coverage is per-row, not "some window exists somewhere".
+    #[test]
+    fn several_windows_each_cover_their_own_blanks() {
+        let result = expand_with_windows(
+            &[Some(1.0), None, Some(3.0), None, Some(5.0)],
+            Some(vec![window("10s", "10s"), window("30s", "10s")]),
+        )
+        .expect("each blank covered by its own window must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A wholly mismatched file summarises rather than printing every row.
+    #[test]
+    fn a_long_run_of_uncovered_blanks_is_summarised() {
+        let values: Vec<Option<f64>> = std::iter::once(Some(1.0))
+            .chain(std::iter::repeat_n(None, 12))
+            .collect();
+        let err = expand_with_windows(&values, None)
+            .expect_err("uncovered blanks must be refused whatever the count");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("and 4 more"),
+            "12 offenders should name 8 and summarise 4, got: {msg}"
+        );
+    }
+
+    // ---- the playback, not just the file ----------------------------------
+    //
+    // The row list says nothing about the instants a run actually reaches:
+    // `repeat` loops it and `repeat: false` clamps past its end. Both leaked a
+    // NaN past a green cross-check, and both are reachable from a default.
+
+    /// A capture containing silence cannot loop, and `repeat` defaults to true.
+    ///
+    /// This is the reachable-by-default case: nothing in the YAML says
+    /// `repeat`, the file has a blank, the window covers it on the first pass,
+    /// and on the second cycle the same row replays where no window is.
+    #[test]
+    fn blanks_are_refused_when_repeat_is_left_to_its_default() {
+        let err = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            None,
+            Some("60s"),
+        )
+        .expect_err("a looping capture with silence must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot loop") && msg.contains("repeat"),
+            "error should name the looping rule, got: {msg}"
+        );
+    }
+
+    /// The same file with `repeat: true` written out, so the rule is not an
+    /// artefact of the default resolving.
+    #[test]
+    fn blanks_are_refused_when_repeat_is_explicitly_true() {
+        let err = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(true),
+            Some("60s"),
+        )
+        .expect_err("a looping capture with silence must be refused");
+        assert!(err.to_string().contains("cannot loop"), "got: {err}");
+    }
+
+    /// The other direction: the identical file loops fine once the blank is
+    /// gone, so the rule is about silence and not about `repeat` itself.
+    #[test]
+    fn a_capture_without_silence_may_still_loop() {
+        let result = expand_with_playback(
+            &[Some(1.0), Some(2.0), Some(3.0)],
+            None,
+            Some(true),
+            Some("60s"),
+        )
+        .expect("a capture with no blanks must still be allowed to loop");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// And with `repeat: false` the same blank-carrying file is accepted.
+    #[test]
+    fn blanks_are_accepted_once_the_capture_stops_looping() {
+        let result = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect("`repeat: false` must accept the same file");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A capture that ends during the outage, replayed past its own length.
+    ///
+    /// `repeat: false` holds the final slot for every remaining tick, so a
+    /// blank last row keeps emitting — as `NaN`, outside every window, with the
+    /// per-row check green because the file has no row for those instants.
+    #[test]
+    fn a_blank_last_row_held_past_the_data_is_refused() {
+        // Rows at 0s, 10s, 20s; the run goes to 60s, so ticks 3..=5 hold row 2.
+        let err = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "10s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect_err("held silence past the data must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outlives its data"),
+            "error should name the clamp, got: {msg}"
+        );
+        // Tick 3 is the first instant past the data that no window covers.
+        // Named as a starting point rather than a list: the held tail can be
+        // tens of millions of ticks, and enumerating them is what the interval
+        // walk exists to avoid.
+        assert!(
+            msg.contains("the first such instant is tick 3"),
+            "error should name the first uncovered tick, got: {msg}"
+        );
+    }
+
+    /// The fix the error suggests works: a window reaching the end of the run.
+    ///
+    /// This is a real capture shape — the exporter went down and had not come
+    /// back when the capture ended — so it must stay expressible.
+    #[test]
+    fn a_blank_last_row_is_accepted_when_the_window_reaches_the_end() {
+        let result = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "45s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect("a window covering the held tail must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// The other suggested fix: stop the run at the data.
+    #[test]
+    fn a_blank_last_row_is_accepted_when_the_run_ends_with_the_data() {
+        let result = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "10s")]),
+            Some(false),
+            Some("30s"),
+        )
+        .expect("a run that ends with its data must be accepted");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// With no `duration:` the held silence never ends, and no finite window
+    /// reaches it — so the error says that rather than naming a window to add.
+    #[test]
+    fn a_blank_last_row_on_an_unbounded_run_is_refused() {
+        let err = expand_with_playback(
+            &[Some(1.0), Some(2.0), None],
+            Some(vec![window("20s", "10s")]),
+            Some(false),
+            None,
+        )
+        .expect_err("unbounded held silence must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no `duration:`") && msg.contains("forever"),
+            "error should explain why no window helps, got: {msg}"
+        );
+    }
+
+    /// A present last row is not subject to the clamp rule: what the run holds
+    /// past the data is a value, not silence.
+    #[test]
+    fn a_present_last_row_held_past_the_data_is_fine() {
+        let result = expand_with_playback(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+        )
+        .expect("holding a present value past the data is not silence");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// A burst compresses the tick grid, so no row lands on `n x step` any
+    /// more and the windows would fall on the wrong rows.
+    ///
+    /// Measured before this rule existed: `every: 4s, for: 2s, multiplier: 4`
+    /// on a 1/s eight-row capture played every row inside the first two
+    /// seconds — the burst occupies the head of the cycle, so the compression
+    /// is not confined to the rows "inside" it.
+    #[test]
+    fn blanks_are_refused_when_the_scenario_bursts() {
+        let err = expand_full(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+            Some(BurstConfig {
+                every: "40s".to_string(),
+                r#for: "20s".to_string(),
+                multiplier: 4.0,
+            }),
+            None,
+        )
+        .expect_err("blanks under a compressed grid must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bursts:") && msg.contains("compresses the tick grid"),
+            "error should name the burst and why it matters, got: {msg}"
+        );
+    }
+
+    /// The other direction: bursts stay legal on a capture with no silence.
+    ///
+    /// The grid still slides — nothing depends on where a particular row lands
+    /// when no row has to line up with a declared window.
+    #[test]
+    fn a_capture_without_silence_may_still_burst() {
+        let result = expand_full(
+            &[Some(1.0), Some(2.0), Some(3.0)],
+            None,
+            Some(false),
+            Some("60s"),
+            Some(BurstConfig {
+                every: "40s".to_string(),
+                r#for: "20s".to_string(),
+                multiplier: 4.0,
+            }),
+            None,
+        )
+        .expect("a blank-free capture must still be allowed to burst");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// `phase_offset:` is deliberately *not* refused alongside `bursts:`.
+    ///
+    /// It delays the whole scenario before the loop's clock starts, so the tick
+    /// grid and the windows shift together and nothing moves relative to
+    /// anything else. That was measured through the CLI rather than derived,
+    /// because reading the call chain is how the clamp case was got wrong.
+    ///
+    /// The measurement has to answer two questions, and the first one is the
+    /// one a single run cannot: **is `phase_offset` applied on this path at
+    /// all?** If it were silently ignored, the suppressed row would be right
+    /// for the wrong reason. Wall time across a sweep says it is —
+    /// `none/1500ms/2s/5s/7s` on a four-row capture ran in
+    /// `3.21/4.62/5.22/8.22/10.02` seconds, tracking the offset. The rows
+    /// emitted stayed `[0, 2, 3]` throughout, with row 1 — the blank —
+    /// suppressed every time.
+    ///
+    /// Those offsets are chosen to exclude the failure they would otherwise
+    /// hide. Had the loop's clock started *before* the delay, an offset of 5s
+    /// or 7s would have consumed the whole `[1s, 2s)` window during the wait
+    /// and suppressed nothing (four rows), and 7s exceeds the 4s duration, so
+    /// the run would have emitted nothing at all. Both counterfactuals are
+    /// excluded by the same table. `1500ms` is there so the result cannot be an
+    /// artefact of the offset being a whole number of steps.
+    ///
+    /// What this test pins is the narrower claim it can actually make: the
+    /// check does not reject the combination. It would not notice a future
+    /// change that started the loop's clock before the delay; that is what the
+    /// measurement above covers, and it is worth re-running if the launch path
+    /// moves.
+    #[test]
+    fn phase_offset_is_not_refused_alongside_blanks() {
+        let result = expand_full(
+            &[Some(1.0), None, Some(3.0)],
+            Some(vec![window("10s", "10s")]),
+            Some(false),
+            Some("60s"),
+            None,
+            Some("20s"),
+        )
+        .expect("phase_offset shifts grid and windows together");
+        assert_eq!(result.len(), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -4252,6 +4873,7 @@ generator:
     fn build_log_scenario(file: String, timescale: Option<f64>) -> LogScenarioConfig {
         LogScenarioConfig {
             base: BaseScheduleConfig {
+                gap_windows: None,
                 name: "log_replay".to_string(),
                 rate: 1.0,
                 duration: None,
