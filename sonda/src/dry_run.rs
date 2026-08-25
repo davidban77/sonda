@@ -39,32 +39,65 @@ pub fn parse_format(value: Option<&str>) -> anyhow::Result<DryRunFormat> {
     }
 }
 
-/// Print the dry-run output for a [`CompiledFile`].
+/// One thing that will actually run, paired with the entry that authored it.
+///
+/// The two halves carry different truths and neither is sufficient alone.
+///
+/// * `runnable` is post-expansion. It is where a multi-column `csv_replay`
+///   becomes one entry per series, where that series' own metric name and
+///   per-column labels live, and where the rate a capture derives from its own
+///   timestamps replaces the authored one.
+/// * `source` is the authored [`CompiledEntry`]. `while:`, `after:`,
+///   `clock_group` and `phase_offset` are resolved by the compiler and do not
+///   survive translation into a runnable entry, so they can only be read here.
+///
+/// Printing only `source` is what review #583 W2 found: `--dry-run` said
+/// "2 scenarios" for a file that launches 3 series, and `--format json` listed
+/// two. A CI job counting scenarios got the authored count under a flag whose
+/// whole job is to answer "what would happen".
+pub struct RunnableView<'a> {
+    /// The entry as it will be launched.
+    pub runnable: &'a sonda_core::config::ScenarioEntry,
+    /// The authored entry it expanded from.
+    pub source: &'a CompiledEntry,
+}
+
+/// Print the dry-run output for a compiled file and the entries it expands to.
 ///
 /// Text output goes to stderr; JSON output goes to stdout.
 pub fn print_dry_run_compiled(
     source_label: &str,
     compiled: &CompiledFile,
+    runnable: &[RunnableView<'_>],
     format: DryRunFormat,
 ) -> anyhow::Result<()> {
     validate_alias_invariants(compiled)?;
     match format {
         DryRunFormat::Text => {
             let mut out = io::stderr().lock();
-            write_text_compiled(&mut out, source_label, compiled)?;
+            write_text_compiled(&mut out, source_label, compiled, runnable)?;
         }
         DryRunFormat::Json => {
             let mut out = io::stdout().lock();
-            write_json_compiled(&mut out, source_label, compiled)?;
+            write_json_compiled(&mut out, source_label, compiled, runnable)?;
         }
     }
     Ok(())
 }
 
-/// Surface alias-validation and sink-config errors that would otherwise only
-/// fire inside `prepare_entries` (which dry-run never calls) or the sink
-/// factory at run time. Extend here for any future invariant that should
-/// reach operators at dry-run time.
+/// Surface alias-validation and sink-config errors that fire late — inside the
+/// sink factory at run time, or in a shape `prepare_entries` reports less
+/// clearly.
+///
+/// **Do not extend this with engine rules.** The sentence that used to be here
+/// said "which dry-run never calls" and invited exactly that; dry-run now calls
+/// the real pipelines (`prepare_entries`, or `validate_compiled_gated` for a
+/// gated file), so every invariant they enforce already reaches operators here
+/// without being written down twice. A transcribed rule diverges on whichever
+/// rule someone adds last, which is the failure this file's callers argue
+/// against four files away. What is left below earns its place only by
+/// producing a better message than the engine does, for a check the engine
+/// makes anyway or makes too late.
 fn validate_alias_invariants(compiled: &CompiledFile) -> anyhow::Result<()> {
     for entry in &compiled.entries {
         if let Some(GeneratorConfig::Flap {
@@ -265,20 +298,23 @@ fn write_text_compiled<W: Write>(
     out: &mut W,
     source_label: &str,
     compiled: &CompiledFile,
+    runnable: &[RunnableView<'_>],
 ) -> io::Result<()> {
-    let entries = &compiled.entries;
-    let total = entries.len();
+    // The count is the RUNNABLE count, not the authored one. They differ
+    // whenever a multi-column csv_replay fans out, and the runnable count is
+    // what the flag is being asked about.
+    let total = runnable.len();
     let scenario_word = if total == 1 { "scenario" } else { "scenarios" };
     writeln!(
         out,
         "[config] file: {source_label} (version: 2, {total} {scenario_word})"
     )?;
 
-    let upstream_index = build_upstream_index(entries);
+    let upstream_index = build_upstream_index(&compiled.entries);
 
-    for (i, entry) in entries.iter().enumerate() {
+    for (i, view) in runnable.iter().enumerate() {
         writeln!(out)?;
-        write_compiled_entry_text(out, entry, &upstream_index, i + 1, total)?;
+        write_compiled_entry_text(out, view, &upstream_index, i + 1, total)?;
         if i + 1 < total {
             writeln!(out, "---")?;
         }
@@ -291,16 +327,31 @@ fn write_text_compiled<W: Write>(
 
 fn write_compiled_entry_text<W: Write>(
     out: &mut W,
-    entry: &CompiledEntry,
+    view: &RunnableView<'_>,
     upstream: &HashMap<&str, &CompiledEntry>,
     index: usize,
     total: usize,
 ) -> io::Result<()> {
-    writeln!(out, "[config] [{index}/{total}] {}", entry.name)?;
+    let entry = view.source;
+    let base = view.runnable.base();
+
+    // `name`, `rate` and `labels` come from the RUNNABLE half: expansion renames
+    // each fanned-out series, merges that column's own labels, and lets a
+    // csv_replay derive its rate from the capture's timestamps. Those three are
+    // exactly what W2 was about.
+    //
+    // Everything else stays on the AUTHORED half, including `generator:`.
+    // Expansion does not change what `generator_display` renders — the column
+    // index is not in it, and the series is already identified by `name:` — but
+    // DESUGARING does, and destructively: an entry written as `type: flap`
+    // prints as `sequence (90 values)` once desugared, which is true of the
+    // machine and useless to the person who wrote `flap`. Truthful about what
+    // runs is the goal; unrecognisable is not the same thing as truthful.
+    writeln!(out, "[config] [{index}/{total}] {}", base.name)?;
     writeln!(out)?;
-    write_field(out, "name:", &entry.name)?;
+    write_field(out, "name:", &base.name)?;
     write_field(out, "signal:", &entry.signal_type)?;
-    write_field(out, "rate:", &format!("{}/s", format_rate(entry.rate)))?;
+    write_field(out, "rate:", &format!("{}/s", format_rate(base.rate)))?;
     write_field(
         out,
         "duration:",
@@ -328,12 +379,21 @@ fn write_compiled_entry_text<W: Write>(
 
     write_field(out, "encoder:", &encoder_display(&entry.encoder))?;
     write_field(out, "sink:", &sink_display(&entry.sink))?;
-    write_labels_btree(out, entry.labels.as_ref())?;
+    write_labels_btree(out, sorted_labels(base.labels.as_ref()).as_ref())?;
+    // Authored-only from here down: the compiler resolves these and they do not
+    // survive translation, so `view.source` is the only place they exist.
     write_phase_offset_or_after_first_fire(out, entry)?;
     write_clock_group(out, &entry.clock_group, Some(entry.clock_group_is_auto))?;
     write_while_block(out, entry, upstream)?;
     write_delay_block(out, entry.delay_clause.as_ref())?;
     Ok(())
+}
+
+/// Labels on a runnable entry are a `HashMap`; the printer wants stable order.
+fn sorted_labels(
+    labels: Option<&std::collections::HashMap<String, String>>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    labels.map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
 }
 
 fn write_phase_offset_or_after_first_fire<W: Write>(
@@ -643,13 +703,13 @@ fn write_json_compiled<W: Write>(
     out: &mut W,
     source_label: &str,
     compiled: &CompiledFile,
+    runnable: &[RunnableView<'_>],
 ) -> io::Result<()> {
     let upstream = build_upstream_index(&compiled.entries);
-    let scenarios = compiled
-        .entries
+    let scenarios = runnable
         .iter()
         .enumerate()
-        .map(|(i, entry)| to_compiled_scenario_dto(i + 1, entry, &upstream))
+        .map(|(i, view)| to_compiled_scenario_dto(i + 1, view, &upstream))
         .collect();
 
     let dto = DryRunDto {
@@ -666,9 +726,12 @@ fn write_json_compiled<W: Write>(
 
 fn to_compiled_scenario_dto<'a>(
     index: usize,
-    entry: &'a CompiledEntry,
+    view: &RunnableView<'a>,
     upstream: &HashMap<&str, &CompiledEntry>,
 ) -> ScenarioDto<'a> {
+    let entry = view.source;
+    let base = view.runnable.base();
+
     let signal: &'static str = match entry.signal_type.as_str() {
         "metrics" => "metrics",
         "logs" => "logs",
@@ -676,6 +739,7 @@ fn to_compiled_scenario_dto<'a>(
         "summary" => "summary",
         _ => "unknown",
     };
+    // Authored, for the same reason the text printer uses it — see there.
     let generator = if let Some(ref g) = entry.generator {
         generator_display(g)
     } else if let Some(ref g) = entry.log_generator {
@@ -685,10 +749,14 @@ fn to_compiled_scenario_dto<'a>(
     } else {
         "unknown".to_string()
     };
-    let labels = entry
+    let labels = base
         .labels
         .as_ref()
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
         .unwrap_or_default();
     let while_clause = entry.while_clause.as_ref().map(while_clause_display);
     let delay_clause = entry.delay_clause.as_ref().map(delay_clause_display);
@@ -699,14 +767,16 @@ fn to_compiled_scenario_dto<'a>(
 
     ScenarioDto {
         index,
-        name: entry.name.as_str(),
+        // Post-expansion: one DTO per series, each under its own metric name.
+        name: base.name.as_str(),
         signal,
-        rate: entry.rate,
+        rate: base.rate,
         duration: entry.duration.as_deref(),
         generator,
         encoder: encoder_display(&entry.encoder),
         sink: sink_display(&entry.sink),
         labels,
+        // Authored-only, read from the compiled entry.
         phase_offset: entry.phase_offset.as_deref(),
         clock_group: entry.clock_group.as_deref(),
         clock_group_is_auto: Some(entry.clock_group_is_auto),
@@ -719,6 +789,51 @@ fn to_compiled_scenario_dto<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build the printer's input by running the REAL expansion pipeline.
+    ///
+    /// Not a transcription of it: these tests exist to pin what `--dry-run`
+    /// shows, and a helper that constructed runnable entries by hand would
+    /// diverge from the launch path on exactly the field a bug is in.
+    fn runnable_of(compiled: &CompiledFile) -> Vec<(usize, sonda_core::config::ScenarioEntry)> {
+        // Pick the pipeline `main.rs` would pick for this file. Always calling
+        // the ungated one left the gated pairing with no unit coverage at all
+        // (review #583 r2 M2) — and "the two pipelines produce identical
+        // entries for anything the gated one accepts" is exactly the kind of
+        // reasoning this helper's own docstring argues against relying on.
+        let has_gates = compiled.entries.iter().any(|e| e.while_clause.is_some());
+        if has_gates {
+            return sonda_core::schedule::multi_runner::validate_compiled_gated(compiled.clone())
+                .expect("validate_compiled_gated must succeed");
+        }
+
+        let entries =
+            sonda_core::compiler::prepare::prepare(compiled.clone()).expect("prepare must succeed");
+        assert_eq!(
+            entries.len(),
+            compiled.entries.len(),
+            "`prepare` must stay a 1:1 order-preserving map for the pairing below"
+        );
+        sonda_core::prepare_entries_grouped(entries)
+            .expect("prepare_entries_grouped must succeed")
+            .into_iter()
+            .enumerate()
+            .flat_map(|(i, group)| group.into_iter().map(move |p| (i, p.entry)))
+            .collect()
+    }
+
+    fn views<'a>(
+        compiled: &'a CompiledFile,
+        runnable: &'a [(usize, sonda_core::config::ScenarioEntry)],
+    ) -> Vec<RunnableView<'a>> {
+        runnable
+            .iter()
+            .map(|(i, entry)| RunnableView {
+                runnable: entry,
+                source: &compiled.entries[*i],
+            })
+            .collect()
+    }
     use sonda_core::compile_scenario_file_compiled;
     use sonda_core::compiler::expand::InMemoryPackResolver;
 
@@ -766,10 +881,87 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "scn.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "scn.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("[config] file: scn.yaml (version: 2, 1 scenario)"));
         assert!(out.contains("Validation: OK (1 scenario)"));
+    }
+
+    #[test]
+    fn dry_run_counts_the_series_that_will_run_not_the_blocks_authored() {
+        // Review #583 W2. One authored `csv_replay` block with two columns
+        // launches two series. Dry-run validated the expansion and then printed
+        // the file that went in, so it said "1 scenario" for a run that starts
+        // two — under a flag whose whole job is to answer "what would happen".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let csv = dir.path().join("cap.csv");
+        std::fs::write(&csv, "timestamp,cpu,mem\n0.000,10,50\n1.000,20,60\n").expect("write csv");
+
+        let compiled = compile(&format!(
+            r#"version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 2s
+scenarios:
+  - id: replay
+    signal_type: metrics
+    name: capture
+    generator:
+      type: csv_replay
+      file: {}
+      columns:
+        - index: 1
+          name: cpu_percent
+        - index: 2
+          name: mem_percent
+"#,
+            csv.display()
+        ));
+
+        // Premise: the file really does author ONE block. Without this the
+        // assertions below would pass against a two-block file that never
+        // exercised fan-out at all.
+        assert_eq!(
+            compiled.entries.len(),
+            1,
+            "premise: the fixture must author exactly one entry"
+        );
+
+        let mut buf = Vec::new();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "fanout.yaml", &compiled, &views).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(
+            out.contains("(version: 2, 2 scenarios)")
+                && out.contains("Validation: OK (2 scenarios)"),
+            "the count must be the series that will run, not the blocks authored, got:\n{out}"
+        );
+        assert!(
+            out.contains("cpu_percent") && out.contains("mem_percent"),
+            "each expanded series must appear under its own metric name, got:\n{out}"
+        );
+
+        // And the JSON a CI job parses must agree with the text.
+        let mut json = Vec::new();
+        write_json_compiled(&mut json, "fanout.yaml", &compiled, &views).unwrap();
+        let dto: serde_json::Value =
+            serde_json::from_slice(&json).expect("dry-run JSON must parse");
+        let scenarios = dto["scenarios"].as_array().expect("scenarios array");
+        assert_eq!(
+            scenarios.len(),
+            2,
+            "--format json must list one entry per series, got:\n{dto:#}"
+        );
+        let names: Vec<&str> = scenarios
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["cpu_percent", "mem_percent"], "got:\n{dto:#}");
     }
 
     #[test]
@@ -796,7 +988,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "multi.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "multi.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("(version: 2, 2 scenarios)"));
         assert!(out.contains("Validation: OK (2 scenarios)"));
@@ -835,11 +1029,23 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "link-failover.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "link-failover.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
+        // Assert the phase_offset LINE, not two substrings that can match in
+        // different places. The previous form was `contains("phase_offset:")
+        // && contains("60")`, and the "60" it matched was in the *generator*
+        // line of the *other* entry — `flap (up_duration: 60s, ...)`. Rendering
+        // the desugared generator instead made that incidental match vanish and
+        // the test fail for a reason unrelated to what it is named for.
+        let offset_line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("phase_offset:"))
+            .unwrap_or_else(|| panic!("phase_offset line must render, got:\n{out}"));
         assert!(
-            out.contains("phase_offset:") && out.contains("60"),
-            "phase_offset line must render, got:\n{out}"
+            offset_line.contains("1m"),
+            "the after-chain resolves to a 60s offset, which renders as `1m`; got: {offset_line:?}\n{out}"
         );
         assert!(
             out.contains("chain_backup_util"),
@@ -871,7 +1077,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_json_compiled(&mut buf, "scn.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_json_compiled(&mut buf, "scn.yaml", &compiled, &views).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).expect("json parses");
         assert_eq!(json["file"], "scn.yaml");
         assert_eq!(json["version"], 2);
@@ -912,7 +1120,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "while-analytical.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "while-analytical.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
             out.contains("while:"),
@@ -959,7 +1169,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "while-non-analytical.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "while-non-analytical.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
             out.contains("<indeterminate — non-analytical generator>"),
@@ -1001,7 +1213,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "while-delay.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "while-delay.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
             out.contains("delay:") && out.contains("open=5s") && out.contains("close=10s"),
@@ -1096,7 +1310,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_text_compiled(&mut buf, "mixed-upstream.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "mixed-upstream.yaml", &compiled, &views).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
             out.contains("after_first_fire:") && out.contains("(ref: trigger)"),
@@ -1150,7 +1366,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_json_compiled(&mut buf, "while-json.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_json_compiled(&mut buf, "while-json.yaml", &compiled, &views).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         let traffic = json["scenarios"]
             .as_array()
@@ -1187,7 +1405,9 @@ scenarios:
 "#,
         );
         let mut buf = Vec::new();
-        write_json_compiled(&mut buf, "no-clauses.yaml", &compiled).unwrap();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_json_compiled(&mut buf, "no-clauses.yaml", &compiled, &views).unwrap();
         let body = String::from_utf8(buf).unwrap();
         assert!(
             !body.contains("while_clause"),

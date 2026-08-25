@@ -69,7 +69,9 @@ pub use schedule::gate_bus::{
 #[cfg(feature = "runtime")]
 pub use schedule::handle::ScenarioHandle;
 #[cfg(feature = "runtime")]
-pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
+pub use schedule::launch::{
+    launch_scenario, prepare_entries, prepare_entries_grouped, validate_entry, PreparedEntry,
+};
 #[cfg(feature = "runtime")]
 pub use schedule::stats::{ScenarioState, ScenarioStats};
 #[cfg(feature = "runtime")]

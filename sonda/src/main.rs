@@ -106,7 +106,96 @@ fn run_scenario(
 
     if cli_opts.dry_run {
         let format = dry_run::parse_format(cli_opts.format.as_deref())?;
-        dry_run::print_dry_run_compiled(&args.scenario, &compiled, format)?;
+        // Validate through the pipeline the runtime uses, not a second list of
+        // its rules.
+        //
+        // `--dry-run` returned here before doing this, which meant it never ran
+        // `prepare_entries` — and therefore never ran `expand_scenario`, where
+        // csv_replay derives its rate from the file's timestamps, fans a
+        // multi-column capture out into one entry per series, and rejects a
+        // file it cannot replay. So a scenario `sonda run` refuses printed
+        // "Validation: OK", which is worse than saying nothing: the whole point
+        // of the flag is to answer "would this run?" without running it, and CI
+        // users reach for it precisely to catch this class before a deploy.
+        //
+        // The fix is to call the real thing rather than teach this path to
+        // recognise the same failures — a transcription would diverge on
+        // exactly the rule that was added last.
+        //
+        // AND IT HAS TO BE THE RIGHT REAL THING. `run` has two launch paths and
+        // they do not share a rulebook: a file with a `while:` clause goes to
+        // `launch_multi_compiled`, whose per-entry preparation refuses things
+        // the ungated `prepare_entries` accepts — multi-column `csv_replay`
+        // fan-out most of all, because a gate needs one entry per gated signal.
+        // Calling only the ungated pipeline restored most of parity and left
+        // the gated branch blessing files `run` refuses, which is worse than
+        // the original bug: the flag now looks trustworthy. So dry-run
+        // dispatches on `has_gates` exactly as the launch below does, and the
+        // two branches call the two pipelines.
+        //
+        // The clone is because both pipelines consume the file and the printer
+        // still needs it. It happens once, on a path that is about to exit.
+        //
+        // And what it prints is what came BACK from that pipeline, not the file
+        // that went in. Validating and then rendering the pre-expansion view
+        // fixed the refusal half of parity and left the reporting half wrong:
+        // a multi-column `csv_replay` launches one series per column, so
+        // "Validation: OK (2 scenarios)" for a file that runs three is the same
+        // flag telling the same CI job the same kind of untruth.
+        let runnable: Vec<(usize, sonda_core::config::ScenarioEntry)> = if has_gates {
+            sonda_core::schedule::multi_runner::validate_compiled_gated(compiled.clone())
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+        } else {
+            let entries = sonda_core::compiler::prepare::prepare(compiled.clone())
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            // The pairing below indexes `compiled.entries` with a position from
+            // the slice handed to `prepare_entries_grouped`. Those are the same
+            // index only because `prepare` is a strict order-preserving 1:1 map.
+            // It is today, and nothing states it — so state it here, where a
+            // future `prepare` that filtered would trip loudly instead of
+            // silently handing one series another entry's `while:` block
+            // (review #583 r2).
+            anyhow::ensure!(
+                entries.len() == compiled.entries.len(),
+                "internal: `prepare` returned {} entries for {} compiled entries. \
+                 The dry-run view pairs them by position and can no longer do so.",
+                entries.len(),
+                compiled.entries.len(),
+            );
+
+            sonda_core::prepare_entries_grouped(entries)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+                .into_iter()
+                .enumerate()
+                .flat_map(|(source_index, group)| {
+                    group.into_iter().map(move |p| (source_index, p.entry))
+                })
+                .collect()
+        };
+
+        // Pair each runnable entry with the entry that authored it. `while:`,
+        // `after:`, `clock_group` and `phase_offset` are resolved by the
+        // compiler and do not survive translation, so they can only be read
+        // from the compiled side.
+        let views: Vec<dry_run::RunnableView<'_>> = runnable
+            .iter()
+            .map(|(source_index, entry)| {
+                let source = compiled.entries.get(*source_index).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "internal: expanded entry reports source index {source_index}, \
+                         but the compiled file has {} entries",
+                        compiled.entries.len()
+                    )
+                })?;
+                Ok(dry_run::RunnableView {
+                    runnable: entry,
+                    source,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        dry_run::print_dry_run_compiled(&args.scenario, &compiled, &views, format)?;
         return Ok(());
     }
 
@@ -122,9 +211,7 @@ fn run_scenario(
         sonda_core::compiler::prepare::prepare(compiled).map_err(|e| anyhow::anyhow!("{}", e))?;
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
-        return Ok(());
-    }
+    handle_pre_launch(&prepared, verbosity);
 
     if prepared.len() == 1 {
         let p = prepared.into_iter().next().expect("len checked above");
@@ -202,24 +289,23 @@ fn show_entry(args: &cli::ShowArgs, catalog: Option<&std::path::Path>) -> anyhow
     Ok(())
 }
 
-fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: bool) -> bool {
+/// Print the pre-launch banner.
+///
+/// It used to return a `bool` saying whether the caller should stop, for a
+/// second `--dry-run` implementation that printed the entries and its own
+/// "Validation: OK". That became unreachable when the dry-run branch in
+/// `run_scenario` started returning above this call, so the flag was always
+/// `false` and the caller's `if … { return }` was dead code that read like a
+/// live branch. `dry_run.rs` owns that output and is the only thing that
+/// prints it.
+fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity) {
     if verbosity == Verbosity::Verbose {
         status::print_version();
-    }
-    let total = prepared.len();
-    if dry_run {
-        for (i, p) in prepared.iter().enumerate() {
-            status::print_config(&p.entry, i + 1, total);
-        }
-        status::print_dry_run_ok(total);
-        return true;
-    }
-    if verbosity == Verbosity::Verbose {
+        let total = prepared.len();
         for (i, p) in prepared.iter().enumerate() {
             status::print_config(&p.entry, i + 1, total);
         }
     }
-    false
 }
 
 fn run_single_scenario(

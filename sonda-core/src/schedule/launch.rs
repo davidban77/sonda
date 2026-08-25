@@ -99,9 +99,34 @@ pub struct PreparedEntry {
 /// or phase-offset parsing. The error message includes the entry index for
 /// diagnostics.
 pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>, SondaError> {
+    Ok(prepare_entries_grouped(entries)?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+/// [`prepare_entries`], with each authored entry's results kept together.
+///
+/// `result[i]` holds every entry that authored entry `i` expanded into, in
+/// order. Usually one; a multi-column `csv_replay` produces one per series, and
+/// an entry that expands to nothing produces an empty inner `Vec` — so the
+/// outer length always equals the input length and index `i` is always the
+/// authored entry `i`.
+///
+/// This exists because a caller that has to render an expanded entry alongside
+/// something only the AUTHORED entry knows — `sonda --dry-run run` and the
+/// `while:` / `after:` / `clock_group` fields the compiler resolves — needs the
+/// mapping, and flattening throws it away. Returning the grouping rather than
+/// stamping an index onto [`PreparedEntry`] keeps that struct's shape: it has
+/// all-public fields and no `#[non_exhaustive]`, so adding one would break
+/// every downstream struct literal (review #583 r2 M1).
+pub fn prepare_entries_grouped(
+    entries: Vec<ScenarioEntry>,
+) -> Result<Vec<Vec<PreparedEntry>>, SondaError> {
     // Phase 1: expand csv_replay multi-column entries, tracking the original
     // input index for each expanded entry so error messages reference the
     // index the caller provided rather than the post-expansion position.
+    let group_count = entries.len();
     let mut expanded: Vec<(usize, ScenarioEntry)> = Vec::new();
     for (i, entry) in entries.into_iter().enumerate() {
         let batch = expand_entry(entry).map_err(|e| {
@@ -132,8 +157,10 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
         })
         .collect::<Result<Vec<_>, SondaError>>()?;
 
-    // Phase 2: validate all entries and resolve phase offsets.
-    let mut prepared = Vec::with_capacity(expanded.len());
+    // Phase 2: validate all entries and resolve phase offsets, keeping each
+    // authored entry's results in its own bucket.
+    let mut prepared: Vec<Vec<PreparedEntry>> = Vec::with_capacity(group_count);
+    prepared.resize_with(group_count, Vec::new);
     for (orig_idx, entry) in expanded {
         validate_entry(&entry).map_err(|e| {
             SondaError::Config(ConfigError::invalid(format!(
@@ -152,7 +179,7 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
             None => None,
         };
 
-        prepared.push(PreparedEntry {
+        prepared[orig_idx].push(PreparedEntry {
             entry,
             start_delay,
             id: None,

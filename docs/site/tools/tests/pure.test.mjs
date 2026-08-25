@@ -508,19 +508,76 @@ test("duration-coupled slider floors cover the scenario duration (review #534 M1
   }
 });
 
-test("every min/max slider pair is non-crossable by range construction", () => {
-  // Generalises the baseline/ceiling rule above to the pairs WP13 added.
-  // The engine rejects `min >= max`, so a pair whose ranges OVERLAP ships a
-  // widget that compiles at rest and throws under the reader's hand — the
-  // failure only appears for the readers who actually play with it, which is
-  // everyone the widget is for. Disjoint ranges make it unreachable rather
-  // than merely untested.
-  for (const [gen, widget] of Object.entries(WIDGETS)) {
-    const lo = (widget.sliders || []).find((s) => s.key === "min");
-    const hi = (widget.sliders || []).find((s) => s.key === "max");
-    if (lo && hi) {
-      assert.ok(lo.max < hi.min, `${gen}: min range [${lo.min},${lo.max}] must sit below max range [${hi.min},${hi.max}]`);
+/* Two-slider constraints, checked against the slider RANGES.
+ *
+ * `lo` must stay strictly below `hi` for every combination a reader can drag
+ * to. Two sliders move independently, so the widget has no way to express that
+ * coupling — the only way to make a bad pair unreachable is to keep the ranges
+ * disjoint, and disjointness is a property of the ranges themselves.
+ *
+ * What this does NOT buy, stated because an earlier version of this comment
+ * claimed it and review #583 W3 disproved it by execution: it is not stronger
+ * than the compile gate for the `for`/`every` rule. `cornerParams` builds the
+ * full CROSS PRODUCT of each slider's {min, value, max}, so the worst pair
+ * (max lo, min hi) is always in the grid — and for a monotone constraint like
+ * this one, a violation exists if and only if that pair violates it. Restoring
+ * the old ranges makes the compile gate fail 3/648 on gaps alone. The two
+ * checks are equally strong there; this one is merely faster, needs no built
+ * binary, and names the ranges rather than one combination.
+ *
+ * Where it IS load-bearing is rule 1, and for the opposite reason: the engine
+ * does not reject `min >= max` for either widget that pairs them. A sawtooth
+ * with min 50 / max 10 compiles and runs, emitting a descending ramp; a uniform
+ * with the same pair emits values inside [10,50]. Both measured. So no compile
+ * gate can catch that one, and the reason to hold it is the widget's own
+ * coherence — a slider that lets a reader set a minimum above a maximum
+ * teaches a wrong shape — not an engine rule.
+ *
+ * `expected` is the anti-vacuity half. A renamed slider key, or a widget
+ * dropped from WIDGETS, would otherwise leave the loop matching nothing and
+ * reporting success — a check that covers zero widgets reads exactly like a
+ * check that covers all of them. Update the count deliberately.
+ */
+const PAIR_RULES = [
+  {
+    lo: "min",
+    hi: "max",
+    expected: 2,
+    why: "widget coherence — the engine accepts min >= max here, so nothing else catches it",
+  },
+  {
+    lo: "for",
+    hi: "every",
+    expected: 2,
+    why: "the engine rejects for >= every for gaps, bursts and cardinality_spikes (config/validate.rs)",
+  },
+];
+
+test("cross-slider constraints are unreachable by range construction", () => {
+  // A pair whose ranges OVERLAP ships a widget that compiles at rest and
+  // misbehaves under the reader's hand — either refused by the engine or
+  // silently drawing the wrong shape, depending on the rule. Either way the
+  // failure only reaches the readers who actually play with it, which is
+  // everyone the widget is for.
+  for (const rule of PAIR_RULES) {
+    let matched = 0;
+    for (const [gen, widget] of Object.entries(WIDGETS)) {
+      const lo = (widget.sliders || []).find((s) => s.key === rule.lo);
+      const hi = (widget.sliders || []).find((s) => s.key === rule.hi);
+      if (!lo || !hi) continue;
+      matched += 1;
+      assert.ok(
+        lo.max < hi.min,
+        `${gen}: ${rule.lo} range [${lo.min},${lo.max}] must sit below ` +
+          `${rule.hi} range [${hi.min},${hi.max}] — ${rule.why}`
+      );
     }
+    assert.equal(
+      matched,
+      rule.expected,
+      `expected ${rule.expected} widgets pairing ${rule.lo}/${rule.hi}, found ${matched} — ` +
+        `a slider was renamed or a widget removed and this rule stopped covering it`
+    );
   }
 });
 

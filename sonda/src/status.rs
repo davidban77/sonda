@@ -7,9 +7,12 @@
 //! [`print_summary`] function prints an aggregate summary after all scenarios
 //! complete in the `run` subcommand. [`print_version`] displays the crate
 //! version and enabled features. [`print_show_header`] prints a styled header
-//! for the `scenarios show` subcommand. [`print_dry_run_ok`] shows the
-//! validation result with a scenario count.
-//! hint message for contextual help on errors.
+//! for the `scenarios show` subcommand.
+//!
+//! The dry-run validation result is NOT printed from here — `dry_run.rs` owns
+//! that output. This module used to carry a second printer for it, reached
+//! from a branch that became unreachable once the dry-run path started
+//! returning before the launch banner.
 
 use std::time::Duration;
 
@@ -493,21 +496,6 @@ fn print_clock_group_line(clock_group: &Option<String>) {
         let label = label.if_supports_color(Stderr, |t| t.bold());
         eprintln!("  {label} {group}");
     }
-}
-
-/// Print the dry-run validation result to stderr.
-///
-/// Called after all entries are printed in dry-run mode to confirm that
-/// validation passed. The `scenario_count` is displayed alongside the OK
-/// status (e.g. `"Validation: OK (3 scenarios)"`).
-pub fn print_dry_run_ok(scenario_count: usize) {
-    let ok_label = "OK".if_supports_color(Stderr, |t| t.green());
-    let noun = if scenario_count == 1 {
-        "scenario"
-    } else {
-        "scenarios"
-    };
-    eprintln!("Validation: {ok_label} ({scenario_count} {noun})");
 }
 
 /// Build the version string displayed by [`print_version`].
@@ -1645,25 +1633,6 @@ mod tests {
             },
         });
         print_config(&entry, 1, 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // print_dry_run_ok: does not panic, correct pluralization
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn print_dry_run_ok_single_scenario_does_not_panic() {
-        print_dry_run_ok(1);
-    }
-
-    #[test]
-    fn print_dry_run_ok_multiple_scenarios_does_not_panic() {
-        print_dry_run_ok(3);
-    }
-
-    #[test]
-    fn print_dry_run_ok_zero_scenarios_does_not_panic() {
-        print_dry_run_ok(0);
     }
 
     // -----------------------------------------------------------------------
