@@ -1095,12 +1095,49 @@ async fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn while_runtime_steady_within_5pct_of_baseline() {
+async fn while_runtime_steady_within_10pct_of_baseline() {
     // Perf-regression gate (A10): a scenario with `while:` open the entire
-    // run must produce within 5% of the event count of the same scenario
-    // without `while:`. Both runs are short (300ms) to keep the test fast.
+    // run must produce within 10% of the event count of the same scenario
+    // without `while:`.
+    //
+    // The spec target is 5%; this asserts 10%, and the name says 10% because
+    // 10% is what it checks. 5% is the lab figure on dedicated hardware.
+    //
+    // Each run is 1s rather than the 300ms it used to be, and the length is
+    // load-bearing rather than incidental. The event count is capped by the
+    // duration, so noise is one-sided: a run never exceeds rate × duration,
+    // it only loses ticks to a scheduler stall, and the band's upper half
+    // never does any work. A longer run divides that loss by a larger
+    // denominator. Measured on a 4-core box under 24 spinning processes,
+    // 25 runs at each length, worst of 25:
+    //
+    //   300ms   7.0%   (279/300)    21 ticks lost
+    //   1000ms  4.4%   (956/1000)   44 ticks lost
+    //
+    // Note what those numbers do NOT say. The loss is not a fixed count: if
+    // it were, 21 ticks would be 2.1% at 1000ms rather than 4.4%. A longer
+    // run has more exposure to stalls as well as more samples to absorb one,
+    // and here the second effect only partly outran the first. On other
+    // hardware the loss has measured as strictly fixed (3 ticks at both
+    // lengths, 1.01% -> 0.30%). The improvement holds in both regimes; the
+    // size of it does not transfer, so re-measure rather than re-derive.
+    //
+    // Widening the geometry rather than the band is deliberate: loosening the
+    // tolerance to absorb noise would also absorb the regression this exists
+    // to catch. Do not shorten these runs to speed the suite up without
+    // re-measuring — the margin, not the wall-clock, is the reason for 1s.
+    //
+    // What the length does NOT buy is resolution. The smallest per-tick
+    // regression this gate can see is set by the tick interval, 1/rate, and
+    // duration does not appear in that floor: at rate 1000 a sweep of added
+    // per-tick cost in the gated arm passes at 1000us and fails at 1200us,
+    // and at rate 4000 it passes at 200us and fails at 300us. So this catches
+    // a gated path that became roughly a millisecond per tick slower, against
+    // a wrapper whose real cost is a closure indirection plus a `try_recv` on
+    // an empty channel — tens of nanoseconds. Rate, not duration, is the knob
+    // that tightens that floor, and raising it costs no wall-clock time.
     async fn run_baseline() -> u64 {
-        let entry = metrics_entry("baseline", 1000.0, 300);
+        let entry = metrics_entry("baseline", 1000.0, 1000);
         let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "baseline".to_string(),
@@ -1114,7 +1151,8 @@ async fn while_runtime_steady_within_5pct_of_baseline() {
         )
         .await
         .unwrap();
-        handle.join(Some(Duration::from_secs(2))).unwrap();
+        // Exceeds the 1s run with room for a stalled scheduler to finish.
+        handle.join(Some(Duration::from_secs(5))).unwrap();
         handle.stats_snapshot().total_events
     }
 
@@ -1122,7 +1160,7 @@ async fn while_runtime_steady_within_5pct_of_baseline() {
         let bus = Arc::new(GateBus::new());
         bus.tick(1.0);
         let (rx, init) = bus.subscribe(while_gt_zero());
-        let entry = metrics_entry("gated", 1000.0, 300);
+        let entry = metrics_entry("gated", 1000.0, 1000);
         let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "gated".to_string(),
@@ -1136,7 +1174,8 @@ async fn while_runtime_steady_within_5pct_of_baseline() {
         )
         .await
         .unwrap();
-        handle.join(Some(Duration::from_secs(2))).unwrap();
+        // Exceeds the 1s run with room for a stalled scheduler to finish.
+        handle.join(Some(Duration::from_secs(5))).unwrap();
         handle.stats_snapshot().total_events
     }
 
@@ -1151,8 +1190,6 @@ async fn while_runtime_steady_within_5pct_of_baseline() {
     let gated_f = gated as f64;
     let ratio = gated_f / baseline_f;
     assert!(baseline > 0, "baseline must produce events: got {baseline}");
-    // spec target is 5%; tightened to 10% to absorb CI noise. < 5% is the
-    // lab-target on dedicated hardware.
     assert!(
         (0.90..=1.10).contains(&ratio),
         "gated/baseline event ratio {ratio:.3} outside [0.90, 1.10]; baseline={baseline}, gated={gated}"
