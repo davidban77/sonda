@@ -168,6 +168,47 @@ pub fn time_until_gap_window_end(elapsed: Duration, windows: &[OneShotGap]) -> D
     cursor.saturating_sub(elapsed)
 }
 
+/// Does this generator replay rows that something recorded?
+///
+/// The question `core_loop` needs answered to know whether a row owed during a
+/// stall may be dropped. A recorded row belongs to whoever recorded it and must
+/// be emitted late rather than deleted; tick 2 of a sine is not a thing anyone
+/// recorded, and a recurring `gaps:` is entitled to swallow it.
+///
+/// Exhaustive on purpose — no `_ =>` arm. A new generator that replays captured
+/// data must be added here, and the compiler will say so rather than letting it
+/// inherit the synthetic answer silently.
+pub(crate) fn generator_replays_recorded_rows(gen: &crate::generator::GeneratorConfig) -> bool {
+    use crate::generator::GeneratorConfig as G;
+    match gen {
+        G::CsvReplay { .. } => true,
+        G::Constant { .. }
+        | G::Uniform { .. }
+        | G::Sine { .. }
+        | G::Sawtooth { .. }
+        | G::Sequence { .. }
+        | G::Step { .. }
+        | G::Spike { .. }
+        | G::Flap { .. }
+        | G::Saturation { .. }
+        | G::Leak { .. }
+        | G::Degradation { .. }
+        | G::Steady { .. }
+        | G::SpikeEvent { .. } => false,
+    }
+}
+
+/// The log-signal counterpart of [`generator_replays_recorded_rows`].
+pub(crate) fn log_generator_replays_recorded_rows(
+    gen: &crate::generator::LogGeneratorConfig,
+) -> bool {
+    use crate::generator::LogGeneratorConfig as G;
+    match gen {
+        G::CsvReplay { .. } => true,
+        G::Template { .. } => false,
+    }
+}
+
 /// Resolved configuration for a cardinality spike window.
 ///
 /// Built from a [`CardinalitySpikeConfig`](crate::config::CardinalitySpikeConfig)
@@ -263,6 +304,18 @@ impl DynamicLabel {
 /// Constructed via [`ParsedSchedule::from_base_config`].
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedSchedule {
+    /// Whether this scenario replays rows that something recorded.
+    ///
+    /// Set from the GENERATOR by the signal runners, because that is the only
+    /// place both halves are in scope — `from_base_config` sees the schedule
+    /// and never the generator, so it leaves this `false`.
+    ///
+    /// `core_loop` uses it to decide whether a row owed during a stall is
+    /// emitted late or dropped. Before this existed the decision keyed on
+    /// `gap_windows` being declared, which is a fine proxy for a capture that
+    /// contains silence and no proxy at all for one that does not — a
+    /// fully-present capture under a user-added `gaps:` still lost rows.
+    pub replays_recorded_rows: bool,
     /// Total run duration. `None` means run indefinitely.
     pub total_duration: Option<Duration>,
     /// Optional recurring gap window.
@@ -399,6 +452,8 @@ impl ParsedSchedule {
         };
 
         Ok(Self {
+            // The generator is not in scope here. Signal runners set it.
+            replays_recorded_rows: false,
             total_duration,
             gap_window,
             gap_windows,
