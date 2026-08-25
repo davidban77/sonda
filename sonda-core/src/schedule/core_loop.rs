@@ -422,30 +422,28 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             // owed ROW and emits the backlog late; a run that did not starts at
             // the CLOCK and drops it.
             //
-            // The predicate is exactly "`gap_windows:` is non-empty", and the
-            // name says that and nothing more. It is NOT "this run is replaying
-            // a capture", which is what an earlier name claimed and the
-            // scheduler cannot know: `gap_windows` lives on
-            // `BaseScheduleConfig` and any generator may set it. Both
-            // directions, stated because only one of them used to be:
+            // The predicate is a UNION of two facts, and it needs both:
             //
-            //   absence declared  =>  MAY be a capture, may equally be a
-            //                         hand-written synthetic scenario, which
-            //                         then gets catch-up that `gaps:` alone
-            //                         does not. `gap_window_alignment.rs` proves
-            //                         it — its probe drives a `sequence`
-            //                         generator with no capture in sight.
-            //   absence absent    =>  there are certainly no recorded rows for
-            //                         the wall to outrank. This half is sound.
+            //   the generator replays recorded rows  — set by the signal runner
+            //       from the generator itself, which is the only place that is
+            //       knowable. This is the half that protects a FULLY-PRESENT
+            //       capture: it declares no windows, so the other half is false,
+            //       and before this existed a user-added `gaps:` still deleted
+            //       its rows under a stall.
             //
-            // Known limit, stated rather than papered over: a capture with no
-            // recorded absence declares no windows, so its rows get the
-            // synthetic treatment. Closing that needs a compiler-derived flag
-            // saying the generator IS a replay — a different predicate from
-            // this one, not a better implementation of it.
-            let declared_recorded_absence = !schedule.gap_windows.is_empty();
+            //   `gap_windows:` is declared              — a hand-written
+            //       synthetic scenario may declare recorded absence without
+            //       replaying anything, and it keeps the protection. Dropping
+            //       this half to "replay only" would be a behaviour regression
+            //       for scenarios that shipped with it.
+            //
+            // Neither implies the other, which is why it is an OR and not a
+            // rename. `gap_windows` lives on `BaseScheduleConfig` and any
+            // generator may set it; a capture may contain no silence at all.
+            let has_recorded_rows =
+                schedule.replays_recorded_rows || !schedule.gap_windows.is_empty();
             let resumed_at = elapsed + sleep_for;
-            let mut ticks_elapsed = if declared_recorded_absence {
+            let mut ticks_elapsed = if has_recorded_rows {
                 tick - initial_tick
             } else {
                 // Truncation is a LOWER bound, not the answer. When a window
@@ -467,10 +465,13 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             // In the synthetic branch that total really is at most two, and
             // this comment twice said otherwise. It does not walk a window it
             // was not slept through: `not_yet` is gated on
-            // `!declared_recorded_absence`, which is true exactly when
-            // `gap_windows` is empty — exactly when there is no one-shot window
-            // for `resumed_at` to land inside. With no windows `sleep_for` is
-            // the periodic gap's end and truncation lands at most one slot low.
+            // `!has_recorded_rows`, and since that predicate is an OR,
+            // `!has_recorded_rows` IMPLIES `gap_windows` is empty — so there is
+            // no one-shot window for `resumed_at` to land inside. (Implies, not
+            // "exactly when": the converse fails for a replay that declares no
+            // windows, which is the case the OR was added to cover.) With no
+            // windows `sleep_for` is the periodic gap's end and truncation
+            // lands at most one slot low.
             //
             // It does not walk the BACKLOG either. The walk starts at the owed
             // row and stops at the first slot that is not silent; the backlog
@@ -482,7 +483,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             // not how many rows are owed.
             loop {
                 let slot = base_interval.mul_f64(ticks_elapsed as f64);
-                let not_yet = !declared_recorded_absence && slot < resumed_at;
+                let not_yet = !has_recorded_rows && slot < resumed_at;
                 let still_silent = schedule
                     .gap_window
                     .as_ref()
@@ -1696,6 +1697,7 @@ mod tests {
     /// Build a minimal ParsedSchedule for testing.
     fn minimal_schedule(duration: Option<Duration>) -> ParsedSchedule {
         ParsedSchedule {
+            replays_recorded_rows: false,
             gap_windows: Vec::new(),
             total_duration: duration,
             gap_window: None,
@@ -1791,6 +1793,7 @@ mod tests {
     #[tokio::test]
     async fn loop_suppresses_events_during_gap() {
         let schedule = ParsedSchedule {
+            replays_recorded_rows: false,
             gap_windows: Vec::new(),
             total_duration: Some(Duration::from_secs(2)),
             gap_window: Some(GapWindow {
@@ -1842,6 +1845,7 @@ mod tests {
     #[tokio::test]
     async fn loop_increases_rate_during_burst() {
         let schedule = ParsedSchedule {
+            replays_recorded_rows: false,
             gap_windows: Vec::new(),
             total_duration: Some(Duration::from_secs(1)),
             gap_window: None,
@@ -1982,6 +1986,7 @@ mod tests {
         use crate::schedule::CardinalitySpikeWindow;
 
         let schedule = ParsedSchedule {
+            replays_recorded_rows: false,
             gap_windows: Vec::new(),
             total_duration: Some(Duration::from_millis(100)),
             gap_window: None,

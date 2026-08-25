@@ -101,7 +101,11 @@ The two kinds of silence are judged against different clocks, and the difference
 
 **A recurring `gaps:` is a wall-clock interval.** It simulates an exporter that is down from here to here, so a run that has fallen behind is genuinely inside the outage and stays silent for it.
 
-**When a scenario declares both**, the recurring gap is still judged by the wall — but a row it did not cover is emitted late rather than dropped. A recorded row outranks a simulated outage. Rows whose own slot really does sit inside either silence stay suppressed; only rows the run merely owes are caught up.
+**When a scenario has recorded rows and a recurring gap**, the gap is still judged by the wall — but a row it did not cover is emitted late rather than dropped. A recorded row outranks a simulated outage: a row the gap did not cover is caught up rather than dropped.
+
+Which rows a *recurring* gap covers is a wall-clock question, though, and that has a consequence worth knowing. `gap_windows:` are judged against the row's own slot, so a row inside one stays silent however late the run is — that is the guarantee a replay depends on. `gaps:` is judged against real time, so a run that has fallen behind can reach a row whose slot sits inside the outage *after* the outage has ended, and emit it. That is the same "an outage is happening now" semantics described above, seen from the other side; if you need silence pinned to particular rows, declare it with `gap_windows:`.
+
+A scenario counts as having recorded rows if it **replays a capture** (`csv_replay`, or `log_csv_replay` for logs) **or** declares `gap_windows:`. Either is enough. The first covers a capture that happens to contain no silence at all — every cell present, so no windows to declare — which would otherwise be treated as synthetic and lose rows to a slow sink. The second covers a hand-written scenario that describes recorded absence without replaying a file.
 
 This pairs with `csv_replay`: a blank cell in the CSV means the sample was absent, and the window is what turns that absence back into silence. Sonda refuses a scenario where the two disagree in either direction — a blank cell with no window over it, or a window over a row that has a value. Today you write both by hand, or emit them from your own tooling; a `sonda new` importer that captures a Prometheus range and emits the pair is in progress, and this page will say so when it ships.
 

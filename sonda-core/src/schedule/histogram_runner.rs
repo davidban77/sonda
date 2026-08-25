@@ -40,7 +40,11 @@ pub async fn run_with_sink_gated(
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: Option<GateContext>,
 ) -> Result<(), SondaError> {
-    let schedule = ParsedSchedule::from_base_config(&config.base)?;
+    let mut schedule = ParsedSchedule::from_base_config(&config.base)?;
+    // Stated rather than inherited from the default: this signal has no
+    // generator field, so nothing here can replay recorded rows. See
+    // runner.rs, where the value is derived from the generator.
+    schedule.replays_recorded_rows = false;
 
     // Defaults resolution is shared with every other consumer (the wasm
     // playground facade included) via from_config.

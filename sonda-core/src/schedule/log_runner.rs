@@ -44,7 +44,11 @@ pub async fn run_logs_with_sink_gated(
     // Parse the schedule (duration, gap/burst/spike windows) from the shared
     // BaseScheduleConfig. This is the single authoritative parsing location —
     // no duplication with the metric runner.
-    let schedule = ParsedSchedule::from_base_config(&config.base)?;
+    let mut schedule = ParsedSchedule::from_base_config(&config.base)?;
+    // Set here and not in `from_base_config`, which never sees the
+    // generator. `core_loop` needs it to know whether a row owed during a
+    // stall may be dropped.
+    schedule.replays_recorded_rows = super::log_generator_replays_recorded_rows(&config.generator);
 
     // Build log generator and encoder from config.
     let generator = create_log_generator(&config.generator)?;

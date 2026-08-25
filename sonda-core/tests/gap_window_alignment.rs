@@ -579,6 +579,93 @@ async fn a_stall_under_both_silences_still_owes_every_row_outside_them() {
     );
 }
 
+/// A capture with NO recorded silence still owes its rows under a stall.
+///
+/// The hole #571 shipped with, closed here. The protection used to key on
+/// `gap_windows:` being declared, which is a good proxy for a capture that
+/// contains silence and no proxy at all for one that does not. A fully-present
+/// capture — every cell has a value, so it declares no windows — replayed under
+/// a user-added `gaps:` was treated as synthetic, and a slow sink deleted the
+/// rows owed during the catch-up.
+///
+/// Same shape as the row-frame probe, but the generator is a real
+/// `csv_replay` over a dense CSV and the ONLY silence is the recurring gap.
+/// `gap_windows` is empty, so this passes only if the predicate consults the
+/// generator.
+///
+/// Only rows 2 and 3 are asserted, and the reason the others are left alone is
+/// worth stating, because the obvious version of it is wrong.
+///
+/// `gaps: every 1s for 200ms` puts the silence at the TAIL of each cycle —
+/// `[800ms, 1000ms)` and `[1800ms, 2000ms)` — so the slots inside a silence are
+/// tick 4 (800ms) and tick 9 (1800ms). Not 5: its slot is 1000ms and the window
+/// is half-open.
+///
+/// And tick 4 is EMITTED anyway. Measured at this head, played is
+/// `[0,1,2,3,4,5,6,7,8,10,11]` — only 9 is missing. A recurring gap is judged
+/// against WALL time on entry, so by the time the stalled loop reaches row 4
+/// real time is past 1000ms and the gap is over. That is `gaps:` doing what it
+/// is documented to do — simulate an outage happening *now* — and not a defect,
+/// but it means "rows whose slot is inside the silence stay suppressed" is a
+/// guarantee only `gap_windows:` makes. Asserting it here would pin behaviour
+/// the wall frame does not promise.
+#[tokio::test]
+async fn a_fully_present_capture_still_owes_its_rows_under_a_recurring_gap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let csv = dir.path().join("dense.csv");
+    // 200ms grid, every slot present. Row n carries value n, so a deleted row
+    // is identifiable by its absence from the played list.
+    let mut body = String::from("timestamp,v\n");
+    for n in 0..12 {
+        body.push_str(&format!("{:.3},{}\n", n as f64 * 0.2, n));
+    }
+    std::fs::write(&csv, body).expect("write csv");
+
+    let mut config = ladder_scenario(
+        "2.4s",
+        Some(GapConfig {
+            every: "1s".to_string(),
+            r#for: "200ms".to_string(),
+        }),
+        None,
+    );
+    config.generator = GeneratorConfig::CsvReplay {
+        file: csv.to_string_lossy().into_owned(),
+        column: Some(1),
+        columns: None,
+        repeat: Some(false),
+        timescale: None,
+        default_metric_name: None,
+    };
+
+    // Premise: the fixture really declares no recorded absence. Without this
+    // the test could pass through the OR's other half and prove nothing.
+    assert!(
+        config.base.gap_windows.is_none(),
+        "premise: this capture must declare NO gap_windows, or the union's \
+         other half satisfies the test and the generator half goes unexercised"
+    );
+
+    let (mut sink, seen) = stalling_sink(2, Duration::from_millis(600));
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+
+    let seen = seen.lock().expect("timing sink mutex poisoned").clone();
+    let played: Vec<u64> = seen.iter().map(|e| e.value as u64).collect();
+
+    assert!(
+        played.contains(&2),
+        "row 2's slot (400ms) is outside the gap [800ms, 1000ms), so a stall \
+         must not delete it; played {played:?}"
+    );
+    assert!(
+        played.contains(&3),
+        "row 3's slot (600ms) is outside the gap, so a stall must not delete \
+         it; played {played:?}"
+    );
+}
+
 /// WALL FRAME: the same stall, and `gaps:` deliberately behaves the other way.
 ///
 /// This is the other half of the split, and it is what makes the pair

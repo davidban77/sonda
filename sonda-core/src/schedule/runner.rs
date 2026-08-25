@@ -44,7 +44,11 @@ pub async fn run_with_sink_gated(
     upstream_bus: Option<Arc<GateBus>>,
     gate_ctx: Option<GateContext>,
 ) -> Result<(), SondaError> {
-    let schedule = ParsedSchedule::from_base_config(&config.base)?;
+    let mut schedule = ParsedSchedule::from_base_config(&config.base)?;
+    // Set here and not in `from_base_config`, which never sees the
+    // generator. `core_loop` needs it to know whether a row owed during a
+    // stall may be dropped.
+    schedule.replays_recorded_rows = super::generator_replays_recorded_rows(&config.generator);
 
     let generator = create_generator(&config.generator, config.rate)?;
     let generator =
