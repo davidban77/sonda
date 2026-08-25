@@ -1106,18 +1106,36 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     // Each run is 1s rather than the 300ms it used to be, and the length is
     // load-bearing rather than incidental. The event count is capped by the
     // duration, so noise is one-sided: a run never exceeds rate × duration,
-    // it only loses ticks to a scheduler stall. That loss is roughly a fixed
-    // number of ticks regardless of how long the run is, so a longer run
-    // divides the same absolute hiccup by a larger denominator. Measured on
-    // a 4-core box under 24 spinning processes, 25 runs each:
+    // it only loses ticks to a scheduler stall, and the band's upper half
+    // never does any work. A longer run divides that loss by a larger
+    // denominator. Measured on a 4-core box under 24 spinning processes,
+    // 25 runs at each length, worst of 25:
     //
-    //   300ms   worst deviation 7.0%   (279/300)
-    //   1000ms  worst deviation 4.4%   (956/1000)
+    //   300ms   7.0%   (279/300)    21 ticks lost
+    //   1000ms  4.4%   (956/1000)   44 ticks lost
+    //
+    // Note what those numbers do NOT say. The loss is not a fixed count: if
+    // it were, 21 ticks would be 2.1% at 1000ms rather than 4.4%. A longer
+    // run has more exposure to stalls as well as more samples to absorb one,
+    // and here the second effect only partly outran the first. On other
+    // hardware the loss has measured as strictly fixed (3 ticks at both
+    // lengths, 1.01% -> 0.30%). The improvement holds in both regimes; the
+    // size of it does not transfer, so re-measure rather than re-derive.
     //
     // Widening the geometry rather than the band is deliberate: loosening the
     // tolerance to absorb noise would also absorb the regression this exists
     // to catch. Do not shorten these runs to speed the suite up without
     // re-measuring — the margin, not the wall-clock, is the reason for 1s.
+    //
+    // What the length does NOT buy is resolution. The smallest per-tick
+    // regression this gate can see is set by the tick interval, 1/rate, and
+    // duration does not appear in that floor: at rate 1000 a sweep of added
+    // per-tick cost in the gated arm passes at 1000us and fails at 1200us,
+    // and at rate 4000 it passes at 200us and fails at 300us. So this catches
+    // a gated path that became roughly a millisecond per tick slower, against
+    // a wrapper whose real cost is a closure indirection plus a `try_recv` on
+    // an empty channel — tens of nanoseconds. Rate, not duration, is the knob
+    // that tightens that floor, and raising it costs no wall-clock time.
     async fn run_baseline() -> u64 {
         let entry = metrics_entry("baseline", 1000.0, 1000);
         let cancel = CancellationToken::new();
