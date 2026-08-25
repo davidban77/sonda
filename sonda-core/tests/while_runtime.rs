@@ -1135,21 +1135,45 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     // the knob for resolution, and it costs no wall-clock time.
     //
     // Hence rate 2000 here rather than the 1000 this started at: it halves the
-    // floor to ~500us. It is NOT set higher, and that ceiling is measured
-    // rather than assumed. Raising the rate is only free while the baseline
-    // arm still saturates — once the tick interval approaches what the host
-    // can schedule under load, BOTH arms start losing ticks, the noise stops
-    // being one-sided, and the band's upper half comes alive. Same box, same
-    // 24 spinners, 1s runs, worst deviation over 25 samples:
+    // floor to ~500us. It is NOT set higher, and the reason is a ceiling that
+    // was measured rather than assumed. Raising the rate is only free while the
+    // baseline arm still saturates at rate × duration. Once the tick interval
+    // approaches what the host can schedule under load, BOTH arms start losing
+    // ticks, the noise stops being one-sided, and the band's upper half comes
+    // alive. One session, 24 spinners on 4 cores, 1s runs, 25 samples per rate,
+    // the three rates interleaved so drifting load hits each equally:
     //
-    //   rate 1000   (1000us tick)   4.4%   baseline saturated 25/25
-    //   rate 2000   ( 500us tick)   2.2%   baseline saturated 41/60
-    //   rate 4000   ( 250us tick)   8.7%   baseline saturated 17/25, max ratio 1.0566
+    //   rate 1000  (1000us tick)   base sat 20/25   max ratio 1.0040   worst dev 5.62%
+    //   rate 2000  ( 500us tick)   base sat 16/25   max ratio 1.0106   worst dev 1.20%
+    //   rate 4000  ( 250us tick)   base sat  7/25   max ratio 1.0501   worst dev 5.01%
     //
-    // At 4000 the worst sample was 0.9127 — 1.3 points from failing — which
-    // would have reintroduced exactly the flake this geometry was widened to
-    // remove. 2000 improves both axes at once; 4000 trades one for the other.
-    // Re-measure before moving it again, on the host that will run it.
+    // Read the first two columns, not the third. Baseline saturation falls
+    // monotonically and the maximum ratio rises monotonically: that is the
+    // ceiling, and it reproduces on other hardware. Worst deviation does NOT
+    // order consistently — it is a tail statistic over 25 samples, it puts 1000
+    // worse than 2000 here, and on a quieter host it comes out monotonic
+    // instead. An earlier version of this comment drew its conclusion from that
+    // column while also taking one of its three rows from a different session,
+    // which is how it reached the claim that 2000 beats 1000 on every axis. It
+    // does not. What 2000 buys is half the floor at a cost that is still far
+    // inside the band; at 4000 the upper half of the band is demonstrably live.
+    //
+    // Re-measure before moving it again, on the host that will run it, in one
+    // session, and judge by saturation rather than by the tail.
+    //
+    // Though there is little left to move it to, which is worth knowing before
+    // anyone tries. The loop is deadline-paced (`emit_at = max(next_deadline,
+    // now)`), so for ANY per-tick cost below one tick interval it still meets
+    // every deadline and emits exactly rate × duration events — identically,
+    // not approximately. No rate buys sensitivity below one interval, and the
+    // interval cannot go below what the host schedules under load, which is the
+    // ceiling above. ~500us is therefore at or near the best this instrument
+    // can do here. Timing the run instead would not help either: the pacing is
+    // deadline-driven rather than work-driven, so elapsed time saturates
+    // exactly as the count does. A gate that could see a sub-interval
+    // regression on the `while:` path would have to microbenchmark the wrapped
+    // against the unwrapped `tick_fn` with no scheduler running — a different
+    // instrument, not a further turn of this one.
     async fn run_baseline() -> u64 {
         let entry = metrics_entry("baseline", 2000.0, 1000);
         let cancel = CancellationToken::new();
