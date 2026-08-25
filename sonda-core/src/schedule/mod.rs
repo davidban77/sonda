@@ -665,6 +665,25 @@ mod tests {
         assert!(!is_in_gap_window(secs(9.999), &w));
     }
 
+    /// No windows means no extra sleep — the step the scheduler's iteration
+    /// bound rests on.
+    ///
+    /// `core_loop`'s resume walk claims that in the SYNTHETIC branch it
+    /// advances at most twice. That holds because `not_yet` is live exactly
+    /// when `gap_windows` is empty, and with no windows `sleep_for` is the
+    /// periodic gap's end alone, so truncation lands at most one slot low.
+    /// If this ever returned non-zero for an empty list, `resumed_at` could
+    /// land inside a silence the walk would then cross one slot at a time and
+    /// the comment there would be wrong again. Asserted rather than reasoned.
+    #[test]
+    fn time_until_gap_window_end_with_no_windows_is_zero() {
+        assert_eq!(time_until_gap_window_end(secs(12.0), &[]), Duration::ZERO);
+        assert_eq!(
+            time_until_gap_window_end(Duration::ZERO, &[]),
+            Duration::ZERO
+        );
+    }
+
     /// Inside a window, the wait runs to that window's end.
     #[test]
     fn time_until_gap_window_end_inside_returns_remaining() {

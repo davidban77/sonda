@@ -418,19 +418,34 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             // frame with it. David ruled: a recorded row always wins. Deleting
             // one is a defect wherever it happens, `gaps:` included.
             //
-            // So a run that declared recorded absence starts the walk at the
+            // So a run that DECLARED recorded absence starts the walk at the
             // owed ROW and emits the backlog late; a run that did not starts at
-            // the CLOCK and drops it. `gap_windows:` is the declaration — it is
-            // what a capture emits for the silence it recorded, and its absence
-            // means there are no recorded rows for the wall to outrank.
+            // the CLOCK and drops it.
+            //
+            // The predicate is exactly "`gap_windows:` is non-empty", and the
+            // name says that and nothing more. It is NOT "this run is replaying
+            // a capture", which is what an earlier name claimed and the
+            // scheduler cannot know: `gap_windows` lives on
+            // `BaseScheduleConfig` and any generator may set it. Both
+            // directions, stated because only one of them used to be:
+            //
+            //   absence declared  =>  MAY be a capture, may equally be a
+            //                         hand-written synthetic scenario, which
+            //                         then gets catch-up that `gaps:` alone
+            //                         does not. `gap_window_alignment.rs` proves
+            //                         it — its probe drives a `sequence`
+            //                         generator with no capture in sight.
+            //   absence absent    =>  there are certainly no recorded rows for
+            //                         the wall to outrank. This half is sound.
             //
             // Known limit, stated rather than papered over: a capture with no
-            // recorded absence emits no `gap_windows:`, so its rows get the
-            // synthetic treatment. Closing that needs the scheduler to know the
-            // generator is a replay, which it does not today.
-            let replaying_capture = !schedule.gap_windows.is_empty();
+            // recorded absence declares no windows, so its rows get the
+            // synthetic treatment. Closing that needs a compiler-derived flag
+            // saying the generator IS a replay — a different predicate from
+            // this one, not a better implementation of it.
+            let declared_recorded_absence = !schedule.gap_windows.is_empty();
             let resumed_at = elapsed + sleep_for;
-            let mut ticks_elapsed = if replaying_capture {
+            let mut ticks_elapsed = if declared_recorded_absence {
                 tick - initial_tick
             } else {
                 // Truncation is a LOWER bound, not the answer. When a window
@@ -444,20 +459,30 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             };
             // Which tick resumes is asked, not computed.
             //
-            // Iterations: for a synthetic run this is normally one or two —
-            // truncation lands at most one slot low, and `resumed_at` is past
-            // the end of the silence that was slept through. NOT "at most
-            // twice", though: `sleep_for` is `max(periodic, one_shot)`, and a
-            // one-shot window starting at or after the periodic gap's end
-            // contributes zero to that max because `elapsed` is not yet inside
-            // it, so `resumed_at` can land inside a window the walk then steps
-            // across one slot at a time. For a capture replay it walks the
-            // backlog, which is O(rows owed) in one burst — the same shape as
-            // the enumeration this branch already paid to remove once, at a
-            // smaller constant, and bounded by the stall rather than by config.
+            // Iterations: the number of consecutive silent slots at or after
+            // the starting tick, plus at most one for truncation in the
+            // synthetic branch. So O(contiguous silence / interval) — bounded
+            // by CONFIG, since the config is what sets how long a silence runs.
+            //
+            // In the synthetic branch that total really is at most two, and
+            // this comment twice said otherwise. It does not walk a window it
+            // was not slept through: `not_yet` is gated on
+            // `!declared_recorded_absence`, which is true exactly when
+            // `gap_windows` is empty — exactly when there is no one-shot window
+            // for `resumed_at` to land inside. With no windows `sleep_for` is
+            // the periodic gap's end and truncation lands at most one slot low.
+            //
+            // It does not walk the BACKLOG either. The walk starts at the owed
+            // row and stops at the first slot that is not silent; the backlog
+            // is emitted by the outer loop, one iteration per event, which is
+            // emission cost rather than walk cost. Measured over a six-case
+            // sweep: 2, 14 and 3 iterations for replay windows of 1.8s, 2.6s
+            // and 2.8s at a 200ms step, with a large backlog owed in all three
+            // — the spread tracks where the owed tick sits inside the silence,
+            // not how many rows are owed.
             loop {
                 let slot = base_interval.mul_f64(ticks_elapsed as f64);
-                let not_yet = !replaying_capture && slot < resumed_at;
+                let not_yet = !declared_recorded_absence && slot < resumed_at;
                 let still_silent = schedule
                     .gap_window
                     .as_ref()

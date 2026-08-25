@@ -168,7 +168,7 @@ pub fn write_csv(grid: Grid, series: &[NormalizedSeries]) -> Result<String, Sond
                 // treats it as a sample that is present and happens to be NaN.
                 // Only a BLANK cell is absence, and only a blank is
                 // cross-checked against a declared `gap_windows:` entry
-                // (`csv_replay::parse_column`). Emitting "NaN" here therefore
+                // (`csv_replay::column_values_and_gaps`). Emitting "NaN" here therefore
                 // reproduces the value and the timing but NOT the silence.
                 // Wiring this side to emit blanks plus the matching windows is
                 // WP18b's job; until then this is the honest half.

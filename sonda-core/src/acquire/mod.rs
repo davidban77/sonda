@@ -1,8 +1,12 @@
 //! Capture a signal out of a Prometheus-compatible TSDB and replay it exactly.
 //!
-//! This is the acquisition half of `sonda new --from-prometheus`. It fetches a
-//! PromQL range query, resamples the result onto the requested step grid, and
-//! hands back data the CSV writer turns into a `csv_replay` scenario.
+//! It fetches a PromQL range query, resamples the result onto the requested
+//! step grid, and hands back data the CSV writer turns into a `csv_replay`
+//! scenario.
+//!
+//! No CLI surface reaches this yet — `sonda new` offers `--template` and
+//! `--from <FILE>` and nothing else. This module is the acquisition half of an
+//! importer still being built; do not name a flag here until one exists.
 //!
 //! # Replay-only — there is no fitting in this path
 //!

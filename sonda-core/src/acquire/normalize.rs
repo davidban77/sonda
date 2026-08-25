@@ -19,7 +19,7 @@
 //! overtaken, not as a live argument. Two of the three reasons this module
 //! originally gave for rejecting absent rows no longer hold:
 //!
-//! * *"A blank shortens the value vector."* It did. `parse_column` now writes
+//! * *"A blank shortens the value vector."* It did. `column_values_and_gaps` now writes
 //!   a `NaN` placeholder for a blank cell and reports its row index instead of
 //!   skipping it, so the grid no longer shifts and later samples no longer
 //!   arrive a step early. Fixed in 1857aa5.
