@@ -593,9 +593,22 @@ async fn a_stall_under_both_silences_still_owes_every_row_outside_them() {
 /// `gap_windows` is empty, so this passes only if the predicate consults the
 /// generator.
 ///
-/// Ticks 4 and 5 are deliberately unasserted: their slots sit inside the
-/// simulated outage, and a row the user covered is covered. The claim is
-/// narrower — falling behind is not itself a reason to drop a recorded row.
+/// Only rows 2 and 3 are asserted, and the reason the others are left alone is
+/// worth stating, because the obvious version of it is wrong.
+///
+/// `gaps: every 1s for 200ms` puts the silence at the TAIL of each cycle —
+/// `[800ms, 1000ms)` and `[1800ms, 2000ms)` — so the slots inside a silence are
+/// tick 4 (800ms) and tick 9 (1800ms). Not 5: its slot is 1000ms and the window
+/// is half-open.
+///
+/// And tick 4 is EMITTED anyway. Measured at this head, played is
+/// `[0,1,2,3,4,5,6,7,8,10,11]` — only 9 is missing. A recurring gap is judged
+/// against WALL time on entry, so by the time the stalled loop reaches row 4
+/// real time is past 1000ms and the gap is over. That is `gaps:` doing what it
+/// is documented to do — simulate an outage happening *now* — and not a defect,
+/// but it means "rows whose slot is inside the silence stay suppressed" is a
+/// guarantee only `gap_windows:` makes. Asserting it here would pin behaviour
+/// the wall frame does not promise.
 #[tokio::test]
 async fn a_fully_present_capture_still_owes_its_rows_under_a_recurring_gap() {
     let dir = tempfile::tempdir().expect("tempdir");
