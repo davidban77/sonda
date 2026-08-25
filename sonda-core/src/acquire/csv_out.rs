@@ -28,9 +28,133 @@
 //! `\n` or `\r` is rejected with the offending label named.
 
 use super::normalize::{Grid, NormalizedSeries};
+use crate::config::GapWindowConfig;
+use crate::generator::csv_replay::tick_in_window;
 use crate::{ConfigError, SondaError};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+
+/// The `gap_windows:` entries describing one column's absent grid points.
+///
+/// A blank cell means "the database reported nothing here". On the way back in,
+/// `csv_replay` requires every blank to sit under a declared window and every
+/// declared window to sit over blanks — `cross_check_gap_windows` refuses a
+/// capture where the two disagree in either direction. So the blanks and the
+/// windows are one artifact, and this is the half that produces the windows.
+///
+/// One window per maximal run of absent points, in row order.
+///
+/// # Where the window ends, and why not at the obvious place
+///
+/// Containment is `t * step >= at && t * step < end` ([`tick_in_window`]). For a
+/// run of rows `a..=b` the obvious encoding is `at = a*step`, `for = (b+1-a)*step`,
+/// putting `end` exactly on row `b+1`'s instant so the half-open interval
+/// excludes it.
+///
+/// That encoding is nearly right, and the way it fails is worth stating
+/// precisely, because the obvious description of it is wrong.
+///
+/// In raw `f64` the sum `at + for` is frequently a hair above `(b+1)*step` —
+/// on a 10 Hz capture, rows 2..=8 give `0.9000000000000001` against an exact
+/// `0.9`. That alone would put row `b+1` inside the window about 10% of the
+/// time. But durations do not travel as `f64`: `parse_duration` quantises to
+/// whole microseconds and **truncates**, which rounds those overshoots back
+/// down and hides almost all of them.
+///
+/// Almost. Truncating `at` and `for` separately can also shift the sum the
+/// other way, and swept over 78000 combinations of run position, run length and
+/// step through the real parse path, the obvious encoding still fails 11 times
+/// — at `step` of `0.3` and `0.007`, on runs of 5 to 15 rows. Rare enough to
+/// survive a small test sweep, common enough to reach a user.
+///
+/// So the boundary goes where neither float error nor microsecond truncation
+/// can reach it: the **midpoint** between the last absent point and the next
+/// one, `end = (b + 0.5) * step`. Row `b` stays covered by half a step and row
+/// `b+1` stays outside by half a step, rather than both sitting a rounding
+/// error from the edge. Zero failures over the same 78000 combinations.
+///
+/// # It checks its own work
+///
+/// Durations round-trip through `parse_duration`, which quantises to whole
+/// microseconds and truncates. Whether half a step survives that depends on the
+/// step, so rather than guess a safe minimum this re-parses what it built and
+/// asks [`tick_in_window`] — the same predicate the cross-check uses — whether
+/// the result covers exactly the rows it meant to. A window that does not is an
+/// error here rather than a rejected capture later.
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] if the emitted window does not survive its own
+/// round-trip, which in practice means a step too fine for microsecond
+/// durations to express.
+pub fn gap_windows_for(values: &[f64], step_secs: f64) -> Result<Vec<GapWindowConfig>, SondaError> {
+    let mut windows = Vec::new();
+    let mut row = 0usize;
+
+    while row < values.len() {
+        if !values[row].is_nan() {
+            row += 1;
+            continue;
+        }
+        let first = row;
+        while row < values.len() && values[row].is_nan() {
+            row += 1;
+        }
+        let last = row - 1;
+
+        let at_secs = first as f64 * step_secs;
+        let end_secs = (last as f64 + 0.5) * step_secs;
+        let window = GapWindowConfig {
+            at: format!("{at_secs}s"),
+            r#for: format!("{}s", end_secs - at_secs),
+        };
+        verify_window(&window, first, last, values.len(), step_secs)?;
+        windows.push(window);
+    }
+
+    Ok(windows)
+}
+
+/// Confirm an emitted window covers rows `first..=last` and nothing else.
+///
+/// Drives the real parser and the real containment predicate rather than
+/// re-deriving either. Only the two rows on the boundary can be wrong — the
+/// interior is covered by construction and distant rows are a full run away —
+/// so this checks the run and its two neighbours.
+fn verify_window(
+    window: &GapWindowConfig,
+    first: usize,
+    last: usize,
+    row_count: usize,
+    step_secs: f64,
+) -> Result<(), SondaError> {
+    let (at, len) = window.resolve()?;
+    let pair = (at.as_secs_f64(), at.as_secs_f64() + len.as_secs_f64());
+
+    let complain = |row: usize, expected: bool| {
+        SondaError::Config(ConfigError::invalid(format!(
+            "acquire: emitted gap window {{at: {}, for: {}}} for absent rows {first}..={last} \
+             {} row {row} after round-tripping through duration parsing at a {step_secs}s step. \
+             This is a bug in window emission, not in the capture.",
+            window.at,
+            window.r#for,
+            if expected { "does not cover" } else { "covers" },
+        )))
+    };
+
+    for row in [first, last] {
+        if !tick_in_window(row, step_secs, pair) {
+            return Err(complain(row, true));
+        }
+    }
+    if first > 0 && tick_in_window(first - 1, step_secs, pair) {
+        return Err(complain(first - 1, false));
+    }
+    if last + 1 < row_count && tick_in_window(last + 1, step_secs, pair) {
+        return Err(complain(last + 1, false));
+    }
+    Ok(())
+}
 
 /// Build one column header for a series' label set.
 ///
@@ -160,22 +284,28 @@ pub fn write_csv(grid: Grid, series: &[NormalizedSeries]) -> Result<String, Sond
         for s in series {
             out.push(',');
             match s.values.get(n) {
-                // Display for f64 round-trips through parse. No formatting
-                // decision is made about the value itself.
+                // A BLANK cell is absence. A literal "NaN" is not: the reader
+                // treats it as a sample that is present and happens to be NaN,
+                // so it reproduces value and timing but not silence, and an
+                // `absent()` alert that fired against the original would not
+                // fire against the replay.
                 //
-                // What a literal "NaN" MEANS on the way back in is the
-                // opposite of what this comment used to claim: the reader
-                // treats it as a sample that is present and happens to be NaN.
-                // Only a BLANK cell is absence, and only a blank is
-                // cross-checked against a declared `gap_windows:` entry
-                // (`csv_replay::column_values_and_gaps`). Emitting "NaN" here therefore
-                // reproduces the value and the timing but NOT the silence.
-                // Wiring this side to emit blanks plus the matching windows is
-                // WP18b's job; until then this is the honest half.
+                // Blanks are only half of it. `csv_replay::column_values_and_gaps`
+                // cross-checks every blank against a declared `gap_windows:`
+                // entry and refuses a capture where the two disagree, so a file
+                // written here is only loadable alongside the windows
+                // [`gap_windows_for`] derives from the same values. Emitting one
+                // without the other produces a capture the engine rejects.
+                //
+                // Display for f64 round-trips through parse. No formatting
+                // decision is made about a value that is present.
+                Some(v) if v.is_nan() => {}
                 Some(v) => {
                     let _ = write!(out, "{v}");
                 }
-                None => out.push_str("NaN"),
+                // Series shorter than the grid: the missing tail is absence
+                // too, and is covered by the same windows.
+                None => {}
             }
         }
         out.push('\n');
@@ -415,15 +545,145 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_is_written_as_nan_so_the_row_count_matches_the_grid() {
-        // The property the whole gap decision rests on: one row per grid
-        // point, whether or not there was data.
+    fn a_gap_is_written_as_a_blank_and_still_holds_its_row() {
+        // Two properties at once. One row per grid point whether or not there
+        // was data — the alignment the whole gap decision rests on — and the
+        // absent cell written BLANK rather than "NaN", because only a blank
+        // reads back as absence.
         let g = Grid::new(0.0, 30.0, 10.0).expect("grid");
         let csv =
             write_csv(g, &[norm(&[("__name__", "m")], &[1.0, f64::NAN, 3.0, 4.0])]).expect("csv");
         let rows: Vec<&str> = csv.lines().skip(1).collect();
         assert_eq!(rows.len(), 4, "one row per grid point, gap included");
-        assert_eq!(rows[1], "10.000,NaN");
+        assert_eq!(rows[1], "10.000,");
+    }
+
+    /// The blanks and the windows are one artifact, so they are tested as one.
+    ///
+    /// Drives the real reader (`column_values_and_gaps`) and the real validator
+    /// (`cross_check_gap_windows`) over a file this module wrote. A window that
+    /// is off by one row — or one float — fails here rather than at a user's
+    /// first run.
+    fn round_trip(values: &[f64], step: f64) {
+        let grid = Grid::new(0.0, step * (values.len() - 1) as f64, step).expect("grid");
+        let csv = write_csv(grid, &[norm(&[("__name__", "m")], values)]).expect("csv");
+        let windows = gap_windows_for(values, step).expect("windows");
+
+        // Column 1: index 0 is the `timestamp` column every emitted file leads
+        // with, so reading 0 here would compare against the grid instead of the
+        // series and find no blanks at all.
+        let (read_back, blanks) =
+            crate::generator::csv_replay::column_values_and_gaps(&csv, 1).expect("read back");
+
+        let expected_blanks: Vec<usize> = values
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.is_nan())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(blanks, expected_blanks, "blank rows survive the write/read");
+        assert_eq!(read_back.len(), values.len(), "grid stays aligned");
+        for (i, (got, want)) in read_back.iter().zip(values).enumerate() {
+            if want.is_nan() {
+                assert!(got.is_nan(), "row {i} should read back absent");
+            } else {
+                assert_eq!(got, want, "row {i} value");
+            }
+        }
+
+        let pairs: Vec<(f64, f64)> = windows
+            .iter()
+            .map(|w| {
+                let (at, len) = w.resolve().expect("resolve");
+                (at.as_secs_f64(), at.as_secs_f64() + len.as_secs_f64())
+            })
+            .collect();
+        let playback = crate::generator::csv_replay::Playback {
+            row_count: values.len(),
+            repeat: false,
+            last_tick: Some(values.len() as u64 - 1),
+            bursts: false,
+        };
+        crate::generator::csv_replay::cross_check_gap_windows(&blanks, &playback, &pairs, step)
+            .unwrap_or_else(|e| {
+                panic!("emitted windows {windows:?} rejected for values {values:?} at step {step}: {e}")
+            });
+    }
+
+    #[test]
+    fn a_capture_with_gaps_round_trips_through_the_real_reader_and_cross_check() {
+        let n = f64::NAN;
+        // Leading, interior, trailing, adjacent runs, and a fully absent column.
+        round_trip(&[n, 1.0, 2.0, 3.0], 1.0);
+        round_trip(&[1.0, n, n, 4.0], 1.0);
+        round_trip(&[1.0, 2.0, 3.0, n], 1.0);
+        round_trip(&[1.0, n, 3.0, n, 5.0], 1.0);
+        round_trip(&[n, n, n, n], 1.0);
+        round_trip(&[1.0, 2.0, 3.0, 4.0], 1.0);
+    }
+
+    #[test]
+    fn the_window_boundary_survives_steps_that_break_the_obvious_encoding() {
+        // These eleven (step, run) pairs are the ones where `for = (b+1-a)*step`
+        // — the obvious encoding — puts row b+1 inside the window after
+        // microsecond truncation. They are named individually because they are
+        // rare: a sweep of short runs at common steps passes under BOTH
+        // encodings, so a test built from round numbers would not discriminate.
+        // Verified by mutation: reverting the emitter to (b+1) fails on these.
+        const OBVIOUS_ENCODING_FAILS_HERE: &[(f64, usize, usize)] = &[
+            (0.3, 4, 12),
+            (0.3, 8, 22),
+            (0.007, 1, 10),
+            (0.007, 3, 7),
+            (0.007, 3, 12),
+            (0.007, 5, 14),
+            (0.007, 6, 10),
+            (0.007, 6, 14),
+            (0.007, 6, 15),
+            (0.007, 11, 20),
+            (0.007, 12, 21),
+        ];
+        for &(step, first, last) in OBVIOUS_ENCODING_FAILS_HERE {
+            let mut values = vec![1.0f64; last + 3];
+            for v in values.iter_mut().take(last + 1).skip(first) {
+                *v = f64::NAN;
+            }
+            round_trip(&values, step);
+        }
+
+        // Plus a broad sweep, so the named cases do not become the only
+        // coverage if the emitter changes shape.
+        for &step in &[0.1, 0.3, 1.0 / 3.0, 0.05, 0.007, 15.0, 0.123_456_789] {
+            for run_start in 1..9 {
+                for run_len in 1..12 {
+                    let mut values = vec![1.0f64; 24];
+                    for v in values.iter_mut().skip(run_start).take(run_len) {
+                        *v = f64::NAN;
+                    }
+                    round_trip(&values, step);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_with_no_gaps_declares_no_windows() {
+        // Vacuity guard for the pair: a window list that is empty because the
+        // emitter did nothing is indistinguishable from one that is empty
+        // because there was nothing to declare, unless the values are checked.
+        let windows = gap_windows_for(&[1.0, 2.0, 3.0], 1.0).expect("windows");
+        assert!(windows.is_empty());
+        let with_gap = gap_windows_for(&[1.0, f64::NAN, 3.0], 1.0).expect("windows");
+        assert_eq!(with_gap.len(), 1, "and a gap does produce one");
+    }
+
+    #[test]
+    fn one_window_per_run_not_per_absent_row() {
+        let n = f64::NAN;
+        let windows = gap_windows_for(&[1.0, n, n, n, 5.0, n, 7.0], 1.0).expect("windows");
+        assert_eq!(windows.len(), 2, "two runs, two windows: {windows:?}");
+        assert_eq!(windows[0].at, "1s");
+        assert_eq!(windows[1].at, "5s");
     }
 
     #[test]

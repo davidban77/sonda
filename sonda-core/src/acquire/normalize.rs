@@ -30,17 +30,20 @@
 //!
 //! # What that changes, and what it does not
 //!
-//! The engine can now reproduce absence: a blank cell plus a declared
-//! `gap_windows:` entry replays as real silence, and `cross_check_gap_windows`
-//! refuses a capture whose blanks and windows disagree. **This module still
-//! writes `NaN`**, so a capture taken through this path today reproduces value
-//! and timing exactly and absence not at all — an `absent()`-style alert that
-//! fired against the original silence will not fire against the replay.
+//! The engine reproduces absence: a blank cell plus a declared `gap_windows:`
+//! entry replays as real silence, and `cross_check_gap_windows` refuses a
+//! capture whose blanks and windows disagree.
 //!
-//! That gap is a wiring job, not a missing capability, and it belongs to the
-//! importer (WP18b): emit blanks for absent grid points and the matching
-//! `gap_windows:` alongside them. It is recorded here so whoever picks that up
-//! does not read the paragraphs above as a settled decision against blanks.
+//! `NaN` remains this module's **in-memory** marker for an absent grid point,
+//! and that is all it is. Nothing is written here. On the way to a file,
+//! [`crate::acquire::csv_out`] turns each `NaN` into a blank cell and derives
+//! the matching `gap_windows:` from the same values, so the two halves of the
+//! pair cannot disagree — they are computed from one source. A capture taken
+//! through this path reproduces value, timing, and absence.
+//!
+//! What still has no CLI surface is the importer that would run
+//! fetch → normalize → emit as one command. Until that exists these are library
+//! entry points only; do not describe a flag here before one is written.
 
 use super::FetchedSeries;
 use std::collections::BTreeMap;
