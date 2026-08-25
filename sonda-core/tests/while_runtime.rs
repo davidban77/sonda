@@ -1105,11 +1105,11 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     //
     // Each run is 1s rather than the 300ms it used to be, and the length is
     // load-bearing rather than incidental. The event count is capped by the
-    // duration, so noise is one-sided: a run never exceeds rate × duration,
-    // it only loses ticks to a scheduler stall, and the band's upper half
-    // never does any work. A longer run divides that loss by a larger
-    // denominator. Measured on a 4-core box under 24 spinning processes,
-    // 25 runs at each length, worst of 25:
+    // duration, so noise is one-sided as long as the baseline arm saturates:
+    // a run never exceeds rate × duration, it only loses ticks to a scheduler
+    // stall, and the band's upper half does no work. A longer run divides that
+    // loss by a larger denominator. Measured on a 4-core box under 24 spinning
+    // processes, 25 runs at each length, worst of 25, at rate 1000:
     //
     //   300ms   7.0%   (279/300)    21 ticks lost
     //   1000ms  4.4%   (956/1000)   44 ticks lost
@@ -1129,15 +1129,29 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     //
     // What the length does NOT buy is resolution. The smallest per-tick
     // regression this gate can see is set by the tick interval, 1/rate, and
-    // duration does not appear in that floor: at rate 1000 a sweep of added
-    // per-tick cost in the gated arm passes at 1000us and fails at 1200us,
-    // and at rate 4000 it passes at 200us and fails at 300us. So this catches
-    // a gated path that became roughly a millisecond per tick slower, against
-    // a wrapper whose real cost is a closure indirection plus a `try_recv` on
-    // an empty channel — tens of nanoseconds. Rate, not duration, is the knob
-    // that tightens that floor, and raising it costs no wall-clock time.
+    // duration does not appear in that floor: swept with added per-tick cost
+    // in the gated arm, rate 1000 passes at 1000us and fails at 1200us, and
+    // rate 4000 passes at 200us and fails at 300us. Rate, not duration, is
+    // the knob for resolution, and it costs no wall-clock time.
+    //
+    // Hence rate 2000 here rather than the 1000 this started at: it halves the
+    // floor to ~500us. It is NOT set higher, and that ceiling is measured
+    // rather than assumed. Raising the rate is only free while the baseline
+    // arm still saturates — once the tick interval approaches what the host
+    // can schedule under load, BOTH arms start losing ticks, the noise stops
+    // being one-sided, and the band's upper half comes alive. Same box, same
+    // 24 spinners, 1s runs, worst deviation over 25 samples:
+    //
+    //   rate 1000   (1000us tick)   4.4%   baseline saturated 25/25
+    //   rate 2000   ( 500us tick)   2.2%   baseline saturated 41/60
+    //   rate 4000   ( 250us tick)   8.7%   baseline saturated 17/25, max ratio 1.0566
+    //
+    // At 4000 the worst sample was 0.9127 — 1.3 points from failing — which
+    // would have reintroduced exactly the flake this geometry was widened to
+    // remove. 2000 improves both axes at once; 4000 trades one for the other.
+    // Re-measure before moving it again, on the host that will run it.
     async fn run_baseline() -> u64 {
-        let entry = metrics_entry("baseline", 1000.0, 1000);
+        let entry = metrics_entry("baseline", 2000.0, 1000);
         let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "baseline".to_string(),
@@ -1160,7 +1174,7 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
         let bus = Arc::new(GateBus::new());
         bus.tick(1.0);
         let (rx, init) = bus.subscribe(while_gt_zero());
-        let entry = metrics_entry("gated", 1000.0, 1000);
+        let entry = metrics_entry("gated", 2000.0, 1000);
         let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "gated".to_string(),
