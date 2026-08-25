@@ -1105,11 +1105,11 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     //
     // Each run is 1s rather than the 300ms it used to be, and the length is
     // load-bearing rather than incidental. The event count is capped by the
-    // duration, so noise is one-sided: a run never exceeds rate × duration,
-    // it only loses ticks to a scheduler stall, and the band's upper half
-    // never does any work. A longer run divides that loss by a larger
-    // denominator. Measured on a 4-core box under 24 spinning processes,
-    // 25 runs at each length, worst of 25:
+    // duration, so noise is one-sided as long as the baseline arm saturates:
+    // a run never exceeds rate × duration, it only loses ticks to a scheduler
+    // stall, and the band's upper half does no work. A longer run divides that
+    // loss by a larger denominator. Measured on a 4-core box under 24 spinning
+    // processes, 25 runs at each length, worst of 25, at rate 1000:
     //
     //   300ms   7.0%   (279/300)    21 ticks lost
     //   1000ms  4.4%   (956/1000)   44 ticks lost
@@ -1129,15 +1129,81 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
     //
     // What the length does NOT buy is resolution. The smallest per-tick
     // regression this gate can see is set by the tick interval, 1/rate, and
-    // duration does not appear in that floor: at rate 1000 a sweep of added
-    // per-tick cost in the gated arm passes at 1000us and fails at 1200us,
-    // and at rate 4000 it passes at 200us and fails at 300us. So this catches
-    // a gated path that became roughly a millisecond per tick slower, against
-    // a wrapper whose real cost is a closure indirection plus a `try_recv` on
-    // an empty channel — tens of nanoseconds. Rate, not duration, is the knob
-    // that tightens that floor, and raising it costs no wall-clock time.
+    // duration does not appear in that floor: swept with added per-tick cost
+    // in the gated arm, rate 1000 passes at 1000us and fails at 1200us, and
+    // rate 4000 passes at 200us and fails at 300us. Rate, not duration, is
+    // the knob for resolution, and it costs no wall-clock time.
+    //
+    // Hence rate 2000 here rather than the 1000 this started at: it halves the
+    // floor to ~500us. It is NOT set higher, and the reason is a ceiling that
+    // was measured rather than assumed. Raising the rate is only free while the
+    // baseline arm still saturates at rate × duration. Once the tick interval
+    // approaches what the host can schedule under load, BOTH arms start losing
+    // ticks, the noise stops being one-sided, and the band's upper half comes
+    // alive. One session, 24 spinners on 4 cores, 1s runs, 25 samples per rate,
+    // the three rates interleaved so drifting load hits each equally:
+    //
+    //   rate 1000  (1000us tick)   base sat 20/25   min 0.9438   max 1.0040
+    //   rate 2000  ( 500us tick)   base sat 16/25   min 0.9880   max 1.0106
+    //   rate 4000  ( 250us tick)   base sat  7/25   min 0.9885   max 1.0501
+    //
+    // The two ratio bounds are reported separately and deliberately, because
+    // they measure different things and only one of them trends. `max` is
+    // baseline loss — the systematic ceiling effect, rising with rate. `min` is
+    // a gated-arm hiccup — random, no trend. Saturation falls monotonically and
+    // `max` rises monotonically; that is the ceiling, and it reproduces on
+    // other hardware.
+    //
+    // An earlier version of this comment reported a single "worst deviation"
+    // column instead, which is max(1 - min, max - 1) — the larger of those two
+    // unrelated quantities. It cannot order monotonically because it is not
+    // measuring one thing: the low side wins at 1000 and 2000, the high side
+    // wins at 4000. That comment then drew its conclusion from that column
+    // while also taking one of its rows from a different session, and reached
+    // the claim that 2000 beats 1000 on every axis. It does not. What 2000
+    // buys is half the floor at a cost still far inside the band; at 4000 the
+    // upper half of the band is demonstrably live.
+    //
+    // Re-measure before moving it again, on the host that will run it, in one
+    // session. Judge by saturation and by `max` — but note the power: at 25
+    // samples per rate, saturation resolves a 4x rate change (2000 vs 4000 here
+    // is p=0.006) and does NOT resolve a 2x one (1000 vs 2000 is p=0.20, on
+    // this host and on a quieter one alike). Comparing adjacent rates needs
+    // roughly 120 samples each, about 24 minutes at this geometry.
+    //
+    // One calibration for how unstable a single session is: the geometry table
+    // fifteen lines above reports 4.4% for rate 1000 at 1s under this same load
+    // on this same box, and the sweep here makes the same measurement 5.62%.
+    // Two sessions, one configuration, 1.2 points apart. That spread is the
+    // reason this table is read by trend rather than by any single figure.
+    //
+    // Though there is little left to move it to, which is worth knowing before
+    // anyone tries. The loop is deadline-paced (`emit_at = max(next_deadline,
+    // now)`), so for any per-tick cost comfortably below one tick interval it
+    // still meets every deadline and emits exactly rate × duration events —
+    // identically, not approximately. "Comfortably" is doing real work in that
+    // sentence: measured at rate 2000 unloaded, injected cost up to 450us is
+    // indistinguishable from zero injection, and at 500us — exactly one
+    // interval — there is a reproducible ~2% loss, because nothing is left for
+    // the sleep and wake path. So it holds to roughly 90% of the interval and
+    // not at 100% of it.
+    //
+    // Two nearby numbers that are not the same quantity: ~500us is where
+    // degradation begins (the interval), and ~600us is where the assertion
+    // fires (about 1.2x the interval — the same ratio held at rate 1000, which
+    // passed at 1000us and failed at 1200us). "~500us floor" labels the former.
+    //
+    // No rate buys sensitivity below one interval, and the
+    // interval cannot go below what the host schedules under load, which is the
+    // ceiling above. ~500us is therefore at or near the best this instrument
+    // can do here. Timing the run instead would not help either: the pacing is
+    // deadline-driven rather than work-driven, so elapsed time saturates
+    // exactly as the count does. A gate that could see a sub-interval
+    // regression on the `while:` path would have to microbenchmark the wrapped
+    // against the unwrapped `tick_fn` with no scheduler running — a different
+    // instrument, not a further turn of this one.
     async fn run_baseline() -> u64 {
-        let entry = metrics_entry("baseline", 1000.0, 1000);
+        let entry = metrics_entry("baseline", 2000.0, 1000);
         let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "baseline".to_string(),
@@ -1160,7 +1226,7 @@ async fn while_runtime_steady_within_10pct_of_baseline() {
         let bus = Arc::new(GateBus::new());
         bus.tick(1.0);
         let (rx, init) = bus.subscribe(while_gt_zero());
-        let entry = metrics_entry("gated", 1000.0, 1000);
+        let entry = metrics_entry("gated", 2000.0, 1000);
         let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "gated".to_string(),
