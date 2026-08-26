@@ -3,44 +3,35 @@
 //! Pure and feature-free. The whole module is one rule with one exception, and
 //! both are load-bearing:
 //!
-//! **A grid point takes the value the TSDB reported at that instant, or `NaN`
+//! **A grid point takes the value the TSDB reported at that instant, or `None`
 //! if the TSDB reported nothing there.** Values are never interpolated,
 //! averaged, carried forward, or otherwise invented — if the database had no
 //! sample, neither does the replay. That is what makes this path exact rather
 //! than a fit.
 //!
-//! # Why gaps become `NaN` here, and why that is now only half the story
+//! # Absence and value are separate facts
 //!
-//! `NaN` parses through `f64::from_str`, so the generator pushes it like any
-//! other value and the grid stays aligned. That preserves *when* things
-//! happened, which is the property the whole feature exists to deliver.
-//!
-//! Read the rest of this section as a record of a decision that has since been
-//! overtaken, not as a live argument. Two of the three reasons this module
-//! originally gave for rejecting absent rows no longer hold:
-//!
-//! * *"A blank shortens the value vector."* It did. `column_values_and_gaps` now writes
-//!   a `NaN` placeholder for a blank cell and reports its row index instead of
-//!   skipping it, so the grid no longer shifts and later samples no longer
-//!   arrive a step early. Fixed in 1857aa5.
-//! * *"`gaps:` cannot express the shape."* True of `gaps:`, which is `every` +
-//!   `duration` and strictly periodic — but `gap_windows:` was added in
-//!   5c2bdce precisely for irregular one-shot silences at arbitrary offsets,
-//!   which is the shape real staleness has.
+//! A grid point carries `Option<f64>`, so "no sample" and "a sample worth
+//! `NaN`" are distinguishable. They have to be: [`super::response`] keeps a
+//! reported `NaN`, `+Inf` or `-Inf` verbatim on purpose, and the capture path
+//! turns absence into a declared `gap_windows:` entry. Spelled the same, a
+//! reported `NaN` would be emitted as silence the database never reported.
 //!
 //! # What that changes, and what it does not
 //!
-//! The engine can now reproduce absence: a blank cell plus a declared
-//! `gap_windows:` entry replays as real silence, and `cross_check_gap_windows`
-//! refuses a capture whose blanks and windows disagree. **This module still
-//! writes `NaN`**, so a capture taken through this path today reproduces value
-//! and timing exactly and absence not at all — an `absent()`-style alert that
-//! fired against the original silence will not fire against the replay.
+//! The engine reproduces absence: a blank cell plus a declared `gap_windows:`
+//! entry replays as real silence, and `cross_check_gap_windows` refuses a
+//! capture whose blanks and windows disagree.
 //!
-//! That gap is a wiring job, not a missing capability, and it belongs to the
-//! importer (WP18b): emit blanks for absent grid points and the matching
-//! `gap_windows:` alongside them. It is recorded here so whoever picks that up
-//! does not read the paragraphs above as a settled decision against blanks.
+//! Nothing is written here. On the way to a file, [`crate::acquire::csv_out`]
+//! turns each `None` into a blank cell and derives the matching `gap_windows:`
+//! from the same entries, so the two halves of the pair cannot disagree —
+//! they are computed from one source. A capture taken through this path
+//! reproduces value, timing, and absence.
+//!
+//! What still has no CLI surface is the importer that would run
+//! fetch → normalize → emit as one command. Until that exists these are library
+//! entry points only; do not describe a flag here before one is written.
 
 use super::FetchedSeries;
 use std::collections::BTreeMap;
@@ -99,18 +90,28 @@ impl Grid {
 pub struct NormalizedSeries {
     /// The series' label set, `__name__` included when the query kept it.
     pub labels: BTreeMap<String, String>,
-    /// One value per grid point. `NaN` marks a grid point the TSDB had no
-    /// sample for — see the module docs for why absence is spelled this way.
-    pub values: Vec<f64>,
+    /// One entry per grid point. `None` is a grid point the TSDB had no sample
+    /// for; `Some(v)` is a sample it reported.
+    ///
+    /// `Option` rather than a `NaN` sentinel because `NaN` is a value the
+    /// database can legitimately report, and [`super::response`] keeps those
+    /// verbatim on purpose — `non_finite_values_survive_verbatim` pins it. A
+    /// sentinel would make `Some(NaN)` and `None` the same bit pattern, and the
+    /// capture path turns absence into declared silence, so conflating them
+    /// would emit a `gap_windows:` entry over a sample the database actually
+    /// reported. That is the mirror image of the bug blanks were introduced to
+    /// fix: instead of an `absent()` alert failing to fire against the replay,
+    /// one that never fired against the original would start to.
+    pub values: Vec<Option<f64>>,
 }
 
 impl NormalizedSeries {
     /// How many grid points carry no data.
     ///
     /// Counted rather than inferred so the CLI can report it and a test can
-    /// assert on it.
+    /// assert on it. A reported `NaN` is data and is not counted here.
     pub fn gap_count(&self) -> usize {
-        self.values.iter().filter(|v| v.is_nan()).count()
+        self.values.iter().filter(|v| v.is_none()).count()
     }
 }
 
@@ -129,7 +130,7 @@ pub fn normalize(series: &FetchedSeries, grid: Grid) -> NormalizedSeries {
     // Half a millisecond, the finest resolution the Prometheus API expresses.
     const TOLERANCE_SECS: f64 = 0.0005;
 
-    let mut values = vec![f64::NAN; grid.len];
+    let mut values = vec![None; grid.len];
     for &(ts, value) in &series.samples {
         if !ts.is_finite() {
             continue;
@@ -141,7 +142,9 @@ pub fn normalize(series: &FetchedSeries, grid: Grid) -> NormalizedSeries {
         }
         let n = n as usize;
         if (ts - grid.point(n)).abs() <= TOLERANCE_SECS {
-            values[n] = value;
+            // `Some(value)` even when `value` is NaN: the database reported a
+            // sample here, and what it reported is not this function's business.
+            values[n] = Some(value);
         }
     }
     NormalizedSeries {
@@ -200,22 +203,25 @@ mod tests {
         let g = Grid::new(100.0, 130.0, 10.0).expect("valid grid");
         let s = series(&[(100.0, 1.0), (110.0, 2.0), (120.0, 3.0), (130.0, 4.0)]);
         let n = normalize(&s, g);
-        assert_eq!(n.values, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(n.values, vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)]);
         assert_eq!(n.gap_count(), 0);
     }
 
     #[test]
-    fn a_missing_sample_becomes_nan_and_does_not_shift_its_neighbours() {
+    fn a_missing_sample_becomes_absent_and_does_not_shift_its_neighbours() {
         // This is the whole reason gaps are NaN. The value after the hole must
         // stay at its own grid point rather than sliding into the hole.
         let g = Grid::new(100.0, 130.0, 10.0).expect("valid grid");
         let s = series(&[(100.0, 1.0), (120.0, 3.0), (130.0, 4.0)]);
         let n = normalize(&s, g);
         assert_eq!(n.values.len(), 4);
-        assert_eq!(n.values[0], 1.0);
-        assert!(n.values[1].is_nan(), "the hole is NaN, not a shifted value");
-        assert_eq!(n.values[2], 3.0, "3.0 stays at its own grid point");
-        assert_eq!(n.values[3], 4.0);
+        assert_eq!(n.values[0], Some(1.0));
+        assert!(
+            n.values[1].is_none(),
+            "the hole is absent, not a shifted value"
+        );
+        assert_eq!(n.values[2], Some(3.0), "3.0 stays at its own grid point");
+        assert_eq!(n.values[3], Some(4.0));
         assert_eq!(n.gap_count(), 1);
     }
 
@@ -234,10 +240,10 @@ mod tests {
         let g = Grid::new(100.0, 130.0, 10.0).expect("valid grid");
         let s = series(&[(100.0, 0.0), (130.0, 300.0)]);
         let n = normalize(&s, g);
-        assert!(n.values[1].is_nan());
-        assert!(n.values[2].is_nan());
-        assert_eq!(n.values[0], 0.0);
-        assert_eq!(n.values[3], 300.0);
+        assert!(n.values[1].is_none());
+        assert!(n.values[2].is_none());
+        assert_eq!(n.values[0], Some(0.0));
+        assert_eq!(n.values[3], Some(300.0));
     }
 
     #[test]
@@ -246,9 +252,9 @@ mod tests {
         let s = series(&[(80.0, 9.0), (100.0, 1.0), (140.0, 9.0)]);
         let n = normalize(&s, g);
         assert_eq!(n.values.len(), 3);
-        assert_eq!(n.values[0], 1.0);
-        assert!(n.values[1].is_nan());
-        assert!(n.values[2].is_nan());
+        assert_eq!(n.values[0], Some(1.0));
+        assert!(n.values[1].is_none());
+        assert!(n.values[2].is_none());
     }
 
     #[test]
@@ -256,8 +262,8 @@ mod tests {
         let g = Grid::new(100.0, 120.0, 10.0).expect("valid grid");
         let s = series(&[(100.0002, 1.0), (109.9997, 2.0)]);
         let n = normalize(&s, g);
-        assert_eq!(n.values[0], 1.0);
-        assert_eq!(n.values[1], 2.0);
+        assert_eq!(n.values[0], Some(1.0));
+        assert_eq!(n.values[1], Some(2.0));
     }
 
     #[test]
@@ -267,7 +273,7 @@ mod tests {
         let g = Grid::new(100.0, 120.0, 10.0).expect("valid grid");
         let s = series(&[(104.0, 7.0)]);
         let n = normalize(&s, g);
-        assert!(n.values.iter().all(|v| v.is_nan()), "nothing was snapped");
+        assert!(n.values.iter().all(|v| v.is_none()), "nothing was snapped");
     }
 
     #[test]
@@ -276,6 +282,37 @@ mod tests {
         let g = Grid::new(0.0, 30.0, 10.0).expect("valid grid");
         let s = series(&[(0.0, 98.0), (10.0, 99.0), (20.0, 0.0), (30.0, 1.0)]);
         let n = normalize(&s, g);
-        assert_eq!(n.values, vec![98.0, 99.0, 0.0, 1.0]);
+        assert_eq!(n.values, vec![Some(98.0), Some(99.0), Some(0.0), Some(1.0)]);
+    }
+
+    #[test]
+    fn a_reported_nan_is_a_sample_and_a_missing_one_is_not() {
+        // `response` keeps a reported NaN verbatim — `non_finite_values_survive_verbatim`
+        // pins that — so it must arrive here as a sample rather than as a hole.
+        // The two are adjacent on purpose: this is the pair a sentinel would
+        // collapse, and the capture path would then emit the NaN as silence.
+        let g = Grid::new(0.0, 30.0, 10.0).expect("valid grid");
+        // Grid point 20.0 has no sample; 10.0 has one whose value is NaN.
+        let s = series(&[(0.0, 1.0), (10.0, f64::NAN), (30.0, 4.0)]);
+        let n = normalize(&s, g);
+
+        assert_eq!(n.values[0], Some(1.0));
+        match n.values[1] {
+            Some(v) => assert!(v.is_nan(), "a reported NaN is Some(NaN)"),
+            None => panic!("a reported NaN must not become absence"),
+        }
+        assert_eq!(n.values[2], None, "no sample at 20.0 is absence");
+        assert_eq!(n.values[3], Some(4.0));
+
+        assert_eq!(n.gap_count(), 1, "only the truly missing point counts");
+    }
+
+    #[test]
+    fn a_reported_infinity_is_a_sample_too() {
+        let g = Grid::new(0.0, 10.0, 10.0).expect("valid grid");
+        let s = series(&[(0.0, f64::INFINITY), (10.0, f64::NEG_INFINITY)]);
+        let n = normalize(&s, g);
+        assert_eq!(n.values, vec![Some(f64::INFINITY), Some(f64::NEG_INFINITY)]);
+        assert_eq!(n.gap_count(), 0);
     }
 }

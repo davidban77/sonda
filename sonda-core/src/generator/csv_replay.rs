@@ -482,11 +482,18 @@ pub(crate) struct Playback {
 
 /// Whether tick `t` falls inside one window.
 ///
-/// The single definition of containment in this file. `covered` is this over
+/// The single definition of containment in the crate. `covered` is this over
 /// every window, and the interval walk uses it as its only oracle — deriving a
 /// tick index from a window edge by arithmetic is what let the walk and the
 /// predicate disagree (see [`first_uncovered_tick`]).
-fn tick_in_window(t: usize, step_secs: f64, window: (f64, f64)) -> bool {
+///
+/// `pub(crate)` so the capture side can be judged by the same predicate that
+/// judges it on the way back in. `acquire::csv_out` builds windows from runs of
+/// absent grid points and then asks *this* whether what it built covers the
+/// rows it meant to cover. A second expression of containment over there would
+/// diverge from this one at exactly the boundary that matters — which is the
+/// failure this comment already records once.
+pub(crate) fn tick_in_window(t: usize, step_secs: f64, window: (f64, f64)) -> bool {
     let at = t as f64 * step_secs;
     at >= window.0 && at < window.1
 }
