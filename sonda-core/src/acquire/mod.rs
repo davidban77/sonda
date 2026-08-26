@@ -31,6 +31,8 @@ pub mod tsdb;
 pub mod csv_out;
 pub mod normalize;
 pub mod response;
+#[cfg(feature = "config")]
+pub mod yaml_out;
 
 use std::collections::BTreeMap;
 
