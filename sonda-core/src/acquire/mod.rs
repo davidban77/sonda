@@ -1,19 +1,14 @@
 //! Capture a signal out of a Prometheus-compatible TSDB and replay it exactly.
 //!
-//! It fetches a PromQL range query, resamples the result onto the requested
-//! step grid, and hands back data the CSV writer turns into a `csv_replay`
-//! scenario.
+//! Fetches a PromQL range query, resamples it onto the requested grid, and
+//! hands back what the CSV writer turns into a `csv_replay` scenario. Reached
+//! from `sonda new --from-prometheus`.
 //!
-//! No CLI surface reaches this yet; do not name a flag here until one exists.
+//! **Replay-only:** no classifier, no generator inference, no `--fit`. The case
+//! this closes is alert regression, where the alert must fire on what actually
+//! happened. Pattern fitting stays in `--from <csv>`, which promises a guess.
 //!
-//! **Replay-only.** Nothing here inspects the shape of a signal — no
-//! classifier, no generator inference, no `--fit`. Recorded values are written
-//! and replayed verbatim, because the case this closes is alert regression,
-//! where the alert must fire on what actually happened. Pattern fitting stays
-//! in the `--from <csv>` wizard, where the promise is "a guess to edit".
-//!
-//! Everything is pure and feature-free except [`tsdb`], which owns the HTTP
-//! client and sits behind the `http` feature.
+//! Pure and feature-free except [`tsdb`], which is behind `http`.
 
 #[cfg(feature = "http")]
 pub mod tsdb;

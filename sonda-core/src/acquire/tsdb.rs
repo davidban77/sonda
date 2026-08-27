@@ -1,25 +1,12 @@
 //! The HTTP half of TSDB capture: fetch one range query.
 //!
-//! Deliberately thin. Every decision that can be made without a socket —
-//! parsing the response, resampling, writing CSV — lives in a feature-free
-//! sibling module and is tested there. What is left here is building a
-//! request, applying auth, and handing the body to
-//! [`super::response::parse_matrix_response`].
+//! Deliberately thin — everything decidable without a socket lives in a
+//! feature-free sibling. Modelled on [`crate::verify::prometheus`]: one agent,
+//! a mandatory timeout, errors that name their URL.
 //!
-//! Modelled on [`crate::verify::prometheus`], which was hardened in #528: one
-//! agent, a mandatory overall timeout so a stalled endpoint fails rather than
-//! hangs, and errors that name the URL they came from.
-//!
-//! # Credentials never reach an artifact
-//!
-//! [`Auth`] deliberately has no `Display`, no `Debug` that prints the secret,
-//! and no accessor returning the token. It exists only to be applied to a
-//! request. The emitted CSV and YAML are built from labels and values, and
-//! never see this type — asserted by a test rather than by inspection.
-//!
-//! A base URL is the other way a credential arrives: `http://user:pass@host`.
-//! That one *is* stored, so the rule is that only [`scrub_userinfo`]'s output
-//! is ever formatted — into an error, into a `Debug`, anywhere but the wire.
+//! Two credential rules. [`Auth`] has no `Display`, no revealing `Debug` and no
+//! accessor, so it can only be applied to a request. A `user:pass@` base URL is
+//! stored, so only [`scrub_userinfo`]'s output is ever formatted.
 
 use super::response::parse_matrix_response;
 use super::FetchedSeries;
@@ -28,17 +15,9 @@ use std::time::Duration;
 
 /// How to authenticate to the TSDB.
 ///
-/// The secret is protected structurally rather than by convention: `Debug` is
-/// written by hand so a token cannot reach a log line, a panic message, or an
-/// error report through a derived formatter, and there is deliberately no
-/// `Serialize`, so it cannot reach an emitted CSV or YAML even by accident.
-///
-/// `#[non_exhaustive]` is here for the remaining hole. The variants are public,
-/// so `if let Auth::Bearer(t) = auth` is an accessor any future caller could
-/// write — the type had no method returning the token, but destructuring did
-/// not need one. Outside this crate the enum can no longer be matched
-/// exhaustively, so reaching the secret is a deliberate act rather than the
-/// obvious one.
+/// Protected structurally: a hand-written `Debug`, no `Serialize`, and
+/// `#[non_exhaustive]` so an outside caller cannot destructure the secret out
+/// without meaning to.
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub enum Auth {

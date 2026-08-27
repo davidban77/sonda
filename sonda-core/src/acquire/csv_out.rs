@@ -1,17 +1,12 @@
 //! Write normalized series as a CSV `csv_replay` already knows how to read.
 //!
-//! Pure and feature-free. The header grammar emitted here is the one
-//! [`crate::generator::csv_header`] parses, and the tests round-trip through
-//! that parser rather than a transcription of it.
+//! The header grammar emitted here is the one [`crate::generator::csv_header`]
+//! parses, and the tests round-trip through that parser rather than a copy.
 //!
-//! A column header is a label block nested inside a CSV field, so it passes
-//! through two encoders: the label block backslash-escapes `"` and `\\`, then
-//! the whole thing is RFC 4180 quoted with `"` doubled. Headers are quoted
-//! unconditionally — they always contain `"` and usually `,`.
-//!
-//! Newlines are refused rather than mangled: the label grammar's escape cannot
-//! express one (`\\n` decodes to the letter `n`), and a CSV is read line by
-//! line, so a literal newline would split one column across two rows.
+//! A header passes through two encoders — the label block backslash-escapes
+//! `"` and `\\`, then RFC 4180 doubles the `"` — and is always quoted. A
+//! newline is refused, not mangled: the label escape cannot express one and it
+//! would split a column across two CSV rows.
 
 use super::normalize::{Grid, NormalizedSeries};
 use crate::config::GapWindowConfig;
@@ -20,28 +15,18 @@ use crate::{ConfigError, SondaError};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-/// The `gap_windows:` entries describing one column's absent grid points — one
-/// window per maximal run, in row order.
+/// The `gap_windows:` entries for one column's absent grid points — one window
+/// per maximal run, in row order.
 ///
-/// Blanks and windows are one artifact: `cross_check_gap_windows` refuses a
-/// capture where they disagree in either direction.
-///
-/// Both edges sit on the **midpoints** either side of the run — `at = (a-0.5)*step`
-/// clamped to zero at row 0, `end = (b+0.5)*step` — not on the row instants
-/// themselves. Containment is `t*step >= at && t*step < end`, and `at`/`for`
-/// reach that predicate via a decimal string and microsecond truncation while
-/// the predicate recomputes `t*step` directly. Landing an edge on a row instant
-/// puts it a rounding error from the boundary, in either direction; half a step
-/// of margin does not.
-///
-/// Then it checks its own work: re-parses what it built and asks
-/// [`tick_in_window`] — the predicate the cross-check uses — whether it covers
-/// exactly the intended rows.
+/// Both edges sit on the **midpoints** either side of the run: `at`/`for` reach
+/// the containment predicate through microsecond truncation, so an edge on a
+/// row instant would sit a rounding error from the boundary. Verified by
+/// re-parsing the output and driving [`tick_in_window`], the real predicate.
 ///
 /// # Errors
 ///
-/// [`SondaError::Config`] if the window fails that round-trip, which now needs a
-/// step whose half-width is under a microsecond.
+/// [`SondaError::Config`] if that round-trip fails, which needs a step whose
+/// half-width is under a microsecond.
 pub fn gap_windows_for(
     values: &[Option<f64>],
     step_secs: f64,
@@ -125,15 +110,11 @@ fn verify_window(
 /// Build one column header for a series' label set, unquoted —
 /// [`csv_quote_field`] applies the CSV layer.
 ///
-/// `{__name__="m", k="v"}` when the series kept its metric name, `{k="v"}` when
-/// the query dropped it. In the latter case the caller must set
-/// `default_metric_name`, which `auto_discover_specs` requires for a nameless
-/// column.
+/// `{__name__="m", k="v"}`, or `{k="v"}` when the query dropped the name.
 ///
 /// # Errors
 ///
-/// [`SondaError::Config`] when a key or value contains a newline, or a key
-/// contains `=`; neither is representable in this grammar.
+/// [`SondaError::Config`] for a newline in either half, or `=` in a key.
 pub fn column_header(labels: &BTreeMap<String, String>) -> Result<String, SondaError> {
     for (k, v) in labels {
         for (what, s) in [("key", k), ("value", v)] {
@@ -146,23 +127,10 @@ pub fn column_header(labels: &BTreeMap<String, String>) -> Result<String, SondaE
             }
         }
 
-        // Values are escaped on the way out, keys are not — the `{k="v"}`
-        // grammar has nowhere to put an escape left of the `=`. A key containing
-        // the delimiter therefore reads back as a different label: `a=b` with
-        // value `v` emits `a=b="v"`, which the parser splits into label `a` with
-        // value `b="v"`. Silent, and wrong data in the file.
-        //
-        // Only `=` needs refusing; against the real parser, keys containing `"`,
-        // `{`, `}`, space or comma all round-trip unharmed, so refusing
-        // them "for symmetry" would reject captures that work today. The tests
-        // below pin that, so the narrowness of this guard is checked rather than
-        // asserted.
-        //
-        // Refused rather than escaped: a conforming Prometheus label name is
-        // `[a-zA-Z_][a-zA-Z0-9_]*`, so this cannot arrive from a well-behaved
-        // server — but acquisition reads a remote TSDB, which is the trust
-        // boundary this whole module polices, and failing at capture time is
-        // more honest than writing a header that reads back as something else.
+        // Keys are not escaped — the `{k="v"}` grammar has nowhere to put an
+        // escape left of the `=` — so a key containing one reads back as a
+        // different label. Only `=` needs refusing; the tests below pin that
+        // `"`, `{`, `}`, space and comma all round-trip through the real parser.
         if k.contains('=') {
             return Err(SondaError::Config(ConfigError::invalid(format!(
                 "csv capture: label key {k:?} contains '=', which is the delimiter this \
@@ -221,27 +189,18 @@ pub fn csv_quote_field(field: &str) -> String {
 /// Render one grid instant as the timestamp cell for its row.
 ///
 /// `{:.3}` rather than `{}` keeps scientific notation out of the file, which
-/// `parse_csv_timestamp` rejects.
-///
-/// A function rather than an inline format string because this precision decides
-/// the step the engine replays at — `csv_replay` derives its interval from these
-/// timestamps — so [`super::yaml_out`] calls it to reduce the same numbers the
-/// file will carry.
+/// `parse_csv_timestamp` rejects. A function because this precision decides the
+/// replay step, so [`super::yaml_out`] reduces the same numbers.
 pub fn format_timestamp(instant: f64) -> String {
     format!("{instant:.3}")
 }
 
-/// Render the whole capture as CSV text.
+/// Render the whole capture as CSV text. Column 0 is the timestamp in unix
+/// seconds, which `csv_replay` derives its rate from; the rest are series.
 ///
-/// Column 0 is the timestamp in unix seconds — `csv_replay` derives its replay
-/// rate from the delta between the first two, and `auto_discover_specs` skips
-/// column 0 when mapping columns to series. Every other column is one series.
-///
-/// This writes every series' blanks, while [`gap_windows_for`] speaks for one
-/// column. `gap_windows:` is scenario-level, so a caller writing a multi-column
-/// capture must group columns by identical absence pattern and emit one block
-/// per group — see [`super::yaml_out`]. Nothing here can check that, because
-/// nothing here knows which column the windows will be paired with.
+/// Writes every series' blanks, while [`gap_windows_for`] speaks for one
+/// column — so a caller must group columns by absence pattern and emit one
+/// block per group ([`super::yaml_out`] does). Nothing here can check that.
 ///
 /// # Errors
 ///
@@ -631,20 +590,10 @@ mod tests {
 
     #[test]
     fn the_window_boundary_survives_steps_that_break_the_obvious_encoding() {
-        // These eleven (step, run) pairs are the ones where `for = (b+1-a)*step`
-        // — the obvious encoding — puts row b+1 inside the window after
-        // microsecond truncation. They are named individually because they are
-        // rare: a sweep of short runs at common steps passes under BOTH
-        // encodings, so a test built from round numbers would not discriminate.
-        // Verified by mutation: reverting the emitter to (b+1) fails on these.
-        // The leading edge has its own failing set, and it is a different one.
-        // With `at = a*step` the run's own FIRST row falls outside its window,
-        // because `at` reaches the predicate via a decimal string and
-        // microsecond quantisation while the predicate recomputes `a * step`
-        // directly — and `trunc(x * 1e6) / 1e6` can land marginally ABOVE `x`
-        // when the multiply rounds up onto an integer. Containment at the start
-        // is `>=`, so marginally above is enough. All of these are steps within
-        // a millionth of one second; none appear in the trailing-edge set.
+        // The (step, run) pairs where the midpoint encoding is load-bearing:
+        // under `for = (b+1-a)*step` row b+1 falls inside the window, and under
+        // `at = a*step` the run's own first row falls outside it. Listed rather
+        // than swept because round steps pass under both encodings.
         const SQUARE_LEADING_EDGE_FAILS_HERE: &[(f64, usize, usize)] = &[
             (0.999_999, 13, 13),
             (0.999_999, 13, 14),

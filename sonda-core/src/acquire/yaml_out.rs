@@ -1,27 +1,12 @@
-//! Emit the scenario file that replays a capture.
+//! Emit the scenario that replays a capture. [`super::csv_out`] writes the data.
 //!
-//! The companion to [`super::csv_out`]. That module writes the data — values,
-//! blanks, one row per grid point — and this one writes the scenario that
-//! plays it back at the cadence it was captured at, with the recorded silence
-//! declared as `gap_windows:`.
+//! Builds the compiler's own [`ScenarioFile`] and serialises it, so nothing
+//! writes YAML by hand. Three rules a block keeps, each enforced below:
 //!
-//! Feature-gated on `config`: it builds the compiler's own [`ScenarioFile`] and
-//! serialises that, so the emitted grammar is whatever serde produces for the
-//! types the compiler already reads. Nothing writes YAML by hand.
-//!
-//! Three rules the emitted scenarios keep:
-//!
-//! * **One block per distinct absence pattern.** `gap_windows:` is
-//!   scenario-level, so a block speaks for every column it lists; columns whose
-//!   silence falls on different rows cannot share one.
-//! * **No two columns in a block share a metric name.** `expand_scenario` makes
-//!   a column name into a scenario name and refuses duplicates, so one metric
-//!   across several label sets — `up{job="api"}` and `up{job="db"}`, the
-//!   ordinary result of a range query — has to span blocks.
-//! * **`repeat: false` on every block**, silence or not. The generator defaults
-//!   to `true`, so omitting it would loop a dense capture — and for a capture
-//!   with silence the engine refuses the combination outright, since
-//!   `gap_windows:` describe a single pass.
+//! * One block per distinct absence pattern — `gap_windows:` is scenario-level.
+//! * No two columns in a block share a metric name — `expand_scenario` turns a
+//!   column name into a scenario name and refuses duplicates.
+//! * `repeat: false` always — the generator defaults to `true` and would loop.
 
 use super::normalize::{Grid, NormalizedSeries};
 use crate::compiler::{Entry, Kind, ScenarioFile};
@@ -29,29 +14,18 @@ use crate::config::GapWindowConfig;
 use crate::generator::{CsvColumnSpec, GeneratorConfig};
 use crate::{ConfigError, SondaError};
 
-/// Build the scenario file that replays `series` from `csv_path`.
+/// Build the scenario that replays `series` from `csv_path`, written verbatim.
 ///
-/// `csv_path` is written into the emitted `file:` field verbatim; the caller
-/// decides whether it is absolute or relative to the scenario, and nothing here
-/// touches the filesystem.
+/// `timescale` is the replay speed. It divides the step rate, duration and the
+/// windows are all derived from, because the engine recomputes
+/// `rate = timescale / Δt` on load and the other two must agree with it.
 ///
-/// `timescale` is the replay speed: `1.0` replays at the captured cadence, `2.0`
-/// twice as fast. It divides the step every emitted value is derived from, so
-/// rate, duration and the gap windows describe the same accelerated timeline —
-/// the engine derives `rate = timescale / Δt` on load, and a duration or a
-/// window left on the captured timeline would disagree with it.
-///
-/// Column indices are 1-based in the emitted spec because column 0 of the file
-/// [`super::csv_out::write_csv`] wrote is the timestamp — series `i` is CSV
-/// column `i + 1`. Getting that off by one would silently replay the timestamps
-/// as values.
+/// Emitted column indices are 1-based: column 0 of the CSV is the timestamp.
 ///
 /// # Errors
 ///
-/// Returns [`SondaError::Config`] when the grid cannot be expressed as a rate,
-/// when `timescale` is not positive and finite, when a series carries no metric
-/// name to build a scenario name from, or when
-/// [`super::csv_out::gap_windows_for`] cannot express a column's silence.
+/// [`SondaError::Config`] for a grid that is not a rate, a non-positive
+/// `timescale`, a series with no `__name__`, or silence with no window.
 pub fn scenario_for(
     csv_path: &str,
     grid: Grid,
@@ -202,19 +176,11 @@ pub fn scenario_for(
     })
 }
 
-/// The step the engine will replay at, given the file [`super::csv_out::write_csv`]
-/// will write.
+/// The step the engine will read back, which is not `grid.step`: the CSV
+/// carries millisecond timestamps, so `1/7` returns as `0.143`.
 ///
-/// Not `grid.step`: the CSV carries millisecond timestamps, so `1/7` reaches the
-/// engine as `0.143`, and windows built from the caller's step drift against the
-/// replay until the capture stops loading.
-///
-/// Both halves are borrowed rather than modelled —
-/// [`super::csv_out::format_timestamp`] renders the instants the file will
-/// carry, and [`crate::config::median_delta_seconds`] reduces them over
-/// [`crate::config::CSV_DELTA_SAMPLE_ROWS`] rows, which is exactly what
-/// `compute_csv_delta_seconds` does on the way back in. Any model of that
-/// reduction disagrees with it somewhere.
+/// Drives the real formatter and the real reduction rather than modelling
+/// either, so this cannot disagree with `compute_csv_delta_seconds`.
 fn file_step(grid: Grid) -> Result<f64, SondaError> {
     // A single-row capture has no delta to read, so nothing rounds it and the
     // caller's step stands.
@@ -246,8 +212,7 @@ fn file_step(grid: Grid) -> Result<f64, SondaError> {
 ///
 /// # Errors
 ///
-/// Returns [`SondaError::Config`] if serialisation fails, which would mean a
-/// config type stopped being representable in YAML.
+/// [`SondaError::Config`] if a config type stopped being representable in YAML.
 pub fn to_yaml(file: &ScenarioFile) -> Result<String, SondaError> {
     let mut value: serde_yaml_ng::Value = serde_yaml_ng::to_value(file).map_err(|e| {
         SondaError::Config(ConfigError::invalid(format!(
@@ -611,16 +576,10 @@ mod tests {
 
     #[test]
     fn a_step_that_is_not_a_whole_millisecond_still_round_trips_at_length() {
-        // The capture file carries millisecond timestamps and `csv_replay`
-        // takes its interval from them, so a step like 1/7 reaches the engine
-        // rounded. Windows built from the caller's exact step drift against
-        // that by a fixed amount per row, and the error accumulates until a
-        // window misses the row it was built for.
-        //
-        // Short captures at round steps do not reach it — every other test in
-        // this file passes under the drifting version — so the length and the
-        // steps here are the point. Measured against the old behaviour: 1/7
-        // and 1/3 failed from roughly 600 rows, 0.123456789 from roughly 200.
+        // `csv_replay` takes its interval from the file's millisecond
+        // timestamps, so a step like 1/7 reaches the engine rounded and windows
+        // built from the caller's exact step drift a fixed amount per row. The
+        // length and the odd steps are the point: round steps never reach it.
         const ROWS: usize = 1400;
         // The last three are the ones a first-delta model gets wrong: a step
         // whose millisecond value is a clean half rounds one way as a single
