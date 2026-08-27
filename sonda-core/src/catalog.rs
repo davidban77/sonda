@@ -28,6 +28,7 @@ pub enum CatalogError {
         source: std::io::Error,
     },
 
+    /// Currently unconstructed: enumeration warns and skips instead. Kept for API stability.
     #[error("failed to read {path}")]
     ReadFile {
         path: String,
@@ -93,7 +94,9 @@ struct CatalogEntryHeader {
 }
 
 /// Walk `dir` and return one [`CatalogEntry`] per YAML file with a
-/// recognized `kind:` header. Files without `kind:` are silently skipped.
+/// recognized `kind:` header. Files without `kind:` are silently skipped;
+/// a file that cannot be read or parsed warns on stderr and is skipped, so
+/// one bad file never costs the rest of the catalog.
 pub fn enumerate(dir: &Path) -> Result<Vec<CatalogEntry>, CatalogError> {
     if !dir.is_dir() {
         return Err(CatalogError::NotADirectory {
@@ -166,10 +169,16 @@ fn is_yaml_file(path: &Path) -> bool {
 }
 
 fn peek_entry(path: &Path) -> Result<Option<CatalogEntry>, CatalogError> {
-    let content = fs::read_to_string(path).map_err(|source| CatalogError::ReadFile {
-        path: path.display().to_string(),
-        source,
-    })?;
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!(
+                "warning: catalog: skipping unreadable file {}: {e}",
+                path.display()
+            );
+            return Ok(None);
+        }
+    };
     let header: CatalogEntryHeader = match serde_yaml_ng::from_str(&content) {
         Ok(h) => h,
         Err(e) => {
@@ -389,6 +398,47 @@ metrics:
         let msg = format!("{err}");
         assert!(msg.contains("missing"), "got: {msg}");
         assert!(msg.contains("cpu-spike"), "must list candidates: {msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_skips_an_unreadable_file_and_keeps_the_rest() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = temp_catalog();
+        let locked = tmp.path().join("locked.yaml");
+        write(tmp.path(), "locked.yaml", "version: 2\nkind: runnable\n");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))
+            .expect("must drop read permission");
+        if fs::File::open(&locked).is_ok() {
+            eprintln!("skipping: this process can open a 0o000 file (running as root?)");
+            return;
+        }
+
+        let entries = enumerate(tmp.path()).expect("one unreadable file must not fail the catalog");
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["cpu-spike", "tiny_pack"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_finds_a_readable_entry_next_to_an_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = temp_catalog();
+        let locked = tmp.path().join("locked.yaml");
+        write(tmp.path(), "locked.yaml", "version: 2\nkind: runnable\n");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))
+            .expect("must drop read permission");
+        if fs::File::open(&locked).is_ok() {
+            eprintln!("skipping: this process can open a 0o000 file (running as root?)");
+            return;
+        }
+
+        let resolved = resolve(tmp.path(), "cpu-spike").expect("must resolve");
+
+        assert_eq!(resolved.file_name().unwrap(), "cpu-spike.yaml");
     }
 
     #[test]

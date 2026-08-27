@@ -220,3 +220,38 @@ fn show_composable_prints_raw_yaml() {
     );
     assert!(stdout.contains("pack_metric_a"));
 }
+
+#[cfg(unix)]
+#[test]
+fn list_skips_an_unreadable_file_and_prints_the_rest() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cat = write_catalog();
+    let locked = cat.path().join("locked.yaml");
+    std::fs::write(&locked, "version: 2\nkind: runnable\n").expect("write locked entry");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+        .expect("drop read permission");
+    if std::fs::File::open(&locked).is_ok() {
+        eprintln!("skipping: this process can open a 0o000 file (running as root?)");
+        return;
+    }
+
+    let output = Command::new(sonda_bin())
+        .args(["--catalog"])
+        .arg(cat.path())
+        .args(["list"])
+        .output()
+        .expect("spawn sonda");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stdout.contains("cpu-spike") && stdout.contains("tiny-pack"),
+        "one unreadable file must not cost the catalog, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("locked.yaml"),
+        "the skipped file must be named: {stderr}"
+    );
+}

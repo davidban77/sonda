@@ -1,3 +1,6 @@
+{{- if and .Values.server.autostart (not .Values.scenarios) }}
+{{- fail "server.autostart is set but scenarios is empty: there is no catalog to start. Populate .Values.scenarios or set server.autostart=false." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,6 +55,9 @@ spec:
             {{- if .Values.scenarios }}
             - "--catalog"
             - "/scenarios"
+            {{- if .Values.server.autostart }}
+            - "--autostart"
+            {{- end }}
             {{- end }}
           ports:
             - name: http

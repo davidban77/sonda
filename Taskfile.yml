@@ -290,7 +290,7 @@ tasks:
       negative cases that keep the schema from degenerating into "accepts
       anything".
     cmds:
-      - cargo test -p sonda-core --all-features --lib schema::
+      - "cargo test -p sonda-core --all-features --lib schema::"
       - cargo test -p sonda-core --all-features --test schema_corpus
 
   site:jstest:

@@ -68,6 +68,7 @@ The chart includes default values that work for most installs. Override any valu
 |-------|---------|-------------|
 | `server.port` | `8080` | Port `sonda-server` listens on inside the container |
 | `server.bind` | `0.0.0.0` | Bind address |
+| `server.autostart` | `false` | Start every `kind: runnable` file in the mounted ConfigMap when the pod boots |
 
 ### Service
 
@@ -234,18 +235,23 @@ at `/scenarios` inside the container:
 ```yaml title="my-values.yaml"
 scenarios:
   cpu-metrics.yaml: |
-    name: cpu_usage
-    rate: 100
-    duration: 30s
-    generator:
-      type: sine
-      amplitude: 50
-      period_secs: 60
-      offset: 50
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
+    version: 2
+    kind: runnable
+    defaults:
+      rate: 100
+      duration: 30s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+    scenarios:
+      - signal_type: metrics
+        name: cpu_usage
+        generator:
+          type: sine
+          amplitude: 50.0
+          period_secs: 60
+          offset: 50.0
 ```
 
 ```bash
@@ -258,6 +264,31 @@ content in your values file triggers an automatic pod rollout on `helm upgrade`.
 You can place `kind: composable` [metric pack](../build/catalogs-and-packs.md) YAMLs in the same `scenarios` map next to your runnable scenarios. When `scenarios` is populated, the chart points the server's `--catalog` flag at the mounted `/scenarios` directory. `POST /scenarios` bodies that reference a pack by name (`pack: <name>`) then resolve automatically. No extra configuration. See [Pack references over HTTP](http-api.md#pack-references-over-http) for how that resolution works.
 
 See [Scenario Fields](../reference/scenario-fields.md) for the full YAML schema.
+
+#### Starting the ConfigMap scenarios automatically
+
+Mounting scenarios makes them available; it does not run them. Set `server.autostart: true` and the pod starts every `kind: runnable` file in the ConfigMap as soon as the server is listening — no POST, no sidecar re-posting on restart:
+
+```yaml title="my-values.yaml"
+server:
+  autostart: true
+
+scenarios:
+  cpu-metrics.yaml: |
+    version: 2
+    kind: runnable
+    ...
+```
+
+`server.autostart: true` with an empty `scenarios` map is rejected at template time, so the mistake surfaces on `helm install` rather than as a Ready pod serving nothing:
+
+```text
+Error: execution error at (sonda/templates/deployment.yaml:2:4): server.autostart is set but scenarios is empty: there is no catalog to start. Populate .Values.scenarios or set server.autostart=false.
+```
+
+`kind: composable` packs are never started — they stay available for `pack: <name>` references. A scenario file the server cannot admit is logged and skipped, so one bad file cannot keep the pod from coming up; two files claiming the same name is a startup error, because the pod would otherwise come up serving nothing. See [Autostarting a catalog](server.md#autostarting-a-catalog) for the full behaviour, including how skipped files are logged.
+
+Autostarted scenarios run for the `duration:` in their YAML. Once they finish they stay in the scenario list in `finished` state until deleted — set a long `duration:` (or omit it for an unbounded run) when the pod is meant to emit continuously.
 
 ### API (runtime)
 
