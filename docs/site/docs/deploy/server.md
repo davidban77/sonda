@@ -225,7 +225,7 @@ The scenario runs in the background inside the server until its `duration` expir
 
 ## Server flags
 
-`sonda-server` accepts nine flags. The first four are the network and addressing surface; the remaining five control resource limits and runtime sizing. Use the `RUST_LOG` environment variable to control log verbosity (default `info`):
+`sonda-server` accepts ten flags. The first five are the network, addressing, and startup surface; the remaining five control resource limits and runtime sizing. Use the `RUST_LOG` environment variable to control log verbosity (default `info`):
 
 ```bash
 RUST_LOG=debug sonda-server --port 8080
@@ -237,6 +237,7 @@ RUST_LOG=debug sonda-server --port 8080
 | `--bind <ADDR>` | -- | `0.0.0.0` | Bind address |
 | `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*`, `/events`, and metrics endpoints. See [Authentication](#authentication). |
 | `--catalog <DIR>` | `SONDA_CATALOG` | (unset) | Directory of scenario and pack YAML files. Lets `POST /scenarios` resolve `pack: <name>` references. See [Pack references over HTTP](http-api.md#pack-references-over-http). |
+| `--autostart` | `SONDA_AUTOSTART` | `false` | Start every `kind: runnable` entry in `--catalog` when the server boots. See [Autostarting a catalog](#autostarting-a-catalog). |
 | `--workers <N>` | -- | `min(available_parallelism(), 16)` | Tokio worker thread count. See [Tuning resource limits](#tuning-resource-limits). |
 | `--max-scenarios <N>` | -- | `0` (unlimited) | Maximum concurrent scenario rows. POSTs beyond the cap return [`429 capacity_exceeded`](http-api.md#capacity-and-resource-errors). |
 | `--max-inflight-requests <N>` | -- | `4 * workers` | Maximum concurrent in-flight control-plane HTTP requests. |
@@ -246,6 +247,63 @@ RUST_LOG=debug sonda-server --port 8080
 When you pass `--catalog`, point it at a directory that holds your `kind: composable` pack YAML files. The path must exist. A missing directory makes the server fail at startup with a clear error.
 
 Press Ctrl+C for graceful shutdown. The server signals all running scenarios to stop before exiting.
+
+### Autostarting a catalog
+
+By default the server boots empty and waits for you to `POST /scenarios`. Add `--autostart` and it starts every `kind: runnable` file in `--catalog` as soon as it is listening — the same result as POSTing each of those files yourself, without the POST:
+
+```bash
+sonda-server --port 8080 --catalog ./catalog --autostart
+```
+
+`--autostart` requires `--catalog`. Passing it alone (or setting `SONDA_AUTOSTART` without `SONDA_CATALOG`) exits before the server binds a port:
+
+```text
+Error: --autostart requires --catalog <DIR> (or SONDA_AUTOSTART requires SONDA_CATALOG): there is no scenario catalog to start from
+```
+
+`SONDA_AUTOSTART` reads like every other boolean env var: empty, `0`, `n`, `no`, `f`, `false`, and `off` (any case) disable it; any other value enables it. An empty value is the common one — `env: [{name: SONDA_AUTOSTART, value: ""}]` in a pod spec, or `SONDA_AUTOSTART=` in a Compose `.env` — and it means "off", not "broken".
+
+What starts and what does not:
+
+| Catalog file | Autostart behaviour |
+|---|---|
+| `kind: runnable` | Started. A file with several entries under `scenarios:` starts one scenario per entry. |
+| `kind: composable` | Not started. Packs exist to be referenced by `pack: <name>`, and runnables that reference them resolve against the same catalog directory. |
+| No `kind:` header | Ignored — the file is not a catalog entry at all. |
+
+Entries start in catalog-name order — the `scenario_name:` of the file, or its `name:`, or the filename stem with underscores turned into dashes (`web_traffic.yaml` becomes `web-traffic`), whichever the file declares first. That is the same order `sonda list` shows, so what you see in the catalog listing is the order the sweep uses.
+
+Two things stop the server before it binds, both of them mistakes only you can fix: `--autostart` with no catalog, and a catalog whose entries are not addressable — two files claiming the same name, or a name that cannot be derived from the file. The error names the clash and the files that caused it:
+
+```text
+Error: --autostart: catalog /catalog is not startable
+
+Caused by:
+    catalog /catalog contains duplicate entry name "web_traffic": /catalog/a.yaml and /catalog/b.yaml
+```
+
+Everything else keeps the server up. A scenario file the server cannot admit — a v1 body, a compile error, a validation failure, or a file that would push past `--max-scenarios` — is logged as a `WARN` and skipped; one bad file never stops the ones after it:
+
+```text
+WARN sonda_server::autostart: /catalog/legacy.yaml: does not compile, skipping catalog entry origin=/catalog/legacy.yaml reason=body is not a v2 scenario. ...
+WARN sonda_server::routes::scenarios: /catalog/extra.yaml: scenario cap reached origin=/catalog/extra.yaml needed=1
+```
+
+If the catalog cannot be read at all — a file the server has no permission to open, a directory that disappears mid-scan — it logs a `WARN`, starts nothing, and keeps serving so you can fix it over the API:
+
+```text
+WARN sonda_server::autostart: autostart: catalog could not be read, starting nothing catalog=/catalog reason=failed to read /catalog/locked.yaml: Permission denied (os error 13)
+```
+
+Every started scenario gets one `INFO` line naming the file it came from, and the sweep closes with a count, so "pod up, serving nothing" is visible in the log rather than only in the API:
+
+```text
+INFO sonda_server::routes::scenarios: scenario launched id=6f1c… name=cpu_usage state=running origin=/catalog/cpu.yaml
+INFO sonda_server::autostart: autostart: started 3 of 4 runnable catalog entries started=3 total=4
+```
+
+Autostarted scenarios are ordinary scenarios: they appear in `GET /scenarios`, count against `--max-scenarios`, and are stoppable with `DELETE /scenarios/{id}`. A `while:` clause that points at a scenario in another catalog file resolves when that file's turn comes; until then the scenario sits in `unresolved` or `pending`, exactly as it would if you posted the two files in catalog-name order.
 
 ### Tuning resource limits
 

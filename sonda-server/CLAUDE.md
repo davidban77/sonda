@@ -20,6 +20,10 @@ src/
 │                         graceful shutdown (Ctrl+C stops all scenarios + joins threads with 5s timeout)
 ├── auth.rs             ← require_api_key middleware (Bearer token), unauthorized() helper,
 │                         extract_bearer_token(), constant-time key comparison via subtle
+├── autostart.rs        ← --autostart sweep: runnable_entries() enumerates pre-bind (a catalog
+│                         the operator must fix is fatal; transient I/O warns and yields none),
+│                         start_entries() admits each through routes::scenarios::admit_compiled
+│                         and logs+skips per-entry failures
 ├── routes/
 │   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
@@ -61,6 +65,9 @@ tests/
 │                         Spawn helpers use `--port 0` + read the stdout announce.
 │                         All test files use `mod common;` for these helpers.
 ├── auth.rs             ← E2E tests: auth via --api-key flag, SONDA_API_KEY env var, no-key backwards compat
+├── autostart.rs        ← --autostart E2E: runnable entries start, packs do not, bad files are
+│                         skipped, SONDA_AUTOSTART value matrix, --autostart without --catalog
+│                         and duplicate catalog names exit before binding
 ├── events.rs           ← POST /events E2E: logs + metrics happy paths, malformed body, unknown
 │                         signal_type, missing fields, invalid sink config (422), sink-push 5xx (502),
 │                         auth (401), loopback warning surfaced on success
@@ -128,6 +135,10 @@ Respects `RUST_LOG` env var for log level (default: `info`).
 
 `--port 0` lets the OS assign a port. The server then prints
 `{"sonda_server":{"port":N}}` to stdout; tracing logs go to stderr.
+
+`--autostart` (env `SONDA_AUTOSTART`) requires `--catalog` and starts every
+`kind: runnable` catalog entry after the listener is bound, through the same
+admission path `POST /scenarios` uses.
 
 ### CLI dispatch shim
 

@@ -15,7 +15,10 @@
 //! - `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 //!
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
-//! plumbing: deserialize → compile → launch → store → respond.
+//! plumbing: deserialize → compile → launch → store → respond. The compile and
+//! launch halves — [`compile_v2_text`] and [`admit_compiled`] — are shared with
+//! the `--autostart` catalog sweep, so a posted and an autostarted scenario are
+//! admitted by the same code.
 
 use std::path::Path as FsPath;
 use std::sync::Arc;
@@ -338,13 +341,13 @@ enum ParsedBody {
 /// `while.op`, NaN values, conflicting fields) — surfaced as 422
 /// Unprocessable Entity.
 #[derive(Debug)]
-enum ParseFailure {
+pub enum ParseFailure {
     Syntactic(String),
     Semantic(String),
 }
 
 impl ParseFailure {
-    fn message(&self) -> &str {
+    pub fn message(&self) -> &str {
         match self {
             ParseFailure::Syntactic(m) | ParseFailure::Semantic(m) => m,
         }
@@ -368,21 +371,28 @@ fn parse_body(
     catalog_dir: Option<&FsPath>,
 ) -> Result<ParsedBody, ParseFailure> {
     let text = yaml_body_text(body, headers).map_err(ParseFailure::Syntactic)?;
+    let compiled = compile_v2_text(&text, catalog_dir)?;
+    Ok(ParsedBody::Compiled(Box::new(compiled)))
+}
 
-    let version = detect_version(&text);
-    if version != Some(2) {
+/// Compile v2 YAML text against the catalog pack resolver.
+pub fn compile_v2_text(
+    text: &str,
+    catalog_dir: Option<&FsPath>,
+) -> Result<CompiledFile, ParseFailure> {
+    if detect_version(text) != Some(2) {
         return Err(ParseFailure::Syntactic(format!(
             "body is not a v2 scenario. {V1_REJECTION_HINT}"
         )));
     }
 
     let resolver = sonda_core::catalog::CatalogPackResolver::new(catalog_dir);
-    let compiled = compile_scenario_file_compiled(&text, &resolver).map_err(|e| {
+    let compiled = compile_scenario_file_compiled(text, &resolver).map_err(|e| {
         let detail = format!(
             "v2 scenario body failed to compile: {}",
             format_error_chain(&e)
         );
-        if is_semantic_schema_error(&e, &text) {
+        if is_semantic_schema_error(&e, text) {
             ParseFailure::Semantic(detail)
         } else {
             ParseFailure::Syntactic(detail)
@@ -395,7 +405,7 @@ fn parse_body(
         ));
     }
 
-    Ok(ParsedBody::Compiled(Box::new(compiled)))
+    Ok(compiled)
 }
 
 /// Detect schema-level deserialize failures on otherwise well-formed YAML.
@@ -542,67 +552,38 @@ pub async fn post_scenario(
         }
     }
 
-    if let Some(name) = compiled.scenario_name.as_deref() {
-        let mut conflicts = collect_active_conflicts(&state, name).map_err(|()| {
-            warn!("POST /scenarios: scenarios lock is poisoned");
-            internal_error("internal state lock is poisoned")
-        })?;
-        if conflicts.is_empty() && state.gate_bus_registry.scenario_name_in_use(name) {
-            conflicts.push(ConflictingScenario {
-                id: String::new(),
-                name: name.to_string(),
-                state: "running".to_string(),
-            });
-        }
-        if !conflicts.is_empty() {
-            warn!(
-                scenario_name = %name,
-                count = conflicts.len(),
-                "POST /scenarios: rejected duplicate scenario_name"
-            );
-            return Err(conflict(
+    let Admitted {
+        mut created,
+        warnings,
+    } = admit_compiled(&state, *compiled, "POST /scenarios")
+        .await
+        .map_err(|err| match err {
+            AdmissionError::BadRequest(m) => bad_request(m),
+            AdmissionError::Unprocessable(m) => unprocessable(m),
+            AdmissionError::Conflict { name, conflicts } => conflict(
                 format!("scenario_name '{name}' is already running"),
                 conflicts,
-            ));
-        }
-    }
-
-    // Derive ScenarioEntry values for the loopback warning helper, which
-    // operates on the runtime input shape. prepare_entries doubles as
-    // pre-flight validation — surfacing rate=0, bad phase_offset, etc. as
-    // 422 before any thread spawns.
-    let prepared_entries = sonda_core::compiler::prepare::prepare(compiled.as_ref().clone())
-        .map_err(|e| {
-            warn!(error = %e, "POST /scenarios: prepare failed");
-            unprocessable(e)
+            ),
+            AdmissionError::CapacityExceeded { needed } => {
+                capacity_exceeded_response(&state, needed)
+            }
+            AdmissionError::Internal(m) => internal_error(m),
         })?;
-    let prepared = prepare_entries(prepared_entries).map_err(|e| {
-        warn!(error = %e, "POST /scenarios: validation failed");
-        unprocessable(e)
-    })?;
-    let warning_entries: Vec<ScenarioEntry> = prepared.into_iter().map(|p| p.entry).collect();
-    let mut warnings = sink_loopback_warnings(&warning_entries);
-    warnings.extend(loki_cardinality_warnings(&warning_entries));
-    log_warnings("POST /scenarios", &warnings);
-    drop(warning_entries);
 
-    let needed = compiled.entries.len();
-    let permits = match acquire_permits(&state, needed) {
-        Ok(p) => p,
-        Err(PermitError::CapacityExceeded) => {
-            warn!(
-                needed,
-                "POST /scenarios: scenario cap reached, returning 429"
-            );
-            return Err(capacity_exceeded_response(&state, needed));
-        }
-        Err(PermitError::SemaphoreClosed) => {
-            warn!("POST /scenarios: scenario_permits semaphore is closed");
-            return Err(internal_error("scenario permit semaphore is closed"));
-        }
-    };
-
-    launch_compiled(state, *compiled, warnings, permits).await
+    if created.len() == 1 {
+        let mut single = created.pop().expect("len checked above");
+        single.warnings = warnings;
+        Ok((StatusCode::CREATED, Json(single)).into_response())
+    } else {
+        Ok((
+            StatusCode::CREATED,
+            Json(CreatedScenariosResponse {
+                scenarios: created,
+                warnings,
+            }),
+        )
+            .into_response())
+    }
 }
 
 enum PermitError {
@@ -653,27 +634,104 @@ fn capacity_exceeded_response(state: &AppState, _needed: usize) -> Response {
     (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
 }
 
-async fn launch_compiled(
-    state: AppState,
+pub struct Admitted {
+    pub created: Vec<CreatedScenario>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum AdmissionError {
+    BadRequest(String),
+    Unprocessable(String),
+    Conflict {
+        name: String,
+        conflicts: Vec<ConflictingScenario>,
+    },
+    CapacityExceeded {
+        needed: usize,
+    },
+    Internal(String),
+}
+
+/// The single admission path: validate a compiled file, launch it, and store the
+/// resulting handles in [`AppState`]. `origin` labels the caller in the logs.
+pub async fn admit_compiled(
+    state: &AppState,
     compiled: CompiledFile,
-    warnings: Vec<String>,
-    mut permits: Vec<OwnedSemaphorePermit>,
-) -> Result<Response, Response> {
+    origin: &str,
+) -> Result<Admitted, AdmissionError> {
+    if let Some(name) = compiled.scenario_name.as_deref() {
+        let mut conflicts = collect_active_conflicts(state, name).map_err(|()| {
+            warn!(origin = %origin, "{origin}: scenarios lock is poisoned");
+            AdmissionError::Internal("internal state lock is poisoned".to_string())
+        })?;
+        if conflicts.is_empty() && state.gate_bus_registry.scenario_name_in_use(name) {
+            conflicts.push(ConflictingScenario {
+                id: String::new(),
+                name: name.to_string(),
+                state: "running".to_string(),
+            });
+        }
+        if !conflicts.is_empty() {
+            warn!(
+                origin = %origin,
+                scenario_name = %name,
+                count = conflicts.len(),
+                "{origin}: rejected duplicate scenario_name"
+            );
+            return Err(AdmissionError::Conflict {
+                name: name.to_string(),
+                conflicts,
+            });
+        }
+    }
+
+    // prepare_entries doubles as pre-flight validation: rate=0 and friends surface before any thread spawns.
+    let prepared_entries =
+        sonda_core::compiler::prepare::prepare(compiled.clone()).map_err(|e| {
+            warn!(origin = %origin, error = %e, "{origin}: prepare failed");
+            AdmissionError::Unprocessable(e.to_string())
+        })?;
+    let prepared = prepare_entries(prepared_entries).map_err(|e| {
+        warn!(origin = %origin, error = %e, "{origin}: validation failed");
+        AdmissionError::Unprocessable(e.to_string())
+    })?;
+    let warning_entries: Vec<ScenarioEntry> = prepared.into_iter().map(|p| p.entry).collect();
+    let mut warnings = sink_loopback_warnings(&warning_entries);
+    warnings.extend(loki_cardinality_warnings(&warning_entries));
+    log_warnings(origin, &warnings);
+    drop(warning_entries);
+
+    let needed = compiled.entries.len();
+    let mut permits = match acquire_permits(state, needed) {
+        Ok(p) => p,
+        Err(PermitError::CapacityExceeded) => {
+            warn!(origin = %origin, needed, "{origin}: scenario cap reached");
+            return Err(AdmissionError::CapacityExceeded { needed });
+        }
+        Err(PermitError::SemaphoreClosed) => {
+            warn!(origin = %origin, "{origin}: scenario_permits semaphore is closed");
+            return Err(AdmissionError::Internal(
+                "scenario permit semaphore is closed".to_string(),
+            ));
+        }
+    };
+
     let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
     let mut handles = launch_multi_compiled(compiled, Some(resolver))
         .await
         .map_err(|e| {
-            warn!(error = %e, "POST /scenarios: failed to launch scenarios");
+            warn!(origin = %origin, error = %e, "{origin}: failed to launch scenarios");
             match e {
-                sonda_core::SondaError::Config(_) => unprocessable(e),
-                _ => internal_error(e),
+                sonda_core::SondaError::Config(_) => AdmissionError::Unprocessable(e.to_string()),
+                _ => AdmissionError::Internal(e.to_string()),
             }
         })?;
 
     if handles.is_empty() {
-        warn!("POST /scenarios: gated launch produced zero handles");
-        return Err(bad_request(
-            "v2 scenario body produced zero runnable entries",
+        warn!(origin = %origin, "{origin}: gated launch produced zero handles");
+        return Err(AdmissionError::BadRequest(
+            "v2 scenario body produced zero runnable entries".to_string(),
         ));
     }
 
@@ -684,7 +742,7 @@ async fn launch_compiled(
         state.gate_bus_registry.rename_handle(&old_id, &new_id);
         let name = handle.name.clone();
         let state_str = state_string(&handle.stats_snapshot()).to_string();
-        info!(id = %new_id, name = %name, state = %state_str, "scenario launched");
+        info!(id = %new_id, name = %name, state = %state_str, origin = %origin, "scenario launched");
         if let Some(permit) = permits.pop() {
             handle.attach_permit(permit);
         }
@@ -700,28 +758,15 @@ async fn launch_compiled(
         for handle in &handles {
             handle.stop();
         }
-        warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
-        internal_error("internal state lock is poisoned")
+        warn!(origin = %origin, error = %e, "{origin}: scenarios lock is poisoned");
+        AdmissionError::Internal("internal state lock is poisoned".to_string())
     })?;
     for (created_entry, handle) in created.iter().zip(handles) {
         scenarios.insert(created_entry.id.clone(), handle);
     }
     drop(scenarios);
 
-    if created.len() == 1 {
-        let mut single = created.into_iter().next().expect("len checked above");
-        single.warnings = warnings;
-        Ok((StatusCode::CREATED, Json(single)).into_response())
-    } else {
-        Ok((
-            StatusCode::CREATED,
-            Json(CreatedScenariosResponse {
-                scenarios: created,
-                warnings,
-            }),
-        )
-            .into_response())
-    }
+    Ok(Admitted { created, warnings })
 }
 
 /// `GET /scenarios` — list all scenarios with summary information.

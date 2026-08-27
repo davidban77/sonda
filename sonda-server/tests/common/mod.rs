@@ -10,6 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
+const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// RAII guard: kills the child on drop.
 pub struct ServerGuard {
@@ -26,25 +27,10 @@ impl Drop for ServerGuard {
 /// Spawn `sonda-server --port 0`, read the announced port, return `(port, child)`.
 /// Strips `SONDA_API_KEY` from the inherited env so a shell-set key doesn't leak in.
 pub fn spawn_server_with(extra_args: &[&str], extra_env: &[(&str, &str)]) -> (u16, Child) {
-    let binary = env!("CARGO_BIN_EXE_sonda-server");
-
-    let mut cmd = Command::new(binary);
-    cmd.args(["--port", "0", "--bind", "127.0.0.1"])
-        .args(extra_args)
-        .env("RUST_LOG", "warn")
-        .env_remove("SONDA_API_KEY")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    for (key, value) in extra_env {
-        cmd.env(key, value);
-    }
-
-    let mut child = cmd.spawn().expect("failed to spawn sonda-server binary");
-    let stdout = child
-        .stdout
-        .take()
-        .expect("child stdout must be piped (Stdio::piped above)");
+    let mut child = server_command(extra_args, extra_env)
+        .spawn()
+        .expect("failed to spawn sonda-server binary");
+    let stdout = child.stdout.take().expect("child stdout must be piped");
 
     let port = read_announced_port(stdout)
         .unwrap_or_else(|err| panic!("sonda-server announce failed: {err}"));
@@ -64,6 +50,66 @@ pub fn start_server() -> (u16, ServerGuard) {
 pub fn start_server_with(extra_args: &[&str], extra_env: &[(&str, &str)]) -> (u16, ServerGuard) {
     let (port, child) = spawn_server_with(extra_args, extra_env);
     (port, ServerGuard { child })
+}
+
+/// Output of a server process that was expected to exit on its own.
+pub struct ServerExit {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl ServerExit {
+    pub fn announced_a_port(&self) -> bool {
+        self.stdout.contains("sonda_server")
+    }
+}
+
+/// Spawn the server with arguments that must be rejected at startup and wait for
+/// it to exit; panics if it is still alive after `EXIT_TIMEOUT`.
+pub fn run_server_expecting_exit(extra_args: &[&str], extra_env: &[(&str, &str)]) -> ServerExit {
+    let mut child = server_command(extra_args, extra_env)
+        .spawn()
+        .expect("failed to spawn sonda-server binary");
+
+    let deadline = std::time::Instant::now() + EXIT_TIMEOUT;
+    loop {
+        match child.try_wait().expect("failed to poll sonda-server") {
+            Some(_) => break,
+            None if std::time::Instant::now() >= deadline => {
+                child.kill().ok();
+                child.wait().ok();
+                panic!("sonda-server did not exit within {EXIT_TIMEOUT:?}");
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .expect("failed to collect sonda-server output");
+    ServerExit {
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+fn server_command(extra_args: &[&str], extra_env: &[(&str, &str)]) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sonda-server"));
+    cmd.args(["--port", "0", "--bind", "127.0.0.1"])
+        .args(extra_args)
+        .env("RUST_LOG", "warn")
+        .env_remove("SONDA_API_KEY")
+        .env_remove("SONDA_CATALOG")
+        .env_remove("SONDA_AUTOSTART")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd
 }
 
 pub fn http_client() -> reqwest::blocking::Client {
