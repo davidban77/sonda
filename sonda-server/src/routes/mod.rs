@@ -3,6 +3,7 @@
 pub mod events;
 pub mod health;
 pub mod metrics;
+pub mod ready;
 pub mod scenarios;
 pub mod sink_warnings;
 
@@ -47,7 +48,9 @@ pub fn router(state: AppState) -> Router {
 }
 
 pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
-    let public = Router::new().route("/health", get(health::health));
+    let public = Router::new()
+        .route("/health", get(health::health))
+        .route("/ready", get(ready::ready));
 
     let protected_observability = Router::new()
         .route("/scenarios/{id}/stats", get(scenarios::get_scenario_stats))
@@ -313,6 +316,22 @@ mod tests {
             response.status(),
             StatusCode::OK,
             "GET /health must return 200 even when auth is enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_enabled_ready_remains_public() {
+        let app = test_router_with_key("secret");
+        let request = Request::builder()
+            .uri("/ready")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "GET /ready must answer without a bearer token"
         );
     }
 

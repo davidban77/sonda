@@ -26,13 +26,17 @@ src/
 │                         and logs+skips per-entry failures. Runs as a spawned task alongside
 │                         axum::serve; takes a CancellationToken that shutdown cancels and joins
 ├── routes/
-│   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health),
+│   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health, /ready),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
 │                         /scenarios/metrics, /metrics), and protected control (/scenarios POST/GET,
 │                         /scenarios/{id} GET/DELETE, /events). Auth + request-metrics middleware
 │                         applied per protected sub-router; the control sub-router additionally
 │                         carries the timeout + body-limit + global-concurrency tower stack.
-│   ├── health.rs       ← GET /health → {"status": "ok"}
+│   ├── health.rs       ← GET /health → {"status": "ok"} (static liveness signal)
+│   ├── ready.rs        ← GET /ready → sweep phase + started/expected counts. 200 when the
+│                         autostart sweep has nothing pending (not configured, or finished —
+│                         including a run that skipped entries), 503 while it runs or after
+│                         it failed.
 │   ├── events.rs       ← POST /events: synchronous single-event emission. Tagged-enum
 │                         request body, dispatches on signal_type, builds LogEvent/MetricEvent,
 │                         awaits sonda_core::emit::{emit_log, emit_metric} directly.
@@ -58,6 +62,9 @@ src/
 │                         get_scenario(), get_scenario_stats(),
 │                         get_scenario_metrics(), delete_scenario().
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>> + optional api_key
+                        + SweepStatus: lock-free autostart sweep phase (not_configured /
+                        in_progress / finished / failed) plus started and expected counts,
+                        built before the listener binds so the denominator is never zero
 
 tests/
 ├── common/
@@ -73,6 +80,9 @@ tests/
 │                         signal_type, missing fields, invalid sink config (422), sink-push 5xx (502),
 │                         auth (401), loopback warning surfaced on success
 ├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
+├── ready.rs            ← GET /ready E2E: 503 during a 500-entry sweep then 200 after, ready
+│                         without autostart, ready despite a skipped file, autostart counters
+│                         on /metrics
 ├── integration.rs      ← full lifecycle: POST metrics + logs → GET list → stats → DELETE → verify stopped
 └── scenarios.rs        ← POST /scenarios unit-level tests (valid/invalid YAML, JSON, validation errors)
 ```
@@ -81,7 +91,8 @@ tests/
 
 | Method | Path                    | Description                                             |
 |--------|-------------------------|---------------------------------------------------------|
-| GET    | /health                 | Health check — always returns 200 OK                    |
+| GET    | /health                 | Liveness check — always returns 200 OK                  |
+| GET    | /ready                  | Readiness check — 200 when the autostart sweep has nothing left to start (or was never configured), 503 while it is in progress or after it failed. Body carries `status`, `autostart_started`, `autostart_expected`. Public, like /health. |
 | POST   | /scenarios              | Start scenario(s) from a v2 YAML or JSON body. Every body is compiled through `sonda_core::compile_scenario_file`; v1 YAML shapes are rejected with a 400 + migration hint. When the compilation produces exactly one entry the response is `{id, name, status}`; otherwise it is `{scenarios: [{id, name, status}, ...]}`. |
 | GET    | /scenarios              | List all scenarios with id, name, status, elapsed       |
 | GET    | /scenarios/{id}         | Inspect a scenario: detail + live stats                 |
@@ -113,7 +124,7 @@ worker threads.
 ## Authentication
 
 API key authentication is opt-in. When configured, all `/scenarios/*` endpoints require a
-`Authorization: Bearer <key>` header. The `/health` endpoint is always public.
+`Authorization: Bearer <key>` header. The `/health` and `/ready` endpoints are always public.
 
 ```
 # Via CLI flag:
@@ -142,7 +153,13 @@ Respects `RUST_LOG` env var for log level (default: `info`).
 uses. Catalog validation runs before the bind, so a catalog the operator must fix
 is fatal; the sweep itself runs concurrently with `axum::serve`, so the server
 answers requests while entries are still starting. `shutdown_signal` cancels and
-joins the sweep before draining, so no admission lands after the drain.
+joins the sweep before draining, so no admission lands after the drain. The sweep is
+spawned through spawn_supervised_sweep(): a supervisor task awaits its JoinHandle, so a
+sweep that panics is logged at ERROR and flips SweepStatus to failed at once and /ready
+reports 503 without waiting for shutdown. The failed phase is terminal — nothing retries
+the sweep, and liveness stays on the static /health, so recovery is a process restart.
+Shutdown joins the supervisor rather than the sweep and no longer reports the outcome
+itself; report_sweep_outcome() is the only place that does.
 
 ### CLI dispatch shim
 

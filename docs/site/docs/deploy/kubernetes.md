@@ -306,15 +306,25 @@ See [Server API](server.md) for the full endpoint reference and the
 
 ## Health probes
 
-The Deployment configures both liveness and readiness probes against `GET /health`:
+The Deployment configures a liveness probe against `GET /health` and a readiness probe against `GET /ready`:
 
-| Probe | Initial delay | Period | Timeout | Failure threshold |
-|-------|--------------|--------|---------|-------------------|
-| Liveness | 5s | 10s | 3s | 3 |
-| Readiness | 2s | 5s | 3s | 3 |
+| Probe | Path | Initial delay | Period | Timeout | Failure threshold |
+|-------|------|--------------|--------|---------|-------------------|
+| Liveness | `/health` | 5s | 10s | 3s | 3 |
+| Readiness | `/ready` | 2s | 5s | 3s | 3 |
 
-The `/health` endpoint returns `{"status":"ok"}` with HTTP 200 when the server is running.
-Pods restart automatically if the server becomes unresponsive.
+The two answer different questions. `/health` returns `{"status":"ok"}` with HTTP 200 whenever the process is up, and a failing liveness probe restarts the pod. `/ready` returns 503 while the [`server.autostart`](#starting-the-configmap-scenarios-automatically) sweep is still starting catalog entries, and 200 once it has finished. A pod only joins the Service endpoints once the scenarios it was deployed to run are actually running. A pod that is not ready is taken out of the Service without being restarted, which is what you want while a large catalog is still starting.
+
+With `server.autostart` enabled, `kubectl rollout status` therefore completes when the catalog is running, not when the port opens. With `server.autostart` disabled — the default — `/ready` answers 200 from the first request, so the readiness probe behaves exactly as it did against `/health`.
+
+??? warning "A pinned `image.tag` older than `/ready` leaves the pod permanently NotReady"
+    The chart's default `image.tag` follows its own `appVersion`, so a `helm upgrade` that takes this chart takes a matching image and there is nothing to do. If you pin `image.tag` to a release that does not serve `/ready`, the probe gets a 404 and the pod never becomes Ready. Move the pin forward, or stay on the chart version you were running.
+
+!!! info "A sweep that skipped files is still ready"
+    A sweep that finished but skipped a file still reports ready, so the pod goes into service and the rollout succeeds. That is deliberate. One bad file in a twelve-file ConfigMap must not pull the whole pod out of service. On a node drain, the same rule stops every pod coming back NotReady at once. The counts on [`GET /ready`](server.md#health-and-readiness) and on [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) are what surface the skip. This holds when every file is broken too: the pod is Ready with nothing running. Alert on the counts rather than relying on the rollout to fail.
+
+!!! warning "A failed sweep is terminal — the pod stays NotReady and is never restarted"
+    `/ready` reports `status: failed` and keeps answering 503 for the life of the process, so the pod never rejoins the Service. It is not restarted either: the process is alive, so the liveness probe on `/health` keeps passing by design. The pod needs a human. Read the `ERROR` line in the log, then `kubectl delete pod` to start a fresh sweep. Alert on it with [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started), since a pod that is permanently NotReady is otherwise quiet.
 
 ## Accessing the server
 
@@ -331,6 +341,9 @@ Then interact with the API at `http://localhost:8080`:
 ```bash
 # Health check
 curl http://localhost:8080/health
+
+# Readiness check
+curl http://localhost:8080/ready
 
 # Start a scenario
 curl -X POST -H "Content-Type: text/yaml" \
@@ -362,7 +375,7 @@ For example, a Prometheus instance in the same namespace can scrape
 | `GET /scenarios/metrics` | Aggregate scenario data | Per-process scenario view |
 | `GET /metrics` | Server-process RED + saturation | Operational dashboards and alerts |
 
-`GET /scenarios/metrics` and `GET /scenarios/{id}/metrics` are idempotent snapshots — one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. `GET /metrics` returns the server's own RED and saturation telemetry — see [Server metrics](server-metrics.md) for the nine series and the alerts that go with them. Most Prometheus setups want a job per endpoint; the aggregate `/scenarios/metrics` covers every scenario and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the `?label=k:v` AND-filter syntax.
+`GET /scenarios/metrics` and `GET /scenarios/{id}/metrics` are idempotent snapshots — one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. `GET /metrics` returns the server's own RED and saturation telemetry — see [Server metrics](server-metrics.md) for the eleven series and the alerts that go with them. Most Prometheus setups want a job per endpoint; the aggregate `/scenarios/metrics` covers every scenario and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the `?label=k:v` AND-filter syntax.
 
 ### Aggregate scrape config
 
@@ -439,7 +452,7 @@ The `port: http` field matches the named port on the Sonda Service. Each `endpoi
 
 Sonda-server supports optional bearer token authentication on `/scenarios/*`, `/scenarios/metrics`, and
 `/events`. When enabled, clients must include an `Authorization: Bearer <key>` header. The
-`/health` endpoint stays public so liveness and readiness probes work without credentials.
+`/health` and `/ready` endpoints stay public so liveness and readiness probes work without credentials.
 
 For the full authentication behavior (error responses, protected vs. public endpoints), see the
 [Server API Authentication](server.md#authentication) section.
@@ -510,8 +523,9 @@ curl -X POST \
   --data-binary @examples/basic-metrics.yaml \
   http://localhost:8080/scenarios
 
-# Health check (always public)
+# Health and readiness checks (always public)
 curl http://localhost:8080/health
+curl http://localhost:8080/ready
 ```
 
 ### Prometheus scraping with auth
@@ -606,6 +620,6 @@ Add `-n <namespace>` if you installed into a non-default namespace.
 
 - [Synthetic Monitoring guide](../test/synthetic-monitoring.md) -- deploy Sonda on Kubernetes, submit long-running scenarios, scrape with Prometheus, and build Grafana dashboards
 - [Server API](server.md) -- full endpoint reference for `sonda-server`
-- [Server metrics](server-metrics.md) -- the nine `/metrics` series and the PromQL alerts that matter
+- [Server metrics](server-metrics.md) -- the eleven `/metrics` series and the PromQL alerts that matter
 - [Docker](docker.md) -- Docker image and Compose stacks for local development
 - [Scenario Fields](../reference/scenario-fields.md) -- full YAML schema for scenario configuration

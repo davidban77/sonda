@@ -133,7 +133,7 @@ Wait for the pod to become ready:
 kubectl get pods -l app.kubernetes.io/name=sonda -w
 ```
 
-You should see `1/1 Running` within 15 to 20 seconds. The Deployment configures liveness and readiness probes against `GET /health`. Kubernetes restarts the pod automatically if the server stops responding.
+You should see `1/1 Running` within 15 to 20 seconds. The Deployment configures a liveness probe against `GET /health` and a readiness probe against `GET /ready`. `/health` says the process is alive, so Kubernetes restarts the pod automatically if the server stops responding. `/ready` says the scenarios it was deployed to run have started — see [Health probes](../deploy/kubernetes.md#health-probes).
 
 ??? info "Customizing the deployment"
     Override common settings with `--set`:
@@ -500,7 +500,8 @@ The pod alert fires fast and signals an infrastructure issue. The metric-absent 
 | Check scenario stats | `curl http://localhost:8080/scenarios/<id>/stats` |
 | Scrape metrics | `curl http://localhost:8080/scenarios/<id>/metrics` |
 | Stop a scenario | `curl -X DELETE http://localhost:8080/scenarios/<id>` |
-| Health check | `curl http://localhost:8080/health` |
+| Health check (process alive) | `curl http://localhost:8080/health` |
+| Readiness check (catalog started) | `curl http://localhost:8080/ready` |
 
 ## Related pages
 

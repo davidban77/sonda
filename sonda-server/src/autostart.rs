@@ -53,10 +53,10 @@ fn is_misconfiguration(error: &CatalogError) -> bool {
 /// so shutdown never races an admission it would not see.
 pub async fn start_entries(state: &AppState, entries: &[CatalogEntry], cancel: &CancellationToken) {
     let catalog_dir = state.catalog_dir.as_deref().map(|p| p.as_path());
-    let mut started = 0usize;
 
     for (index, entry) in entries.iter().enumerate() {
         if cancel.is_cancelled() {
+            let started = state.sweep_status.snapshot().started;
             warn!(
                 started,
                 total = entries.len(),
@@ -87,10 +87,13 @@ pub async fn start_entries(state: &AppState, entries: &[CatalogEntry], cancel: &
 
         // admit_compiled logs the reason it rejected an entry, with the same origin.
         if admit_compiled(state, compiled, &path).await.is_ok() {
-            started += 1;
+            state.sweep_status.record_started();
         }
     }
 
+    // Finish before the summary line, so anything that waits on the log sees a ready /ready.
+    state.sweep_status.finish();
+    let started = state.sweep_status.snapshot().started;
     info!(
         started,
         total = entries.len(),
@@ -106,7 +109,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::state::AppState;
+    use crate::state::{AppState, SweepPhase, SweepStatus};
 
     const RUNNABLE: &str = "\
 version: 2
@@ -135,6 +138,7 @@ scenarios:
 
         let mut state = AppState::new();
         state.catalog_dir = Some(Arc::new(dir.path().to_path_buf()));
+        state.sweep_status = Arc::new(SweepStatus::in_progress(entries.len()));
         (dir, entries, state)
     }
 
@@ -152,6 +156,17 @@ scenarios:
     }
 
     #[tokio::test]
+    async fn a_completed_sweep_reports_finished_with_its_counts() {
+        let (_dir, entries, state) = catalog_with_one_runnable();
+
+        start_entries(&state, &entries, &CancellationToken::new()).await;
+
+        let snap = state.sweep_status.snapshot();
+        assert_eq!(snap.phase, SweepPhase::Finished);
+        assert_eq!((snap.started, snap.expected), (1, 1));
+    }
+
+    #[tokio::test]
     async fn cancelled_sweep_admits_nothing() {
         let (_dir, entries, state) = catalog_with_one_runnable();
         let cancel = CancellationToken::new();
@@ -160,5 +175,16 @@ scenarios:
         start_entries(&state, &entries, &cancel).await;
 
         assert_eq!(admitted(&state), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_sweep_never_reports_itself_finished() {
+        let (_dir, entries, state) = catalog_with_one_runnable();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        start_entries(&state, &entries, &cancel).await;
+
+        assert_eq!(state.sweep_status.snapshot().phase, SweepPhase::InProgress);
     }
 }

@@ -107,15 +107,31 @@ Mounting a catalog makes its files available to `POST /scenarios`; it does not r
           - SONDA_AUTOSTART=1
     ```
 
-The server answers `/health` as soon as the port is open and the entries appear in `GET /scenarios` as they start, so a container health check never waits on the catalog:
+The server answers `/health` as soon as the port is open and the entries appear in `GET /scenarios` as they start. `/ready` is the one that waits: it returns 503 until the sweep has been through every entry, then 200.
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8080/health   # 200 as soon as the port is open
+curl http://localhost:8080/ready    # 503 until the sweep is done, then 200
 curl http://localhost:8080/scenarios
 
 # One line per started entry, plus a closing count
 docker logs sonda-server
 ```
+
+Gate anything that depends on the scenarios on `/ready`, not on the port being open. A script that starts the stack and immediately asserts on data will otherwise run against a half-started catalog:
+
+```bash
+# Wait for the catalog to be up before doing anything that depends on it
+until curl -sf http://localhost:8080/ready > /dev/null; do sleep 1; done
+docker compose up -d prometheus grafana
+```
+
+!!! warning "Do not add a Compose `healthcheck:` — nothing in the image can run it"
+    The published image is built `FROM scratch`. It has no shell, no `curl`, and no `wget` — only the two Sonda binaries. A `healthcheck:` therefore has no command to run the request with, and `depends_on: condition: service_healthy` has nothing to wait on. A healthcheck added anyway does not fall back to something that works: it fails every time, and the container settles into `unhealthy` while serving normally. Poll from the host as shown above instead.
+
+    Kubernetes does not have this limitation. The kubelet performs the HTTP GET itself, which is why the [Helm chart](kubernetes.md#health-probes) points its readiness probe straight at `/ready`.
+
+A sweep that finished but skipped a file still reports ready; see [Health and readiness](server.md#health-and-readiness) for the response shape and the counts that surface the skip.
 
 `kind: composable` packs are never started — they stay available for `pack: <name>` references from the runnables next to them. A file the server cannot open, compile, or admit is logged and skipped, so one bad file does not stop the container coming up. Two files claiming the same catalog name is a startup error: the process exits before binding, which under a restart policy shows up as a restart loop rather than a container serving nothing.
 
@@ -155,16 +171,17 @@ way as the `--api-key` CLI flag.
           - SONDA_API_KEY=my-secret-key
     ```
 
-Once enabled, all `/scenarios/*` requests require a `Bearer` token. The `/health`
-endpoint stays public so health probes keep working.
+Once enabled, all `/scenarios/*` requests require a `Bearer` token. The `/health` and
+`/ready` endpoints stay public so health and readiness probes keep working.
 
 ```bash
 # Authenticated request
 curl -H "Authorization: Bearer my-secret-key" \
   http://localhost:8080/scenarios
 
-# Health check (no auth needed)
+# Health and readiness checks (no auth needed)
 curl http://localhost:8080/health
+curl http://localhost:8080/ready
 ```
 
 !!! warning "Don't embed secrets in plain text"

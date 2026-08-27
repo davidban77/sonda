@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -96,6 +96,104 @@ pub struct HistogramSnapshot {
     pub count: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepPhase {
+    NotConfigured,
+    InProgress,
+    Finished,
+    Failed,
+}
+
+impl SweepPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SweepPhase::NotConfigured => "not_configured",
+            SweepPhase::InProgress => "in_progress",
+            SweepPhase::Finished => "finished",
+            SweepPhase::Failed => "failed",
+        }
+    }
+
+    pub fn is_ready(self) -> bool {
+        matches!(self, SweepPhase::NotConfigured | SweepPhase::Finished)
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            SweepPhase::NotConfigured => 0,
+            SweepPhase::InProgress => 1,
+            SweepPhase::Finished => 2,
+            SweepPhase::Failed => 3,
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            0 => SweepPhase::NotConfigured,
+            1 => SweepPhase::InProgress,
+            2 => SweepPhase::Finished,
+            _ => SweepPhase::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepSnapshot {
+    pub phase: SweepPhase,
+    pub started: usize,
+    pub expected: usize,
+}
+
+/// Progress of the `--autostart` catalog sweep. `expected` is fixed when the catalog
+/// is enumerated, before the listener binds, so probes never read a zero denominator.
+pub struct SweepStatus {
+    phase: AtomicU8,
+    started: AtomicUsize,
+    expected: usize,
+}
+
+impl SweepStatus {
+    pub fn not_configured() -> Self {
+        Self {
+            phase: AtomicU8::new(SweepPhase::NotConfigured.code()),
+            started: AtomicUsize::new(0),
+            expected: 0,
+        }
+    }
+
+    pub fn in_progress(expected: usize) -> Self {
+        Self {
+            phase: AtomicU8::new(SweepPhase::InProgress.code()),
+            started: AtomicUsize::new(0),
+            expected,
+        }
+    }
+
+    pub fn record_started(&self) {
+        self.started.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn finish(&self) {
+        self.phase
+            .store(SweepPhase::Finished.code(), Ordering::Release);
+    }
+
+    pub fn fail(&self) {
+        self.phase
+            .store(SweepPhase::Failed.code(), Ordering::Release);
+    }
+
+    pub fn snapshot(&self) -> SweepSnapshot {
+        // Acquire pairs with finish()'s Release: seeing Finished implies the final count.
+        let phase = SweepPhase::from_code(self.phase.load(Ordering::Acquire));
+        SweepSnapshot {
+            phase,
+            started: self.started.load(Ordering::Relaxed),
+            expected: self.expected,
+        }
+    }
+}
+
 /// Shared application state for the HTTP server.
 ///
 /// Holds a map of running [`ScenarioHandle`]s keyed by scenario ID, the
@@ -128,6 +226,8 @@ pub struct AppState {
     pub request_counters: Arc<RwLock<HashMap<RouteKey, AtomicU64>>>,
     /// Per-`(route, method)` duration histograms.
     pub request_histograms: Arc<RwLock<HashMap<HistogramKey, HistogramShard>>>,
+    /// Progress of the `--autostart` catalog sweep.
+    pub sweep_status: Arc<SweepStatus>,
 }
 
 impl AppState {
@@ -144,6 +244,7 @@ impl AppState {
             max_scenarios: 0,
             request_counters: Arc::new(RwLock::new(HashMap::new())),
             request_histograms: Arc::new(RwLock::new(HashMap::new())),
+            sweep_status: Arc::new(SweepStatus::not_configured()),
         }
     }
 
@@ -161,6 +262,7 @@ impl AppState {
             max_scenarios: 0,
             request_counters: Arc::new(RwLock::new(HashMap::new())),
             request_histograms: Arc::new(RwLock::new(HashMap::new())),
+            sweep_status: Arc::new(SweepStatus::not_configured()),
         }
     }
 }
@@ -324,6 +426,83 @@ mod tests {
         let after = Instant::now();
         assert!(state.started_at >= before);
         assert!(state.started_at <= after);
+    }
+
+    #[test]
+    fn not_configured_status_is_ready_with_zero_counts() {
+        let snap = SweepStatus::not_configured().snapshot();
+        assert_eq!(snap.phase, SweepPhase::NotConfigured);
+        assert!(snap.phase.is_ready());
+        assert_eq!((snap.started, snap.expected), (0, 0));
+    }
+
+    #[test]
+    fn in_progress_status_carries_the_expected_count_before_anything_starts() {
+        let snap = SweepStatus::in_progress(12).snapshot();
+        assert_eq!(snap.phase, SweepPhase::InProgress);
+        assert!(!snap.phase.is_ready());
+        assert_eq!((snap.started, snap.expected), (0, 12));
+    }
+
+    #[test]
+    fn record_started_counts_up_to_finish() {
+        let status = SweepStatus::in_progress(3);
+        status.record_started();
+        status.record_started();
+        status.finish();
+
+        let snap = status.snapshot();
+        assert_eq!(snap.phase, SweepPhase::Finished);
+        assert!(snap.phase.is_ready());
+        assert_eq!((snap.started, snap.expected), (2, 3));
+    }
+
+    #[test]
+    fn a_failed_sweep_is_not_ready_and_keeps_its_counts() {
+        let status = SweepStatus::in_progress(4);
+        status.record_started();
+        status.fail();
+
+        let snap = status.snapshot();
+        assert_eq!(snap.phase, SweepPhase::Failed);
+        assert!(!snap.phase.is_ready());
+        assert_eq!((snap.started, snap.expected), (1, 4));
+    }
+
+    #[test]
+    fn phase_labels_are_stable() {
+        assert_eq!(SweepPhase::NotConfigured.as_str(), "not_configured");
+        assert_eq!(SweepPhase::InProgress.as_str(), "in_progress");
+        assert_eq!(SweepPhase::Finished.as_str(), "finished");
+        assert_eq!(SweepPhase::Failed.as_str(), "failed");
+    }
+
+    #[test]
+    fn phase_codes_round_trip() {
+        for phase in [
+            SweepPhase::NotConfigured,
+            SweepPhase::InProgress,
+            SweepPhase::Finished,
+            SweepPhase::Failed,
+        ] {
+            assert_eq!(SweepPhase::from_code(phase.code()), phase);
+        }
+    }
+
+    #[test]
+    fn new_state_reports_no_autostart_sweep() {
+        assert_eq!(
+            AppState::new().sweep_status.snapshot().phase,
+            SweepPhase::NotConfigured
+        );
+    }
+
+    #[test]
+    fn clone_shares_the_same_sweep_status() {
+        let state = AppState::new();
+        let clone = state.clone();
+        state.sweep_status.record_started();
+        assert_eq!(clone.sweep_status.snapshot().started, 1);
     }
 
     #[test]

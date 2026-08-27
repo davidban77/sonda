@@ -25,10 +25,10 @@ use anyhow::Context;
 use clap::Parser;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::routes::RouterConfig;
-use crate::state::AppState;
+use crate::state::{AppState, SweepStatus};
 
 /// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
 /// Mirror of `sonda`'s clap definition.
@@ -52,8 +52,8 @@ struct Args {
     /// API key for bearer-token authentication on `/scenarios/*`, `/events`, `/metrics`, and `/scenarios/metrics` endpoints.
     ///
     /// When set, requests to these endpoints must include an
-    /// `Authorization: Bearer <key>` header. The `/health` endpoint remains
-    /// public regardless of this setting.
+    /// `Authorization: Bearer <key>` header. The `/health` and `/ready`
+    /// endpoints remain public regardless of this setting.
     ///
     /// Can also be set via the `SONDA_API_KEY` environment variable.
     #[arg(long, env = "SONDA_API_KEY")]
@@ -191,6 +191,12 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
         _ => Vec::new(),
     };
 
+    let sweep_status = Arc::new(if args.autostart {
+        SweepStatus::in_progress(autostart_entries.len())
+    } else {
+        SweepStatus::not_configured()
+    });
+
     let permits = if args.max_scenarios == 0 {
         warn!("--max-scenarios 0 — scenario row cap disabled (unlimited)");
         Semaphore::new(Semaphore::MAX_PERMITS)
@@ -211,6 +217,7 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
             HashMap::<crate::state::RouteKey, AtomicU64>::new(),
         )),
         request_histograms: Arc::new(RwLock::new(HashMap::new())),
+        sweep_status,
     };
 
     let inflight_semaphore = Arc::new(Semaphore::new(max_inflight_requests));
@@ -239,10 +246,11 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
 
     let sweep_cancel = CancellationToken::new();
     let sweep = args.autostart.then(|| {
-        let state = state.clone();
+        let sweep_state = state.clone();
         let cancel = sweep_cancel.clone();
-        tokio::spawn(
-            async move { autostart::start_entries(&state, &autostart_entries, &cancel).await },
+        spawn_supervised_sweep(
+            async move { autostart::start_entries(&sweep_state, &autostart_entries, &cancel).await },
+            state.sweep_status.clone(),
         )
     });
 
@@ -259,6 +267,24 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
 
     info!("sonda-server shut down cleanly");
     Ok(())
+}
+
+/// Run the sweep under a task that observes how it ended. The returned handle is
+/// the supervisor's: awaiting it joins the sweep and its outcome report.
+fn spawn_supervised_sweep<F>(sweep: F, status: Arc<SweepStatus>) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let sweeping = tokio::spawn(sweep);
+    tokio::spawn(report_sweep_outcome(sweeping, status))
+}
+
+/// Report a sweep that ended without finishing when it happens, not at shutdown.
+async fn report_sweep_outcome(sweeping: tokio::task::JoinHandle<()>, status: Arc<SweepStatus>) {
+    if let Err(error) = sweeping.await {
+        status.fail();
+        error!(%error, "autostart: sweep ended without finishing — the catalog entries it had not reached will not be started");
+    }
 }
 
 /// If `argv[1]` is a sonda subcommand, exec the sibling `sonda` binary and
@@ -345,9 +371,9 @@ async fn shutdown_signal(
 
     sweep_cancel.cancel();
     if let Some(sweep) = sweep {
-        if let Err(e) = sweep.await {
-            warn!(error = %e, "autostart sweep did not finish cleanly");
-        }
+        // report_sweep_outcome already reported anything worth reporting; this join
+        // only orders the sweep ahead of the drain.
+        let _ = sweep.await;
     }
 
     if let Ok(scenarios) = state.scenarios.read() {
@@ -422,6 +448,73 @@ mod tests {
             sorted.len(),
             "SONDA_SUBCOMMANDS contains duplicates"
         );
+    }
+
+    #[tokio::test]
+    async fn a_spawned_sweep_that_panics_is_reported_as_failed_without_waiting_for_shutdown() {
+        let status = Arc::new(SweepStatus::in_progress(3));
+
+        spawn_supervised_sweep(async { panic!("sweep exploded") }, Arc::clone(&status))
+            .await
+            .expect("the supervisor must not panic with the sweep");
+
+        assert_eq!(status.snapshot().phase, crate::state::SweepPhase::Failed);
+    }
+
+    #[tokio::test]
+    async fn a_spawned_sweep_that_finishes_stays_ready() {
+        let status = Arc::new(SweepStatus::in_progress(1));
+        let sweep_status = Arc::clone(&status);
+
+        spawn_supervised_sweep(
+            async move {
+                sweep_status.record_started();
+                sweep_status.finish();
+            },
+            Arc::clone(&status),
+        )
+        .await
+        .expect("the supervisor must not panic");
+
+        let snap = status.snapshot();
+        assert_eq!(snap.phase, crate::state::SweepPhase::Finished);
+        assert_eq!((snap.started, snap.expected), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_sweep_is_reported_as_failed_without_waiting_for_shutdown() {
+        let status = Arc::new(SweepStatus::in_progress(3));
+        status.record_started();
+        let sweeping = tokio::spawn(async { panic!("sweep exploded") });
+
+        report_sweep_outcome(sweeping, Arc::clone(&status)).await;
+
+        let snap = status.snapshot();
+        assert_eq!(snap.phase, crate::state::SweepPhase::Failed);
+        assert!(!snap.phase.is_ready());
+        assert_eq!((snap.started, snap.expected), (1, 3));
+    }
+
+    #[tokio::test]
+    async fn an_aborted_sweep_is_reported_as_failed() {
+        let status = Arc::new(SweepStatus::in_progress(3));
+        let sweeping = tokio::spawn(std::future::pending::<()>());
+        sweeping.abort();
+
+        report_sweep_outcome(sweeping, Arc::clone(&status)).await;
+
+        assert_eq!(status.snapshot().phase, crate::state::SweepPhase::Failed);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_that_returns_normally_keeps_the_status_it_set_itself() {
+        let status = Arc::new(SweepStatus::in_progress(3));
+        let sweep_status = Arc::clone(&status);
+        let sweeping = tokio::spawn(async move { sweep_status.finish() });
+
+        report_sweep_outcome(sweeping, Arc::clone(&status)).await;
+
+        assert_eq!(status.snapshot().phase, crate::state::SweepPhase::Finished);
     }
 
     #[test]
