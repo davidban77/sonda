@@ -192,7 +192,7 @@ sonda --catalog ~/sonda-catalog list --kind runnable --tag cpu
 
 `--json` emits a stable array on stdout. Each element has `name`, `kind`, `description`, `tags`, and the resolved `source` path. Use it as the contract when scripting catalog discovery.
 
-Files without a recognized `kind:` header are skipped silently. Files with an unparseable YAML body print a warning to stderr and are also skipped. The listing continues.
+Files without a recognized `kind:` header are skipped silently. A file the process cannot open, and a file with an unparseable YAML body, each print a warning to stderr and are also skipped. The listing continues — one bad file never costs you the rest of the catalog.
 
 ## `sonda show`
 

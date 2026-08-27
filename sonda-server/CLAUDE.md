@@ -23,7 +23,8 @@ src/
 ├── autostart.rs        ← --autostart sweep: runnable_entries() enumerates pre-bind (a catalog
 │                         the operator must fix is fatal; transient I/O warns and yields none),
 │                         start_entries() admits each through routes::scenarios::admit_compiled
-│                         and logs+skips per-entry failures
+│                         and logs+skips per-entry failures. Runs as a spawned task alongside
+│                         axum::serve; takes a CancellationToken that shutdown cancels and joins
 ├── routes/
 │   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
@@ -137,8 +138,11 @@ Respects `RUST_LOG` env var for log level (default: `info`).
 `{"sonda_server":{"port":N}}` to stdout; tracing logs go to stderr.
 
 `--autostart` (env `SONDA_AUTOSTART`) requires `--catalog` and starts every
-`kind: runnable` catalog entry after the listener is bound, through the same
-admission path `POST /scenarios` uses.
+`kind: runnable` catalog entry through the same admission path `POST /scenarios`
+uses. Catalog validation runs before the bind, so a catalog the operator must fix
+is fatal; the sweep itself runs concurrently with `axum::serve`, so the server
+answers requests while entries are still starting. `shutdown_signal` cancels and
+joins the sweep before draining, so no admission lands after the drain.
 
 ### CLI dispatch shim
 

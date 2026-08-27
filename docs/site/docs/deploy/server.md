@@ -250,11 +250,13 @@ Press Ctrl+C for graceful shutdown. The server signals all running scenarios to 
 
 ### Autostarting a catalog
 
-By default the server boots empty and waits for you to `POST /scenarios`. Add `--autostart` and it starts every `kind: runnable` file in `--catalog` as soon as it is listening — the same result as POSTing each of those files yourself, without the POST:
+By default the server boots empty and waits for you to `POST /scenarios`. Add `--autostart` and it starts every `kind: runnable` file in `--catalog` itself — the same result as POSTing each of those files yourself, without the POST:
 
 ```bash
 sonda-server --port 8080 --catalog ./catalog --autostart
 ```
+
+The sweep runs alongside the server, not ahead of it. `/health` answers as soon as the port is open, so a readiness probe with a tight `timeoutSeconds` never waits on the catalog, and entries appear in `GET /scenarios` as they start — a large catalog reads as a growing list rather than an empty one. The `INFO` summary below is the point at which the list is complete. A shutdown signal that arrives mid-sweep stops the sweep at the next entry, and every scenario it did start is stopped with the rest.
 
 `--autostart` requires `--catalog`. Passing it alone (or setting `SONDA_AUTOSTART` without `SONDA_CATALOG`) exits before the server binds a port:
 
@@ -283,17 +285,20 @@ Caused by:
     catalog /catalog contains duplicate entry name "web_traffic": /catalog/a.yaml and /catalog/b.yaml
 ```
 
-Everything else keeps the server up. A scenario file the server cannot admit — a v1 body, a compile error, a validation failure, or a file that would push past `--max-scenarios` — is logged as a `WARN` and skipped; one bad file never stops the ones after it:
+Everything else keeps the server up. A file the server cannot use — one it has no permission to open, a v1 body, a compile error, a validation failure, or a file that would push past `--max-scenarios` — is logged and skipped; one bad file never stops the ones after it:
 
 ```text
+warning: catalog: skipping unreadable file /catalog/locked.yaml: Permission denied (os error 13)
 WARN sonda_server::autostart: /catalog/legacy.yaml: does not compile, skipping catalog entry origin=/catalog/legacy.yaml reason=body is not a v2 scenario. ...
 WARN sonda_server::routes::scenarios: /catalog/extra.yaml: scenario cap reached origin=/catalog/extra.yaml needed=1
 ```
 
-If the catalog cannot be read at all — a file the server has no permission to open, a directory that disappears mid-scan — it logs a `WARN`, starts nothing, and keeps serving so you can fix it over the API:
+The first line has a different shape because it comes from the catalog scan rather than the sweep: unreadable and unparseable files are dropped while the catalog is being read, and `sonda list` reports them the same way.
+
+If the catalog *directory* cannot be scanned — its permissions do not allow a listing, or an entry vanishes mid-scan — the server logs a `WARN`, starts nothing, and keeps serving so you can fix it over the API:
 
 ```text
-WARN sonda_server::autostart: autostart: catalog could not be read, starting nothing catalog=/catalog reason=failed to read /catalog/locked.yaml: Permission denied (os error 13)
+WARN sonda_server::autostart: autostart: catalog could not be read, starting nothing catalog=/catalog reason=failed to read catalog dir /catalog: Permission denied (os error 13)
 ```
 
 Every started scenario gets one `INFO` line naming the file it came from, and the sweep closes with a count, so "pod up, serving nothing" is visible in the log rather than only in the API:

@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::routes::RouterConfig;
@@ -236,13 +237,20 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
 
     info!(addr = %bound_addr, workers, "sonda-server listening");
 
-    if args.autostart {
-        autostart::start_entries(&state, &autostart_entries).await;
-    }
+    let sweep_cancel = CancellationToken::new();
+    let sweep = args.autostart.then(|| {
+        let state = state.clone();
+        let cancel = sweep_cancel.clone();
+        tokio::spawn(
+            async move { autostart::start_entries(&state, &autostart_entries, &cancel).await },
+        )
+    });
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(
             state,
+            sweep,
+            sweep_cancel,
             #[cfg(unix)]
             sigterm,
         ))
@@ -305,10 +313,16 @@ fn announce_bound_port(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Wait for Ctrl+C or SIGTERM, then stop all running scenarios and signal
-/// shutdown. SIGTERM coverage is what `docker stop` and Kubernetes pod eviction
-/// rely on; without it the process is SIGKILLed after the grace period.
-async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signal::unix::Signal) {
+/// Wait for Ctrl+C or SIGTERM, then cancel and join the autostart sweep before
+/// draining the scenarios it started. SIGTERM coverage is what `docker stop`
+/// and Kubernetes pod eviction rely on; without it the process is SIGKILLed
+/// after the grace period.
+async fn shutdown_signal(
+    state: AppState,
+    sweep: Option<tokio::task::JoinHandle<()>>,
+    sweep_cancel: CancellationToken,
+    #[cfg(unix)] mut sigterm: tokio::signal::unix::Signal,
+) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -328,6 +342,13 @@ async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signa
     }
 
     info!("shutdown signal received — stopping all running scenarios");
+
+    sweep_cancel.cancel();
+    if let Some(sweep) = sweep {
+        if let Err(e) = sweep.await {
+            warn!(error = %e, "autostart sweep did not finish cleanly");
+        }
+    }
 
     if let Ok(scenarios) = state.scenarios.read() {
         for handle in scenarios.values() {

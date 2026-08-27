@@ -26,7 +26,7 @@ sonda --catalog ./my-catalog show @cpu-spike
 sonda --catalog ./my-catalog run @cpu-spike
 ```
 
-Files without a recognized `kind:` header are skipped silently. Files with an unparseable YAML body print a warning to stderr and are skipped. The listing continues.
+Files without a recognized `kind:` header are skipped silently. A file the process cannot open, and a file with an unparseable YAML body, each print a warning to stderr and are skipped. The listing continues — one bad file never costs you the rest of the catalog.
 
 Two files with the same logical name (`name:` field or filename) are a **hard error**. Discovery fails with the conflicting paths. Rename one to disambiguate.
 
