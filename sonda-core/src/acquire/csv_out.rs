@@ -1,31 +1,17 @@
 //! Write normalized series as a CSV `csv_replay` already knows how to read.
 //!
-//! Pure and feature-free. This module invents nothing: the header grammar it
-//! emits is the one [`crate::generator::csv_header`] parses, and the tests
-//! round-trip through that parser rather than through a transcription of it.
+//! Pure and feature-free. The header grammar emitted here is the one
+//! [`crate::generator::csv_header`] parses, and the tests round-trip through
+//! that parser rather than a transcription of it.
 //!
-//! # The two escaping layers, in order
+//! A column header is a label block nested inside a CSV field, so it passes
+//! through two encoders: the label block backslash-escapes `"` and `\\`, then
+//! the whole thing is RFC 4180 quoted with `"` doubled. Headers are quoted
+//! unconditionally — they always contain `"` and usually `,`.
 //!
-//! A column header is a label block nested inside a CSV field, so a label
-//! value passes through two encoders on the way out and two decoders on the
-//! way back:
-//!
-//! 1. **Label block.** `{__name__="m", job="api"}`. Inside a quoted value a
-//!    backslash escapes the next character, so a literal `"` is written `\"`
-//!    and a literal `\` is written `\\`.
-//! 2. **CSV field.** The whole block is then wrapped in double quotes with
-//!    every `"` doubled, per RFC 4180. Headers are quoted unconditionally —
-//!    they always contain `"` and usually `,`, so there is no case where
-//!    leaving them bare would be correct.
-//!
-//! # Newlines are refused, not mangled
-//!
-//! The label grammar's escape is "backslash means take the next character
-//! literally", which can express a quote or a backslash but has no way to
-//! express a newline: `\n` decodes to the letter `n`. A CSV is also read line
-//! by line, so a literal newline in a header would split one column across two
-//! rows. Rather than silently corrupting the capture, a label value containing
-//! `\n` or `\r` is rejected with the offending label named.
+//! Newlines are refused rather than mangled: the label grammar's escape cannot
+//! express one (`\\n` decodes to the letter `n`), and a CSV is read line by
+//! line, so a literal newline would split one column across two rows.
 
 use super::normalize::{Grid, NormalizedSeries};
 use crate::config::GapWindowConfig;
@@ -34,70 +20,28 @@ use crate::{ConfigError, SondaError};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-/// The `gap_windows:` entries describing one column's absent grid points.
+/// The `gap_windows:` entries describing one column's absent grid points — one
+/// window per maximal run, in row order.
 ///
-/// A blank cell means "the database reported nothing here". On the way back in,
-/// `csv_replay` requires every blank to sit under a declared window and every
-/// declared window to sit over blanks — `cross_check_gap_windows` refuses a
-/// capture where the two disagree in either direction. So the blanks and the
-/// windows are one artifact, and this is the half that produces the windows.
+/// Blanks and windows are one artifact: `cross_check_gap_windows` refuses a
+/// capture where they disagree in either direction.
 ///
-/// One window per maximal run of absent points, in row order.
+/// Both edges sit on the **midpoints** either side of the run — `at = (a-0.5)*step`
+/// clamped to zero at row 0, `end = (b+0.5)*step` — not on the row instants
+/// themselves. Containment is `t*step >= at && t*step < end`, and `at`/`for`
+/// reach that predicate via a decimal string and microsecond truncation while
+/// the predicate recomputes `t*step` directly. Landing an edge on a row instant
+/// puts it a rounding error from the boundary, in either direction; half a step
+/// of margin does not.
 ///
-/// # Where the window ends, and why not at the obvious place
-///
-/// Containment is `t * step >= at && t * step < end` ([`tick_in_window`]). For a
-/// run of rows `a..=b` the obvious encoding is `at = a*step`, `for = (b+1-a)*step`,
-/// putting `end` exactly on row `b+1`'s instant so the half-open interval
-/// excludes it.
-///
-/// That encoding is nearly right, and the way it fails is worth stating
-/// precisely, because the obvious description of it is wrong.
-///
-/// In raw `f64` the sum `at + for` is frequently a hair above `(b+1)*step` —
-/// on a 10 Hz capture, rows 2..=8 give `0.9000000000000001` against an exact
-/// `0.9`. That alone would put row `b+1` inside the window about 10% of the
-/// time. But durations do not travel as `f64`: `parse_duration` quantises to
-/// whole microseconds and **truncates**, which rounds those overshoots back
-/// down and hides almost all of them.
-///
-/// Almost. Truncating `at` and `for` separately can also shift the sum the
-/// other way, and swept over 78000 combinations of run position, run length and
-/// step through the real parse path, the obvious encoding still fails 11 times
-/// — at `step` of `0.3` and `0.007`, on runs of 5 to 15 rows. Rare enough to
-/// survive a small test sweep, common enough to reach a user.
-///
-/// So both boundaries go where neither float error nor microsecond truncation
-/// can reach them: the **midpoints** either side of the run.
-/// `at = (a - 0.5) * step` and `end = (b + 0.5) * step`, with `at` clamped to
-/// zero when the run starts at row 0. Every row that should be covered sits
-/// half a step inside an edge, and every row that should not sits half a step
-/// outside one, rather than any of them landing on a rounding error.
-///
-/// The leading edge needs this as much as the trailing one, and for a subtler
-/// reason: `at` reaches the predicate through a decimal string and microsecond
-/// quantisation, while `tick_in_window` recomputes `t as f64 * step_secs`
-/// directly. Those two routes to "the same instant" differ by an ULP often
-/// enough to matter, and containment at the start is `>=`, so when the
-/// recomputed product lands just below the parsed `at` the run's own first row
-/// falls outside its own window. Measured over 25920 combinations, `at = a*step`
-/// refuses 240 captures it should have produced — all at steps near one second
-/// — and the symmetric form refuses none.
-///
-/// # It checks its own work
-///
-/// Durations round-trip through `parse_duration`, which quantises to whole
-/// microseconds and truncates. Whether half a step survives that depends on the
-/// step, so rather than guess a safe minimum this re-parses what it built and
-/// asks [`tick_in_window`] — the same predicate the cross-check uses — whether
-/// the result covers exactly the rows it meant to. A window that does not is an
-/// error here rather than a rejected capture later.
+/// Then it checks its own work: re-parses what it built and asks
+/// [`tick_in_window`] — the predicate the cross-check uses — whether it covers
+/// exactly the intended rows.
 ///
 /// # Errors
 ///
-/// Returns [`SondaError::Config`] if the emitted window does not survive its own
-/// round-trip. With both edges on midpoints the remaining way to reach that is a
-/// step whose half-width is under a microsecond, which durations cannot express.
+/// [`SondaError::Config`] if the window fails that round-trip, which now needs a
+/// step whose half-width is under a microsecond.
 pub fn gap_windows_for(
     values: &[Option<f64>],
     step_secs: f64,
@@ -138,10 +82,9 @@ pub fn gap_windows_for(
 
 /// Confirm an emitted window covers rows `first..=last` and nothing else.
 ///
-/// Drives the real parser and the real containment predicate rather than
-/// re-deriving either. Only the two rows on the boundary can be wrong — the
-/// interior is covered by construction and distant rows are a full run away —
-/// so this checks the run and its two neighbours.
+/// Only the boundary rows can be wrong — containment is monotone in row index —
+/// so this checks the run's two ends and its two neighbours, via the real parser
+/// and the real predicate.
 fn verify_window(
     window: &GapWindowConfig,
     first: usize,
@@ -179,22 +122,18 @@ fn verify_window(
     Ok(())
 }
 
-/// Build one column header for a series' label set.
+/// Build one column header for a series' label set, unquoted —
+/// [`csv_quote_field`] applies the CSV layer.
 ///
-/// Emits format 1 — `{__name__="m", k="v"}` — when the series kept its metric
-/// name, and format 3 — `{k="v"}` — when the query dropped it (an aggregation
-/// like `sum by (job)`). In the latter case the caller must set
-/// `default_metric_name` on the generator config, because
-/// `auto_discover_specs` refuses a nameless column without one.
-///
-/// The returned string is the *unquoted* header; [`csv_quote_field`] applies
-/// the CSV layer.
+/// `{__name__="m", k="v"}` when the series kept its metric name, `{k="v"}` when
+/// the query dropped it. In the latter case the caller must set
+/// `default_metric_name`, which `auto_discover_specs` requires for a nameless
+/// column.
 ///
 /// # Errors
 ///
-/// Returns [`SondaError::Config`] when a label key or value contains a
-/// newline, or when a key contains `=`. Neither is representable in this
-/// grammar — see below for why `=` is the only delimiter that needs refusing.
+/// [`SondaError::Config`] when a key or value contains a newline, or a key
+/// contains `=`; neither is representable in this grammar.
 pub fn column_header(labels: &BTreeMap<String, String>) -> Result<String, SondaError> {
     for (k, v) in labels {
         for (what, s) in [("key", k), ("value", v)] {
@@ -207,16 +146,14 @@ pub fn column_header(labels: &BTreeMap<String, String>) -> Result<String, SondaE
             }
         }
 
-        // Values are escaped on the way out; keys are not, because the `{k="v"}`
-        // grammar has nowhere to put an escape on the left of the `=`. So a key
-        // containing the delimiter writes a header the parser reads back as a
-        // different label: key `a=b` with value `v` emits `a=b="v"`, and
-        // `parse_column_header` splits on the first `=` and returns a label
-        // named `a` whose value is `b="v"`. Silent, and wrong data in the
-        // captured file.
+        // Values are escaped on the way out, keys are not — the `{k="v"}`
+        // grammar has nowhere to put an escape left of the `=`. A key containing
+        // the delimiter therefore reads back as a different label: `a=b` with
+        // value `v` emits `a=b="v"`, which the parser splits into label `a` with
+        // value `b="v"`. Silent, and wrong data in the file.
         //
-        // Only `=` needs this. Measured against the real parser, keys containing
-        // `"`, `{`, `}`, a space or a comma all round-trip unharmed, so refusing
+        // Only `=` needs refusing; against the real parser, keys containing `"`,
+        // `{`, `}`, space or comma all round-trip unharmed, so refusing
         // them "for symmetry" would reject captures that work today. The tests
         // below pin that, so the narrowness of this guard is checked rather than
         // asserted.
@@ -281,25 +218,30 @@ pub fn csv_quote_field(field: &str) -> String {
     out
 }
 
+/// Render one grid instant as the timestamp cell for its row.
+///
+/// `{:.3}` rather than `{}` keeps scientific notation out of the file, which
+/// `parse_csv_timestamp` rejects.
+///
+/// A function rather than an inline format string because this precision decides
+/// the step the engine replays at — `csv_replay` derives its interval from these
+/// timestamps — so [`super::yaml_out`] calls it to reduce the same numbers the
+/// file will carry.
+pub fn format_timestamp(instant: f64) -> String {
+    format!("{instant:.3}")
+}
+
 /// Render the whole capture as CSV text.
 ///
 /// Column 0 is the timestamp in unix seconds — `csv_replay` derives its replay
 /// rate from the delta between the first two, and `auto_discover_specs` skips
 /// column 0 when mapping columns to series. Every other column is one series.
 ///
-/// # Every column's blanks land in one file; `gap_windows:` speaks for one
-///
-/// This writes the absent points of *every* series, while
-/// [`gap_windows_for`] describes *one* column. `gap_windows:` is a
-/// scenario-level field, so two columns whose absence falls on different rows
-/// cannot share a scenario block — the cross-check will refuse whichever one
-/// the windows do not fit. Nothing here prevents that, because nothing here
-/// knows which column a caller will pair the windows with; the failure lands at
-/// the user's first run rather than at emission.
-///
-/// A caller writing a multi-column capture has to group columns by identical
-/// absence pattern and emit one scenario block per group. No caller does yet —
-/// there is no importer.
+/// This writes every series' blanks, while [`gap_windows_for`] speaks for one
+/// column. `gap_windows:` is scenario-level, so a caller writing a multi-column
+/// capture must group columns by identical absence pattern and emit one block
+/// per group — see [`super::yaml_out`]. Nothing here can check that, because
+/// nothing here knows which column the windows will be paired with.
 ///
 /// # Errors
 ///
@@ -315,30 +257,15 @@ pub fn write_csv(grid: Grid, series: &[NormalizedSeries]) -> Result<String, Sond
     out.push('\n');
 
     for n in 0..grid.len {
-        // {:.3} rather than {} so a timestamp never reaches the file in
-        // scientific notation, which parse_csv_timestamp would reject.
-        let _ = write!(out, "{:.3}", grid.point(n));
+        out.push_str(&format_timestamp(grid.point(n)));
         for s in series {
             out.push(',');
-            // Absence is a BLANK cell, and a blank is the only thing that reads
-            // back as absence: a literal "NaN" reads as a sample that is present
-            // and happens to be NaN, which reproduces value and timing but not
-            // silence.
-            //
-            // So `Some(Some(v))` — a sample the database reported, NaN and the
-            // infinities included — is written verbatim, because a reported NaN
-            // is data and blanking it would declare silence that never happened.
-            // `Some(None)` is a grid point with no sample, and `None` is a series
-            // shorter than the grid; both are absence and both write nothing.
-            //
-            // Blanks are only half of it. `csv_replay::column_values_and_gaps`
-            // cross-checks every blank against a declared `gap_windows:` entry
-            // and refuses a capture where the two disagree, so a file written
-            // here is loadable only alongside the windows [`gap_windows_for`]
-            // derives from these same entries.
-            //
-            // Display for f64 round-trips through parse, so no formatting
-            // decision is made about a value that is present.
+            // A blank is the only thing that reads back as absence — a literal
+            // "NaN" reads as a present sample that happens to be NaN. So a
+            // reported value is written verbatim (NaN and infinities included,
+            // since those are data), and both flavours of absence write nothing:
+            // `Some(None)` is a grid point with no sample, `None` a series
+            // shorter than the grid.
             if let Some(Some(v)) = s.values.get(n) {
                 let _ = write!(out, "{v}");
             }

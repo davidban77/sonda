@@ -900,9 +900,7 @@ fn parse_csv_timestamp(cell: &str) -> Option<f64> {
 }
 
 fn compute_csv_delta_seconds(path: &str, ts_col_idx: usize) -> Result<f64, SondaError> {
-    const MAX_SAMPLE_ROWS: usize = 100;
-
-    let lines = read_csv_first_lines(path, MAX_SAMPLE_ROWS + 1)?;
+    let lines = read_csv_first_lines(path, CSV_DELTA_SAMPLE_ROWS + 1)?;
     if lines.is_empty() {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "csv_replay: file {:?} has no non-comment, non-empty lines",
@@ -935,18 +933,56 @@ fn compute_csv_delta_seconds(path: &str, ts_col_idx: usize) -> Result<f64, Sonda
         ))));
     }
 
+    median_delta_seconds(&timestamps).map_err(|e| {
+        SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: cannot derive a replay interval from {path:?}: {e}"
+        )))
+    })
+}
+
+/// The replay interval a run of timestamps implies: the median pairwise delta.
+///
+/// **The one definition of that reduction.** `compute_csv_delta_seconds` calls
+/// it over the timestamps it parsed from a file, and
+/// [`crate::acquire::yaml_out`] calls it over the instants it is about to
+/// write, so the interval a capture is emitted against and the interval the
+/// engine derives from that capture are the same number by construction.
+///
+/// They were not, and the gap was not obvious: a second implementation over
+/// there modelled this as "the delta between the first two rows". That agrees
+/// with the median for most steps and disagrees when the step's millisecond
+/// value is a clean half, because the two round to different sides — and the
+/// emitted `gap_windows:` then drift against the replay until the capture no
+/// longer loads. Reimplementing it a third time to fix that reproduces the
+/// same class of bug, so there is one of it and both sides call it.
+///
+/// Median rather than mean because a capture can contain one irregular delta —
+/// a scrape that landed late — and a mean would smear that across the whole
+/// replay.
+///
+/// # Errors
+///
+/// Returns a bare message naming the problem; callers attach the file. Fails on
+/// fewer than two timestamps, on a non-monotonic pair, and on a reduction that
+/// does not come out positive and finite.
+pub(crate) fn median_delta_seconds(timestamps: &[f64]) -> Result<f64, String> {
+    if timestamps.len() < 2 {
+        return Err(format!(
+            "fewer than 2 data rows ({}); there is no interval between them",
+            timestamps.len()
+        ));
+    }
+
     let mut deltas = Vec::with_capacity(timestamps.len() - 1);
     for pair in timestamps.windows(2) {
         let d = pair[1] - pair[0];
         if d <= 0.0 {
-            return Err(SondaError::Config(ConfigError::invalid(format!(
-                "csv_replay: non-monotonic timestamps in {:?} \
-                 (row {} value {} <= previous {})",
-                path,
+            return Err(format!(
+                "non-monotonic timestamps (row {} value {} <= previous {})",
                 deltas.len() + 1,
                 pair[1],
                 pair[0]
-            ))));
+            ));
         }
         deltas.push(d);
     }
@@ -963,14 +999,19 @@ fn compute_csv_delta_seconds(path: &str, ts_col_idx: usize) -> Result<f64, Sonda
     };
 
     if median <= 0.0 || !median.is_finite() {
-        return Err(SondaError::Config(ConfigError::invalid(format!(
-            "csv_replay: derived median Δt is not positive in {:?}",
-            path
-        ))));
+        return Err(format!("derived median Δt {median} is not positive"));
     }
 
     Ok(median)
 }
+
+/// How many data rows [`compute_csv_delta_seconds`] samples when deriving the
+/// interval.
+///
+/// Exported so [`crate::acquire::yaml_out`] samples the same window. Sampling a
+/// different number of rows would put a different set of deltas into the
+/// median, which is the same divergence the shared reduction exists to prevent.
+pub(crate) const CSV_DELTA_SAMPLE_ROWS: usize = 100;
 
 /// Expand a `csv_replay` scenario into one config per data column, deriving
 /// `rate` from the CSV's column-0 timestamps (`rate = timescale / median Δt`).
