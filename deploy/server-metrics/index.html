@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones.">
+        <meta name="description" content="Three Prometheus endpoints on sonda-server, the twelve /metrics series, and PromQL alerts for the load-bearing ones.">
       
       
       
@@ -64,7 +64,7 @@
   
 <meta property="og:type" content="website" />
 <meta property="og:title" content="Server metrics - Sonda" />
-<meta property="og:description" content="Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones." />
+<meta property="og:description" content="Three Prometheus endpoints on sonda-server, the twelve /metrics series, and PromQL alerts for the load-bearing ones." />
 <meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/deploy/server-metrics.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
@@ -72,7 +72,7 @@
 <meta property="og:url" content="https://davidban77.github.io/sonda/deploy/server-metrics/" />
 <meta property="twitter:card" content="summary_large_image" />
 <meta property="twitter:title" content="Server metrics - Sonda" />
-<meta property="twitter:description" content="Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones." />
+<meta property="twitter:description" content="Three Prometheus endpoints on sonda-server, the twelve /metrics series, and PromQL alerts for the load-bearing ones." />
 <meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/deploy/server-metrics.png" />
 </head>
   
@@ -2416,16 +2416,24 @@
 </span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a># HELP sonda_server_sink_errors_total Lifetime sink-write failures, summed across scenarios per sink_type.
 </span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a># TYPE sonda_server_sink_errors_total counter
 </span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>sonda_server_sink_errors_total{sink_type="loki"} 4
-</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a># HELP sonda_server_uptime_seconds Seconds since the server process started.
-</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a># TYPE sonda_server_uptime_seconds gauge
-</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>sonda_server_uptime_seconds 18432.4
-</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a># HELP sonda_server_build_info Build-time version and git SHA. Constant gauge always set to 1.
-</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a># TYPE sonda_server_build_info gauge
-</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>sonda_server_build_info{version="1.14.0",git_sha="58f288f47a2c2e91d8c3e8b4f1e6d8a9c2b5f3e7"} 1
+</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a># HELP sonda_server_lock_recoveries_total Poisoned shared-state locks recovered, per lock. Non-zero means a handler panicked while holding it.
+</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a># TYPE sonda_server_lock_recoveries_total counter
+</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>sonda_server_lock_recoveries_total{lock="gate_buses"} 0
+</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>sonda_server_lock_recoveries_total{lock="gate_pending"} 0
+</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>sonda_server_lock_recoveries_total{lock="gate_subscribers"} 0
+</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>sonda_server_lock_recoveries_total{lock="request_counters"} 0
+</span><span id="__span-1-42"><a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>sonda_server_lock_recoveries_total{lock="request_histograms"} 0
+</span><span id="__span-1-43"><a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>sonda_server_lock_recoveries_total{lock="scenarios"} 0
+</span><span id="__span-1-44"><a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a># HELP sonda_server_uptime_seconds Seconds since the server process started.
+</span><span id="__span-1-45"><a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a># TYPE sonda_server_uptime_seconds gauge
+</span><span id="__span-1-46"><a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>sonda_server_uptime_seconds 18432.4
+</span><span id="__span-1-47"><a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a># HELP sonda_server_build_info Build-time version and git SHA. Constant gauge always set to 1.
+</span><span id="__span-1-48"><a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a># TYPE sonda_server_build_info gauge
+</span><span id="__span-1-49"><a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>sonda_server_build_info{version="1.14.0",git_sha="58f288f47a2c2e91d8c3e8b4f1e6d8a9c2b5f3e7"} 1
 </span></code></pre></div>
 <p>The endpoint is idempotent — two back-to-back scrapes return logically equivalent bodies (counters increment, gauges may shift, but the shape and label sets stay stable).</p>
 <h3 id="series-reference">Series reference<a class="headerlink" href="#series-reference" title="Permanent link">&para;</a></h3>
-<p>Eleven series. Operator-tense one-liners and the alerts that matter follow.</p>
+<p>Twelve series. Operator-tense one-liners and the alerts that matter follow.</p>
 <h4 id="sonda_server_active_scenarios"><code>sonda_server_active_scenarios</code><a class="headerlink" href="#sonda_server_active_scenarios" title="Permanent link">&para;</a></h4>
 <p>Gauge. Scenarios currently held in each operational state. Always emits all five rows even when the value is zero, so <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> alerting stays continuous as scenarios come and go.</p>
 <table>
@@ -2559,9 +2567,53 @@
 <div class="language-promql highlight"><span class="filename">Alert: sink errors on any sink type in the last 5 minutes</span><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_sink_errors_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
 </span></code></pre></div>
 <p>This is the single most important alert on the page. Sustained <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> errors mean some backend is unreachable or rejecting writes. Drill into individual scenarios with <code>GET /scenarios</code> and look at the <code>degraded</code> field, then inspect the offenders with <code>GET /scenarios/{id}/stats</code> for <code>last_sink_error</code>.</p>
+<h4 id="sonda_server_lock_recoveries_total"><code>sonda_server_lock_recoveries_total</code><a class="headerlink" href="#sonda_server_lock_recoveries_total" title="Permanent link">&para;</a></h4>
+<p>Counter. Acquisitions of a shared-state lock that had to be recovered because a previous holder panicked while writing to it. Zero on a healthy server, and every lock is reported so the series exist before anything goes wrong.</p>
+<table>
+<thead>
+<tr>
+<th><code>lock</code> value</th>
+<th>What it guards</th>
+<th>What one recovery costs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scenarios</code></td>
+<td>The map of scenarios the server is running.</td>
+<td>A multi-entry <code>POST /scenarios</code> may have registered some of its entries and not the others. The ones it had not registered yet are stopped rather than left emitting.</td>
+</tr>
+<tr>
+<td><code>request_counters</code>, <code>request_histograms</code></td>
+<td>The request counts and durations reported on this endpoint.</td>
+<td>One request missing from <code>sonda_server_requests_total</code> or from the duration <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr>.</td>
+</tr>
+<tr>
+<td><code>gate_buses</code>, <code>gate_subscribers</code>, <code>gate_pending</code></td>
+<td>The cross-POST <code>while:</code> wiring.</td>
+<td>A downstream <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> can settle in <code>unresolved</code> instead of waiting for an upstream that is gone.</td>
+</tr>
+</tbody>
+</table>
+<p>The server keeps serving after a panic: the lock is recovered, the request that panicked is lost — the connection is dropped rather than answered — and everything else carries on. The counter is how you find out it happened at all. A panic marks the lock it was holding as poisoned, and that mark is never cleared while the process runs. Every later acquisition of that lock adds one, so the value climbs with traffic. Only a restart returns it to zero.</p>
+<div class="language-promql highlight"><span class="filename">Alert: a handler panicked while holding shared state</span><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nv">sonda_server_lock_recoveries_total</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
+</span></code></pre></div>
+<p>Alert on the level, not on <code>rate()</code> or <code>increase()</code>. Those measure how often the lock is being acquired, not whether it was ever poisoned. On a server with little traffic the rate falls back to zero while the lock is still poisoned, so the alert resolves itself and then returns with the next <abbr title="Recurring window during which a scenario emits at an elevated rate.">burst</abbr> of requests. <code>&gt; 0</code> stays true from the panic until the process restarts, which is exactly as long as the condition lasts.</p>
+<p>When it fires:</p>
+<ol>
+<li>Do not read it as an outage. The server is still answering requests; one request was lost.</li>
+<li>Find the panic in the log. The panic message names the code that failed, and a <code>recovered a poisoned lock</code> <code>WARN</code> names the lock. That <code>WARN</code> is written once, at the first recovery, so search back to the start of the incident rather than to the moment the alert fired.</li>
+<li>Read the table above for what the lost update was. For <code>lock="scenarios"</code>, compare <code>GET /scenarios</code> against what you expect to be running.</li>
+<li>Restart the process when you want certainty that nothing else was dropped. The mark stays for the life of the process, and the alert clears on restart.</li>
+</ol>
+<p>A handler that panics is a bug in the server. Keep the panic message and the <code>lock</code> label when you report it.</p>
+<div class="admonition info">
+<p class="admonition-title">A <code>POST /scenarios</code> that panics does not keep the name it claimed</p>
+<p>If the panic lands while a POST is registering its entries, the server stops the entries it has not registered yet and frees the <code>scenario_name</code> they claimed, with an <code>admission panicked after launch</code> <code>WARN</code>. The name is available again, so you can re-send the same body without having to <code>DELETE</code> anything to free it first.</p>
+</div>
 <h4 id="sonda_server_uptime_seconds"><code>sonda_server_uptime_seconds</code><a class="headerlink" href="#sonda_server_uptime_seconds" title="Permanent link">&para;</a></h4>
 <p>Gauge. Seconds since the server process started. Drops to a small value on restart — useful as a crash-loop indicator.</p>
-<div class="language-promql highlight"><span class="filename">Alert: server restarted in the last 5 minutes</span><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nv">sonda_server_uptime_seconds</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">300</span>
+<div class="language-promql highlight"><span class="filename">Alert: server restarted in the last 5 minutes</span><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nv">sonda_server_uptime_seconds</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">300</span>
 </span></code></pre></div>
 <h4 id="sonda_server_build_info"><code>sonda_server_build_info</code><a class="headerlink" href="#sonda_server_build_info" title="Permanent link">&para;</a></h4>
 <p>Constant gauge, always <code>1</code>. Carries the build version and git SHA as labels.</p>
@@ -2586,16 +2638,16 @@
 <p>Use it to identify which build is running. Join it onto other queries with <code>group_left</code> to see whether a regression coincides with a deploy.</p>
 <h3 id="authentication">Authentication<a class="headerlink" href="#authentication" title="Permanent link">&para;</a></h3>
 <p>All three metrics endpoints inherit the same <code>SONDA_API_KEY</code> gate as <code>/scenarios/*</code> and <code>/events</code>. When the env var or <code>--api-key</code> flag is set, requests must include <code>Authorization: Bearer &lt;key&gt;</code>. When the key is unset, the endpoints are public. See <a href="../server/#authentication">Authentication on Deploy as a server</a> for the full setup.</p>
-<div class="language-bash highlight"><span class="filename">Scraping /metrics with auth</span><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer my-secret-key"</span><span class="w"> </span>http://localhost:8080/metrics
+<div class="language-bash highlight"><span class="filename">Scraping /metrics with auth</span><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer my-secret-key"</span><span class="w"> </span>http://localhost:8080/metrics
 </span></code></pre></div>
 <p>For <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>:</p>
-<div class="language-yaml highlight"><span class="filename">prometheus.yml (with auth)</span><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">scrape_configs</span><span class="p">:</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-server</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span><span class="nt">scrape_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15s</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="nt">metrics_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/metrics</span>
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span><span class="nt">bearer_token</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-secret-key</span>
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">    </span><span class="nt">static_configs</span><span class="p">:</span>
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"localhost:8080"</span><span class="p p-Indicator">]</span>
+<div class="language-yaml highlight"><span class="filename">prometheus.yml (with auth)</span><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">scrape_configs</span><span class="p">:</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-server</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span><span class="nt">scrape_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15s</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="nt">metrics_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/metrics</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="nt">bearer_token</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-secret-key</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">    </span><span class="nt">static_configs</span><span class="p">:</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"localhost:8080"</span><span class="p p-Indicator">]</span>
 </span></code></pre></div>
 <p>For the <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> Operator, use a <a href="../kubernetes/#prometheus-scraping-with-auth"><code>bearerTokenSecret</code> on the ServiceMonitor</a>.</p>
 <h3 id="scrape-isolation-under-load">Scrape isolation under load<a class="headerlink" href="#scrape-isolation-under-load" title="Permanent link">&para;</a></h3>
@@ -2630,7 +2682,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 18:13:19 UTC">August 27, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 23:11:04 UTC">August 27, 2026</span>
   </span>
 
     
