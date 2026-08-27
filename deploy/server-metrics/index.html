@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Three Prometheus endpoints on sonda-server, the nine /metrics series, and PromQL alerts for the load-bearing ones.">
+        <meta name="description" content="Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones.">
       
       
       
@@ -64,7 +64,7 @@
   
 <meta property="og:type" content="website" />
 <meta property="og:title" content="Server metrics - Sonda" />
-<meta property="og:description" content="Three Prometheus endpoints on sonda-server, the nine /metrics series, and PromQL alerts for the load-bearing ones." />
+<meta property="og:description" content="Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones." />
 <meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/deploy/server-metrics.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
@@ -72,7 +72,7 @@
 <meta property="og:url" content="https://davidban77.github.io/sonda/deploy/server-metrics/" />
 <meta property="twitter:card" content="summary_large_image" />
 <meta property="twitter:title" content="Server metrics - Sonda" />
-<meta property="twitter:description" content="Three Prometheus endpoints on sonda-server, the nine /metrics series, and PromQL alerts for the load-bearing ones." />
+<meta property="twitter:description" content="Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones." />
 <meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/deploy/server-metrics.png" />
 </head>
   
@@ -2367,29 +2367,35 @@
 </span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a># HELP sonda_server_max_scenarios Configured scenario row cap (0 means unlimited).
 </span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a># TYPE sonda_server_max_scenarios gauge
 </span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>sonda_server_max_scenarios 500
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a># HELP sonda_server_requests_total HTTP requests served, per matched route, method, and status.
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a># TYPE sonda_server_requests_total counter
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>sonda_server_requests_total{route="/scenarios",method="POST",status="201"} 14
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>sonda_server_requests_total{route="/scenarios/{id}/stats",method="GET",status="200"} 482
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a># HELP sonda_server_request_duration_seconds HTTP request duration in seconds, per matched route and method.
-</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a># TYPE sonda_server_request_duration_seconds histogram
-</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>sonda_server_request_duration_seconds_bucket{route="/scenarios",method="POST",le="0.005"} 0
-</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>sonda_server_request_duration_seconds_bucket{route="/scenarios",method="POST",le="+Inf"} 14
-</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>sonda_server_request_duration_seconds_sum{route="/scenarios",method="POST"} 0.342
-</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>sonda_server_request_duration_seconds_count{route="/scenarios",method="POST"} 14
-</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a># HELP sonda_server_sink_errors_total Lifetime sink-write failures, summed across scenarios per sink_type.
-</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a># TYPE sonda_server_sink_errors_total counter
-</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>sonda_server_sink_errors_total{sink_type="loki"} 4
-</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a># HELP sonda_server_uptime_seconds Seconds since the server process started.
-</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a># TYPE sonda_server_uptime_seconds gauge
-</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>sonda_server_uptime_seconds 18432.4
-</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a># HELP sonda_server_build_info Build-time version and git SHA. Constant gauge always set to 1.
-</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a># TYPE sonda_server_build_info gauge
-</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>sonda_server_build_info{version="1.14.0",git_sha="58f288f47a2c2e91d8c3e8b4f1e6d8a9c2b5f3e7"} 1
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a># HELP sonda_server_autostart_started Catalog entries the startup sweep has started.
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a># TYPE sonda_server_autostart_started gauge
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>sonda_server_autostart_started 12
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a># HELP sonda_server_autostart_expected Runnable catalog entries the startup sweep set out to start.
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a># TYPE sonda_server_autostart_expected gauge
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>sonda_server_autostart_expected 12
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a># HELP sonda_server_requests_total HTTP requests served, per matched route, method, and status.
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a># TYPE sonda_server_requests_total counter
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>sonda_server_requests_total{route="/scenarios",method="POST",status="201"} 14
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>sonda_server_requests_total{route="/scenarios/{id}/stats",method="GET",status="200"} 482
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a># HELP sonda_server_request_duration_seconds HTTP request duration in seconds, per matched route and method.
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a># TYPE sonda_server_request_duration_seconds histogram
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>sonda_server_request_duration_seconds_bucket{route="/scenarios",method="POST",le="0.005"} 0
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>sonda_server_request_duration_seconds_bucket{route="/scenarios",method="POST",le="+Inf"} 14
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>sonda_server_request_duration_seconds_sum{route="/scenarios",method="POST"} 0.342
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>sonda_server_request_duration_seconds_count{route="/scenarios",method="POST"} 14
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a># HELP sonda_server_sink_errors_total Lifetime sink-write failures, summed across scenarios per sink_type.
+</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a># TYPE sonda_server_sink_errors_total counter
+</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>sonda_server_sink_errors_total{sink_type="loki"} 4
+</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a># HELP sonda_server_uptime_seconds Seconds since the server process started.
+</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a># TYPE sonda_server_uptime_seconds gauge
+</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>sonda_server_uptime_seconds 18432.4
+</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a># HELP sonda_server_build_info Build-time version and git SHA. Constant gauge always set to 1.
+</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a># TYPE sonda_server_build_info gauge
+</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>sonda_server_build_info{version="1.14.0",git_sha="58f288f47a2c2e91d8c3e8b4f1e6d8a9c2b5f3e7"} 1
 </span></code></pre></div>
 <p>The endpoint is idempotent — two back-to-back scrapes return logically equivalent bodies (counters increment, gauges may shift, but the shape and label sets stay stable).</p>
 <h3 id="series-reference">Series reference<a class="headerlink" href="#series-reference" title="Permanent link">&para;</a></h3>
-<p>Nine series. Operator-tense one-liners and the alerts that matter follow.</p>
+<p>Eleven series. Operator-tense one-liners and the alerts that matter follow.</p>
 <h4 id="sonda_server_active_scenarios"><code>sonda_server_active_scenarios</code><a class="headerlink" href="#sonda_server_active_scenarios" title="Permanent link">&para;</a></h4>
 <p>Gauge. Scenarios currently held in each operational state. Always emits all five rows even when the value is zero, so <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> alerting stays continuous as scenarios come and go.</p>
 <table>
@@ -2419,6 +2425,30 @@
 <p>Gauge. The tokio multi-thread worker count configured at startup — that is, the value of <a href="../server/#tuning-resource-limits"><code>--workers</code></a> or the default <code>min(std::thread::available_parallelism(), 16)</code>. On Linux the default queries <code>sched_getaffinity</code>, so the count reflects the cpuset the process is allowed to run on, not CFS CPU quotas — see <a href="../server/#tuning-resource-limits">Tuning resource limits</a> for the full caveat.</p>
 <h4 id="sonda_server_max_scenarios"><code>sonda_server_max_scenarios</code><a class="headerlink" href="#sonda_server_max_scenarios" title="Permanent link">&para;</a></h4>
 <p>Gauge. The configured value of <a href="../server/#tuning-resource-limits"><code>--max-scenarios</code></a>. Reports <code>0</code> when the cap is disabled (unlimited).</p>
+<h4 id="sonda_server_autostart_started"><code>sonda_server_autostart_started</code><a class="headerlink" href="#sonda_server_autostart_started" title="Permanent link">&para;</a></h4>
+<p>Gauge. Catalog entries the <a href="../server/#autostarting-a-catalog"><code>--autostart</code></a> sweep has started so far. Rises during the sweep and then stays flat for the life of the process. Reports <code>0</code> on a server started without <code>--autostart</code>.</p>
+<h4 id="sonda_server_autostart_expected"><code>sonda_server_autostart_expected</code><a class="headerlink" href="#sonda_server_autostart_expected" title="Permanent link">&para;</a></h4>
+<p>Gauge. Runnable <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> entries the sweep set out to start, fixed when the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> is enumerated at startup. Reports <code>0</code> on a server started without <code>--autostart</code>, and also when <code>--autostart</code> found nothing to start.</p>
+<div class="language-promql highlight"><span class="filename">Alert: the sweep skipped catalog entries</span><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">sonda_server_autostart_started</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="nv">sonda_server_autostart_expected</span>
+</span></code></pre></div>
+<p>A <code>started</code> count that stays below <code>expected</code> means the sweep either skipped entries — a file that does not compile, one the server could not read, or one that would have pushed past <code>--max-scenarios</code> — or died partway through. The server stays <a href="../server/#health-and-readiness">ready</a> when entries are skipped, on purpose, so this alert is how you find out; the <code>WARN</code> line for each skipped entry names the file, and a sweep that died logs an <code>ERROR</code> and flips <code>GET /ready</code> to <code>status: failed</code>.</p>
+<p>The expression is also briefly true while a large <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> is still starting, so pair it with a <code>for:</code> clause longer than your sweep takes:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">alert</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SondaAutostartIncomplete</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">expr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda_server_autostart_started &lt; sonda_server_autostart_expected</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">for</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5m</span>
+</span></code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title">This alert cannot see an empty <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr></p>
+<p><code>started &lt; expected</code> is false when both counts are <code>0</code>, and both are <code>0</code> whenever the sweep found no runnable entries. Three cases produce that:</p>
+<ul>
+<li>the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory is empty</li>
+<li>it holds only <code>kind: composable</code> packs, which are never started</li>
+<li>the server could not read it, and logged a <code>WARN</code> naming the directory</li>
+</ul>
+<p>In all three the server reports <a href="../server/#health-and-readiness">ready</a> with nothing running, because the sweep did run and had nothing to do. On a deployment you expect to autostart something, alert on the count itself:</p>
+<div class="language-promql highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nv">sonda_server_autostart_expected</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span>
+</span></code></pre></div>
+</div>
 <h4 id="sonda_server_requests_total"><code>sonda_server_requests_total</code><a class="headerlink" href="#sonda_server_requests_total" title="Permanent link">&para;</a></h4>
 <p>Counter. HTTP requests served by the protected sub-routers, labelled by the matched route template, method, and status.</p>
 <table>
@@ -2444,10 +2474,10 @@
 </tbody>
 </table>
 <p>The <code>route</code> label uses the route template (with literal <code>{id}</code> braces), not the concrete request path. This keeps <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> bounded regardless of how many unique <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> IDs hit the server.</p>
-<div class="language-promql highlight"><span class="filename">Alert: control-plane saturation hitting the inflight cap</span><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_requests_total</span><span class="p">{</span><span class="nl">status</span><span class="o">=</span><span class="p">"</span><span class="s">429</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
+<div class="language-promql highlight"><span class="filename">Alert: control-plane saturation hitting the inflight cap</span><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_requests_total</span><span class="p">{</span><span class="nl">status</span><span class="o">=</span><span class="p">"</span><span class="s">429</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
 </span></code></pre></div>
 <p>Sustained 429s mean either the server cap (<code>--max-scenarios</code>) is hit or the inflight-request cap (<code>--max-inflight-requests</code>) is. Cross-reference <a href="#sonda_server_active_scenarios"><code>sonda_server_active_scenarios</code></a> to tell which.</p>
-<div class="language-promql highlight"><span class="filename">Alert: payload-size limit being hit</span><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_requests_total</span><span class="p">{</span><span class="nl">status</span><span class="o">=</span><span class="p">"</span><span class="s">413</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
+<div class="language-promql highlight"><span class="filename">Alert: payload-size limit being hit</span><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_requests_total</span><span class="p">{</span><span class="nl">status</span><span class="o">=</span><span class="p">"</span><span class="s">413</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
 </span></code></pre></div>
 <p>Some client is sending bodies larger than <a href="../server/#tuning-resource-limits"><code>--max-body-bytes</code></a>. Either the limit is too tight for legitimate payloads or you have a misbehaving caller.</p>
 <h4 id="sonda_server_request_duration_seconds"><code>sonda_server_request_duration_seconds</code><a class="headerlink" href="#sonda_server_request_duration_seconds" title="Permanent link">&para;</a></h4>
@@ -2474,9 +2504,9 @@
 </tr>
 </tbody>
 </table>
-<div class="language-promql highlight"><span class="filename">Alert: control-plane P99 above 1 second</span><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.99</span><span class="p">,</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">le</span><span class="p">,</span><span class="w"> </span><span class="nv">route</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_request_duration_seconds_bucket</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1</span>
+<div class="language-promql highlight"><span class="filename">Alert: control-plane P99 above 1 second</span><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.99</span><span class="p">,</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">le</span><span class="p">,</span><span class="w"> </span><span class="nv">route</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_request_duration_seconds_bucket</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1</span>
 </span></code></pre></div>
 <p>Use this to catch back-pressure from <code>--max-inflight-requests</code>. <code>tower::limit::ConcurrencyLimitLayer</code> does not return explicit 503s; it back-pressures via <code>Service::poll_ready</code> and the listener queues requests, so the symptom is "P99 climbs" rather than "errors spike."</p>
 <h4 id="sonda_server_sink_errors_total"><code>sonda_server_sink_errors_total</code><a class="headerlink" href="#sonda_server_sink_errors_total" title="Permanent link">&para;</a></h4>
@@ -2496,12 +2526,12 @@
 </tbody>
 </table>
 <p>Computed at <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> time from each <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s <code>total_sink_failures</code> counter on <code>GET /scenarios/{id}/stats</code>. The counter resets when scenarios are deleted, which is the intended behaviour — a deleted <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is no longer your problem.</p>
-<div class="language-promql highlight"><span class="filename">Alert: sink errors on any sink type in the last 5 minutes</span><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_sink_errors_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
+<div class="language-promql highlight"><span class="filename">Alert: sink errors on any sink type in the last 5 minutes</span><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">sonda_server_sink_errors_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
 </span></code></pre></div>
 <p>This is the single most important alert on the page. Sustained <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> errors mean some backend is unreachable or rejecting writes. Drill into individual scenarios with <code>GET /scenarios</code> and look at the <code>degraded</code> field, then inspect the offenders with <code>GET /scenarios/{id}/stats</code> for <code>last_sink_error</code>.</p>
 <h4 id="sonda_server_uptime_seconds"><code>sonda_server_uptime_seconds</code><a class="headerlink" href="#sonda_server_uptime_seconds" title="Permanent link">&para;</a></h4>
 <p>Gauge. Seconds since the server process started. Drops to a small value on restart — useful as a crash-loop indicator.</p>
-<div class="language-promql highlight"><span class="filename">Alert: server restarted in the last 5 minutes</span><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nv">sonda_server_uptime_seconds</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">300</span>
+<div class="language-promql highlight"><span class="filename">Alert: server restarted in the last 5 minutes</span><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nv">sonda_server_uptime_seconds</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">300</span>
 </span></code></pre></div>
 <h4 id="sonda_server_build_info"><code>sonda_server_build_info</code><a class="headerlink" href="#sonda_server_build_info" title="Permanent link">&para;</a></h4>
 <p>Constant gauge, always <code>1</code>. Carries the build version and git SHA as labels.</p>
@@ -2526,16 +2556,16 @@
 <p>Use it to identify which build is running. Join it onto other queries with <code>group_left</code> to see whether a regression coincides with a deploy.</p>
 <h3 id="authentication">Authentication<a class="headerlink" href="#authentication" title="Permanent link">&para;</a></h3>
 <p>All three metrics endpoints inherit the same <code>SONDA_API_KEY</code> gate as <code>/scenarios/*</code> and <code>/events</code>. When the env var or <code>--api-key</code> flag is set, requests must include <code>Authorization: Bearer &lt;key&gt;</code>. When the key is unset, the endpoints are public. See <a href="../server/#authentication">Authentication on Deploy as a server</a> for the full setup.</p>
-<div class="language-bash highlight"><span class="filename">Scraping /metrics with auth</span><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer my-secret-key"</span><span class="w"> </span>http://localhost:8080/metrics
+<div class="language-bash highlight"><span class="filename">Scraping /metrics with auth</span><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer my-secret-key"</span><span class="w"> </span>http://localhost:8080/metrics
 </span></code></pre></div>
 <p>For <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>:</p>
-<div class="language-yaml highlight"><span class="filename">prometheus.yml (with auth)</span><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">scrape_configs</span><span class="p">:</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-server</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">scrape_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15s</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">metrics_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/metrics</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">bearer_token</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-secret-key</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">static_configs</span><span class="p">:</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"localhost:8080"</span><span class="p p-Indicator">]</span>
+<div class="language-yaml highlight"><span class="filename">prometheus.yml (with auth)</span><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">scrape_configs</span><span class="p">:</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-server</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span><span class="nt">scrape_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15s</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="nt">metrics_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/metrics</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span><span class="nt">bearer_token</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-secret-key</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">    </span><span class="nt">static_configs</span><span class="p">:</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"localhost:8080"</span><span class="p p-Indicator">]</span>
 </span></code></pre></div>
 <p>For the <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> Operator, use a <a href="../kubernetes/#prometheus-scraping-with-auth"><code>bearerTokenSecret</code> on the ServiceMonitor</a>.</p>
 <h3 id="scrape-isolation-under-load">Scrape isolation under load<a class="headerlink" href="#scrape-isolation-under-load" title="Permanent link">&para;</a></h3>
@@ -2570,7 +2600,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="June 16, 2026 08:30:23 UTC">June 16, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 18:13:19 UTC">August 27, 2026</span>
   </span>
 
     

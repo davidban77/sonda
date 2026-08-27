@@ -3538,11 +3538,12 @@ content in your values file triggers an automatic pod rollout on <code>helm upgr
 See <a href="../server/">Server API</a> for the full endpoint reference and the
 <a href="../../test/synthetic-monitoring/">Synthetic Monitoring</a> guide for operational patterns.</p>
 <h2 id="health-probes">Health probes<a class="headerlink" href="#health-probes" title="Permanent link">&para;</a></h2>
-<p>The Deployment configures both liveness and readiness probes against <code>GET /health</code>:</p>
+<p>The Deployment configures a liveness probe against <code>GET /health</code> and a readiness probe against <code>GET /ready</code>:</p>
 <table>
 <thead>
 <tr>
 <th>Probe</th>
+<th>Path</th>
 <th>Initial delay</th>
 <th>Period</th>
 <th>Timeout</th>
@@ -3552,6 +3553,7 @@ See <a href="../server/">Server API</a> for the full endpoint reference and the
 <tbody>
 <tr>
 <td>Liveness</td>
+<td><code>/health</code></td>
 <td>5s</td>
 <td>10s</td>
 <td>3s</td>
@@ -3559,6 +3561,7 @@ See <a href="../server/">Server API</a> for the full endpoint reference and the
 </tr>
 <tr>
 <td>Readiness</td>
+<td><code>/ready</code></td>
 <td>2s</td>
 <td>5s</td>
 <td>3s</td>
@@ -3566,8 +3569,20 @@ See <a href="../server/">Server API</a> for the full endpoint reference and the
 </tr>
 </tbody>
 </table>
-<p>The <code>/health</code> endpoint returns <code>{"status":"ok"}</code> with HTTP 200 when the server is running.
-Pods restart automatically if the server becomes unresponsive.</p>
+<p>The two answer different questions. <code>/health</code> returns <code>{"status":"ok"}</code> with HTTP 200 whenever the process is up, and a failing liveness probe restarts the pod. <code>/ready</code> returns 503 while the <a href="#starting-the-configmap-scenarios-automatically"><code>server.autostart</code></a> sweep is still starting <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> entries, and 200 once it has finished. A pod only joins the Service endpoints once the scenarios it was deployed to run are actually running. A pod that is not ready is taken out of the Service without being restarted, which is what you want while a large <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> is still starting.</p>
+<p>With <code>server.autostart</code> enabled, <code>kubectl rollout status</code> therefore completes when the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> is running, not when the port opens. With <code>server.autostart</code> disabled — the default — <code>/ready</code> answers 200 from the first request, so the readiness probe behaves exactly as it did against <code>/health</code>.</p>
+<details class="warning">
+<summary>A pinned <code>image.tag</code> older than <code>/ready</code> leaves the pod permanently NotReady</summary>
+<p>The chart's default <code>image.tag</code> follows its own <code>appVersion</code>, so a <code>helm upgrade</code> that takes this chart takes a matching image and there is nothing to do. If you pin <code>image.tag</code> to a release that does not serve <code>/ready</code>, the probe gets a 404 and the pod never becomes Ready. Move the pin forward, or stay on the chart version you were running.</p>
+</details>
+<div class="admonition info">
+<p class="admonition-title">A sweep that skipped files is still ready</p>
+<p>A sweep that finished but skipped a file still reports ready, so the pod goes into service and the rollout succeeds. That is deliberate. One bad file in a twelve-file ConfigMap must not pull the whole pod out of service. On a node drain, the same rule stops every pod coming back NotReady at once. The counts on <a href="../server/#health-and-readiness"><code>GET /ready</code></a> and on <a href="../server-metrics/#sonda_server_autostart_started"><code>sonda_server_autostart_started</code></a> are what surface the skip. This holds when every file is broken too: the pod is Ready with nothing running. Alert on the counts rather than relying on the rollout to fail.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">A failed sweep is terminal — the pod stays NotReady and is never restarted</p>
+<p><code>/ready</code> reports <code>status: failed</code> and keeps answering 503 for the life of the process, so the pod never rejoins the Service. It is not restarted either: the process is alive, so the liveness probe on <code>/health</code> keeps passing by design. The pod needs a human. Read the <code>ERROR</code> line in the log, then <code>kubectl delete pod</code> to start a fresh sweep. Alert on it with <a href="../server-metrics/#sonda_server_autostart_started"><code>sonda_server_autostart_started</code></a>, since a pod that is permanently NotReady is otherwise quiet.</p>
+</div>
 <h2 id="accessing-the-server">Accessing the server<a class="headerlink" href="#accessing-the-server" title="Permanent link">&para;</a></h2>
 <h3 id="port-forward">Port-forward<a class="headerlink" href="#port-forward" title="Permanent link">&para;</a></h3>
 <p>The quickest way to reach <code>sonda-server</code> from your workstation:</p>
@@ -3577,13 +3592,16 @@ Pods restart automatically if the server becomes unresponsive.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Health check</span>
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>curl<span class="w"> </span>http://localhost:8080/health
 </span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Start a scenario</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">  </span>--data-binary<span class="w"> </span>@examples/basic-metrics.yaml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">  </span>http://localhost:8080/scenarios
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>
-</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="c1"># List running scenarios</span>
-</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>curl<span class="w"> </span>http://localhost:8080/scenarios
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Readiness check</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>curl<span class="w"> </span>http://localhost:8080/ready
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="c1"># Start a scenario</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: text/yaml"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">  </span>--data-binary<span class="w"> </span>@examples/basic-metrics.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">  </span>http://localhost:8080/scenarios
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="c1"># List running scenarios</span>
+</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>curl<span class="w"> </span>http://localhost:8080/scenarios
 </span></code></pre></div>
 <h3 id="in-cluster-dns">In-cluster DNS<a class="headerlink" href="#in-cluster-dns" title="Permanent link">&para;</a></h3>
 <p>Other pods in the cluster can reach <code>sonda-server</code> using the Service DNS name:</p>
@@ -3619,7 +3637,7 @@ Pods restart automatically if the server becomes unresponsive.</p>
 </tr>
 </tbody>
 </table>
-<p><code>GET /scenarios/metrics</code> and <code>GET /scenarios/{id}/metrics</code> are idempotent snapshots — one sample per <code>(name, labels)</code> series with no timestamp, like a <code>node_exporter</code> <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr>. <code>GET /metrics</code> returns the server's own RED and saturation telemetry — see <a href="../server-metrics/">Server metrics</a> for the nine series and the alerts that go with them. Most <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> setups want a job per endpoint; the aggregate <code>/scenarios/metrics</code> covers every <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and you do not need to know <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> IDs in advance. See <a href="../http-api/#aggregate-prometheus-scrape">Aggregate <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr></a> for the <code>?label=k:v</code> AND-filter syntax.</p>
+<p><code>GET /scenarios/metrics</code> and <code>GET /scenarios/{id}/metrics</code> are idempotent snapshots — one sample per <code>(name, labels)</code> series with no timestamp, like a <code>node_exporter</code> <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr>. <code>GET /metrics</code> returns the server's own RED and saturation telemetry — see <a href="../server-metrics/">Server metrics</a> for the eleven series and the alerts that go with them. Most <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> setups want a job per endpoint; the aggregate <code>/scenarios/metrics</code> covers every <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and you do not need to know <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> IDs in advance. See <a href="../http-api/#aggregate-prometheus-scrape">Aggregate <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr></a> for the <code>?label=k:v</code> AND-filter syntax.</p>
 <h3 id="aggregate-scrape-config">Aggregate <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> config<a class="headerlink" href="#aggregate-scrape-config" title="Permanent link">&para;</a></h3>
 <div class="language-yaml highlight"><span class="filename">prometheus-scrape.yaml</span><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">scrape_configs</span><span class="p">:</span>
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda</span>
@@ -3673,7 +3691,7 @@ with:</p>
 <h2 id="api-key-authentication">API key authentication<a class="headerlink" href="#api-key-authentication" title="Permanent link">&para;</a></h2>
 <p>Sonda-server supports optional bearer token authentication on <code>/scenarios/*</code>, <code>/scenarios/metrics</code>, and
 <code>/events</code>. When enabled, clients must include an <code>Authorization: Bearer &lt;key&gt;</code> header. The
-<code>/health</code> endpoint stays public so liveness and readiness probes work without credentials.</p>
+<code>/health</code> and <code>/ready</code> endpoints stay public so liveness and readiness probes work without credentials.</p>
 <p>For the full authentication behavior (error responses, protected vs. public endpoints), see the
 <a href="../server/#authentication">Server API Authentication</a> section.</p>
 <h3 id="create-a-secret">Create a Secret<a class="headerlink" href="#create-a-secret" title="Permanent link">&para;</a></h3>
@@ -3723,8 +3741,9 @@ will see:</p>
 </span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a><span class="w">  </span>--data-binary<span class="w"> </span>@examples/basic-metrics.yaml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-24-9"><a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a><span class="w">  </span>http://localhost:8080/scenarios
 </span><span id="__span-24-10"><a id="__codelineno-24-10" name="__codelineno-24-10" href="#__codelineno-24-10"></a>
-</span><span id="__span-24-11"><a id="__codelineno-24-11" name="__codelineno-24-11" href="#__codelineno-24-11"></a><span class="c1"># Health check (always public)</span>
+</span><span id="__span-24-11"><a id="__codelineno-24-11" name="__codelineno-24-11" href="#__codelineno-24-11"></a><span class="c1"># Health and readiness checks (always public)</span>
 </span><span id="__span-24-12"><a id="__codelineno-24-12" name="__codelineno-24-12" href="#__codelineno-24-12"></a>curl<span class="w"> </span>http://localhost:8080/health
+</span><span id="__span-24-13"><a id="__codelineno-24-13" name="__codelineno-24-13" href="#__codelineno-24-13"></a>curl<span class="w"> </span>http://localhost:8080/ready
 </span></code></pre></div>
 <h3 id="prometheus-scraping-with-auth"><abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> scraping with auth<a class="headerlink" href="#prometheus-scraping-with-auth" title="Permanent link">&para;</a></h3>
 <p>When authentication is enabled, every <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> endpoint requires a bearer token: <code>/metrics</code>, <code>/scenarios/metrics</code>, and <code>/scenarios/{id}/metrics</code>. Add the token to your <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> config:</p>
@@ -3803,7 +3822,7 @@ Add <code>-n &lt;namespace&gt;</code> if you installed into a non-default namesp
 <ul>
 <li><a href="../../test/synthetic-monitoring/">Synthetic Monitoring guide</a> -- deploy Sonda on Kubernetes, submit long-running scenarios, <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> with <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>, and build Grafana dashboards</li>
 <li><a href="../server/">Server API</a> -- full endpoint reference for <code>sonda-server</code></li>
-<li><a href="../server-metrics/">Server metrics</a> -- the nine <code>/metrics</code> series and the <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> alerts that matter</li>
+<li><a href="../server-metrics/">Server metrics</a> -- the eleven <code>/metrics</code> series and the <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> alerts that matter</li>
 <li><a href="../docker/">Docker</a> -- Docker image and Compose stacks for local development</li>
 <li><a href="../../reference/scenario-fields/">Scenario Fields</a> -- full YAML schema for <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> configuration</li>
 </ul>
@@ -3827,7 +3846,7 @@ Add <code>-n &lt;namespace&gt;</code> if you installed into a non-default namesp
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 16:06:20 UTC">August 27, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 18:13:19 UTC">August 27, 2026</span>
   </span>
 
     
