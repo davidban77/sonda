@@ -1861,6 +1861,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#autostarting-a-catalog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Autostarting a catalog
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#tuning-resource-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2411,6 +2422,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#autostarting-a-catalog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Autostarting a catalog
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#tuning-resource-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2735,7 +2757,7 @@
 </span></code></pre></div>
 <p>The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> runs in the background inside the server until its <code>duration</code> expires, or until you stop it with <code>DELETE /scenarios/{id}</code>. See <a href="../http-api/">HTTP API reference</a> for the full endpoint list, request bodies, and response shapes.</p>
 <h2 id="server-flags">Server flags<a class="headerlink" href="#server-flags" title="Permanent link">&para;</a></h2>
-<p><code>sonda-server</code> accepts nine flags. The first four are the network and addressing surface; the remaining five control resource limits and runtime sizing. Use the <code>RUST_LOG</code> environment variable to control log verbosity (default <code>info</code>):</p>
+<p><code>sonda-server</code> accepts ten flags. The first five are the network, addressing, and startup surface; the remaining five control resource limits and runtime sizing. Use the <code>RUST_LOG</code> environment variable to control log verbosity (default <code>info</code>):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nv">RUST_LOG</span><span class="o">=</span>debug<span class="w"> </span>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span>
 </span></code></pre></div>
 <table>
@@ -2773,6 +2795,12 @@
 <td>Directory of <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> YAML files. Lets <code>POST /scenarios</code> resolve <code>pack: &lt;name&gt;</code> references. See <a href="../http-api/#pack-references-over-http">Pack references over HTTP</a>.</td>
 </tr>
 <tr>
+<td><code>--autostart</code></td>
+<td><code>SONDA_AUTOSTART</code></td>
+<td><code>false</code></td>
+<td>Start every <code>kind: runnable</code> entry in <code>--catalog</code> when the server boots. See <a href="#autostarting-a-catalog">Autostarting a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr></a>.</td>
+</tr>
+<tr>
 <td><code>--workers &lt;N&gt;</code></td>
 <td>--</td>
 <td><code>min(available_parallelism(), 16)</code></td>
@@ -2806,6 +2834,59 @@
 </table>
 <p>When you pass <code>--catalog</code>, point it at a directory that holds your <code>kind: composable</code> <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> YAML files. The path must exist. A missing directory makes the server fail at startup with a clear error.</p>
 <p>Press Ctrl+C for graceful shutdown. The server signals all running scenarios to stop before exiting.</p>
+<h3 id="autostarting-a-catalog">Autostarting a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr><a class="headerlink" href="#autostarting-a-catalog" title="Permanent link">&para;</a></h3>
+<p>By default the server boots empty and waits for you to <code>POST /scenarios</code>. Add <code>--autostart</code> and it starts every <code>kind: runnable</code> file in <code>--catalog</code> itself — the same result as POSTing each of those files yourself, without the POST:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span><span class="w"> </span>--catalog<span class="w"> </span>./catalog<span class="w"> </span>--autostart
+</span></code></pre></div>
+<p>The sweep runs alongside the server, not ahead of it. <code>/health</code> answers as soon as the port is open, so a readiness probe with a tight <code>timeoutSeconds</code> never waits on the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>, and entries appear in <code>GET /scenarios</code> as they start — a large <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> reads as a growing list rather than an empty one. The <code>INFO</code> <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> below is the point at which the list is complete. A shutdown signal that arrives mid-sweep stops the sweep at the next entry, and every <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> it did start is stopped with the rest.</p>
+<p><code>--autostart</code> requires <code>--catalog</code>. Passing it alone (or setting <code>SONDA_AUTOSTART</code> without <code>SONDA_CATALOG</code>) exits before the server binds a port:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Error: --autostart requires --catalog &lt;DIR&gt; (or SONDA_AUTOSTART requires SONDA_CATALOG): there is no scenario catalog to start from
+</span></code></pre></div>
+<p><code>SONDA_AUTOSTART</code> reads like every other boolean env var: empty, <code>0</code>, <code>n</code>, <code>no</code>, <code>f</code>, <code>false</code>, and <code>off</code> (any case) disable it; any other value enables it. An empty value is the common one — <code>env: [{name: SONDA_AUTOSTART, value: ""}]</code> in a pod spec, or <code>SONDA_AUTOSTART=</code> in a Compose <code>.env</code> — and it means "off", not "broken".</p>
+<p>What starts and what does not:</p>
+<table>
+<thead>
+<tr>
+<th>Catalog file</th>
+<th>Autostart behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kind: runnable</code></td>
+<td>Started. A file with several entries under <code>scenarios:</code> starts one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> per entry.</td>
+</tr>
+<tr>
+<td><code>kind: composable</code></td>
+<td>Not started. Packs exist to be referenced by <code>pack: &lt;name&gt;</code>, and runnables that reference them resolve against the same <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory.</td>
+</tr>
+<tr>
+<td>No <code>kind:</code> header</td>
+<td>Ignored — the file is not a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> entry at all.</td>
+</tr>
+</tbody>
+</table>
+<p>Entries start in <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>-name order — the <code>scenario_name:</code> of the file, or its <code>name:</code>, or the filename stem with underscores turned into dashes (<code>web_traffic.yaml</code> becomes <code>web-traffic</code>), whichever the file declares first. That is the same order <code>sonda list</code> shows, so what you see in the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> listing is the order the sweep uses.</p>
+<p>Two things stop the server before it binds, both of them mistakes only you can fix: <code>--autostart</code> with no <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>, and a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> whose entries are not addressable — two files claiming the same name, or a name that cannot be derived from the file. The error names the clash and the files that caused it:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>Error: --autostart: catalog /catalog is not startable
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>Caused by:
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    catalog /catalog contains duplicate entry name "web_traffic": /catalog/a.yaml and /catalog/b.yaml
+</span></code></pre></div>
+<p>Everything else keeps the server up. A file the server cannot use — one it has no permission to open, a v1 body, a compile error, a validation failure, or a file that would push past <code>--max-scenarios</code> — is logged and skipped; one bad file never stops the ones after it:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>warning: catalog: skipping unreadable file /catalog/locked.yaml: Permission denied (os error 13)
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>WARN sonda_server::autostart: /catalog/legacy.yaml: does not compile, skipping catalog entry origin=/catalog/legacy.yaml reason=body is not a v2 scenario. ...
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>WARN sonda_server::routes::scenarios: /catalog/extra.yaml: scenario cap reached origin=/catalog/extra.yaml needed=1
+</span></code></pre></div>
+<p>The first line has a different shape because it comes from the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> scan rather than the sweep: unreadable and unparseable files are dropped while the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> is being read, and <code>sonda list</code> reports them the same way.</p>
+<p>If the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> <em>directory</em> cannot be scanned — its permissions do not allow a listing, or an entry vanishes mid-scan — the server logs a <code>WARN</code>, starts nothing, and keeps serving so you can fix it over the API:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>WARN sonda_server::autostart: autostart: catalog could not be read, starting nothing catalog=/catalog reason=failed to read catalog dir /catalog: Permission denied (os error 13)
+</span></code></pre></div>
+<p>Every started <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> gets one <code>INFO</code> line naming the file it came from, and the sweep closes with a count, so "pod up, serving nothing" is visible in the log rather than only in the API:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>INFO sonda_server::routes::scenarios: scenario launched id=6f1c… name=cpu_usage state=running origin=/catalog/cpu.yaml
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>INFO sonda_server::autostart: autostart: started 3 of 4 runnable catalog entries started=3 total=4
+</span></code></pre></div>
+<p>Autostarted scenarios are ordinary scenarios: they appear in <code>GET /scenarios</code>, count against <code>--max-scenarios</code>, and are stoppable with <code>DELETE /scenarios/{id}</code>. A <code>while:</code> clause that points at a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> in another <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> file resolves when that file's turn comes; until then the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> sits in <code>unresolved</code> or <code>pending</code>, exactly as it would if you posted the two files in <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>-name order.</p>
 <h3 id="tuning-resource-limits">Tuning resource limits<a class="headerlink" href="#tuning-resource-limits" title="Permanent link">&para;</a></h3>
 <p>The five resource-limit flags shape what the server accepts, how many scenarios it holds, and how it spends CPU. Their defaults work for a developer laptop. Production deployments should pick values per the guidance below.</p>
 <h4 id="-workers-n"><code>--workers &lt;N&gt;</code><a class="headerlink" href="#-workers-n" title="Permanent link">&para;</a></h4>
@@ -2815,7 +2896,7 @@
 <p>A <strong>row cap</strong>, not a CPU-task cap. Every entry in the server's <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> map consumes one slot, including scenarios in <code>pending</code>, <code>running</code>, <code>paused</code>, <code>held</code>, <code>unresolved</code>, and <code>finished</code> state. Reaching the cap returns <code>429 capacity_exceeded</code> with a <code>by_state</code> breakdown of where the slots went.</p>
 <p>Pick <code>N</code> from the memory you are willing to dedicate. Each <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> row holds runtime state plus a per-<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> stats buffer; an order-of-magnitude estimate is ~1 MB per <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> at moderate rates. Production deployments commonly use values in the <code>100</code> to <code>1000</code> range; CI runners often run with <code>--max-scenarios 50</code> so a runaway test cannot OOM the runner.</p>
 <p><code>0</code> disables the cap entirely. The server emits a <code>WARN</code> log line at startup so the choice is visible:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>WARN sonda_server: --max-scenarios 0 — scenario row cap disabled (unlimited)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>WARN sonda_server: --max-scenarios 0 — scenario row cap disabled (unlimited)
 </span></code></pre></div>
 <p>The cap is exported on <a href="../server-metrics/#sonda_server_max_scenarios"><code>sonda_server_max_scenarios</code></a>. Live row usage is in <a href="../server-metrics/#sonda_server_active_scenarios"><code>sonda_server_active_scenarios</code></a> plus <a href="../server-metrics/#sonda_server_scenarios_finished_total"><code>sonda_server_scenarios_finished_total</code></a>.</p>
 <div class="admonition warning">
@@ -2839,17 +2920,17 @@
 <div class="tabbed-set tabbed-alternate" data-tabs="4:2"><input checked="checked" id="__tabbed_4_1" name="__tabbed_4" type="radio" /><input id="__tabbed_4_2" name="__tabbed_4" type="radio" /><div class="tabbed-labels"><label for="__tabbed_4_1">CLI flag</label><label for="__tabbed_4_2">Environment variable</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span><span class="w"> </span>--api-key<span class="w"> </span>my-secret-key
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span><span class="w"> </span>--api-key<span class="w"> </span>my-secret-key
 </span></code></pre></div>
 </div>
 <div class="tabbed-block">
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nv">SONDA_API_KEY</span><span class="o">=</span>my-secret-key<span class="w"> </span>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nv">SONDA_API_KEY</span><span class="o">=</span>my-secret-key<span class="w"> </span>sonda-server<span class="w"> </span>--port<span class="w"> </span><span class="m">8080</span>
 </span></code></pre></div>
 </div>
 </div>
 </div>
 <p>When the server starts with a key configured, you will see:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /metrics, and /scenarios/metrics endpoints
+<div class="language-text highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /metrics, and /scenarios/metrics endpoints
 </span></code></pre></div>
 <div class="admonition info">
 <p class="admonition-title">No key = no auth</p>
@@ -2914,23 +2995,23 @@
 <details class="tip">
 <summary>Kubernetes Secrets</summary>
 <p>In Kubernetes deployments, store the API key in a Secret and reference it as an environment variable in your Deployment spec:</p>
-<div class="language-yaml highlight"><span class="filename">sonda-secret.yaml</span><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Secret</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="nt">metadata</span><span class="p">:</span>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-api-key</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Opaque</span>
-</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="nt">stringData</span><span class="p">:</span>
-</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="w">  </span><span class="nt">api-key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-secret-key</span>
+<div class="language-yaml highlight"><span class="filename">sonda-secret.yaml</span><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Secret</span>
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="nt">metadata</span><span class="p">:</span>
+</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-api-key</span>
+</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Opaque</span>
+</span><span id="__span-26-6"><a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="nt">stringData</span><span class="p">:</span>
+</span><span id="__span-26-7"><a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="w">  </span><span class="nt">api-key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-secret-key</span>
 </span></code></pre></div>
-<div class="language-yaml highlight"><span class="filename">deployment patch</span><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nt">env</span><span class="p">:</span>
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SONDA_API_KEY</span>
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">    </span><span class="nt">valueFrom</span><span class="p">:</span>
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">      </span><span class="nt">secretKeyRef</span><span class="p">:</span>
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">        </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-api-key</span>
-</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">        </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">api-key</span>
+<div class="language-yaml highlight"><span class="filename">deployment patch</span><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nt">env</span><span class="p">:</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SONDA_API_KEY</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">    </span><span class="nt">valueFrom</span><span class="p">:</span>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">      </span><span class="nt">secretKeyRef</span><span class="p">:</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="w">        </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-api-key</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">        </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">api-key</span>
 </span></code></pre></div>
 <p>Apply the Secret before deploying:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>sonda-secret.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>sonda-secret.yaml
 </span></code></pre></div>
 <p>See <a href="../kubernetes/#api-key-authentication">API key authentication</a> in the Kubernetes deployment guide for the full Helm chart setup.</p>
 </details>
@@ -2963,7 +3044,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 17:59:15 UTC">August 8, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 16:06:20 UTC">August 27, 2026</span>
   </span>
 
     
