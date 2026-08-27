@@ -9,11 +9,15 @@
 //! serialises that, so the emitted grammar is whatever serde produces for the
 //! types the compiler already reads. Nothing writes YAML by hand.
 //!
-//! Two rules the emitted scenarios keep:
+//! Three rules the emitted scenarios keep:
 //!
 //! * **One block per distinct absence pattern.** `gap_windows:` is
 //!   scenario-level, so a block speaks for every column it lists; columns whose
 //!   silence falls on different rows cannot share one.
+//! * **No two columns in a block share a metric name.** `expand_scenario` makes
+//!   a column name into a scenario name and refuses duplicates, so one metric
+//!   across several label sets — `up{job="api"}` and `up{job="db"}`, the
+//!   ordinary result of a range query — has to span blocks.
 //! * **`repeat: false` on every block**, silence or not. The generator defaults
 //!   to `true`, so omitting it would loop a dense capture — and for a capture
 //!   with silence the engine refuses the combination outright, since
@@ -87,7 +91,19 @@ pub fn scenario_for(
             w.iter().map(|g| (g.at.clone(), g.r#for.clone())).collect()
         };
         let this = key(&windows);
-        match blocks.iter_mut().find(|(_, w)| key(w) == this) {
+        // ...and only when their metric names differ. `expand_scenario` turns
+        // each column name into a scenario name, so it refuses duplicates
+        // within a block — and one metric across several label sets, which is
+        // what `up{job="api"}` and `up{job="db"}` are, is the ordinary thing a
+        // range query returns.
+        let name = s.labels.get("__name__");
+        let fits = |(members, w): &&mut (Vec<usize>, Vec<GapWindowConfig>)| {
+            key(w) == this
+                && !members
+                    .iter()
+                    .any(|&j| series[j].labels.get("__name__") == name)
+        };
+        match blocks.iter_mut().find(fits) {
             Some((members, _)) => members.push(i),
             None => blocks.push((vec![i], windows)),
         }
@@ -358,6 +374,82 @@ mod tests {
             runnables, 3,
             "and the three columns fan out to three runnables at launch"
         );
+    }
+
+    #[test]
+    fn one_metric_across_several_label_sets_splits_rather_than_colliding() {
+        // The shape `--query up` returns from any Prometheus with two healthy
+        // targets, and the one a fixture hides whenever its series happen to
+        // differ in absence pattern or in name. `expand_scenario` turns a
+        // column name into a scenario name and refuses duplicates, so two
+        // columns called `up` in one block is a file that will not load.
+        let grid = Grid::new(0.0, 3.0, 1.0).expect("grid");
+        let series = [
+            norm("up", &[("job", "api")], &[Some(1.0); 4]),
+            norm("up", &[("job", "db")], &[Some(1.0); 4]),
+        ];
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
+        assert_eq!(
+            file.scenarios.len(),
+            2,
+            "same name and same (empty) absence pattern still needs two blocks: {:#?}",
+            file.scenarios
+        );
+
+        // Drive the real compiler: the emitted file has to load, which is the
+        // property the block split exists for.
+        let (_dir, entries) = compile_emitted(grid, &series);
+        let runnables: usize = entries
+            .into_iter()
+            .map(|e| {
+                crate::config::expand_entry(e)
+                    .expect("the emitted columns must expand")
+                    .len()
+            })
+            .sum();
+        assert_eq!(runnables, 2, "one runnable per series");
+    }
+
+    #[test]
+    fn columns_split_by_name_keep_their_own_silence() {
+        // Splitting must not smear one series' windows onto another's block.
+        let grid = Grid::new(0.0, 3.0, 1.0).expect("grid");
+        let series = [
+            norm(
+                "up",
+                &[("job", "api")],
+                &[Some(1.0), None, Some(3.0), Some(4.0)],
+            ),
+            norm(
+                "up",
+                &[("job", "db")],
+                &[Some(1.0), None, Some(3.0), Some(4.0)],
+            ),
+        ];
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
+        assert_eq!(file.scenarios.len(), 2, "same name, so two blocks");
+        for (n, entry) in file.scenarios.iter().enumerate() {
+            let w = entry
+                .gap_windows
+                .as_ref()
+                .unwrap_or_else(|| panic!("block {n} lost its silence"));
+            assert_eq!(w.len(), 1, "block {n}: one hole, one window");
+            assert_eq!((w[0].at.as_str(), w[0].r#for.as_str()), ("0.5s", "1s"));
+        }
+        let (_dir, _entries) = compile_emitted(grid, &series);
+    }
+
+    #[test]
+    fn distinct_names_sharing_an_absence_pattern_still_share_a_block() {
+        // The split is by name collision only — it must not undo the grouping
+        // that `columns_sharing_an_absence_pattern_share_a_block` pins.
+        let grid = Grid::new(0.0, 3.0, 1.0).expect("grid");
+        let series = [
+            norm("a", &[], &[Some(1.0), None, Some(3.0), Some(4.0)]),
+            norm("b", &[], &[Some(9.0), None, Some(7.0), Some(6.0)]),
+        ];
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
+        assert_eq!(file.scenarios.len(), 1, "different names, one block");
     }
 
     #[test]

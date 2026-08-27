@@ -194,31 +194,66 @@ pub struct NewArgs {
     pub from_prometheus: Option<String>,
 
     /// PromQL range query to capture.
-    #[arg(long, value_name = "PROMQL", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "PROMQL",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub query: Option<String>,
 
     /// Capture the window ending now (e.g. `1h`, `30m`). Alternative to --start/--end.
-    #[arg(long, value_name = "DURATION", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "DURATION",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub range: Option<String>,
 
     /// Window start, as unix seconds or RFC 3339. Use with --end.
-    #[arg(long, value_name = "INSTANT", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "INSTANT",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub start: Option<String>,
 
     /// Window end, as unix seconds or RFC 3339. Use with --start.
-    #[arg(long, value_name = "INSTANT", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "INSTANT",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub end: Option<String>,
 
     /// Sample step for the range query (e.g. `15s`, `1m`).
-    #[arg(long, value_name = "DURATION", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "DURATION",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub step: Option<String>,
 
     /// Where to write the captured CSV. The emitted scenario references this path.
-    #[arg(long, value_name = "PATH", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub out: Option<PathBuf>,
 
     /// Replay speed: 1.0 is the captured cadence, 2.0 is twice as fast.
-    #[arg(long, value_name = "FACTOR", help_heading = "Capture")]
+    #[arg(
+        long,
+        value_name = "FACTOR",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
     pub timescale: Option<f64>,
 
     /// Add a request header as `Name: value`. Repeat for multiple. A bearer token
@@ -227,9 +262,20 @@ pub struct NewArgs {
         long = "header",
         value_parser = parse_header,
         value_name = "NAME:VALUE",
+        requires = "from_prometheus",
         help_heading = "Capture"
     )]
     pub headers: Vec<(String, String)>,
+
+    /// Metric name for series the query left without one. PromQL aggregations
+    /// drop `__name__`, so `sum by (job) (...)` needs this.
+    #[arg(
+        long,
+        value_name = "NAME",
+        requires = "from_prometheus",
+        help_heading = "Capture"
+    )]
+    pub metric_name: Option<String>,
 }
 
 /// Parse a `Name: value` request header.

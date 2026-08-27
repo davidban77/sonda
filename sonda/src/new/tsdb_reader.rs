@@ -9,11 +9,22 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use sonda_core::acquire::normalize::{normalize, Grid};
+use sonda_core::acquire::normalize::{normalize, Grid, NormalizedSeries};
 use sonda_core::acquire::tsdb::{Auth, TsdbClient};
 use sonda_core::acquire::{csv_out, yaml_out};
+use sonda_core::SondaError;
 
 use crate::cli::NewArgs;
+
+/// Flatten a [`SondaError`] into one message.
+///
+/// Its `Display` already contains the source's text *and* `#[from]` exposes
+/// that source, so anyhow's `{:#}` walks the chain and prints the same sentence
+/// twice. Flattening here keeps every error this path reports readable; the
+/// duplication itself is core's and predates this module.
+fn flat(e: SondaError) -> anyhow::Error {
+    anyhow::anyhow!("{e}")
+}
 
 /// Past this many series a capture stops being a scenario anyone can read, and
 /// the CSV grows a column per series. The number is a judgement, not a limit of
@@ -48,14 +59,25 @@ pub fn capture(args: &NewArgs, now_unix: f64) -> Result<String> {
         .as_deref()
         .context("--step is required with --from-prometheus")?;
     let step = sonda_core::config::validate::parse_duration(step_text)
+        .map_err(flat)
         .with_context(|| format!("--step {step_text:?} is not a duration"))?;
 
+    // Everything that can be rejected from the flags alone is rejected here,
+    // before the network call and before anything is written. `scenario_for`
+    // validates the timescale too, but that runs after the CSV has landed —
+    // which would leave a capture on disk with no scenario beside it.
     let (start, end) = resolve_window(args, now_unix)?;
-    let timescale = args.timescale.unwrap_or(1.0);
+    let timescale = resolve_timescale(args)?;
+    if let Some(name) = args.metric_name.as_deref() {
+        sonda_core::ValidatedMetricName::new(name)
+            .map_err(flat)
+            .context("--metric-name")?;
+    }
 
-    let client = TsdbClient::new(url, auth_from(args)?, FETCH_TIMEOUT);
+    let client = TsdbClient::new(url, auth_from(args), FETCH_TIMEOUT);
     let series = client
         .fetch_range(query, start, end, step)
+        .map_err(flat)
         .context("the range query failed")?;
 
     if series.is_empty() {
@@ -63,8 +85,9 @@ pub fn capture(args: &NewArgs, now_unix: f64) -> Result<String> {
     }
     if series.len() > MAX_SERIES {
         bail!(
-            "the query matched {} series, over the cap of {MAX_SERIES}. Aggregate \
-             (`sum by (job) (...)`) or add matchers to narrow it.",
+            "the query matched {} series, over the cap of {MAX_SERIES}. Add matchers to narrow \
+             it, or aggregate — `sum by (job) (...)` drops the metric name, so an aggregated \
+             query needs --metric-name <NAME> to supply one.",
             series.len()
         );
     }
@@ -75,14 +98,20 @@ pub fn capture(args: &NewArgs, now_unix: f64) -> Result<String> {
             step.as_secs_f64()
         )
     })?;
-    let normalized: Vec<_> = series.iter().map(|s| normalize(s, grid)).collect();
+    let mut normalized: Vec<_> = series.iter().map(|s| normalize(s, grid)).collect();
+    name_unnamed_series(&mut normalized, args.metric_name.as_deref())?;
 
-    let csv = csv_out::write_csv(grid, &normalized).context("building the capture CSV")?;
+    let csv = csv_out::write_csv(grid, &normalized)
+        .map_err(flat)
+        .context("building the capture CSV")?;
     write_file(csv_path, &csv)?;
 
     let file = yaml_out::scenario_for(&path_for_yaml(csv_path)?, grid, &normalized, timescale)
+        .map_err(flat)
         .context("building the scenario for the capture")?;
-    let yaml = yaml_out::to_yaml(&file).context("rendering the scenario")?;
+    let yaml = yaml_out::to_yaml(&file)
+        .map_err(flat)
+        .context("rendering the scenario")?;
 
     let gaps: usize = normalized.iter().map(|s| s.gap_count()).sum();
     eprintln!(
@@ -95,6 +124,43 @@ pub fn capture(args: &NewArgs, now_unix: f64) -> Result<String> {
     Ok(yaml)
 }
 
+/// The replay speed, refused here rather than deep in the emitter.
+fn resolve_timescale(args: &NewArgs) -> Result<f64> {
+    let t = args.timescale.unwrap_or(1.0);
+    if !t.is_finite() || t <= 0.0 {
+        bail!("--timescale must be a positive finite number, got {t}");
+    }
+    Ok(t)
+}
+
+/// Give `--metric-name` to every series the query left without one.
+///
+/// PromQL aggregations drop `__name__`, and `sum by (job) (...)` is the usual
+/// way to get under the series cap — so the two would otherwise contradict each
+/// other: take the cap's advice and the capture is refused for having no name.
+fn name_unnamed_series(series: &mut [NormalizedSeries], name: Option<&str>) -> Result<()> {
+    let missing = series
+        .iter()
+        .filter(|s| !s.labels.contains_key("__name__"))
+        .count();
+    if missing == 0 {
+        return Ok(());
+    }
+    let Some(name) = name else {
+        bail!(
+            "{missing} of {} series carry no metric name. PromQL aggregations such as \
+             `sum by (job) (...)` drop __name__; pass --metric-name <NAME> to supply one.",
+            series.len()
+        );
+    };
+    for s in series.iter_mut() {
+        s.labels
+            .entry("__name__".to_string())
+            .or_insert_with(|| name.to_string());
+    }
+    Ok(())
+}
+
 /// Resolve `--range` or `--start`/`--end` into a unix-seconds window.
 ///
 /// `--range` is relative to `now_unix`, which the caller reads once so a
@@ -103,6 +169,7 @@ fn resolve_window(args: &NewArgs, now_unix: f64) -> Result<(f64, f64)> {
     match (&args.range, &args.start, &args.end) {
         (Some(range), None, None) => {
             let span = sonda_core::config::validate::parse_duration(range)
+                .map_err(flat)
                 .with_context(|| format!("--range {range:?} is not a duration"))?;
             Ok((now_unix - span.as_secs_f64(), now_unix))
         }
@@ -137,23 +204,34 @@ fn parse_instant(text: &str) -> Result<f64> {
 
 /// Build the credential from `--header` and the token environment variable.
 ///
-/// Both may be set: the token becomes an `Authorization` header alongside the
-/// rest. Neither the value nor the [`Auth`] carrying it is ever printed — see
-/// that type's docs.
-fn auth_from(args: &NewArgs) -> Result<Auth> {
+/// Both may be set and the token joins the headers — except when one of them is
+/// itself an `Authorization`, where the explicit flag wins and the token is
+/// dropped with a note. Silently sending one of two credentials is the part
+/// worth avoiding. Neither the value nor the [`Auth`] carrying it is ever
+/// printed — see that type's docs.
+fn auth_from(args: &NewArgs) -> Auth {
     let token = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
     if args.headers.is_empty() {
-        return Ok(match token {
+        return match token {
             Some(t) => Auth::Bearer(t),
             None => Auth::None,
-        });
+        };
     }
+
+    let explicit_auth = args
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Authorization"));
     let mut headers = Vec::with_capacity(args.headers.len() + 1);
-    if let Some(t) = token {
-        headers.push(("Authorization".to_string(), format!("Bearer {t}")));
+    match token {
+        Some(_) if explicit_auth => eprintln!(
+            "note: --header Authorization overrides {TOKEN_ENV}; the environment token is unused"
+        ),
+        Some(t) => headers.push(("Authorization".to_string(), format!("Bearer {t}"))),
+        None => {}
     }
     headers.extend(args.headers.iter().cloned());
-    Ok(Auth::Headers(headers))
+    Auth::Headers(headers)
 }
 
 /// The CSV path as the emitted scenario should carry it.
@@ -192,7 +270,66 @@ mod tests {
             out: None,
             timescale: None,
             headers: Vec::new(),
+            metric_name: None,
         }
+    }
+
+    fn series(name: Option<&str>) -> NormalizedSeries {
+        let mut labels = std::collections::BTreeMap::new();
+        if let Some(n) = name {
+            labels.insert("__name__".to_string(), n.to_string());
+        }
+        labels.insert("job".to_string(), "api".to_string());
+        NormalizedSeries {
+            labels,
+            values: vec![Some(1.0)],
+        }
+    }
+
+    #[test]
+    fn a_metric_name_fills_in_only_the_series_that_lack_one() {
+        let mut s = [series(None), series(Some("kept"))];
+        name_unnamed_series(&mut s, Some("supplied")).expect("named");
+        assert_eq!(
+            s[0].labels.get("__name__").map(String::as_str),
+            Some("supplied")
+        );
+        assert_eq!(
+            s[1].labels.get("__name__").map(String::as_str),
+            Some("kept"),
+            "an existing name is not overwritten"
+        );
+    }
+
+    #[test]
+    fn a_nameless_series_without_the_flag_says_which_flag_supplies_one() {
+        let mut s = [series(None), series(Some("kept"))];
+        let err = name_unnamed_series(&mut s, None).expect_err("must refuse");
+        let text = err.to_string();
+        assert!(text.contains("1 of 2"), "it counts them: {text}");
+        assert!(text.contains("--metric-name"), "and names the flag: {text}");
+        assert!(text.contains("sum by"), "and why it happened: {text}");
+    }
+
+    #[test]
+    fn a_fully_named_result_needs_no_flag() {
+        let mut s = [series(Some("a")), series(Some("b"))];
+        name_unnamed_series(&mut s, None).expect("nothing to fill in");
+    }
+
+    #[test]
+    fn a_timescale_that_is_not_positive_is_refused_before_anything_is_written() {
+        for bad in ["0", "-1", "nan", "inf"] {
+            let mut a = args();
+            a.timescale = Some(bad.parse().expect("f64"));
+            let err =
+                resolve_timescale(&a).expect_err(&format!("--timescale {bad} must be refused"));
+            assert!(err.to_string().contains("--timescale"), "{err}");
+        }
+        let mut a = args();
+        a.timescale = Some(4.0);
+        assert_eq!(resolve_timescale(&a).expect("valid"), 4.0);
+        assert_eq!(resolve_timescale(&args()).expect("default"), 1.0);
     }
 
     #[test]
