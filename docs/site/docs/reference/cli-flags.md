@@ -216,10 +216,10 @@ sonda --dry-run run /tmp/snap.yaml
 
 ## `sonda new`
 
-Create a new scenario YAML. Three modes are available. Pick the one that matches how much you already know about the scenario you want.
+Create a new scenario YAML. Four modes are available. Pick the one that matches how much you already know about the scenario you want.
 
 ```
-sonda new [--template] [--from <CSV>] [-o <PATH>]
+sonda new [--template] [--from <CSV>] [--from-prometheus <URL> ...] [-o <PATH>]
 ```
 
 | Flag | Description |
@@ -227,7 +227,29 @@ sonda new [--template] [--from <CSV>] [-o <PATH>]
 | (no flags) | Interactive [dialoguer](https://crates.io/crates/dialoguer) flow. Walks through signal type, generator, rate, duration, sink type, and output path. Requires a TTY on stdin. |
 | `--template` | Print a minimal valid YAML to stdout and exit. No prompts. |
 | `--from <CSV>` | Seed the file from a CSV file. Pattern detection runs on each numeric column and chooses an operational alias (`steady`, `spike_event`, `leak`, `saturation`, `flap`) per column. |
+| `--from-prometheus <URL>` | Capture a live PromQL range query and replay it verbatim — no pattern detection. See the capture flags below. Conflicts with `--template` and `--from`. |
 | `-o <PATH>` | Write the result to a file instead of stdout. Parent directories are created if missing. |
+
+### Capture flags
+
+Every flag in this table requires `--from-prometheus`, and `--from-prometheus`
+requires `--query`, `--step` and `--out`. Full guide:
+[From a live Prometheus](../import/from-prometheus.md).
+
+| Flag | Description |
+|------|-------------|
+| `--query <PROMQL>` | The range query to capture. Sent to the server as written. |
+| `--range <DURATION>` | Capture the window ending now (`1h`, `30m`). Alternative to `--start`/`--end`. |
+| `--start <INSTANT>` / `--end <INSTANT>` | Explicit bounds, as unix seconds or RFC 3339. Both or neither. |
+| `--step <DURATION>` | Sample step of the query, and the replay grid. |
+| `--out <PATH>` | Where to write the captured CSV. The emitted scenario references this path. |
+| `--metric-name <NAME>` | Name for series the query left without one — PromQL aggregations drop `__name__`. Never overwrites a name the query kept. |
+| `--timescale <FACTOR>` | Replay speed. `4` replays an hour in fifteen minutes, moving rate, duration and gap windows together. |
+| `--header <NAME:VALUE>` | Extra request header, repeatable. An explicit `Authorization:` overrides `SONDA_PROM_TOKEN`, with a note on stderr. |
+
+| Environment variable | Description |
+|---|---|
+| `SONDA_PROM_TOKEN` | Bearer token for the capture. Read from the environment so it stays out of shell history and process listings. |
 
 ### Minimal template
 

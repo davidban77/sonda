@@ -190,7 +190,7 @@ sonda run scenario.yaml --rate 10 --duration 5m
 ## CLI reference
 
 ```
-sonda new [--template] [--from <CSV>] [-o <PATH>]
+sonda new [--template] [--from <CSV>] [--from-prometheus <URL> ...] [-o <PATH>]
 ```
 
 | Flag | Description |
@@ -198,6 +198,7 @@ sonda new [--template] [--from <CSV>] [-o <PATH>]
 | (no flags) | Interactive flow. Asks for signal type, generator, rate, duration, sink type, and output path. |
 | `--template` | Print a minimal valid YAML to stdout and exit. No prompts. |
 | `--from <CSV>` | Generate a scenario from a CSV file. Runs pattern detection on each numeric column. |
+| `--from-prometheus <URL>` | Capture a live PromQL range query and replay it verbatim — no pattern detection. Takes its own flags; see [From a live Prometheus](from-prometheus.md). |
 | `-o <PATH>` | Write the result to a file instead of stdout. |
 
 See [CLI Reference: sonda new](../reference/cli-flags.md#sonda-new) for the full reference.

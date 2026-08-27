@@ -5,9 +5,13 @@ description: Convert CSV exports, Grafana panels, and log files into replayable 
 
 # Import real data
 
-This section covers three ways to turn real telemetry into a Sonda scenario. Each page handles one input format: a CSV file, a Grafana panel export, or a structured log file. The result is a YAML scenario you can replay for incident reproduction, regression tests, or dashboard validation.
+This section covers four ways to turn real telemetry into a Sonda scenario: a live Prometheus, a CSV file, a Grafana panel export, or a structured log file. The result is a YAML scenario you can replay for incident reproduction, regression tests, or dashboard validation.
 
 <div class="grid cards" markdown>
+
+-   :material-database-arrow-down-outline: __[From a live Prometheus](from-prometheus.md)__
+
+    `sonda new --from-prometheus` captures a PromQL range query and replays the recorded values verbatim — gaps included. For alert regression.
 
 -   :material-file-table-outline: __[From a CSV file](from-csv.md)__
 

@@ -248,10 +248,13 @@ pub struct NewArgs {
     pub out: Option<PathBuf>,
 
     /// Replay speed: 1.0 is the captured cadence, 2.0 is twice as fast.
+    // `allow_negative_numbers` so `--timescale -1` reaches the capture's own
+    // check and gets its message, not clap's "unexpected argument".
     #[arg(
         long,
         value_name = "FACTOR",
         requires = "from_prometheus",
+        allow_negative_numbers = true,
         help_heading = "Capture"
     )]
     pub timescale: Option<f64>,

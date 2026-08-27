@@ -378,6 +378,30 @@ fn a_flag_only_refusal_writes_nothing_and_never_reaches_the_network() {
     );
 }
 
+/// N7: both spellings of a negative timescale get the capture's own message,
+/// not clap's "unexpected argument". The unit test parses `"-1"` directly, which
+/// never passes through clap, so only a spawned binary shows what a user sees.
+#[test]
+fn a_negative_timescale_is_refused_the_same_way_however_it_is_spelled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for spelling in [vec!["--timescale", "-1"], vec!["--timescale=-1"]] {
+        let out = Command::new(sonda_bin())
+            .args(["new", "--from-prometheus", "http://127.0.0.1:1"])
+            .args(["--query", "up", "--range", "1h", "--step", "10s"])
+            .args(&spelling)
+            .arg("--out")
+            .arg(dir.path().join("capture.csv"))
+            .output()
+            .expect("spawn sonda");
+        assert!(!out.status.success(), "{spelling:?} must be refused");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--timescale must be a positive finite number"),
+            "{spelling:?} should get the capture's message, got: {stderr}"
+        );
+    }
+}
+
 /// W4: an error from this path says its piece once.
 #[test]
 fn an_error_is_not_printed_twice() {
