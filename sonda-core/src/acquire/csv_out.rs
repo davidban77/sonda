@@ -288,11 +288,11 @@ pub fn csv_quote_field(field: &str) -> String {
 ///
 /// The millisecond precision is not incidental, which is why this is a function
 /// rather than a format string at the one place that writes it. `csv_replay`
-/// takes its replay interval from the delta between the first two rows, so THIS
-/// is what decides the step the engine replays at — not the step a capture was
+/// derives its replay interval from these timestamps — the median pairwise
+/// delta over the first hundred rows, via `compute_csv_delta_seconds` — so THIS
+/// is what decides the step the engine replays at, not the step a capture was
 /// requested with. [`super::yaml_out`] calls it for exactly that reason, so the
-/// windows it derives and the interval the engine derives come from one
-/// definition instead of two that agree by luck.
+/// instants it reduces are the ones the file will carry.
 pub fn format_timestamp(instant: f64) -> String {
     format!("{instant:.3}")
 }

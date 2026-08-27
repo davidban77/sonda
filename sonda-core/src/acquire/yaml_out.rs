@@ -77,18 +77,14 @@ pub fn scenario_for(
     }
 
     // The step the ENGINE will use, which is not always the step the caller
-    // handed us. `write_csv` renders timestamps at millisecond precision, and
-    // `csv_replay` derives its replay interval from the delta between the first
-    // two rows of the file it reads. So for a step that is not a whole number
-    // of milliseconds the file rounds it, and windows built from the caller's
-    // exact step would drift against the engine's rounded one by a fixed amount
-    // per row — accumulating linearly until a window misses the row it was
-    // built for, and the cross-check refuses the capture. Measured before the
-    // fix: a `1/7` step failed from about 600 rows, `0.123456789` from about
-    // 200.
+    // handed us: `write_csv` renders timestamps at millisecond precision, and
+    // `csv_replay` derives its interval from those rendered numbers. Windows
+    // built from the caller's exact step drift against that by a fixed amount
+    // per row until one misses the row it was built for and the cross-check
+    // refuses the capture.
     //
-    // Both halves of the pair are computed from this one value, which is the
-    // whole principle the capture pair rests on.
+    // Both halves of the pair, and the emitted rate and duration, come from
+    // this one value — which is the principle the capture pair rests on.
     let step = file_step(grid)?;
     let rate = 1.0 / step;
     let duration = format!("{}s", grid.len as f64 * step);
@@ -205,39 +201,51 @@ pub fn scenario_for(
 /// The step the engine will replay at, given the file [`super::csv_out::write_csv`]
 /// will write.
 ///
-/// Not `grid.step`. The CSV carries timestamps at millisecond precision, and
-/// `csv_replay` takes its interval from the delta between the file's first two
-/// rows, so a step of `1/7` reaches the engine as `0.143`. Deriving it here the
-/// same way — by rendering the two instants exactly as the writer will and
-/// subtracting — means the windows and the replay agree by construction rather
-/// than by both being close to the caller's number.
+/// Not `grid.step`. The CSV carries timestamps at millisecond precision, so a
+/// step of `1/7` reaches the engine as `0.143`, and windows built from the
+/// caller's exact step drift against the replay until the capture stops
+/// loading.
 ///
-/// Driving the real formatter rather than reimplementing the rounding is the
-/// point: a change to how timestamps are written moves this with it.
+/// Two things are borrowed rather than modelled, and both had to be:
+///
+/// * [`super::csv_out::format_timestamp`] renders each instant, so the numbers
+///   fed to the reduction are the ones the file will literally carry.
+/// * [`crate::config::median_delta_seconds`] reduces them, because that is what
+///   `compute_csv_delta_seconds` does on the way back in — over
+///   [`crate::config::CSV_DELTA_SAMPLE_ROWS`] rows, the same window.
+///
+/// An earlier version modelled the second as "the delta between the first two
+/// rows". That agrees with the median for most steps and disagrees when the
+/// step's millisecond value is a clean half, because the two round to different
+/// sides: at `0.0015` the emitter said `0.002` against the engine's `0.0015`,
+/// drifting 0.199 s by row 398 against a 0.001 s margin. Reimplementing the
+/// median here instead would be a third model of the same thing; calling it is
+/// the only version that cannot disagree.
 fn file_step(grid: Grid) -> Result<f64, SondaError> {
     // A single-row capture has no delta to read, so nothing rounds it and the
     // caller's step stands.
     if grid.len < 2 {
         return Ok(grid.step);
     }
-    let render = |n: usize| -> Result<f64, SondaError> {
+    let sampled = grid.len.min(crate::config::CSV_DELTA_SAMPLE_ROWS);
+    let mut instants = Vec::with_capacity(sampled);
+    for n in 0..sampled {
         let text = super::csv_out::format_timestamp(grid.point(n));
-        text.parse::<f64>().map_err(|e| {
+        instants.push(text.parse::<f64>().map_err(|e| {
             SondaError::Config(ConfigError::invalid(format!(
                 "acquire: timestamp {text:?} for grid point {n} is not a number the replay \
                  could read back ({e})"
             )))
-        })
-    };
-    let step = render(1)? - render(0)?;
-    if step <= 0.0 || !step.is_finite() {
-        return Err(SondaError::Config(ConfigError::invalid(format!(
-            "acquire: a grid step of {}s rounds to {step}s at the millisecond precision the \
-             capture file uses, which is not a replayable interval. Capture at a coarser step.",
-            grid.step
-        ))));
+        })?);
     }
-    Ok(step)
+
+    crate::config::median_delta_seconds(&instants).map_err(|e| {
+        SondaError::Config(ConfigError::invalid(format!(
+            "acquire: a grid step of {}s does not survive the millisecond precision the capture \
+             file uses: {e}. Capture at a coarser step.",
+            grid.step
+        )))
+    })
 }
 
 /// Render [`scenario_for`]'s output as YAML text.
@@ -452,7 +460,12 @@ mod tests {
         // steps here are the point. Measured against the old behaviour: 1/7
         // and 1/3 failed from roughly 600 rows, 0.123456789 from roughly 200.
         const ROWS: usize = 1400;
-        for step in [1.0 / 7.0, 1.0 / 3.0, 0.123_456_789] {
+        // The last three are the ones a first-delta model gets wrong: a step
+        // whose millisecond value is a clean half rounds one way as a single
+        // delta and the other way as a median, so the emitter and the engine
+        // land on different numbers. 0.0015 emitted 0.002 against the engine's
+        // 0.0015 — 0.199s of drift by row 398, against a 0.001s margin.
+        for step in [1.0 / 7.0, 1.0 / 3.0, 0.123_456_789, 0.0015, 0.0025, 0.0035] {
             // Absences at high row indices, where linear drift is largest.
             let absent = [3usize, ROWS - 400, ROWS - 399, ROWS - 2];
             let values: Vec<Option<f64>> = (0..ROWS)
