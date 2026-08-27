@@ -2,6 +2,8 @@
 
 pub mod csv_reader;
 pub mod prompts;
+#[cfg(feature = "http")]
+pub mod tsdb_reader;
 pub mod yaml_gen;
 
 use std::fs;
@@ -15,6 +17,8 @@ use crate::cli::NewArgs;
 pub fn run(args: &NewArgs) -> Result<()> {
     let yaml = if args.template {
         yaml_gen::minimal_template()
+    } else if args.from_prometheus.is_some() {
+        capture(args)?
     } else if let Some(ref csv_path) = args.from {
         scaffold_from_csv(csv_path)?
     } else {
@@ -39,6 +43,25 @@ pub fn run(args: &NewArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Capture a live range query. `acquire::tsdb` is behind sonda-core's `http`
+/// feature, so a build without it refuses at runtime rather than silently
+/// scaffolding something else.
+#[cfg(feature = "http")]
+fn capture(args: &NewArgs) -> Result<String> {
+    // Read the wall clock once, so a `--range` window and anything reported
+    // about it agree on when "now" was.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    tsdb_reader::capture(args, now)
+}
+
+#[cfg(not(feature = "http"))]
+fn capture(_args: &NewArgs) -> Result<String> {
+    anyhow::bail!("this build of sonda has no HTTP support, so it cannot capture")
 }
 
 fn scaffold_from_csv(path: &Path) -> Result<String> {

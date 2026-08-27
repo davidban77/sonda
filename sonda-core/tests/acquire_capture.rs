@@ -91,7 +91,7 @@ fn a_capture_taken_over_http_replays_through_the_real_compiler() {
     )
     .expect("write");
 
-    let file = yaml_out::scenario_for(csv_path.to_str().expect("utf8"), grid, &normalized)
+    let file = yaml_out::scenario_for(csv_path.to_str().expect("utf8"), grid, &normalized, 1.0)
         .expect("scenario");
     let yaml = yaml_out::to_yaml(&file).expect("yaml");
 
@@ -128,7 +128,7 @@ fn a_bearer_token_is_sent_and_never_reaches_an_emitted_artifact() {
     let normalized: Vec<_> = series.iter().map(|s| normalize(s, grid)).collect();
 
     let csv = csv_out::write_csv(grid, &normalized).expect("csv");
-    let file = yaml_out::scenario_for("capture.csv", grid, &normalized).expect("scenario");
+    let file = yaml_out::scenario_for("capture.csv", grid, &normalized, 1.0).expect("scenario");
     let yaml = yaml_out::to_yaml(&file).expect("yaml");
 
     for (what, text) in [("csv", &csv), ("yaml", &yaml)] {
@@ -209,7 +209,7 @@ fn basic_auth_credentials_do_not_reach_an_artifact_in_either_form() {
     let normalized: Vec<_> = series.iter().map(|s| normalize(s, grid)).collect();
     let csv = csv_out::write_csv(grid, &normalized).expect("csv");
     let yaml = yaml_out::to_yaml(
-        &yaml_out::scenario_for("capture.csv", grid, &normalized).expect("scenario"),
+        &yaml_out::scenario_for("capture.csv", grid, &normalized, 1.0).expect("scenario"),
     )
     .expect("yaml");
 
@@ -289,7 +289,7 @@ fn hostile_labels_from_the_server_survive_into_a_loadable_capture() {
     .expect("write");
 
     let yaml = yaml_out::to_yaml(
-        &yaml_out::scenario_for(csv_path.to_str().expect("utf8"), grid, &normalized)
+        &yaml_out::scenario_for(csv_path.to_str().expect("utf8"), grid, &normalized, 1.0)
             .expect("scenario"),
     )
     .expect("yaml");

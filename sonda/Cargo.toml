@@ -14,7 +14,7 @@ readme = "../README.md"
 [features]
 default = ["config", "http"]
 config = ["sonda-core/config"]
-http = ["sonda-core/http"]
+http = ["sonda-core/http", "dep:chrono"]
 remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 otlp = ["sonda-core/otlp"]
@@ -37,6 +37,9 @@ dialoguer = "0.12"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = { version = "0.7", default-features = false }
+# Only the `--from-prometheus` capture path parses RFC 3339 window bounds, and
+# that path is behind `http`.
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

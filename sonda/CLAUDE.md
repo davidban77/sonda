@@ -41,12 +41,19 @@ src/
 │                          the "start" banner agree on how a sink prints).
 ├── new/
 │   ├── mod.rs          ← `sonda new` subcommand: dispatches between --template,
-│   │                      --from <csv>, and interactive flow; writes to -o <path>
-│   │                      or stdout
+│   │                      --from <csv>, --from-prometheus <url>, and the
+│   │                      interactive flow; writes to -o <path> or stdout
 │   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type,
 │   │                      scenario id, generator (metrics only), rate, duration, sink
 │   ├── csv_reader.rs   ← CSV file reading for `--from <csv>`: header parsing,
 │   │                      numeric column extraction
+│   ├── tsdb_reader.rs  ← `--from-prometheus`: resolves the capture window from
+│   │                      --range or --start/--end, validates every flag-only
+│   │                      input before the network call, builds the credential
+│   │                      from --header and SONDA_PROM_TOKEN, names series the
+│   │                      query left unnamed, and hands off to
+│   │                      sonda_core::acquire. Caps the result at 20 series.
+│   │                      Behind the `http` feature, with the rest of acquire.
 │   └── yaml_gen.rs     ← YAML rendering: minimal_template(), render_from_answers(),
 │                          spec_from_pattern() — maps detected patterns to v2 YAML
 │                          using operational vocabulary aliases (steady, spike_event,
@@ -69,7 +76,7 @@ requires multiple tightly-coupled files.
 sonda [GLOBAL FLAGS] run <SCENARIO> [OPTIONS]
 sonda [GLOBAL FLAGS] list --catalog <DIR> [--kind <runnable|composable>] [--tag <TAG>] [--json]
 sonda [GLOBAL FLAGS] show <@NAME> --catalog <DIR>
-sonda [GLOBAL FLAGS] new [--template | --from <CSV>] [-o <PATH>]
+sonda [GLOBAL FLAGS] new [--template | --from <CSV> | --from-prometheus <URL>] [-o <PATH>]
 sonda [GLOBAL FLAGS] test <SCENARIO> --prometheus-url <URL> | --alertmanager-url <URL>
 sonda completions <bash|zsh|fish|powershell|elvish>
 ```
@@ -110,6 +117,22 @@ the single discovery surface. The verbosity model is captured in the `Verbosity`
   with no prompts. `--from <csv>` scaffolds from a CSV using `sonda_core::analysis::pattern`
   and maps detected patterns to operational vocabulary aliases. `-o <path>` writes to a file;
   otherwise the YAML is printed to stdout.
+
+  `--from-prometheus <url>` captures a live PromQL range query and emits a scenario that
+  replays it **verbatim** — no pattern detection, no generator inference, no `--fit`. It
+  requires `--query`, `--step` and `--out` (the CSV path the emitted scenario references), plus
+  a window from either `--range` or `--start`/`--end` (unix seconds or RFC 3339). Every capture
+  flag requires `--from-prometheus` in turn, so one on its own is a typo rather than a no-op.
+  `--timescale` sets the replay speed and moves rate, duration and gap windows together.
+
+  `--metric-name <NAME>` supplies a name for series the query left without one. PromQL
+  aggregations drop `__name__`, and aggregating is the usual way under the 20-series cap, so
+  the cap's advice and this flag go together — without it an aggregated capture is refused.
+
+  Credentials come from `SONDA_PROM_TOKEN` or `--header Name: value`, never from a flag value
+  that would land in a shell history; neither reaches the emitted CSV or YAML. An explicit
+  `--header Authorization:` wins over the environment token, with a note on stderr rather than
+  silently.
 
 - **`sonda test`** — run a scenario and verify its top-level `expect:` alert expectations
   against **exactly one** acquisition source: a Prometheus-compatible API
@@ -185,5 +208,7 @@ This crate depends on:
 - `anyhow` for error handling
 - `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
 - `dialoguer` for interactive terminal prompts in `sonda new` (pure Rust, musl-compatible)
+- `chrono` (optional, enabled by the `http` feature) for RFC 3339 window bounds on
+  `sonda new --from-prometheus`
 
 It depends on `tokio` (runtime construction in `main` to drive the async `launch_scenario` API). It should NOT depend on: `axum`, `hyper`, or any server-specific HTTP crate.

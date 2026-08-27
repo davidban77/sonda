@@ -1,18 +1,12 @@
 //! Resample fetched series onto the requested step grid.
 //!
-//! Pure and feature-free, and one rule: **a grid point takes the value the TSDB
-//! reported at that instant, or `None` if it reported nothing there.** Values
-//! are never interpolated, averaged or carried forward — that is what makes
-//! this path exact rather than a fit.
+//! One rule: **a grid point takes the value the TSDB reported at that instant,
+//! or `None` if it reported nothing there.** Never interpolated, averaged or
+//! carried forward — that is what makes this exact rather than a fit.
 //!
-//! `Option<f64>` rather than a `NaN` sentinel because absence and value are
-//! separate facts: [`super::response`] keeps a reported `NaN` or infinity
-//! verbatim, and the capture path turns absence into a declared `gap_windows:`
-//! entry, so conflating them would emit silence the database never reported.
-//!
-//! Nothing is written here. [`crate::acquire::csv_out`] turns each `None` into
-//! a blank cell and derives the matching windows from the same entries, so the
-//! two halves of that pair come from one source.
+//! `Option<f64>` rather than a `NaN` sentinel: a reported `NaN` is data and
+//! absence is not, and conflating them would emit silence the database never
+//! reported.
 
 use super::FetchedSeries;
 use std::collections::BTreeMap;
@@ -91,15 +85,9 @@ impl NormalizedSeries {
 
 /// Resample one fetched series onto `grid`.
 ///
-/// A sample counts for grid point `n` when its timestamp is within half a
-/// millisecond of `grid.point(n)`. Prometheus aligns range-query samples to
-/// the requested grid, so in practice this is an exact match; the tolerance
-/// exists because the timestamps arrive as JSON floats, not because the
-/// values are being snapped to somewhere they did not come from.
-///
-/// Samples that match no grid point are dropped: they are outside the
-/// requested window, and inventing a grid point for them would move data the
-/// caller did not ask for.
+/// A sample counts for grid point `n` within half a millisecond of
+/// `grid.point(n)` — a tolerance for JSON float error, not a snap. Samples
+/// matching no grid point are dropped rather than given one.
 pub fn normalize(series: &FetchedSeries, grid: Grid) -> NormalizedSeries {
     // Half a millisecond, the finest resolution the Prometheus API expresses.
     const TOLERANCE_SECS: f64 = 0.0005;

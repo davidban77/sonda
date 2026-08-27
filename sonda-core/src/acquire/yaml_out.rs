@@ -1,23 +1,12 @@
-//! Emit the scenario file that replays a capture.
+//! Emit the scenario that replays a capture. [`super::csv_out`] writes the data.
 //!
-//! The companion to [`super::csv_out`]. That module writes the data — values,
-//! blanks, one row per grid point — and this one writes the scenario that
-//! plays it back at the cadence it was captured at, with the recorded silence
-//! declared as `gap_windows:`.
+//! Builds the compiler's own [`ScenarioFile`] and serialises it, so nothing
+//! writes YAML by hand. Three rules a block keeps, each enforced below:
 //!
-//! Feature-gated on `config`: it builds the compiler's own [`ScenarioFile`] and
-//! serialises that, so the emitted grammar is whatever serde produces for the
-//! types the compiler already reads. Nothing writes YAML by hand.
-//!
-//! Two rules the emitted scenarios keep:
-//!
-//! * **One block per distinct absence pattern.** `gap_windows:` is
-//!   scenario-level, so a block speaks for every column it lists; columns whose
-//!   silence falls on different rows cannot share one.
-//! * **`repeat: false` on every block**, silence or not. The generator defaults
-//!   to `true`, so omitting it would loop a dense capture — and for a capture
-//!   with silence the engine refuses the combination outright, since
-//!   `gap_windows:` describe a single pass.
+//! * One block per distinct absence pattern — `gap_windows:` is scenario-level.
+//! * No two columns in a block share a metric name — `expand_scenario` turns a
+//!   column name into a scenario name and refuses duplicates.
+//! * `repeat: false` always — the generator defaults to `true` and would loop.
 
 use super::normalize::{Grid, NormalizedSeries};
 use crate::compiler::{Entry, Kind, ScenarioFile};
@@ -25,26 +14,23 @@ use crate::config::GapWindowConfig;
 use crate::generator::{CsvColumnSpec, GeneratorConfig};
 use crate::{ConfigError, SondaError};
 
-/// Build the scenario file that replays `series` from `csv_path`.
+/// Build the scenario that replays `series` from `csv_path`, written verbatim.
 ///
-/// `csv_path` is written into the emitted `file:` field verbatim; the caller
-/// decides whether it is absolute or relative to the scenario, and nothing here
-/// touches the filesystem.
+/// `timescale` is the replay speed. It divides the step rate, duration and the
+/// windows are all derived from, because the engine recomputes
+/// `rate = timescale / Δt` on load and the other two must agree with it.
 ///
-/// Column indices are 1-based in the emitted spec because column 0 of the file
-/// [`super::csv_out::write_csv`] wrote is the timestamp — series `i` is CSV
-/// column `i + 1`. Getting that off by one would silently replay the timestamps
-/// as values.
+/// Emitted column indices are 1-based: column 0 of the CSV is the timestamp.
 ///
 /// # Errors
 ///
-/// Returns [`SondaError::Config`] when the grid cannot be expressed as a rate,
-/// when a series carries no metric name to build a scenario name from, or when
-/// [`super::csv_out::gap_windows_for`] cannot express a column's silence.
+/// [`SondaError::Config`] for a grid that is not a rate, a non-positive
+/// `timescale`, a series with no `__name__`, or silence with no window.
 pub fn scenario_for(
     csv_path: &str,
     grid: Grid,
     series: &[NormalizedSeries],
+    timescale: f64,
 ) -> Result<ScenarioFile, SondaError> {
     if series.is_empty() {
         return Err(SondaError::Config(ConfigError::invalid(
@@ -57,10 +43,15 @@ pub fn scenario_for(
             grid.step
         ))));
     }
+    if !timescale.is_finite() || timescale <= 0.0 {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "acquire: timescale must be a positive finite number, got {timescale}"
+        ))));
+    }
 
-    // The engine's step, not the caller's — see `file_step`. Windows, rate and
-    // duration all come from this one value.
-    let step = file_step(grid)?;
+    // The engine's step, not the caller's — see `file_step` — divided by the
+    // replay speed. Windows, rate and duration all come from this one value.
+    let step = file_step(grid)? / timescale;
     let rate = 1.0 / step;
     let duration = format!("{}s", grid.len as f64 * step);
 
@@ -74,7 +65,19 @@ pub fn scenario_for(
             w.iter().map(|g| (g.at.clone(), g.r#for.clone())).collect()
         };
         let this = key(&windows);
-        match blocks.iter_mut().find(|(_, w)| key(w) == this) {
+        // ...and only when their metric names differ. `expand_scenario` turns
+        // each column name into a scenario name, so it refuses duplicates
+        // within a block — and one metric across several label sets, which is
+        // what `up{job="api"}` and `up{job="db"}` are, is the ordinary thing a
+        // range query returns.
+        let name = s.labels.get("__name__");
+        let fits = |(members, w): &&mut (Vec<usize>, Vec<GapWindowConfig>)| {
+            key(w) == this
+                && !members
+                    .iter()
+                    .any(|&j| series[j].labels.get("__name__") == name)
+        };
+        match blocks.iter_mut().find(fits) {
             Some((members, _)) => members.push(i),
             None => blocks.push((vec![i], windows)),
         }
@@ -122,7 +125,8 @@ pub fn scenario_for(
                 columns: Some(columns),
                 // Explicit, and never true — see the module docs.
                 repeat: Some(false),
-                timescale: None,
+                // Omitted at 1.0 so an untimescaled capture reads as one.
+                timescale: (timescale != 1.0).then_some(timescale),
                 default_metric_name: None,
             }),
             log_generator: None,
@@ -172,19 +176,11 @@ pub fn scenario_for(
     })
 }
 
-/// The step the engine will replay at, given the file [`super::csv_out::write_csv`]
-/// will write.
+/// The step the engine will read back, which is not `grid.step`: the CSV
+/// carries millisecond timestamps, so `1/7` returns as `0.143`.
 ///
-/// Not `grid.step`: the CSV carries millisecond timestamps, so `1/7` reaches the
-/// engine as `0.143`, and windows built from the caller's step drift against the
-/// replay until the capture stops loading.
-///
-/// Both halves are borrowed rather than modelled —
-/// [`super::csv_out::format_timestamp`] renders the instants the file will
-/// carry, and [`crate::config::median_delta_seconds`] reduces them over
-/// [`crate::config::CSV_DELTA_SAMPLE_ROWS`] rows, which is exactly what
-/// `compute_csv_delta_seconds` does on the way back in. Any model of that
-/// reduction disagrees with it somewhere.
+/// Drives the real formatter and the real reduction rather than modelling
+/// either, so this cannot disagree with `compute_csv_delta_seconds`.
 fn file_step(grid: Grid) -> Result<f64, SondaError> {
     // A single-row capture has no delta to read, so nothing rounds it and the
     // caller's step stands.
@@ -216,8 +212,7 @@ fn file_step(grid: Grid) -> Result<f64, SondaError> {
 ///
 /// # Errors
 ///
-/// Returns [`SondaError::Config`] if serialisation fails, which would mean a
-/// config type stopped being representable in YAML.
+/// [`SondaError::Config`] if a config type stopped being representable in YAML.
 pub fn to_yaml(file: &ScenarioFile) -> Result<String, SondaError> {
     let mut value: serde_yaml_ng::Value = serde_yaml_ng::to_value(file).map_err(|e| {
         SondaError::Config(ConfigError::invalid(format!(
@@ -287,7 +282,7 @@ mod tests {
         let csv_path = dir.path().join("capture.csv");
         std::fs::write(&csv_path, write_csv(grid, series).expect("csv")).expect("write csv");
 
-        let file = scenario_for(csv_path.to_str().expect("utf8 path"), grid, series)
+        let file = scenario_for(csv_path.to_str().expect("utf8 path"), grid, series, 1.0)
             .expect("scenario must build");
         let yaml = to_yaml(&file).expect("yaml");
         let entries = crate::compile_scenario_file(&yaml, &InMemoryPackResolver::default())
@@ -318,7 +313,7 @@ mod tests {
             norm("b", &[], &[Some(9.0), None, Some(7.0), Some(6.0)]),
             norm("c", &[], &[Some(1.0), Some(2.0), None, Some(4.0)]),
         ];
-        let file = scenario_for("capture.csv", grid, &series).expect("scenario");
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
         assert_eq!(
             file.scenarios.len(),
             2,
@@ -347,10 +342,180 @@ mod tests {
     }
 
     #[test]
+    fn one_metric_across_several_label_sets_splits_rather_than_colliding() {
+        // The shape `--query up` returns from any Prometheus with two healthy
+        // targets, and the one a fixture hides whenever its series happen to
+        // differ in absence pattern or in name. `expand_scenario` turns a
+        // column name into a scenario name and refuses duplicates, so two
+        // columns called `up` in one block is a file that will not load.
+        let grid = Grid::new(0.0, 3.0, 1.0).expect("grid");
+        let series = [
+            norm("up", &[("job", "api")], &[Some(1.0); 4]),
+            norm("up", &[("job", "db")], &[Some(1.0); 4]),
+        ];
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
+        assert_eq!(
+            file.scenarios.len(),
+            2,
+            "same name and same (empty) absence pattern still needs two blocks: {:#?}",
+            file.scenarios
+        );
+
+        // Drive the real compiler: the emitted file has to load, which is the
+        // property the block split exists for.
+        let (_dir, entries) = compile_emitted(grid, &series);
+        let runnables: usize = entries
+            .into_iter()
+            .map(|e| {
+                crate::config::expand_entry(e)
+                    .expect("the emitted columns must expand")
+                    .len()
+            })
+            .sum();
+        assert_eq!(runnables, 2, "one runnable per series");
+    }
+
+    #[test]
+    fn columns_split_by_name_keep_their_own_silence() {
+        // Splitting must not smear one series' windows onto another's block.
+        let grid = Grid::new(0.0, 3.0, 1.0).expect("grid");
+        let series = [
+            norm(
+                "up",
+                &[("job", "api")],
+                &[Some(1.0), None, Some(3.0), Some(4.0)],
+            ),
+            norm(
+                "up",
+                &[("job", "db")],
+                &[Some(1.0), None, Some(3.0), Some(4.0)],
+            ),
+        ];
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
+        assert_eq!(file.scenarios.len(), 2, "same name, so two blocks");
+        for (n, entry) in file.scenarios.iter().enumerate() {
+            let w = entry
+                .gap_windows
+                .as_ref()
+                .unwrap_or_else(|| panic!("block {n} lost its silence"));
+            assert_eq!(w.len(), 1, "block {n}: one hole, one window");
+            assert_eq!((w[0].at.as_str(), w[0].r#for.as_str()), ("0.5s", "1s"));
+        }
+        let (_dir, _entries) = compile_emitted(grid, &series);
+    }
+
+    #[test]
+    fn distinct_names_sharing_an_absence_pattern_still_share_a_block() {
+        // The split is by name collision only — it must not undo the grouping
+        // that `columns_sharing_an_absence_pattern_share_a_block` pins.
+        let grid = Grid::new(0.0, 3.0, 1.0).expect("grid");
+        let series = [
+            norm("a", &[], &[Some(1.0), None, Some(3.0), Some(4.0)]),
+            norm("b", &[], &[Some(9.0), None, Some(7.0), Some(6.0)]),
+        ];
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
+        assert_eq!(file.scenarios.len(), 1, "different names, one block");
+    }
+
+    #[test]
+    fn a_timescale_moves_rate_duration_and_windows_together() {
+        // 10s grid, silence on row 2. At 1.0 the engine replays one row per
+        // 10s; at 4.0, one per 2.5s — and every emitted value has to say so.
+        let grid = Grid::new(0.0, 30.0, 10.0).expect("grid");
+        let series = [norm("m", &[], &[Some(1.0), None, Some(3.0), Some(4.0)])];
+
+        let at = |t: f64| {
+            let e = scenario_for("capture.csv", grid, &series, t)
+                .expect("scenario")
+                .scenarios
+                .remove(0);
+            let w = e.gap_windows.clone().expect("silence to declare");
+            (
+                e.rate.expect("rate"),
+                e.duration.clone().expect("duration"),
+                w[0].at.clone(),
+                w[0].r#for.clone(),
+            )
+        };
+
+        let (rate1, dur1, at1, for1) = at(1.0);
+        let (rate4, dur4, at4, for4) = at(4.0);
+
+        assert_eq!((rate1, dur1.as_str()), (0.1, "40s"));
+        assert_eq!((at1.as_str(), for1.as_str()), ("5s", "10s"));
+
+        assert_eq!(rate4, 0.4, "four times the rate");
+        assert_eq!(dur4, "10s", "and a quarter of the wall clock");
+        assert_eq!(
+            (at4.as_str(), for4.as_str()),
+            ("1.25s", "2.5s"),
+            "the window has to land on the accelerated timeline too"
+        );
+    }
+
+    #[test]
+    fn a_timescale_is_emitted_only_when_it_is_not_one() {
+        let grid = Grid::new(0.0, 2.0, 1.0).expect("grid");
+        let series = [norm("m", &[], &[Some(1.0), Some(2.0), Some(3.0)])];
+        let timescale_of = |t: f64| match scenario_for("capture.csv", grid, &series, t)
+            .expect("scenario")
+            .scenarios[0]
+            .generator
+            .as_ref()
+            .expect("generator")
+        {
+            GeneratorConfig::CsvReplay { timescale, .. } => *timescale,
+            other => panic!("expected csv_replay, got {other:?}"),
+        };
+        assert_eq!(timescale_of(1.0), None, "the default is not written out");
+        assert_eq!(timescale_of(2.5), Some(2.5));
+    }
+
+    #[test]
+    fn a_timescaled_capture_still_compiles_and_loads_its_own_file() {
+        // The engine derives `rate = timescale / Δt` on load, overriding the
+        // emitted rate. If the two disagree the replay runs at a cadence the
+        // duration and windows were not written for, so drive the real thing.
+        let grid = Grid::new(0.0, 4.0, 1.0).expect("grid");
+        let series = [norm(
+            "m",
+            &[],
+            &[Some(1.0), None, Some(3.0), Some(4.0), None],
+        )];
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let csv_path = dir.path().join("capture.csv");
+        std::fs::write(&csv_path, write_csv(grid, &series).expect("csv")).expect("write csv");
+
+        let file = scenario_for(csv_path.to_str().expect("utf8 path"), grid, &series, 3.0)
+            .expect("scenario must build");
+        let yaml = to_yaml(&file).expect("yaml");
+        let entries = crate::compile_scenario_file(&yaml, &InMemoryPackResolver::default())
+            .unwrap_or_else(|e| panic!("the compiler rejected a timescaled capture: {e}\n{yaml}"));
+        for e in entries {
+            crate::config::expand_entry(e).expect("the emitted columns must expand");
+        }
+    }
+
+    #[test]
+    fn a_timescale_that_is_not_a_positive_number_is_refused() {
+        let grid = Grid::new(0.0, 2.0, 1.0).expect("grid");
+        let series = [norm("m", &[], &[Some(1.0), Some(2.0), Some(3.0)])];
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let err = scenario_for("capture.csv", grid, &series, bad)
+                .expect_err(&format!("timescale {bad} must be refused"));
+            assert!(
+                err.to_string().contains("timescale"),
+                "the error should name the field: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn every_block_sets_repeat_false_even_with_no_silence_to_declare() {
         let grid = Grid::new(0.0, 2.0, 1.0).expect("grid");
         let series = [norm("dense", &[], &[Some(1.0), Some(2.0), Some(3.0)])];
-        let file = scenario_for("capture.csv", grid, &series).expect("scenario");
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
         let entry = &file.scenarios[0];
         assert!(
             entry.gap_windows.is_none(),
@@ -373,7 +538,7 @@ mod tests {
         // reproduce it exactly.
         let grid = Grid::new(0.0, 2.0, 1.0).expect("grid");
         let series = [norm("m", &[], &[Some(1.0), None, Some(3.0)])];
-        let file = scenario_for("capture.csv", grid, &series).expect("scenario");
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
         for e in &file.scenarios {
             assert!(e.jitter.is_none() && e.jitter_seed.is_none(), "no jitter");
         }
@@ -390,7 +555,7 @@ mod tests {
             norm("first", &[], &[Some(1.0), Some(2.0)]),
             norm("second", &[], &[Some(3.0), Some(4.0)]),
         ];
-        let file = scenario_for("capture.csv", grid, &series).expect("scenario");
+        let file = scenario_for("capture.csv", grid, &series, 1.0).expect("scenario");
         match file.scenarios[0].generator.as_ref().expect("generator") {
             GeneratorConfig::CsvReplay { columns, .. } => {
                 let idx: Vec<usize> = columns
@@ -411,16 +576,10 @@ mod tests {
 
     #[test]
     fn a_step_that_is_not_a_whole_millisecond_still_round_trips_at_length() {
-        // The capture file carries millisecond timestamps and `csv_replay`
-        // takes its interval from them, so a step like 1/7 reaches the engine
-        // rounded. Windows built from the caller's exact step drift against
-        // that by a fixed amount per row, and the error accumulates until a
-        // window misses the row it was built for.
-        //
-        // Short captures at round steps do not reach it — every other test in
-        // this file passes under the drifting version — so the length and the
-        // steps here are the point. Measured against the old behaviour: 1/7
-        // and 1/3 failed from roughly 600 rows, 0.123456789 from roughly 200.
+        // `csv_replay` takes its interval from the file's millisecond
+        // timestamps, so a step like 1/7 reaches the engine rounded and windows
+        // built from the caller's exact step drift a fixed amount per row. The
+        // length and the odd steps are the point: round steps never reach it.
         const ROWS: usize = 1400;
         // The last three are the ones a first-delta model gets wrong: a step
         // whose millisecond value is a clean half rounds one way as a single
@@ -457,7 +616,7 @@ mod tests {
             labels: BTreeMap::new(),
             values: vec![Some(1.0), Some(2.0)],
         };
-        let err = scenario_for("capture.csv", grid, &[nameless]).expect_err("must refuse");
+        let err = scenario_for("capture.csv", grid, &[nameless], 1.0).expect_err("must refuse");
         assert!(
             err.to_string().contains("__name__"),
             "the error names the missing label: {err}"
@@ -467,7 +626,7 @@ mod tests {
     #[test]
     fn zero_series_is_refused_rather_than_emitting_an_empty_scenario() {
         let grid = Grid::new(0.0, 1.0, 1.0).expect("grid");
-        let err = scenario_for("capture.csv", grid, &[]).expect_err("must refuse");
+        let err = scenario_for("capture.csv", grid, &[], 1.0).expect_err("must refuse");
         assert!(err.to_string().contains("matched nothing"), "{err}");
     }
 }
