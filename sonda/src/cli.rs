@@ -181,6 +181,67 @@ pub struct NewArgs {
     /// Output file path. When omitted, the YAML is printed to stdout.
     #[arg(short, long, value_name = "PATH")]
     pub output: Option<PathBuf>,
+
+    /// Capture a live range query from a Prometheus-compatible TSDB and replay it
+    /// verbatim. Values are recorded, never fitted to a generator.
+    #[arg(
+        long,
+        value_name = "URL",
+        conflicts_with_all = ["template", "from"],
+        requires_all = ["query", "step", "out"],
+        help_heading = "Capture"
+    )]
+    pub from_prometheus: Option<String>,
+
+    /// PromQL range query to capture.
+    #[arg(long, value_name = "PROMQL", help_heading = "Capture")]
+    pub query: Option<String>,
+
+    /// Capture the window ending now (e.g. `1h`, `30m`). Alternative to --start/--end.
+    #[arg(long, value_name = "DURATION", help_heading = "Capture")]
+    pub range: Option<String>,
+
+    /// Window start, as unix seconds or RFC 3339. Use with --end.
+    #[arg(long, value_name = "INSTANT", help_heading = "Capture")]
+    pub start: Option<String>,
+
+    /// Window end, as unix seconds or RFC 3339. Use with --start.
+    #[arg(long, value_name = "INSTANT", help_heading = "Capture")]
+    pub end: Option<String>,
+
+    /// Sample step for the range query (e.g. `15s`, `1m`).
+    #[arg(long, value_name = "DURATION", help_heading = "Capture")]
+    pub step: Option<String>,
+
+    /// Where to write the captured CSV. The emitted scenario references this path.
+    #[arg(long, value_name = "PATH", help_heading = "Capture")]
+    pub out: Option<PathBuf>,
+
+    /// Replay speed: 1.0 is the captured cadence, 2.0 is twice as fast.
+    #[arg(long, value_name = "FACTOR", help_heading = "Capture")]
+    pub timescale: Option<f64>,
+
+    /// Add a request header as `Name: value`. Repeat for multiple. A bearer token
+    /// is better passed as `SONDA_PROM_TOKEN` so it stays out of the command line.
+    #[arg(
+        long = "header",
+        value_parser = parse_header,
+        value_name = "NAME:VALUE",
+        help_heading = "Capture"
+    )]
+    pub headers: Vec<(String, String)>,
+}
+
+/// Parse a `Name: value` request header.
+fn parse_header(raw: &str) -> Result<(String, String), String> {
+    let (name, value) = raw
+        .split_once(':')
+        .ok_or_else(|| format!("expected `Name: value`, got {raw:?}"))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(format!("header name is empty in {raw:?}"));
+    }
+    Ok((name.to_string(), value.trim().to_string()))
 }
 
 fn clap_styles() -> clap::builder::styling::Styles {
