@@ -1,5 +1,6 @@
 //! Startup sweep that admits every `kind: runnable` catalog entry.
 
+use std::future::Future;
 use std::path::Path;
 
 use sonda_core::catalog::{self, CatalogEntry, CatalogError, EntryKind};
@@ -48,12 +49,24 @@ fn is_misconfiguration(error: &CatalogError) -> bool {
 }
 
 /// Admit every entry through the same path `POST /scenarios` uses, logging and
-/// skipping any entry that fails so one bad file cannot stop the server.
+/// skipping any entry that fails so one bad file cannot stop the server. An entry
+/// whose admission panics is skipped the same way: it runs in its own task, so the
+/// panic ends that entry and not the sweep.
 /// Runs alongside the HTTP server; `cancel` stops it at the next entry boundary
 /// so shutdown never races an admission it would not see.
 pub async fn start_entries(state: &AppState, entries: &[CatalogEntry], cancel: &CancellationToken) {
-    let catalog_dir = state.catalog_dir.as_deref().map(|p| p.as_path());
+    start_entries_with(state, entries, cancel, admit_entry).await
+}
 
+async fn start_entries_with<F, Fut>(
+    state: &AppState,
+    entries: &[CatalogEntry],
+    cancel: &CancellationToken,
+    admit: F,
+) where
+    F: Fn(AppState, CatalogEntry) -> Fut,
+    Fut: Future<Output = bool> + Send + 'static,
+{
     for (index, entry) in entries.iter().enumerate() {
         if cancel.is_cancelled() {
             let started = state.sweep_status.snapshot().started;
@@ -67,27 +80,13 @@ pub async fn start_entries(state: &AppState, entries: &[CatalogEntry], cancel: &
             return;
         }
 
-        let path = entry.source_path.display().to_string();
-
-        let text = match std::fs::read_to_string(&entry.source_path) {
-            Ok(text) => text,
+        match tokio::spawn(admit(state.clone(), entry.clone())).await {
+            Ok(true) => state.sweep_status.record_started(),
+            Ok(false) => {}
             Err(e) => {
-                warn!(origin = %path, reason = %e, "{path}: unreadable, skipping catalog entry");
-                continue;
+                let path = entry.source_path.display().to_string();
+                warn!(origin = %path, reason = %e, "{path}: panicked while starting, skipping catalog entry");
             }
-        };
-
-        let compiled = match compile_v2_text(&text, catalog_dir) {
-            Ok(compiled) => compiled,
-            Err(fail) => {
-                warn!(origin = %path, reason = %fail.message(), "{path}: does not compile, skipping catalog entry");
-                continue;
-            }
-        };
-
-        // admit_compiled logs the reason it rejected an entry, with the same origin.
-        if admit_compiled(state, compiled, &path).await.is_ok() {
-            state.sweep_status.record_started();
         }
     }
 
@@ -100,6 +99,30 @@ pub async fn start_entries(state: &AppState, entries: &[CatalogEntry], cancel: &
         "autostart: started {started} of {} runnable catalog entries",
         entries.len()
     );
+}
+
+async fn admit_entry(state: AppState, entry: CatalogEntry) -> bool {
+    let path = entry.source_path.display().to_string();
+
+    let text = match std::fs::read_to_string(&entry.source_path) {
+        Ok(text) => text,
+        Err(e) => {
+            warn!(origin = %path, reason = %e, "{path}: unreadable, skipping catalog entry");
+            return false;
+        }
+    };
+
+    let catalog_dir = state.catalog_dir.as_deref().map(|p| p.as_path());
+    let compiled = match compile_v2_text(&text, catalog_dir) {
+        Ok(compiled) => compiled,
+        Err(fail) => {
+            warn!(origin = %path, reason = %fail.message(), "{path}: does not compile, skipping catalog entry");
+            return false;
+        }
+    };
+
+    // admit_compiled logs the reason it rejected an entry, with the same origin.
+    admit_compiled(&state, compiled, &path).await.is_ok()
 }
 
 #[cfg(test)]
@@ -142,8 +165,43 @@ scenarios:
         (dir, entries, state)
     }
 
+    fn runnable_named(name: &str) -> String {
+        RUNNABLE
+            .replace("scenario_name: alpha", &format!("scenario_name: {name}"))
+            .replace("name: alpha_cpu", &format!("name: {name}_cpu"))
+    }
+
+    fn catalog_with_three_runnables() -> (TempDir, Vec<CatalogEntry>, AppState) {
+        let dir = TempDir::new().expect("must create temp catalog dir");
+        for name in ["alpha", "beta", "gamma"] {
+            std::fs::write(
+                dir.path().join(format!("{name}.yaml")),
+                runnable_named(name),
+            )
+            .expect("must write catalog file");
+        }
+        let entries = runnable_entries(dir.path()).expect("must enumerate");
+        assert_eq!(
+            entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma"],
+            "the sweep must reach beta with an entry still behind it"
+        );
+
+        let mut state = AppState::new();
+        state.catalog_dir = Some(Arc::new(dir.path().to_path_buf()));
+        state.sweep_status = Arc::new(SweepStatus::in_progress(entries.len()));
+        (dir, entries, state)
+    }
+
+    async fn admit_but_panic_on_beta(state: AppState, entry: CatalogEntry) -> bool {
+        if entry.name == "beta" {
+            panic!("intentional admission panic");
+        }
+        admit_entry(state, entry).await
+    }
+
     fn admitted(state: &AppState) -> usize {
-        state.scenarios.read().expect("scenarios lock").len()
+        state.scenarios.read().len()
     }
 
     #[tokio::test]
@@ -164,6 +222,49 @@ scenarios:
         let snap = state.sweep_status.snapshot();
         assert_eq!(snap.phase, SweepPhase::Finished);
         assert_eq!((snap.started, snap.expected), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn entries_behind_a_panicking_admission_still_start() {
+        let (_dir, entries, state) = catalog_with_three_runnables();
+
+        start_entries_with(
+            &state,
+            &entries,
+            &CancellationToken::new(),
+            admit_but_panic_on_beta,
+        )
+        .await;
+
+        let names: Vec<String> = state
+            .scenarios
+            .read()
+            .values()
+            .map(|h| h.name.clone())
+            .collect();
+        assert_eq!(names.len(), 2, "got {names:?}");
+        assert!(names.iter().any(|n| n == "alpha_cpu"), "got {names:?}");
+        assert!(names.iter().any(|n| n == "gamma_cpu"), "got {names:?}");
+    }
+
+    #[tokio::test]
+    async fn a_sweep_with_a_panicking_entry_still_finishes_and_reports_ready() {
+        let (_dir, entries, state) = catalog_with_three_runnables();
+
+        start_entries_with(
+            &state,
+            &entries,
+            &CancellationToken::new(),
+            admit_but_panic_on_beta,
+        )
+        .await;
+
+        let snap = state.sweep_status.snapshot();
+        assert_eq!(snap.phase, SweepPhase::Finished);
+        assert_eq!((snap.started, snap.expected), (2, 3));
+
+        let ready = crate::routes::ready::ready(axum::extract::State(state.clone())).await;
+        assert_eq!(ready.status(), axum::http::StatusCode::OK);
     }
 
     #[tokio::test]

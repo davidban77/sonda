@@ -3,13 +3,18 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use sonda_core::ScenarioHandle;
 use tokio::sync::Semaphore;
 
 use crate::gate_registry::GateBusRegistry;
+use crate::locks::RecoveringLock;
+
+const SCENARIOS_LOCK: &str = "scenarios";
+const REQUEST_COUNTERS_LOCK: &str = "request_counters";
+const REQUEST_HISTOGRAMS_LOCK: &str = "request_histograms";
 
 pub type RouteKey = (String, String, u16);
 pub type HistogramKey = (String, String);
@@ -207,7 +212,7 @@ impl SweepStatus {
 #[derive(Clone)]
 pub struct AppState {
     /// Map from scenario ID to its lifecycle handle.
-    pub scenarios: Arc<RwLock<HashMap<String, ScenarioHandle>>>,
+    pub scenarios: Arc<RecoveringLock<HashMap<String, ScenarioHandle>>>,
     /// Optional API key for bearer-token authentication on protected routes.
     pub api_key: Option<Arc<String>>,
     /// Optional catalog directory for resolving `pack:` references in posted bodies.
@@ -223,9 +228,9 @@ pub struct AppState {
     /// Configured `--max-scenarios` value exposed via `sonda_server_max_scenarios`.
     pub max_scenarios: usize,
     /// Per-`(route, method, status)` request counters.
-    pub request_counters: Arc<RwLock<HashMap<RouteKey, AtomicU64>>>,
+    pub request_counters: Arc<RecoveringLock<HashMap<RouteKey, AtomicU64>>>,
     /// Per-`(route, method)` duration histograms.
-    pub request_histograms: Arc<RwLock<HashMap<HistogramKey, HistogramShard>>>,
+    pub request_histograms: Arc<RecoveringLock<HashMap<HistogramKey, HistogramShard>>>,
     /// Progress of the `--autostart` catalog sweep.
     pub sweep_status: Arc<SweepStatus>,
 }
@@ -234,7 +239,7 @@ impl AppState {
     /// Create a new, empty application state with no authentication.
     pub fn new() -> Self {
         Self {
-            scenarios: Arc::new(RwLock::new(HashMap::new())),
+            scenarios: Arc::new(RecoveringLock::new(SCENARIOS_LOCK, HashMap::new())),
             api_key: None,
             catalog_dir: None,
             gate_bus_registry: Arc::new(GateBusRegistry::new()),
@@ -242,8 +247,11 @@ impl AppState {
             started_at: Instant::now(),
             worker_threads: 1,
             max_scenarios: 0,
-            request_counters: Arc::new(RwLock::new(HashMap::new())),
-            request_histograms: Arc::new(RwLock::new(HashMap::new())),
+            request_counters: Arc::new(RecoveringLock::new(REQUEST_COUNTERS_LOCK, HashMap::new())),
+            request_histograms: Arc::new(RecoveringLock::new(
+                REQUEST_HISTOGRAMS_LOCK,
+                HashMap::new(),
+            )),
             sweep_status: Arc::new(SweepStatus::not_configured()),
         }
     }
@@ -252,7 +260,7 @@ impl AppState {
     #[allow(dead_code)]
     pub fn with_api_key(api_key: Option<String>) -> Self {
         Self {
-            scenarios: Arc::new(RwLock::new(HashMap::new())),
+            scenarios: Arc::new(RecoveringLock::new(SCENARIOS_LOCK, HashMap::new())),
             api_key: api_key.map(Arc::new),
             catalog_dir: None,
             gate_bus_registry: Arc::new(GateBusRegistry::new()),
@@ -260,10 +268,31 @@ impl AppState {
             started_at: Instant::now(),
             worker_threads: 1,
             max_scenarios: 0,
-            request_counters: Arc::new(RwLock::new(HashMap::new())),
-            request_histograms: Arc::new(RwLock::new(HashMap::new())),
+            request_counters: Arc::new(RecoveringLock::new(REQUEST_COUNTERS_LOCK, HashMap::new())),
+            request_histograms: Arc::new(RecoveringLock::new(
+                REQUEST_HISTOGRAMS_LOCK,
+                HashMap::new(),
+            )),
             sweep_status: Arc::new(SweepStatus::not_configured()),
         }
+    }
+
+    /// Recovered poisoned-lock acquisitions, per lock, across every lock the server owns.
+    pub fn lock_recoveries(&self) -> Vec<(&'static str, u64)> {
+        let mut rows = vec![
+            (self.scenarios.name(), self.scenarios.recoveries()),
+            (
+                self.request_counters.name(),
+                self.request_counters.recoveries(),
+            ),
+            (
+                self.request_histograms.name(),
+                self.request_histograms.recoveries(),
+            ),
+        ];
+        rows.extend(self.gate_bus_registry.lock_recoveries());
+        rows.sort_by_key(|(name, _)| *name);
+        rows
     }
 }
 
@@ -281,7 +310,7 @@ mod tests {
     #[test]
     fn new_state_has_empty_scenarios() {
         let state = AppState::new();
-        let scenarios = state.scenarios.read().expect("RwLock must not be poisoned");
+        let scenarios = state.scenarios.read();
         assert!(
             scenarios.is_empty(),
             "new AppState must have an empty scenarios map"
@@ -302,7 +331,7 @@ mod tests {
     #[test]
     fn default_produces_empty_state() {
         let state = AppState::default();
-        let scenarios = state.scenarios.read().expect("RwLock must not be poisoned");
+        let scenarios = state.scenarios.read();
         assert!(
             scenarios.is_empty(),
             "default AppState must have an empty scenarios map"
@@ -335,7 +364,7 @@ mod tests {
     #[test]
     fn with_api_key_has_empty_scenarios() {
         let state = AppState::with_api_key(Some("key".to_string()));
-        let scenarios = state.scenarios.read().expect("RwLock must not be poisoned");
+        let scenarios = state.scenarios.read();
         assert!(
             scenarios.is_empty(),
             "with_api_key must produce an empty scenarios map"
@@ -350,7 +379,7 @@ mod tests {
         // Both point to the same Arc.
         assert!(
             Arc::ptr_eq(&state1.scenarios, &state2.scenarios),
-            "cloned AppState must share the same Arc<RwLock<...>>"
+            "cloned AppState must share the same lock"
         );
     }
 
