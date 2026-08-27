@@ -281,6 +281,22 @@ pub fn csv_quote_field(field: &str) -> String {
     out
 }
 
+/// Render one grid instant as the timestamp cell for its row.
+///
+/// `{:.3}` rather than `{}` so a timestamp never reaches the file in scientific
+/// notation, which `parse_csv_timestamp` would reject.
+///
+/// The millisecond precision is not incidental, which is why this is a function
+/// rather than a format string at the one place that writes it. `csv_replay`
+/// takes its replay interval from the delta between the first two rows, so THIS
+/// is what decides the step the engine replays at — not the step a capture was
+/// requested with. [`super::yaml_out`] calls it for exactly that reason, so the
+/// windows it derives and the interval the engine derives come from one
+/// definition instead of two that agree by luck.
+pub fn format_timestamp(instant: f64) -> String {
+    format!("{instant:.3}")
+}
+
 /// Render the whole capture as CSV text.
 ///
 /// Column 0 is the timestamp in unix seconds — `csv_replay` derives its replay
@@ -315,9 +331,7 @@ pub fn write_csv(grid: Grid, series: &[NormalizedSeries]) -> Result<String, Sond
     out.push('\n');
 
     for n in 0..grid.len {
-        // {:.3} rather than {} so a timestamp never reaches the file in
-        // scientific notation, which parse_csv_timestamp would reject.
-        let _ = write!(out, "{:.3}", grid.point(n));
+        out.push_str(&format_timestamp(grid.point(n)));
         for s in series {
             out.push(',');
             // Absence is a BLANK cell, and a blank is the only thing that reads

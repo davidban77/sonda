@@ -76,13 +76,26 @@ pub fn scenario_for(
         ))));
     }
 
-    // The capture's cadence IS the replay rate: one row per step.
-    let rate = 1.0 / grid.step;
-    let duration = format!("{}s", grid.len as f64 * grid.step);
+    // The step the ENGINE will use, which is not always the step the caller
+    // handed us. `write_csv` renders timestamps at millisecond precision, and
+    // `csv_replay` derives its replay interval from the delta between the first
+    // two rows of the file it reads. So for a step that is not a whole number
+    // of milliseconds the file rounds it, and windows built from the caller's
+    // exact step would drift against the engine's rounded one by a fixed amount
+    // per row — accumulating linearly until a window misses the row it was
+    // built for, and the cross-check refuses the capture. Measured before the
+    // fix: a `1/7` step failed from about 600 rows, `0.123456789` from about
+    // 200.
+    //
+    // Both halves of the pair are computed from this one value, which is the
+    // whole principle the capture pair rests on.
+    let step = file_step(grid)?;
+    let rate = 1.0 / step;
+    let duration = format!("{}s", grid.len as f64 * step);
 
     let mut blocks: Vec<(Vec<usize>, Vec<GapWindowConfig>)> = Vec::new();
     for (i, s) in series.iter().enumerate() {
-        let windows = super::csv_out::gap_windows_for(&s.values, grid.step)?;
+        let windows = super::csv_out::gap_windows_for(&s.values, step)?;
         // Group by the windows themselves rather than by the absent-row set:
         // two columns belong together exactly when the same `gap_windows:`
         // block is correct for both, and that is what the windows are.
@@ -187,6 +200,44 @@ pub fn scenario_for(
         scenarios,
         expect: None,
     })
+}
+
+/// The step the engine will replay at, given the file [`super::csv_out::write_csv`]
+/// will write.
+///
+/// Not `grid.step`. The CSV carries timestamps at millisecond precision, and
+/// `csv_replay` takes its interval from the delta between the file's first two
+/// rows, so a step of `1/7` reaches the engine as `0.143`. Deriving it here the
+/// same way — by rendering the two instants exactly as the writer will and
+/// subtracting — means the windows and the replay agree by construction rather
+/// than by both being close to the caller's number.
+///
+/// Driving the real formatter rather than reimplementing the rounding is the
+/// point: a change to how timestamps are written moves this with it.
+fn file_step(grid: Grid) -> Result<f64, SondaError> {
+    // A single-row capture has no delta to read, so nothing rounds it and the
+    // caller's step stands.
+    if grid.len < 2 {
+        return Ok(grid.step);
+    }
+    let render = |n: usize| -> Result<f64, SondaError> {
+        let text = super::csv_out::format_timestamp(grid.point(n));
+        text.parse::<f64>().map_err(|e| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "acquire: timestamp {text:?} for grid point {n} is not a number the replay \
+                 could read back ({e})"
+            )))
+        })
+    };
+    let step = render(1)? - render(0)?;
+    if step <= 0.0 || !step.is_finite() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "acquire: a grid step of {}s rounds to {step}s at the millisecond precision the \
+             capture file uses, which is not a replayable interval. Capture at a coarser step.",
+            grid.step
+        ))));
+    }
+    Ok(step)
 }
 
 /// Render [`scenario_for`]'s output as YAML text.
@@ -385,6 +436,42 @@ mod tests {
                 );
             }
             other => panic!("expected csv_replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_step_that_is_not_a_whole_millisecond_still_round_trips_at_length() {
+        // The capture file carries millisecond timestamps and `csv_replay`
+        // takes its interval from them, so a step like 1/7 reaches the engine
+        // rounded. Windows built from the caller's exact step drift against
+        // that by a fixed amount per row, and the error accumulates until a
+        // window misses the row it was built for.
+        //
+        // Short captures at round steps do not reach it — every other test in
+        // this file passes under the drifting version — so the length and the
+        // steps here are the point. Measured against the old behaviour: 1/7
+        // and 1/3 failed from roughly 600 rows, 0.123456789 from roughly 200.
+        const ROWS: usize = 1400;
+        for step in [1.0 / 7.0, 1.0 / 3.0, 0.123_456_789] {
+            // Absences at high row indices, where linear drift is largest.
+            let absent = [3usize, ROWS - 400, ROWS - 399, ROWS - 2];
+            let values: Vec<Option<f64>> = (0..ROWS)
+                .map(|i| {
+                    if absent.contains(&i) {
+                        None
+                    } else {
+                        Some(i as f64)
+                    }
+                })
+                .collect();
+            let grid = Grid::new(0.0, step * (ROWS - 1) as f64, step).expect("grid");
+            let series = [norm("m", &[], &values)];
+            let (_dir, entries) = compile_emitted(grid, &series);
+            for e in entries {
+                crate::config::expand_entry(e).unwrap_or_else(|err| {
+                    panic!("step {step} at {ROWS} rows: the engine refused the pair: {err}")
+                });
+            }
         }
     }
 
