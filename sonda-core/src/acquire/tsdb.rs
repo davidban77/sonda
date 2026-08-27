@@ -16,6 +16,10 @@
 //! and no accessor returning the token. It exists only to be applied to a
 //! request. The emitted CSV and YAML are built from labels and values, and
 //! never see this type — asserted by a test rather than by inspection.
+//!
+//! A base URL is the other way a credential arrives: `http://user:pass@host`.
+//! That one *is* stored, so the rule is that only [`scrub_userinfo`]'s output
+//! is ever formatted — into an error, into a `Debug`, anywhere but the wire.
 
 use super::response::parse_matrix_response;
 use super::FetchedSeries;
@@ -101,12 +105,46 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// The `user:pass@` prefix of a URL's authority, if it has one.
+///
+/// The last `@` before the path ends the userinfo: RFC 3986 requires an `@`
+/// inside it to be percent-encoded, so a later one cannot belong to it.
+fn userinfo_of(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let at = rest[..authority_end].rfind('@')?;
+    Some(rest[..=at].to_string())
+}
+
+/// Replace a URL credential wherever it appears in `text`.
+///
+/// Every occurrence, because `ureq` builds its error messages from the URL it
+/// was handed and quotes it more than once.
+fn scrub_userinfo(text: &str, userinfo: Option<&str>) -> String {
+    match userinfo {
+        Some(u) => text.replace(u, "<redacted>@"),
+        None => text.to_string(),
+    }
+}
+
 /// A client for one TSDB's range-query endpoint.
-#[derive(Debug)]
 pub struct TsdbClient {
     range_url: String,
+    /// `range_url` with any credential removed. The only form that is printed.
+    display_url: String,
+    userinfo: Option<String>,
     agent: ureq::Agent,
     auth: Auth,
+}
+
+/// Written by hand so a `user:pass@` base URL cannot reach a log line.
+impl std::fmt::Debug for TsdbClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TsdbClient")
+            .field("range_url", &self.display_url)
+            .field("auth", &self.auth)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TsdbClient {
@@ -116,11 +154,20 @@ impl TsdbClient {
     /// against an unreachable endpoint must fail, not hang.
     pub fn new(base_url: &str, auth: Auth, timeout: Duration) -> Self {
         let base = base_url.trim_end_matches('/');
+        let range_url = format!("{base}/api/v1/query_range");
+        let userinfo = userinfo_of(&range_url);
         TsdbClient {
-            range_url: format!("{base}/api/v1/query_range"),
+            display_url: scrub_userinfo(&range_url, userinfo.as_deref()),
+            userinfo,
+            range_url,
             agent: ureq::AgentBuilder::new().timeout(timeout).build(),
             auth,
         }
+    }
+
+    /// Strip the URL credential from anything this client reports.
+    fn scrub(&self, text: &str) -> String {
+        scrub_userinfo(text, self.userinfo.as_deref())
     }
 
     /// Run `query` over `start..=end` at `step` and return the series.
@@ -162,22 +209,22 @@ impl TsdbClient {
             .call()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::Query {
-                    url: self.range_url.clone(),
-                    reason: e.to_string(),
+                    url: self.display_url.clone(),
+                    reason: self.scrub(&e.to_string()),
                 })
             })?
             .into_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
-                    url: self.range_url.clone(),
-                    reason: format!("response could not be read: {e}"),
+                    url: self.display_url.clone(),
+                    reason: self.scrub(&format!("response could not be read: {e}")),
                 })
             })?;
 
         parse_matrix_response(&body).map_err(|reason| {
             SondaError::Verify(VerifyError::BadResponse {
-                url: self.range_url.clone(),
-                reason,
+                url: self.display_url.clone(),
+                reason: self.scrub(&reason),
             })
         })
     }
@@ -241,5 +288,51 @@ mod tests {
     fn base_url_trailing_slashes_do_not_double_up() {
         let c = TsdbClient::new("http://x:9090/", Auth::None, Duration::from_secs(1));
         assert_eq!(c.range_url, "http://x:9090/api/v1/query_range");
+    }
+
+    #[test]
+    fn userinfo_is_found_only_in_the_authority() {
+        assert_eq!(
+            userinfo_of("http://admin:s3cret@host:9090/api"),
+            Some("admin:s3cret@".to_string())
+        );
+        assert_eq!(userinfo_of("http://tok@host/api"), Some("tok@".to_string()));
+        assert_eq!(userinfo_of("http://host:9090/api"), None);
+        // An `@` in the path is not a credential.
+        assert_eq!(userinfo_of("http://host:9090/api/a@b"), None);
+        assert_eq!(userinfo_of("http://host:9090/?q=a@b"), None);
+        assert_eq!(userinfo_of("not-a-url"), None);
+    }
+
+    #[test]
+    fn a_url_credential_is_kept_for_the_wire_and_stripped_from_everything_else() {
+        let c = TsdbClient::new(
+            "http://admin:urlsecret@127.0.0.1:9090",
+            Auth::None,
+            Duration::from_secs(1),
+        );
+        assert!(
+            c.range_url.contains("admin:urlsecret@"),
+            "the request itself still needs the credential: {}",
+            c.range_url
+        );
+        assert_eq!(
+            c.display_url,
+            "http://<redacted>@127.0.0.1:9090/api/v1/query_range"
+        );
+
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("urlsecret"), "client Debug leaked: {shown}");
+
+        // ureq quotes the URL more than once in one message.
+        let doubled = format!("{0} failed: {0}", c.range_url);
+        assert!(!c.scrub(&doubled).contains("urlsecret"), "{doubled}");
+    }
+
+    #[test]
+    fn a_url_without_a_credential_is_reported_verbatim() {
+        let c = TsdbClient::new("http://127.0.0.1:9090", Auth::None, Duration::from_secs(1));
+        assert_eq!(c.display_url, c.range_url);
+        assert_eq!(c.scrub("nothing to strip"), "nothing to strip");
     }
 }

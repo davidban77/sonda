@@ -197,7 +197,13 @@ fn basic_auth_credentials_do_not_reach_an_artifact_in_either_form() {
         .expect("a Basic header was sent")
         .trim()
         .to_string();
-    assert!(!encoded.is_empty(), "the encoded credential is non-empty");
+    // Vacuity guard, and it has to be this exact value: a header that is merely
+    // present and non-empty is satisfied by base64("admin:"), so the plaintext
+    // check below would pass with the password never leaving the process.
+    assert_eq!(
+        encoded, "YWRtaW46aHVudGVyMi1wbGFpbnRleHQ=",
+        "the password must actually have been sent, or the plaintext leak check proves nothing"
+    );
 
     let grid = Grid::new(0.0, 10.0, 10.0).expect("grid");
     let normalized: Vec<_> = series.iter().map(|s| normalize(s, grid)).collect();
@@ -214,6 +220,49 @@ fn basic_auth_credentials_do_not_reach_an_artifact_in_either_form() {
             "{what} carries the encoded header"
         );
     }
+}
+
+/// `http://user:pass@host` is the other way a credential reaches this client,
+/// and it is the one that is stored rather than applied and dropped.
+#[test]
+fn a_credential_in_the_base_url_reaches_neither_the_error_nor_the_debug() {
+    const PASSWORD: &str = "urlsecret9999";
+
+    let (base, rx) = mock_tsdb(
+        "500 Internal Server Error",
+        r#"{"status":"error","error":"boom"}"#,
+    );
+    let with_credential = base.replace("http://", &format!("http://admin:{PASSWORD}@"));
+
+    let err = fetch(&with_credential, Auth::None).expect_err("a 500 must be an error");
+
+    // The credential still has to be on the wire, or nothing below is a test.
+    let request = rx.recv_timeout(Duration::from_secs(5)).expect("request");
+    assert!(
+        request.starts_with("GET "),
+        "the request was actually made:\n{request}"
+    );
+
+    let text = err.to_string();
+    assert!(!text.contains(PASSWORD), "the error quotes it: {text}");
+    // Same trap as the basic-auth guard: absence proves nothing if the URL
+    // never carried a credential. The marker says one was there and was cut.
+    assert!(
+        text.contains("<redacted>@"),
+        "a credential was redacted, rather than there being none: {text}"
+    );
+    assert!(
+        text.contains("/api/v1/query_range"),
+        "and it still names the endpoint: {text}"
+    );
+
+    let client = TsdbClient::new(&with_credential, Auth::None, Duration::from_secs(1));
+    let shown = format!("{client:?}");
+    assert!(!shown.contains(PASSWORD), "Debug carries it: {shown}");
+    assert!(
+        shown.contains("<redacted>@"),
+        "Debug shows the cut: {shown}"
+    );
 }
 
 /// Labels chosen to break the header grammar, arriving over the wire.
