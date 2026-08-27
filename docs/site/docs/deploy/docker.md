@@ -79,6 +79,56 @@ The image has no built-in catalog. Mount a directory of your own scenario and pa
 !!! warning "Pre-1.9 env vars are gone"
     Earlier releases let the image discover scenarios from `SONDA_PACK_PATH=/packs` and `SONDA_SCENARIO_PATH=/scenarios` environment variables. The image also included companion `/packs` and `/scenarios` directories. Both were removed in 1.9. Discovery is explicit through `--catalog <dir>`. There is no environment variable fallback and no implicit search path. Old recipes built around `docker run … run @scenario` fail with "catalog dir does not exist or is not a directory" or a `@name` resolution error. Add `--catalog /catalog` and mount your catalog volume there.
 
+## Autostarting a mounted catalog
+
+Mounting a catalog makes its files available to `POST /scenarios`; it does not run any of them. Add `SONDA_AUTOSTART` (or the `--autostart` flag) and the container starts every `kind: runnable` file in the mounted directory itself, so a `docker compose up` brings the traffic up with the server and a container restart brings it back:
+
+=== "`docker run`"
+
+    ```bash
+    docker run -p 8080:8080 \
+      -v "$PWD/my-catalog":/catalog:ro \
+      ghcr.io/davidban77/sonda:latest \
+      --catalog /catalog --autostart
+    ```
+
+=== "Docker Compose"
+
+    ```yaml title="docker-compose.yml"
+    services:
+      sonda-server:
+        image: ghcr.io/davidban77/sonda:latest
+        ports:
+          - "8080:8080"
+        volumes:
+          - ./my-catalog:/catalog:ro
+        environment:
+          - SONDA_CATALOG=/catalog
+          - SONDA_AUTOSTART=1
+    ```
+
+The server answers `/health` as soon as the port is open and the entries appear in `GET /scenarios` as they start, so a container health check never waits on the catalog:
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/scenarios
+
+# One line per started entry, plus a closing count
+docker logs sonda-server
+```
+
+`kind: composable` packs are never started — they stay available for `pack: <name>` references from the runnables next to them. A file the server cannot open, compile, or admit is logged and skipped, so one bad file does not stop the container coming up. Two files claiming the same catalog name is a startup error: the process exits before binding, which under a restart policy shows up as a restart loop rather than a container serving nothing.
+
+!!! warning "`SONDA_AUTOSTART=` in an `.env` file means off"
+    Sonda reads `SONDA_AUTOSTART` like every other boolean env var: an empty value, `0`, `n`, `no`, `f`, `false`, and `off` (any case) all disable it. Compose substitutes an unset variable as empty, so an `.env` entry left blank switches autostart off rather than failing loudly.
+
+    ```bash title=".env"
+    SONDA_CATALOG=/catalog
+    SONDA_AUTOSTART=1
+    ```
+
+See [Server API -- Autostarting a catalog](server.md#autostarting-a-catalog) for the full behaviour, including start order and how skipped files are logged.
+
 ## Authentication
 
 You can protect the server's `/scenarios/*` endpoints with API key authentication.

@@ -4,6 +4,7 @@
 //! stopped over HTTP. All scenario lifecycle logic is delegated to sonda-core.
 
 mod auth;
+mod autostart;
 mod gate_registry;
 mod middleware;
 mod routes;
@@ -23,6 +24,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::routes::RouterConfig;
@@ -64,6 +66,18 @@ struct Args {
     #[arg(long, env = "SONDA_CATALOG")]
     catalog: Option<PathBuf>,
 
+    /// Start every `kind: runnable` entry in `--catalog` at server startup.
+    ///
+    /// Can also be set via the `SONDA_AUTOSTART` environment variable, where
+    /// an empty value and `0` / `no` / `off` / `false` all mean disabled.
+    #[arg(
+        long,
+        env = "SONDA_AUTOSTART",
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    autostart: bool,
+
     /// Tokio worker thread count. Defaults to min(available_parallelism(), 16).
     #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..))]
     workers: Option<u64>,
@@ -93,6 +107,7 @@ impl std::fmt::Debug for Args {
             .field("bind", &self.bind)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("catalog", &self.catalog)
+            .field("autostart", &self.autostart)
             .field("workers", &self.workers)
             .field("max_scenarios", &self.max_scenarios)
             .field("max_inflight_requests", &self.max_inflight_requests)
@@ -154,6 +169,13 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
         info!("API key authentication disabled — all endpoints are public");
     }
 
+    if args.autostart && args.catalog.is_none() {
+        anyhow::bail!(
+            "--autostart requires --catalog <DIR> (or SONDA_AUTOSTART requires SONDA_CATALOG): \
+             there is no scenario catalog to start from"
+        );
+    }
+
     if let Some(dir) = &args.catalog {
         if !dir.is_dir() {
             anyhow::bail!(
@@ -163,6 +185,11 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
         }
         info!(catalog = %dir.display(), "pack catalog enabled for POST /scenarios");
     }
+
+    let autostart_entries = match args.catalog.as_deref() {
+        Some(dir) if args.autostart => autostart::runnable_entries(dir)?,
+        _ => Vec::new(),
+    };
 
     let permits = if args.max_scenarios == 0 {
         warn!("--max-scenarios 0 — scenario row cap disabled (unlimited)");
@@ -210,9 +237,20 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
 
     info!(addr = %bound_addr, workers, "sonda-server listening");
 
+    let sweep_cancel = CancellationToken::new();
+    let sweep = args.autostart.then(|| {
+        let state = state.clone();
+        let cancel = sweep_cancel.clone();
+        tokio::spawn(
+            async move { autostart::start_entries(&state, &autostart_entries, &cancel).await },
+        )
+    });
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(
             state,
+            sweep,
+            sweep_cancel,
             #[cfg(unix)]
             sigterm,
         ))
@@ -275,10 +313,16 @@ fn announce_bound_port(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Wait for Ctrl+C or SIGTERM, then stop all running scenarios and signal
-/// shutdown. SIGTERM coverage is what `docker stop` and Kubernetes pod eviction
-/// rely on; without it the process is SIGKILLed after the grace period.
-async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signal::unix::Signal) {
+/// Wait for Ctrl+C or SIGTERM, then cancel and join the autostart sweep before
+/// draining the scenarios it started. SIGTERM coverage is what `docker stop`
+/// and Kubernetes pod eviction rely on; without it the process is SIGKILLed
+/// after the grace period.
+async fn shutdown_signal(
+    state: AppState,
+    sweep: Option<tokio::task::JoinHandle<()>>,
+    sweep_cancel: CancellationToken,
+    #[cfg(unix)] mut sigterm: tokio::signal::unix::Signal,
+) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -298,6 +342,13 @@ async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signa
     }
 
     info!("shutdown signal received — stopping all running scenarios");
+
+    sweep_cancel.cancel();
+    if let Some(sweep) = sweep {
+        if let Err(e) = sweep.await {
+            warn!(error = %e, "autostart sweep did not finish cleanly");
+        }
+    }
 
     if let Ok(scenarios) = state.scenarios.read() {
         for handle in scenarios.values() {

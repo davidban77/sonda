@@ -145,9 +145,9 @@ pub(crate) fn collect_warnings_for_sink(
     }
 }
 
-pub(crate) fn log_warnings(route: &str, warnings: &[String]) {
+pub(crate) fn log_warnings(origin: &str, warnings: &[String]) {
     for message in warnings {
-        warn!(message = %message, route = %route, "{}: sink pre-flight warning", route);
+        warn!(message = %message, origin = %origin, "{origin}: sink pre-flight warning");
     }
 }
 

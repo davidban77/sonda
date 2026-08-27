@@ -24,6 +24,9 @@ server:
   port: 8080
   # Bind address for the sonda-server.
   bind: "0.0.0.0"
+  # Start every `kind: runnable` file in the mounted catalog at pod startup.
+  # Requires a populated `scenarios` map below.
+  autostart: false
   # API key authentication for /scenarios/* endpoints.
   auth:
     # Enable API key authentication (Bearer token via SONDA_API_KEY).
@@ -74,38 +77,49 @@ securityContext:
 # Each key becomes a file under /scenarios in the container.
 # Composable pack files (kind: composable) can be placed in the same map; they
 # are resolved automatically for `pack: <name>` references in posted scenario
-# bodies.
+# bodies. With server.autostart: true, every kind: runnable file here is
+# started when the pod boots.
 # Example:
 #   scenarios:
 #     basic-metrics.yaml: |
-#       name: cpu_usage
-#       rate: 100
-#       duration: 30s
-#       generator:
-#         type: sine
-#         amplitude: 50
-#         period_secs: 60
-#         offset: 50
-#       encoder:
-#         type: prometheus_text
-#       sink:
-#         type: stdout
+#       version: 2
+#       kind: runnable
+#       defaults:
+#         rate: 100
+#         duration: 30s
+#         encoder:
+#           type: prometheus_text
+#         sink:
+#           type: stdout
+#       scenarios:
+#         - signal_type: metrics
+#           name: cpu_usage
+#           generator:
+#             type: sine
+#             amplitude: 50.0
+#             period_secs: 60
+#             offset: 50.0
 #     app-logs.yaml: |
-#       name: app_logs
-#       rate: 10
-#       duration: 60s
-#       generator:
-#         type: template
-#         templates:
-#           - message: "Request from {ip}"
-#             field_pools:
-#               ip:
-#                 - "10.0.0.1"
-#                 - "10.0.0.2"
-#       encoder:
-#         type: json_lines
-#       sink:
-#         type: stdout
+#       version: 2
+#       kind: runnable
+#       defaults:
+#         rate: 10
+#         duration: 60s
+#         encoder:
+#           type: json_lines
+#         sink:
+#           type: stdout
+#       scenarios:
+#         - signal_type: logs
+#           name: app_logs
+#           log_generator:
+#             type: template
+#             templates:
+#               - message: "Request from {ip}"
+#                 field_pools:
+#                   ip:
+#                     - "10.0.0.1"
+#                     - "10.0.0.2"
 scenarios: {}
 
 # Horizontal Pod Autoscaler configuration.
