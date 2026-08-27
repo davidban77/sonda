@@ -6,15 +6,17 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Common symptoms, causes, and fixes for Sonda runs, sinks, and deployments.">
+        <meta name="description" content="Capture a PromQL range query with sonda new --from-prometheus and replay it verbatim — recorded values, recorded gaps, no pattern fitting.">
       
       
       
-        <link rel="canonical" href="https://davidban77.github.io/sonda/reference/troubleshooting/">
+        <link rel="canonical" href="https://davidban77.github.io/sonda/import/from-prometheus/">
       
       
-        <link rel="prev" href="../glossary/">
+        <link rel="prev" href="../from-csv/">
       
+      
+        <link rel="next" href="../grafana-exports/">
       
       
         
@@ -25,7 +27,7 @@
     
     
       
-        <title>Troubleshooting - Sonda</title>
+        <title>From a live Prometheus - Sonda</title>
       
     
     
@@ -61,17 +63,17 @@
     
   
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Troubleshooting - Sonda" />
-<meta property="og:description" content="Common symptoms, causes, and fixes for Sonda runs, sinks, and deployments." />
-<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/reference/troubleshooting.png" />
+<meta property="og:title" content="From a live Prometheus - Sonda" />
+<meta property="og:description" content="Capture a PromQL range query with sonda new --from-prometheus and replay it verbatim — recorded values, recorded gaps, no pattern fitting." />
+<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/import/from-prometheus.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:url" content="https://davidban77.github.io/sonda/reference/troubleshooting/" />
+<meta property="og:url" content="https://davidban77.github.io/sonda/import/from-prometheus/" />
 <meta property="twitter:card" content="summary_large_image" />
-<meta property="twitter:title" content="Troubleshooting - Sonda" />
-<meta property="twitter:description" content="Common symptoms, causes, and fixes for Sonda runs, sinks, and deployments." />
-<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/reference/troubleshooting.png" />
+<meta property="twitter:title" content="From a live Prometheus - Sonda" />
+<meta property="twitter:description" content="Capture a PromQL range query with sonda new --from-prometheus and replay it verbatim — recorded values, recorded gaps, no pattern fitting." />
+<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/import/from-prometheus.png" />
 </head>
   
   
@@ -91,7 +93,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#troubleshooting" class="md-skip">
+        <a href="#capture-from-a-live-prometheus" class="md-skip">
           Skip to content
         </a>
       
@@ -126,7 +128,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Troubleshooting
+              From a live Prometheus
             
           </span>
         </div>
@@ -343,11 +345,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../import/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -387,13 +391,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../reference/" class="md-tabs__link">
           
   
   
@@ -1414,6 +1416,8 @@
       
   
   
+    
+  
   
   
     
@@ -1435,20 +1439,23 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../import/" class="md-nav__link ">
+            <a href="../" class="md-nav__link ">
               
   
   
@@ -1466,13 +1473,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1492,7 +1499,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../import/from-csv/" class="md-nav__link">
+      <a href="../from-csv/" class="md-nav__link">
         
   
   
@@ -1517,10 +1524,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../import/from-prometheus/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From a live Prometheus
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1536,6 +1570,120 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The recipe
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The recipe">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-window" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The window
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#aggregated-queries-need-metric-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregated queries need --metric-name
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#replaying-faster-than-real-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replaying faster than real time
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gaps-are-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps are data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-is-not" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this is not
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-gets-written" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What gets written
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1548,7 +1696,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../import/grafana-exports/" class="md-nav__link">
+      <a href="../grafana-exports/" class="md-nav__link">
         
   
   
@@ -1576,7 +1724,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../import/log-files/" class="md-nav__link">
+      <a href="../log-files/" class="md-nav__link">
         
   
   
@@ -1862,8 +2010,6 @@
       
   
   
-    
-  
   
   
     
@@ -1887,23 +2033,20 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../" class="md-nav__link ">
+            <a href="../../reference/" class="md-nav__link ">
               
   
   
@@ -1921,13 +2064,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1947,7 +2090,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cli-flags/" class="md-nav__link">
+      <a href="../../reference/cli-flags/" class="md-nav__link">
         
   
   
@@ -1975,7 +2118,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../scenario-fields/" class="md-nav__link">
+      <a href="../../reference/scenario-fields/" class="md-nav__link">
         
   
   
@@ -2003,7 +2146,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../editor-schema/" class="md-nav__link">
+      <a href="../../reference/editor-schema/" class="md-nav__link">
         
   
   
@@ -2031,7 +2174,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../glossary/" class="md-nav__link">
+      <a href="../../reference/glossary/" class="md-nav__link">
         
   
   
@@ -2056,37 +2199,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Troubleshooting
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../reference/troubleshooting/" class="md-nav__link">
         
   
   
@@ -2102,276 +2218,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#first-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        First steps
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="First steps">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#validate-your-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Validate your configuration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get-diagnostic-output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Get diagnostic output
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#a-scenario-stopped-emitting-silently" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A scenario stopped emitting silently
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#connection-and-delivery-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Connection and delivery issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Connection and delivery issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#connection-refused" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Connection refused
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#data-not-appearing-at-the-destination" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Data not appearing at the destination
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#batching-delays" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Batching delays
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#sink-specific-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sink-specific issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Sink-specific issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#loki" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Loki
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#kafka" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Kafka
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#remote-write" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Remote write
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#otlp-grpc" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        OTLP gRPC
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#resource-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resource issues
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Resource issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#high-memory-usage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        High memory usage
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-mistakes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration mistakes
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Configuration mistakes">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#yaml-parsing-errors" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        YAML parsing errors
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#feature-flag-errors" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Feature flag errors
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#container-and-signal-handling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Container and signal handling
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -2411,22 +2257,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#first-steps" class="md-nav__link">
+  <a href="#the-recipe" class="md-nav__link">
     <span class="md-ellipsis">
       
-        First steps
+        The recipe
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="First steps">
+    <nav class="md-nav" aria-label="The recipe">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#validate-your-configuration" class="md-nav__link">
+  <a href="#the-window" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Validate your configuration
+        The window
       
     </span>
   </a>
@@ -2434,32 +2280,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#get-diagnostic-output" class="md-nav__link">
+  <a href="#credentials" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Get diagnostic output
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#exit-codes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exit codes
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#a-scenario-stopped-emitting-silently" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        A scenario stopped emitting silently
+        Credentials
       
     </span>
   </a>
@@ -2472,188 +2296,54 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#connection-and-delivery-issues" class="md-nav__link">
+  <a href="#aggregated-queries-need-metric-name" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Connection and delivery issues
+        Aggregated queries need --metric-name
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Connection and delivery issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#connection-refused" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Connection refused
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#data-not-appearing-at-the-destination" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Data not appearing at the destination
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#batching-delays" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Batching delays
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#sink-specific-issues" class="md-nav__link">
+  <a href="#replaying-faster-than-real-time" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sink-specific issues
+        Replaying faster than real time
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Sink-specific issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#loki" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Loki
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#kafka" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Kafka
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#remote-write" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Remote write
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#otlp-grpc" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        OTLP gRPC
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#resource-issues" class="md-nav__link">
+  <a href="#gaps-are-data" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Resource issues
+        Gaps are data
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Resource issues">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#high-memory-usage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        High memory usage
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration-mistakes" class="md-nav__link">
+  <a href="#what-this-is-not" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration mistakes
+        What this is not
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Configuration mistakes">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#yaml-parsing-errors" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        YAML parsing errors
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#feature-flag-errors" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Feature flag errors
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#container-and-signal-handling" class="md-nav__link">
+  <a href="#what-gets-written" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Container and signal handling
+        What gets written
       
     </span>
   </a>
@@ -2680,471 +2370,174 @@
   
 
 
-<h1 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h1>
-<p>When Sonda is not working as expected, start here. This page covers the most common issues and how to resolve them. The order goes from general diagnostics to specific <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> and deployment problems.</p>
+<h1 id="capture-from-a-live-prometheus">Capture from a live <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr><a class="headerlink" href="#capture-from-a-live-prometheus" title="Permanent link">&para;</a></h1>
+<p><code>sonda new --from-prometheus</code> runs one <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> range query against a live
+<abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>-compatible <abbr title="Time-series database -- storage engine optimised for timestamp-indexed numeric samples (e.g., Prometheus, VictoriaMetrics).">TSDB</abbr> and writes the two files that replay it: a CSV of the
+values it recorded, and a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> that plays them back at the cadence they were
+captured at.</p>
+<p>The case this closes is <strong>alert regression</strong>. An alert fired during an incident;
+you want it to fire again, in CI, on the same numbers — not on a synthetic curve
+that resembles them. So the values are replayed verbatim, and the gaps in the
+data are replayed as gaps.</p>
 <hr />
-<h2 id="first-steps">First steps<a class="headerlink" href="#first-steps" title="Permanent link">&para;</a></h2>
-<p>Before looking at specific issues, run these quick checks.</p>
-<h3 id="validate-your-configuration">Validate your configuration<a class="headerlink" href="#validate-your-configuration" title="Permanent link">&para;</a></h3>
-<p>Use <code>--dry-run</code> to parse and validate a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> without emitting events:</p>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Scenario file</label><label for="__tabbed_1_2">Catalog entry</label></div>
-<div class="tabbed-content">
-<div class="tabbed-block">
-<div class="language-bash highlight"><span class="filename">my-scenario.yaml</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>run<span class="w"> </span>my-scenario.yaml
+<h2 id="the-recipe">The recipe<a class="headerlink" href="#the-recipe" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>http://localhost:9090<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">'up{job="api"}'</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--range<span class="w"> </span>1h<span class="w"> </span>--step<span class="w"> </span>15s<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--out<span class="w"> </span>incident.csv<span class="w"> </span>-o<span class="w"> </span>incident.yaml
 </span></code></pre></div>
-</div>
-<div class="tabbed-block">
-<div class="language-bash highlight"><span class="filename">./my-catalog</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>--catalog<span class="w"> </span>./my-catalog<span class="w"> </span>run<span class="w"> </span>@cpu-spike
+<p>That writes two files and prints a line to stderr saying what it captured:</p>
+<div class="language-text highlight"><span class="filename">stderr</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>captured 1 series over 241 points to incident.csv (1 missing sample)
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>wrote incident.yaml
 </span></code></pre></div>
-</div>
-</div>
-</div>
-<p>If the config is valid, Sonda prints the resolved settings and exits with code <code>0</code>. If there is an error, it prints the problem to stderr and exits with code <code>1</code>.</p>
-<h3 id="get-diagnostic-output">Get diagnostic output<a class="headerlink" href="#get-diagnostic-output" title="Permanent link">&para;</a></h3>
-<p>Use <code>--verbose</code> to print the resolved config at startup, then run normally. This shows exactly what Sonda parsed before it starts emitting events:</p>
-<div class="language-bash highlight"><span class="filename">my-scenario.yaml</span><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sonda<span class="w"> </span>--verbose<span class="w"> </span>run<span class="w"> </span>my-scenario.yaml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--sink<span class="w"> </span>http_push<span class="w"> </span>--endpoint<span class="w"> </span>http://localhost:8428/api/v1/import/prometheus
+<p>Then replay it like any other <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>incident.yaml
 </span></code></pre></div>
-<h3 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Code</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>0</code></td>
-<td>Success. Scenario completed or <code>--dry-run</code> validation passed.</td>
-</tr>
-<tr>
-<td><code>1</code></td>
-<td>Runtime error. Invalid config, <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> unreachable, or <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> validation failure.</td>
-</tr>
-<tr>
-<td><code>2</code></td>
-<td>Argument parse error. Unknown flag or unrecognized subcommand.</td>
-</tr>
-</tbody>
-</table>
-<h3 id="a-scenario-stopped-emitting-silently">A <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> stopped emitting silently<a class="headerlink" href="#a-scenario-stopped-emitting-silently" title="Permanent link">&para;</a></h3>
-<p>A <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> looks alive (the process is running, no error in the foreground) but no data reaches the backend. This usually means the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> is failing on every write. Sonda's default <a href="../../build/scenario-files/#sink-error-policy"><code>on_sink_error: warn</code></a> policy keeps the runner alive through transient <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> errors. The symptom is degradation rather than a crash.</p>
-<p>Confirm the diagnosis from three places:</p>
-<ul>
-<li>
-<p><strong>Stderr <code>[progress]</code> banner</strong>. When a runner exits, the progress reporter prints a one-shot <code>STOPPED</code> line that includes the last <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> error:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>[progress] my_scenario  STOPPED (sink: HTTP 500 from 'http://loki:3100/loki/api/v1/push') | events: 3359 | bytes: 1.0 MB | elapsed: 18h59m
+<p><code>incident.yaml</code> references <code>incident.csv</code> by the path you gave <code>--out</code>, so keep
+the pair together — or pass an absolute path if the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> will run from
+somewhere else.</p>
+<h3 id="the-window">The window<a class="headerlink" href="#the-window" title="Permanent link">&para;</a></h3>
+<p>Either a duration ending now:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>http://localhost:9090<span class="w"> </span>--query<span class="w"> </span>up<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--range<span class="w"> </span>30m<span class="w"> </span>--step<span class="w"> </span>15s<span class="w"> </span>--out<span class="w"> </span>capture.csv
 </span></code></pre></div>
-<p>No parenthetical means the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> stopped cleanly (duration expired, Ctrl+C, and so on) and the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> was healthy.</p>
-</li>
-<li>
-<p><strong><code>GET /scenarios/{id}/stats</code></strong>. A non-zero <code>consecutive_failures</code> with an old <code>last_successful_write_at</code> confirms the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> is stuck. <code>last_sink_error</code> carries the message:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8080/scenarios/<span class="nv">$ID</span>/stats<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">'.consecutive_failures, .last_sink_error'</span>
+<p>…or explicit bounds, as unix seconds or RFC 3339:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>http://localhost:9090<span class="w"> </span>--query<span class="w"> </span>up<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--start<span class="w"> </span><span class="m">2026</span>-05-14T09:00:00Z<span class="w"> </span>--end<span class="w"> </span><span class="m">2026</span>-05-14T10:00:00Z<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--step<span class="w"> </span>15s<span class="w"> </span>--out<span class="w"> </span>capture.csv
 </span></code></pre></div>
-<p>See <a href="../../deploy/http-api/#self-observability-via-stats">Self-observability via /stats</a>.</p>
-<div class="admonition warning">
-<p class="admonition-title"><code>total_events</code> is not a delivery signal for batching sinks</p>
-<p>Batching sinks (<code>loki</code>, <code>http_push</code>, <code>remote_write</code>, <code>otlp_grpc</code>, <code>kafka</code>) buffer events and deliver them in groups. <code>total_events</code> increases on every <em>buffered</em> write, so a rising counter is <strong>not</strong> proof that data reaches the backend. Read the delivery-health fields instead: <code>last_successful_write_at</code> (old or <code>null</code> means nothing has arrived) and <code>consecutive_failures</code> (non-zero means a stuck buffer). See <a href="../../deploy/http-api/#what-a-stuck-batching-sink-looks-like">What a stuck batching <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> looks like</a> for the full timeline.</p>
-</div>
-</li>
-<li>
-<p><strong>Use the <code>degraded</code> field for monitoring</strong>. <code>GET /scenarios</code> returns a precomputed <code>degraded: bool</code> per <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. It is true when the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> has had <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> failures and has not delivered in the last 30 seconds. Use it directly for a readiness probe or alert:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>-sS<span class="w"> </span>http://localhost:8080/scenarios<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">'.scenarios[] | select(.degraded)'</span>
+<p><code>--step</code> is the sample step of the query <em>and</em> the replay grid: one CSV row per
+step, one replay tick per row.</p>
+<h3 id="credentials">Credentials<a class="headerlink" href="#credentials" title="Permanent link">&para;</a></h3>
+<p>Pass a bearer token through the environment, never a flag — a flag value lands in
+shell history, process listings and CI logs:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nv">SONDA_PROM_TOKEN</span><span class="o">=</span>…<span class="w"> </span>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>https://prom.example.com<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--query<span class="w"> </span>up<span class="w"> </span>--range<span class="w"> </span>1h<span class="w"> </span>--step<span class="w"> </span>15s<span class="w"> </span>--out<span class="w"> </span>capture.csv
 </span></code></pre></div>
-<p>A non-empty result means at least one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> has stopped delivering. The same expression works as a Kubernetes readiness probe or a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> alert input. If you need a different staleness window than 30 seconds, threshold the raw fields from the per-<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> <code>/stats</code> endpoint. Combine <code>total_sink_failures &gt; 0</code> with your own staleness check on <code>last_successful_write_at</code>.</p>
-</li>
-</ul>
-<p>Recovery is the default behavior. Under <code>on_sink_error: warn</code>, the runner keeps emitting while you fix the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> (restart <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>, repair DNS, restore the network path). Once the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> accepts a write, <code>consecutive_failures</code> resets to <code>0</code> and <code>last_successful_write_at</code> advances. Any threshold you set clears automatically. If you want a <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> failure to hard-fail the run, set <code>on_sink_error: fail</code>. See <a href="../../build/scenario-files/#sink-error-policy">Sink-error policy</a>.</p>
+<p>For anything else, <code>--header</code> (repeatable):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>https://prom.example.com<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--header<span class="w"> </span><span class="s1">'X-Scope-OrgID: tenant-7'</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--query<span class="w"> </span>up<span class="w"> </span>--range<span class="w"> </span>1h<span class="w"> </span>--step<span class="w"> </span>15s<span class="w"> </span>--out<span class="w"> </span>capture.csv
+</span></code></pre></div>
+<p>Both can be set at once. An explicit <code>--header Authorization:</code> wins over
+<code>SONDA_PROM_TOKEN</code>, and says so on stderr rather than quietly dropping one of the
+two. Neither ever reaches the emitted CSV or YAML.</p>
 <hr />
-<h2 id="connection-and-delivery-issues">Connection and delivery issues<a class="headerlink" href="#connection-and-delivery-issues" title="Permanent link">&para;</a></h2>
-<h3 id="connection-refused">Connection refused<a class="headerlink" href="#connection-refused" title="Permanent link">&para;</a></h3>
-<p>You configured a network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> but Sonda reports a connection error.</p>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>connection refused</code> on HTTP/TCP <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></td>
-<td>Backend is not running or not listening on the expected port</td>
-<td>Verify the backend is up: <code>curl -s http://host:port/health</code></td>
-</tr>
-<tr>
-<td><code>connection refused</code> on gRPC (<abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>)</td>
-<td>Collector not running, or wrong port (HTTP vs gRPC)</td>
-<td><abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> gRPC uses port <code>4317</code>, not <code>4318</code> (HTTP). Check the collector status</td>
-</tr>
-<tr>
-<td>DNS resolution failure</td>
-<td>Hostname typo or DNS not configured</td>
-<td>Test with <code>dig</code> or <code>nslookup</code>. Use the IP address to isolate DNS</td>
-</tr>
-<tr>
-<td>Timeout with no error</td>
-<td>Firewall blocking the port</td>
-<td>Check firewall rules. Try <code>nc -zv host port</code> to test connectivity</td>
-</tr>
-</tbody>
-</table>
-<div class="admonition tip">
-<p class="admonition-title">Tip</p>
-<p>Test connectivity to your backend <em>before</em> running Sonda. A quick <code>curl -s http://localhost:8428/health</code> for <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> or <code>curl -s http://localhost:3100/ready</code> for <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> confirms the backend is reachable.</p>
-</div>
-<h3 id="data-not-appearing-at-the-destination">Data not appearing at the destination<a class="headerlink" href="#data-not-appearing-at-the-destination" title="Permanent link">&para;</a></h3>
-<p>Sonda runs without errors but you do not see data in your backend.</p>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>No data in <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr></td>
-<td>Wrong endpoint path</td>
-<td>Use <code>/api/v1/import/prometheus</code> for <code>http_push</code>, <code>/api/v1/write</code> for <code>remote_write</code></td>
-</tr>
-<tr>
-<td>No data in <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr></td>
-<td><abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> needs the <abbr title="Prometheus protocol for pushing samples from a producer to a TSDB over HTTP, using protobuf + Snappy compression.">remote-write</abbr> receiver enabled</td>
-<td>Start <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> with <code>--web.enable-remote-write-receiver</code></td>
-</tr>
-<tr>
-<td>Encoder/<abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> mismatch</td>
-<td>Using <code>prometheus_text</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> with <code>remote_write</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> (or vice versa)</td>
-<td>Match <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> to <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>: <code>remote_write</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> with <code>remote_write</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>, <code>otlp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> with <code>otlp_grpc</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></td>
-</tr>
-<tr>
-<td>HTTP 400 Bad Request</td>
-<td>Wrong <code>content_type</code> for the endpoint</td>
-<td>Use <code>text/plain</code> for the <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> import endpoint</td>
-</tr>
-<tr>
-<td>POST to <code>sonda-server</code> succeeds but no data in the backend</td>
-<td>Sink <code>url: http://localhost:&lt;port&gt;</code> resolves inside the server container</td>
-<td>Use the in-network address (Compose service name <code>http://victoriametrics:8428</code>, or Kubernetes Service DNS), or write the URL with <a href="../../build/scenario-files/#environment-variable-interpolation"><code>${VAR:-default}</code></a> so one file works from both paths. See <a href="../../deploy/server/">Endpoints &amp; networking</a></td>
-</tr>
-</tbody>
-</table>
-<h3 id="batching-delays">Batching delays<a class="headerlink" href="#batching-delays" title="Permanent link">&para;</a></h3>
-<p>Data arrives in groups, or only appears when the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> ends.</p>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Stdout output appears in groups</td>
-<td>Normal OS-level buffering (~8 KB)</td>
-<td>Expected behavior. Data flushes when the buffer fills or the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> ends</td>
-</tr>
-<tr>
-<td>No HTTP POST until the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> ends</td>
-<td>Batch threshold not reached at low rates</td>
-<td>Lower <code>batch_size</code> (e.g., <code>512</code> for <code>http_push</code>) or increase the rate. See <a href="../../build/sink-batching/">Sink Batching</a></td>
-</tr>
-<tr>
-<td>Short <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> sends only one batch</td>
-<td>Total data smaller than the batch threshold</td>
-<td>All data flushes on exit. This is correct behavior for short runs</td>
-</tr>
-</tbody>
-</table>
-<div class="admonition info">
-<p class="admonition-title">Info</p>
-<p>At 10 events/sec with <code>http_push</code> at the default 4 KiB threshold, around 40 events must accumulate before the first POST. That is about 4 seconds. Set <code>batch_size: 512</code> for faster feedback. Time-based flushing is tracked in <a href="https://github.com/davidban77/sonda/issues/266">#266</a>.</p>
-</div>
+<h2 id="aggregated-queries-need-metric-name">Aggregated queries need <code>--metric-name</code><a class="headerlink" href="#aggregated-queries-need-metric-name" title="Permanent link">&para;</a></h2>
+<p>A query matching more than 20 series is refused — past that a capture stops being
+a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> anyone can read. The usual way under the cap is to aggregate, and
+<strong><abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> aggregations drop <code>__name__</code></strong>, so the emitted <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> would have no
+metric name to use. Supply one:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>http://localhost:9090<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">'sum by (job) (rate(http_errors_total[5m]))'</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>http_errors_per_second<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--range<span class="w"> </span>1h<span class="w"> </span>--step<span class="w"> </span>15s<span class="w"> </span>--out<span class="w"> </span>errors.csv<span class="w"> </span>-o<span class="w"> </span>errors.yaml
+</span></code></pre></div>
+<p><code>--metric-name</code> fills in only the series that lack a name; one the query kept is
+never overwritten.</p>
+<h2 id="replaying-faster-than-real-time">Replaying faster than real time<a class="headerlink" href="#replaying-faster-than-real-time" title="Permanent link">&para;</a></h2>
+<p><code>--timescale 4</code> replays a one-hour capture in fifteen minutes. It moves the rate,
+the duration and the <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr> windows together, so the accelerated <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> describes
+one consistent timeline:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>--from-prometheus<span class="w"> </span>http://localhost:9090<span class="w"> </span>--query<span class="w"> </span>up<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--range<span class="w"> </span>1h<span class="w"> </span>--step<span class="w"> </span>15s<span class="w"> </span>--timescale<span class="w"> </span><span class="m">4</span><span class="w"> </span>--out<span class="w"> </span>capture.csv<span class="w"> </span>-o<span class="w"> </span>fast.yaml
+</span></code></pre></div>
+<h2 id="gaps-are-data">Gaps are data<a class="headerlink" href="#gaps-are-data" title="Permanent link">&para;</a></h2>
+<p>A grid point the database had no sample for becomes a blank cell in the CSV and a
+<a href="../../build/scheduling/"><code>gap_windows:</code></a> entry in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, so the replay goes
+silent exactly where the original did. A <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr> that made an alert fire is
+part of the incident, and a capture that filled it in would not reproduce it.</p>
+<p>Values are never interpolated, averaged or carried forward. A <code>NaN</code> the database
+reported is a sample; a point it reported nothing for is a <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr>. They are
+different facts and the capture keeps them apart.</p>
 <hr />
-<h2 id="sink-specific-issues">Sink-specific issues<a class="headerlink" href="#sink-specific-issues" title="Permanent link">&para;</a></h2>
-<h3 id="loki"><abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr><a class="headerlink" href="#loki" title="Permanent link">&para;</a></h3>
+<h2 id="what-this-is-not">What this is not<a class="headerlink" href="#what-this-is-not" title="Permanent link">&para;</a></h2>
+<p>Three fences worth stating plainly, because each one is a thing people reasonably
+expect and none of them is here.</p>
+<p><strong>Not a <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> engine.</strong> Sonda sends your query to <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> and reads the
+result. It does not parse, rewrite, optimise or validate <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> — a syntax error
+comes back from the server, in the server's words. Anything your <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> can
+answer, this can capture; anything it cannot, neither can this.</p>
+<p><strong>Not backfill.</strong> This reads <em>out</em> of a <abbr title="Time-series database -- storage engine optimised for timestamp-indexed numeric samples (e.g., Prometheus, VictoriaMetrics).">TSDB</abbr> and writes files. It never writes
+into one. If you need historical samples loaded into <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>, that is
+<code>promtool tsdb create-blocks-from</code> or your vendor's import path, not Sonda.</p>
+<p><strong>Not decomposition.</strong> A capture is not analysed. Nothing here classifies the
+shape of a signal, fits a <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> to it, or hands you tunable parameters —
+there is no <code>--fit</code>. You get the recorded numbers back.</p>
+<p>If you want the <em>pattern</em> rather than the recording — a portable <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> with
+knobs you can turn, that runs without the original file — that is
+<a href="../from-csv/"><code>sonda new --from &lt;csv&gt;</code></a>, which does classify and does fit. The
+two answer different questions:</p>
 <table>
 <thead>
 <tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
+<th></th>
+<th><code>--from-prometheus</code></th>
+<th><code>--from &lt;csv&gt;</code></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>400 Bad Request</code> from <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr></td>
-<td>Label names contain invalid characters</td>
-<td><abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> labels must match <code>[a-zA-Z_][a-zA-Z0-9_]*</code>. Avoid dots, dashes, or spaces in label keys</td>
+<td>Output</td>
+<td>the recorded values</td>
+<td>a fitted <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr></td>
 </tr>
 <tr>
-<td>Logs rejected in multi-tenant <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr></td>
-<td>Missing tenant header</td>
-<td>Add <code>X-Scope-OrgID</code> via custom headers on an <code>http_push</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>, or use the default tenant if <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> is in single-tenant mode</td>
+<td>Needs the data file at run time</td>
+<td>yes</td>
+<td>no</td>
 </tr>
 <tr>
-<td>No logs visible in Grafana</td>
-<td>Wrong label selector in Explore</td>
-<td>Check that your Grafana query matches the labels you set in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr></td>
-</tr>
-</tbody>
-</table>
-<div class="admonition tip">
-<p class="admonition-title">Tip</p>
-<p>Sonda sends logs to <code>{url}/loki/api/v1/push</code>. You configure only the base URL (for example, <code>http://localhost:3100</code>), not the full push path.</p>
-</div>
-<h3 id="kafka">Kafka<a class="headerlink" href="#kafka" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Broker connection timeout</td>
-<td>Wrong broker address or port</td>
-<td>Verify the broker is reachable: <code>nc -zv broker-host 9092</code>. Check for TLS port (<code>9093</code>) vs plaintext (<code>9092</code>)</td>
+<td>Parameterised afterwards</td>
+<td>no</td>
+<td>yes</td>
 </tr>
 <tr>
-<td><code>UnknownTopicOrPartition</code></td>
-<td>Topic does not exist and auto-creation is off</td>
-<td>Set <code>auto.create.topics.enable=true</code> on the broker, or create the topic before running Sonda</td>
-</tr>
-<tr>
-<td>Authentication failure with <abbr title="Simple Authentication and Security Layer -- modular auth framework used by Kafka brokers.">SASL</abbr></td>
-<td>Wrong mechanism, username, or password</td>
-<td>Confirm <code>sasl.mechanism</code> matches your broker config. Confluent Cloud uses <code>PLAIN</code>, AWS MSK uses <code>SCRAM-SHA-256</code></td>
-</tr>
-<tr>
-<td>Data sent but unreadable</td>
-<td>Consumer expects a different encoding</td>
-<td>Ensure the consumer's deserializer matches Sonda's <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> (for example, <code>prometheus_text</code> produces plain text)</td>
-</tr>
-</tbody>
-</table>
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p><abbr title="Simple Authentication and Security Layer -- modular auth framework used by Kafka brokers.">SASL</abbr> credentials are sent in plaintext if TLS is not enabled. Sonda warns about this at startup. Always enable <code>tls.enabled: true</code> alongside <abbr title="Simple Authentication and Security Layer -- modular auth framework used by Kafka brokers.">SASL</abbr> in production.</p>
-</div>
-<h3 id="remote-write">Remote write<a class="headerlink" href="#remote-write" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>HTTP 400 from backend</td>
-<td>Wrong endpoint URL for the backend</td>
-<td>Each backend has a specific path. See the <a href="../../build/sinks/#remote_write">compatible endpoints table</a></td>
-</tr>
-<tr>
-<td>HTTP 403 or 401</td>
-<td>Backend requires authentication headers</td>
-<td>Add auth headers via <code>http_push</code> with custom <code>headers</code> instead</td>
-</tr>
-</tbody>
-</table>
-<h3 id="otlp-grpc"><abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> gRPC<a class="headerlink" href="#otlp-grpc" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>gRPC <code>INVALID_ARGUMENT</code></td>
-<td>Signal type mismatch between <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></td>
-<td>Set <code>signal_type</code> in the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> to match your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>: <code>metrics</code> for metric scenarios, <code>logs</code> for log scenarios</td>
-</tr>
-<tr>
-<td>Connection refused on port 4318</td>
-<td>Using the HTTP port instead of gRPC</td>
-<td><abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> gRPC uses port <code>4317</code>. Port <code>4318</code> is for <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> HTTP</td>
-</tr>
-<tr>
-<td><code>UNAUTHENTICATED</code></td>
-<td>Collector requires an auth token</td>
-<td>Configure the collector to accept unauthenticated connections, or use an <code>http_push</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> with auth headers instead</td>
+<td>Reproduces an incident exactly</td>
+<td>yes</td>
+<td>approximately</td>
 </tr>
 </tbody>
 </table>
 <hr />
-<h2 id="resource-issues">Resource issues<a class="headerlink" href="#resource-issues" title="Permanent link">&para;</a></h2>
-<h3 id="high-memory-usage">High memory usage<a class="headerlink" href="#high-memory-usage" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Memory grows during <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spikes</td>
-<td>Each unique label combination creates a new series in memory</td>
-<td>Reduce <code>cardinality</code> in the spike config, or use shorter <code>for</code> windows</td>
-</tr>
-<tr>
-<td>Memory grows during CSV replay</td>
-<td>Large CSV file loaded into memory</td>
-<td>Use smaller CSV files, or split large files into chunks</td>
-</tr>
-<tr>
-<td>Steady memory growth over long runs</td>
-<td>Large label sets with many static labels</td>
-<td>Reduce the number of labels per metric. Each label adds memory per series</td>
-</tr>
-</tbody>
-</table>
-<div class="admonition info">
-<p class="admonition-title">Info</p>
-<p>Sonda's baseline memory footprint is roughly 5 MB. Memory scales with the number of unique series generated at the same time. For sizing guidance, see <a href="../../test/capacity-planning/#performance-baselines">Capacity Planning — Performance baselines</a>.</p>
-</div>
-<hr />
-<h2 id="configuration-mistakes">Configuration mistakes<a class="headerlink" href="#configuration-mistakes" title="Permanent link">&para;</a></h2>
-<h3 id="yaml-parsing-errors">YAML parsing errors<a class="headerlink" href="#yaml-parsing-errors" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>v2 scenario file requires a top-level 'kind:' field</code></td>
-<td>The file is missing the <code>kind:</code> declaration</td>
-<td>Add <code>kind: runnable</code> (for files you run) or <code>kind: composable</code> (for <a href="../../build/catalogs-and-packs/">metric packs</a>) at the top of the file, alongside <code>version: 2</code>. See <a href="../../build/scenario-files/">Scenario Files</a>.</td>
-</tr>
-<tr>
-<td><code>unknown kind '&lt;value&gt;': must be 'runnable' or 'composable'</code></td>
-<td><code>kind:</code> is set to a typo or unsupported value</td>
-<td>Use exactly <code>runnable</code> or <code>composable</code>.</td>
-</tr>
-<tr>
-<td><code>invalid type</code> error on a numeric field</td>
-<td>Value is quoted as a string in YAML (for example, <code>rate: "10"</code>)</td>
-<td>Remove quotes from numeric fields: <code>rate: 10</code></td>
-</tr>
-<tr>
-<td><code>unknown field</code> error</td>
-<td>Typo in a field name, or field placed at the wrong nesting level</td>
-<td>Check indentation. <code>labels</code> goes at the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> level, not inside <code>sink</code></td>
-</tr>
-<tr>
-<td><code>missing field</code> error</td>
-<td>Required field omitted</td>
-<td>Run <code>sonda --dry-run</code> to see which field is missing</td>
-</tr>
-</tbody>
-</table>
-<h3 id="feature-flag-errors">Feature flag errors<a class="headerlink" href="#feature-flag-errors" title="Permanent link">&para;</a></h3>
-<p>Some sinks and encoders require Cargo feature flags when building from source. Pre-built release binaries include all features.</p>
-<table>
-<thead>
-<tr>
-<th>Feature</th>
-<th>Required for</th>
-<th>Build command</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>http</code></td>
-<td><code>http_push</code>, <code>loki</code> sinks</td>
-<td><code>cargo build --features http -p sonda</code></td>
-</tr>
-<tr>
-<td><code>remote-write</code></td>
-<td><code>remote_write</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></td>
-<td><code>cargo build --features remote-write -p sonda</code></td>
-</tr>
-<tr>
-<td><code>otlp</code></td>
-<td><code>otlp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, <code>otlp_grpc</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></td>
-<td><code>cargo build --features otlp -p sonda</code></td>
-</tr>
-<tr>
-<td><code>kafka</code></td>
-<td><code>kafka</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></td>
-<td><code>cargo build --features kafka -p sonda</code></td>
-</tr>
-</tbody>
-</table>
-<div class="admonition tip">
-<p class="admonition-title">Tip</p>
-<p>Build with all features at once: <code>cargo build --features http,remote-write,otlp,kafka -p sonda</code></p>
-</div>
-<hr />
-<h2 id="container-and-signal-handling">Container and signal handling<a class="headerlink" href="#container-and-signal-handling" title="Permanent link">&para;</a></h2>
-<p>Sonda flushes all buffered data on clean shutdown (SIGTERM or SIGINT). If the process is killed with SIGKILL, any data still in the buffer is lost.</p>
-<table>
-<thead>
-<tr>
-<th>Symptom</th>
-<th>Likely cause</th>
-<th>Fix</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Partial data loss in Docker</td>
-<td>Container stopped with <code>docker kill</code> (sends SIGKILL)</td>
-<td>Use <code>docker stop</code> instead, which sends SIGTERM and waits for graceful shutdown</td>
-</tr>
-<tr>
-<td>Data loss in Kubernetes</td>
-<td>Pod killed before flush completes</td>
-<td>Set <code>terminationGracePeriodSeconds</code> to at least 5 seconds in your pod spec</td>
-</tr>
-<tr>
-<td>No data flushed on Ctrl+C in script</td>
-<td>Script traps signals before Sonda receives them</td>
-<td>Ensure SIGTERM/SIGINT reach the Sonda process</td>
-</tr>
-</tbody>
-</table>
-<div class="admonition warning">
-<p class="admonition-title">SIGKILL bypasses flush</p>
-<p><code>kill -9</code> (SIGKILL) terminates Sonda immediately with no chance to flush buffered data. Use <code>kill</code> (SIGTERM) or Ctrl+C (SIGINT) for a clean shutdown.</p>
-</div>
-<div class="language-yaml highlight"><span class="filename">Kubernetes: ensure graceful shutdown</span><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">spec</span><span class="p">:</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">terminationGracePeriodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">containers</span><span class="p">:</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">      </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/davidban77/sonda:latest</span>
+<h2 id="what-gets-written">What gets written<a class="headerlink" href="#what-gets-written" title="Permanent link">&para;</a></h2>
+<p>The CSV carries one timestamp column and one column per series, with the label
+set in the header:</p>
+<div class="language-text highlight"><span class="filename">incident.csv</span><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>timestamp,"{__name__=""up"", job=""api""}"
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>1747213200.000,1
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>1747213215.000,1
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>1747213230.000,
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>1747213245.000,1
 </span></code></pre></div>
-<div class="language-yaml highlight"><span class="filename">Docker Compose: default stop signal is SIGTERM (correct)</span><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">services</span><span class="p">:</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">sonda</span><span class="p">:</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/davidban77/sonda:latest</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="c1"># docker compose stop sends SIGTERM by default. No special config needed</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">stop_grace_period</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10s</span>
+<p>The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> points at it, one entry per group of columns that share an absence
+pattern and carry different metric names:</p>
+<div class="language-yaml highlight"><span class="filename">incident.yaml</span><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="nt">tags</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">capture_0</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">capture_0</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.06666666666666667</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">  </span><span class="nt">duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3615s</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">  </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">csv_replay</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">    </span><span class="nt">file</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">incident.csv</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="nt">columns</span><span class="p">:</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">index</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">up</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">      </span><span class="nt">labels</span><span class="p">:</span>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">        </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">api</span>
+</span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="w">    </span><span class="nt">repeat</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</span><span id="__span-10-19"><a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="w">  </span><span class="nt">gap_windows</span><span class="p">:</span>
+</span><span id="__span-10-20"><a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">22.5s</span>
+</span><span id="__span-10-21"><a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="w">    </span><span class="nt">for</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15s</span>
 </span></code></pre></div>
-<hr />
-<p><strong>Related pages:</strong></p>
-<ul>
-<li><a href="../../build/sinks/">Sinks</a> — <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> types, parameters, and retry configuration</li>
-<li><a href="../../build/sink-batching/">Sink Batching</a> — how batching affects data delivery</li>
-<li><a href="../cli-flags/">CLI Reference</a> — all flags for <code>--dry-run</code>, <code>--verbose</code>, and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> options</li>
-<li><a href="../../test/capacity-planning/">Capacity Planning</a> — performance baselines and infrastructure sizing</li>
-</ul>
+<p><code>repeat: false</code> is always written: a capture is a single pass, and looping one
+that declares <code>gap_windows:</code> is refused by the engine.</p>
+<p>One metric across several label sets — <code>up{job="api"}</code> and <code>up{job="db"}</code>, the
+ordinary result of a range query — becomes one entry each, because a column name
+becomes a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> name and those must be unique.</p>
 
 
 
@@ -3165,7 +2558,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="May 24, 2026 10:21:38 UTC">May 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 23:09:34 UTC">August 27, 2026</span>
   </span>
 
     
@@ -3203,7 +2596,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../glossary/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Glossary">
+          <a href="../from-csv/" class="md-footer__link md-footer__link--prev" aria-label="Previous: From a CSV file">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3213,11 +2606,27 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Glossary
+                From a CSV file
               </div>
             </div>
           </a>
         
+        
+          
+          <a href="../grafana-exports/" class="md-footer__link md-footer__link--next" aria-label="Next: Grafana exports">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Grafana exports
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
         
       </nav>
     

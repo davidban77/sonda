@@ -1431,6 +1431,8 @@
       
         
       
+        
+      
     
     
     
@@ -1500,6 +1502,34 @@
     
   
     From a CSV file
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../import/from-prometheus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From a live Prometheus
   
 
     
@@ -2085,6 +2115,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#capture-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#minimal-template" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2464,6 +2505,17 @@
   
     <nav class="md-nav" aria-label="sonda new">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#capture-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture flags
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#minimal-template" class="md-nav__link">
@@ -2877,8 +2929,8 @@
 </span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>run<span class="w"> </span>/tmp/snap.yaml
 </span></code></pre></div>
 <h2 id="sonda-new"><code>sonda new</code><a class="headerlink" href="#sonda-new" title="Permanent link">&para;</a></h2>
-<p>Create a new <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML. Three modes are available. Pick the one that matches how much you already know about the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> you want.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>sonda new [--template] [--from &lt;CSV&gt;] [-o &lt;PATH&gt;]
+<p>Create a new <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML. Four modes are available. Pick the one that matches how much you already know about the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> you want.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>sonda new [--template] [--from &lt;CSV&gt;] [--from-prometheus &lt;URL&gt; ...] [-o &lt;PATH&gt;]
 </span></code></pre></div>
 <table>
 <thead>
@@ -2901,8 +2953,72 @@
 <td>Seed the file from a CSV file. Pattern detection runs on each numeric column and chooses an operational alias (<code>steady</code>, <code>spike_event</code>, <code>leak</code>, <code>saturation</code>, <code>flap</code>) per column.</td>
 </tr>
 <tr>
+<td><code>--from-prometheus &lt;URL&gt;</code></td>
+<td>Capture a live <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> range query and replay it verbatim — no pattern detection. See the capture flags below. Conflicts with <code>--template</code> and <code>--from</code>.</td>
+</tr>
+<tr>
 <td><code>-o &lt;PATH&gt;</code></td>
 <td>Write the result to a file instead of stdout. Parent directories are created if missing.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capture-flags">Capture flags<a class="headerlink" href="#capture-flags" title="Permanent link">&para;</a></h3>
+<p>Every flag in this table requires <code>--from-prometheus</code>, and <code>--from-prometheus</code>
+requires <code>--query</code>, <code>--step</code> and <code>--out</code>. Full guide:
+<a href="../../import/from-prometheus/">From a live <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr></a>.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--query &lt;PROMQL&gt;</code></td>
+<td>The range query to capture. Sent to the server as written.</td>
+</tr>
+<tr>
+<td><code>--range &lt;DURATION&gt;</code></td>
+<td>Capture the window ending now (<code>1h</code>, <code>30m</code>). Alternative to <code>--start</code>/<code>--end</code>.</td>
+</tr>
+<tr>
+<td><code>--start &lt;INSTANT&gt;</code> / <code>--end &lt;INSTANT&gt;</code></td>
+<td>Explicit bounds, as unix seconds or RFC 3339. Both or neither.</td>
+</tr>
+<tr>
+<td><code>--step &lt;DURATION&gt;</code></td>
+<td>Sample step of the query, and the replay grid.</td>
+</tr>
+<tr>
+<td><code>--out &lt;PATH&gt;</code></td>
+<td>Where to write the captured CSV. The emitted <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> references this path.</td>
+</tr>
+<tr>
+<td><code>--metric-name &lt;NAME&gt;</code></td>
+<td>Name for series the query left without one — <abbr title="Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.">PromQL</abbr> aggregations drop <code>__name__</code>. Never overwrites a name the query kept.</td>
+</tr>
+<tr>
+<td><code>--timescale &lt;FACTOR&gt;</code></td>
+<td>Replay speed. <code>4</code> replays an hour in fifteen minutes, moving rate, duration and <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr> windows together.</td>
+</tr>
+<tr>
+<td><code>--header &lt;NAME:VALUE&gt;</code></td>
+<td>Extra request header, repeatable. An explicit <code>Authorization:</code> overrides <code>SONDA_PROM_TOKEN</code>, with a note on stderr.</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Environment variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SONDA_PROM_TOKEN</code></td>
+<td>Bearer token for the capture. Read from the environment so it stays out of shell history and process listings.</td>
 </tr>
 </tbody>
 </table>
@@ -3088,7 +3204,7 @@ mistyped shell cannot silently install an empty completion file.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 16:06:20 UTC">August 27, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 23:09:34 UTC">August 27, 2026</span>
   </span>
 
     
