@@ -1,37 +1,18 @@
 //! Resample fetched series onto the requested step grid.
 //!
-//! Pure and feature-free. The whole module is one rule with one exception, and
-//! both are load-bearing:
+//! Pure and feature-free, and one rule: **a grid point takes the value the TSDB
+//! reported at that instant, or `None` if it reported nothing there.** Values
+//! are never interpolated, averaged or carried forward — that is what makes
+//! this path exact rather than a fit.
 //!
-//! **A grid point takes the value the TSDB reported at that instant, or `None`
-//! if the TSDB reported nothing there.** Values are never interpolated,
-//! averaged, carried forward, or otherwise invented — if the database had no
-//! sample, neither does the replay. That is what makes this path exact rather
-//! than a fit.
+//! `Option<f64>` rather than a `NaN` sentinel because absence and value are
+//! separate facts: [`super::response`] keeps a reported `NaN` or infinity
+//! verbatim, and the capture path turns absence into a declared `gap_windows:`
+//! entry, so conflating them would emit silence the database never reported.
 //!
-//! # Absence and value are separate facts
-//!
-//! A grid point carries `Option<f64>`, so "no sample" and "a sample worth
-//! `NaN`" are distinguishable. They have to be: [`super::response`] keeps a
-//! reported `NaN`, `+Inf` or `-Inf` verbatim on purpose, and the capture path
-//! turns absence into a declared `gap_windows:` entry. Spelled the same, a
-//! reported `NaN` would be emitted as silence the database never reported.
-//!
-//! # What that changes, and what it does not
-//!
-//! The engine reproduces absence: a blank cell plus a declared `gap_windows:`
-//! entry replays as real silence, and `cross_check_gap_windows` refuses a
-//! capture whose blanks and windows disagree.
-//!
-//! Nothing is written here. On the way to a file, [`crate::acquire::csv_out`]
-//! turns each `None` into a blank cell and derives the matching `gap_windows:`
-//! from the same entries, so the two halves of the pair cannot disagree —
-//! they are computed from one source. A capture taken through this path
-//! reproduces value, timing, and absence.
-//!
-//! What still has no CLI surface is the importer that would run
-//! fetch → normalize → emit as one command. Until that exists these are library
-//! entry points only; do not describe a flag here before one is written.
+//! Nothing is written here. [`crate::acquire::csv_out`] turns each `None` into
+//! a blank cell and derives the matching windows from the same entries, so the
+//! two halves of that pair come from one source.
 
 use super::FetchedSeries;
 use std::collections::BTreeMap;
@@ -93,15 +74,8 @@ pub struct NormalizedSeries {
     /// One entry per grid point. `None` is a grid point the TSDB had no sample
     /// for; `Some(v)` is a sample it reported.
     ///
-    /// `Option` rather than a `NaN` sentinel because `NaN` is a value the
-    /// database can legitimately report, and [`super::response`] keeps those
-    /// verbatim on purpose — `non_finite_values_survive_verbatim` pins it. A
-    /// sentinel would make `Some(NaN)` and `None` the same bit pattern, and the
-    /// capture path turns absence into declared silence, so conflating them
-    /// would emit a `gap_windows:` entry over a sample the database actually
-    /// reported. That is the mirror image of the bug blanks were introduced to
-    /// fix: instead of an `absent()` alert failing to fire against the replay,
-    /// one that never fired against the original would start to.
+    /// Not a `NaN` sentinel — see the module docs. `Some(NaN)` is a sample the
+    /// database reported; `None` is silence.
     pub values: Vec<Option<f64>>,
 }
 
@@ -209,8 +183,8 @@ mod tests {
 
     #[test]
     fn a_missing_sample_becomes_absent_and_does_not_shift_its_neighbours() {
-        // This is the whole reason gaps are NaN. The value after the hole must
-        // stay at its own grid point rather than sliding into the hole.
+        // The point of holding the slot: the value after a hole must stay on
+        // its own grid point rather than sliding into the hole.
         let g = Grid::new(100.0, 130.0, 10.0).expect("valid grid");
         let s = series(&[(100.0, 1.0), (120.0, 3.0), (130.0, 4.0)]);
         let n = normalize(&s, g);

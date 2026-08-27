@@ -4,26 +4,16 @@
 //! step grid, and hands back data the CSV writer turns into a `csv_replay`
 //! scenario.
 //!
-//! No CLI surface reaches this yet — `sonda new` offers `--template` and
-//! `--from <FILE>` and nothing else. This module is the acquisition half of an
-//! importer still being built; do not name a flag here until one exists.
+//! No CLI surface reaches this yet; do not name a flag here until one exists.
 //!
-//! # Replay-only — there is no fitting in this path
+//! **Replay-only.** Nothing here inspects the shape of a signal — no
+//! classifier, no generator inference, no `--fit`. Recorded values are written
+//! and replayed verbatim, because the case this closes is alert regression,
+//! where the alert must fire on what actually happened. Pattern fitting stays
+//! in the `--from <csv>` wizard, where the promise is "a guess to edit".
 //!
-//! Nothing here inspects the *shape* of a signal. No classifier, no generator
-//! inference, no `--fit`. The recorded values are written out verbatim and
-//! replayed verbatim. That is a deliberate product decision, not an omission:
-//! the use case this closes is alert regression, where the alert must fire on
-//! what actually happened, so an exact replay is strictly better than an
-//! idealised generator. Pattern fitting stays in the `--from <csv>` starter
-//! wizard, where its promise level is "a guess to edit".
-//!
-//! # Layering
-//!
-//! Everything in this module is pure and feature-free: parsing a matrix
-//! response, resampling onto a grid, and writing CSV are all plain functions
-//! of their arguments, unit-tested without a network. Only [`tsdb`], which
-//! owns the HTTP client, is behind the `http` feature.
+//! Everything is pure and feature-free except [`tsdb`], which owns the HTTP
+//! client and sits behind the `http` feature.
 
 #[cfg(feature = "http")]
 pub mod tsdb;
@@ -36,13 +26,12 @@ pub mod yaml_out;
 
 use std::collections::BTreeMap;
 
-/// One time series as returned by a range query.
+/// One time series as returned by a range query, before any grid alignment.
 ///
-/// `labels` is the series' full label set with `__name__` still present when
-/// the query preserved it — the CSV writer needs it to name the column, and
-/// callers must not assume it exists (aggregations like `sum by (job)` drop
-/// it). Samples are `(unix_seconds, value)` in ascending time order, exactly
-/// as the TSDB reported them: no grid alignment has happened yet.
+/// `labels` keeps `__name__` when the query preserved it — the CSV writer needs
+/// it to name the column, and callers must not assume it is there, since
+/// aggregations like `sum by (job)` drop it. Samples are
+/// `(unix_seconds, value)` in ascending time order, as the TSDB reported them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FetchedSeries {
     /// The series' label set, `__name__` included when the query kept it.

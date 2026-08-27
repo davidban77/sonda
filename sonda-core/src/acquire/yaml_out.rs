@@ -5,37 +5,19 @@
 //! plays it back at the cadence it was captured at, with the recorded silence
 //! declared as `gap_windows:`.
 //!
-//! Feature-gated on `config`, because it builds the compiler's own
-//! [`ScenarioFile`] and serialises that. Nothing here writes YAML by hand: the
-//! grammar is whatever `serde` produces for the types the compiler already
-//! reads, so the emitter cannot drift from the parser by transcription. The
-//! tests then push the result back through `compile_scenario_file`, which is
-//! the same entry point `sonda run` uses.
+//! Feature-gated on `config`: it builds the compiler's own [`ScenarioFile`] and
+//! serialises that, so the emitted grammar is whatever serde produces for the
+//! types the compiler already reads. Nothing writes YAML by hand.
 //!
-//! # One scenario block per distinct absence pattern
+//! Two rules the emitted scenarios keep:
 //!
-//! `gap_windows:` is a scenario-level field while a capture is a table of
-//! columns, so a block speaks for every column it lists. Two columns whose
-//! silence falls on different rows therefore cannot share one — the windows
-//! would fit one and not the other, and `cross_check_gap_windows` refuses the
-//! mismatch on the way back in.
-//!
-//! Columns are grouped by their exact set of absent rows, one block per group.
-//! That is forced by the data model rather than chosen: a single block for a
-//! multi-column capture is only correct when every column happens to go silent
-//! together.
-//!
-//! # `repeat: false`, always, explicitly
-//!
-//! A capture containing silence cannot loop. `gap_windows:` describe one pass,
-//! so a second cycle would replay the blank rows at instants no window covers
-//! and emit them as `NaN` samples. `cross_check_gap_windows` refuses `repeat:
-//! true` alongside blanks for exactly that reason.
-//!
-//! It is written on every emitted block regardless, including captures with no
-//! silence at all. The generator's own default is `true`, so leaving it off
-//! would make a dense capture loop — which is a different scenario from the one
-//! that was captured, and the difference would be invisible in the file.
+//! * **One block per distinct absence pattern.** `gap_windows:` is
+//!   scenario-level, so a block speaks for every column it lists; columns whose
+//!   silence falls on different rows cannot share one.
+//! * **`repeat: false` on every block**, silence or not. The generator defaults
+//!   to `true`, so omitting it would loop a dense capture — and for a capture
+//!   with silence the engine refuses the combination outright, since
+//!   `gap_windows:` describe a single pass.
 
 use super::normalize::{Grid, NormalizedSeries};
 use crate::compiler::{Entry, Kind, ScenarioFile};
@@ -76,15 +58,8 @@ pub fn scenario_for(
         ))));
     }
 
-    // The step the ENGINE will use, which is not always the step the caller
-    // handed us: `write_csv` renders timestamps at millisecond precision, and
-    // `csv_replay` derives its interval from those rendered numbers. Windows
-    // built from the caller's exact step drift against that by a fixed amount
-    // per row until one misses the row it was built for and the cross-check
-    // refuses the capture.
-    //
-    // Both halves of the pair, and the emitted rate and duration, come from
-    // this one value — which is the principle the capture pair rests on.
+    // The engine's step, not the caller's — see `file_step`. Windows, rate and
+    // duration all come from this one value.
     let step = file_step(grid)?;
     let rate = 1.0 / step;
     let duration = format!("{}s", grid.len as f64 * step);
@@ -130,11 +105,10 @@ pub fn scenario_for(
             });
         }
 
-        // Every field listed, and no `..` — a field added to `Entry` later
-        // should force a decision here rather than defaulting silently into an
-        // emitted scenario. `jitter` in particular must stay `None`: it
-        // perturbs the value and would break the equality a replay exists to
-        // provide.
+        // Every field listed, no `..`: a field added to `Entry` later should
+        // force a decision here rather than defaulting into an emitted
+        // scenario. `jitter` must stay `None` — it perturbs the value a replay
+        // exists to reproduce exactly.
         scenarios.push(Entry {
             id: Some(format!("capture_{block_index}")),
             signal_type: "metrics".to_string(),
@@ -201,26 +175,16 @@ pub fn scenario_for(
 /// The step the engine will replay at, given the file [`super::csv_out::write_csv`]
 /// will write.
 ///
-/// Not `grid.step`. The CSV carries timestamps at millisecond precision, so a
-/// step of `1/7` reaches the engine as `0.143`, and windows built from the
-/// caller's exact step drift against the replay until the capture stops
-/// loading.
+/// Not `grid.step`: the CSV carries millisecond timestamps, so `1/7` reaches the
+/// engine as `0.143`, and windows built from the caller's step drift against the
+/// replay until the capture stops loading.
 ///
-/// Two things are borrowed rather than modelled, and both had to be:
-///
-/// * [`super::csv_out::format_timestamp`] renders each instant, so the numbers
-///   fed to the reduction are the ones the file will literally carry.
-/// * [`crate::config::median_delta_seconds`] reduces them, because that is what
-///   `compute_csv_delta_seconds` does on the way back in — over
-///   [`crate::config::CSV_DELTA_SAMPLE_ROWS`] rows, the same window.
-///
-/// An earlier version modelled the second as "the delta between the first two
-/// rows". That agrees with the median for most steps and disagrees when the
-/// step's millisecond value is a clean half, because the two round to different
-/// sides: at `0.0015` the emitter said `0.002` against the engine's `0.0015`,
-/// drifting 0.199 s by row 398 against a 0.001 s margin. Reimplementing the
-/// median here instead would be a third model of the same thing; calling it is
-/// the only version that cannot disagree.
+/// Both halves are borrowed rather than modelled —
+/// [`super::csv_out::format_timestamp`] renders the instants the file will
+/// carry, and [`crate::config::median_delta_seconds`] reduces them over
+/// [`crate::config::CSV_DELTA_SAMPLE_ROWS`] rows, which is exactly what
+/// `compute_csv_delta_seconds` does on the way back in. Any model of that
+/// reduction disagrees with it somewhere.
 fn file_step(grid: Grid) -> Result<f64, SondaError> {
     // A single-row capture has no delta to read, so nothing rounds it and the
     // caller's step stands.
@@ -270,12 +234,10 @@ pub fn to_yaml(file: &ScenarioFile) -> Result<String, SondaError> {
 
 /// Drop every `null`-valued key, recursively.
 ///
-/// `Entry` has 34 fields and an emitted scenario sets a handful of them, so a
-/// straight serialisation renders thirty-odd `field: null` lines per block.
-/// They are not merely noise: `jitter: null` is a mention of jitter in a file
-/// whose whole purpose is exact replay, and a reader — human or grep — cannot
-/// tell it apart from a setting. An omitted key and a null one mean the same
-/// thing to the parser, so the emitted file says only what it actually sets.
+/// `Entry` has 34 fields and an emitted scenario sets a handful, so serialising
+/// straight renders thirty `field: null` lines per block. An omitted key and a
+/// null one mean the same thing to the parser, and `jitter: null` in a file
+/// meant for exact replay reads like a setting to anyone grepping it.
 fn strip_nulls(value: &mut serde_yaml_ng::Value) {
     match value {
         serde_yaml_ng::Value::Mapping(map) => {
