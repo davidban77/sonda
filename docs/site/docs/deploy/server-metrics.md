@@ -1,6 +1,6 @@
 ---
 title: Server metrics
-description: Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones.
+description: Three Prometheus endpoints on sonda-server, the twelve /metrics series, and PromQL alerts for the load-bearing ones.
 ---
 
 # Server metrics
@@ -59,6 +59,14 @@ sonda_server_request_duration_seconds_count{route="/scenarios",method="POST"} 14
 # HELP sonda_server_sink_errors_total Lifetime sink-write failures, summed across scenarios per sink_type.
 # TYPE sonda_server_sink_errors_total counter
 sonda_server_sink_errors_total{sink_type="loki"} 4
+# HELP sonda_server_lock_recoveries_total Poisoned shared-state locks recovered, per lock. Non-zero means a handler panicked while holding it.
+# TYPE sonda_server_lock_recoveries_total counter
+sonda_server_lock_recoveries_total{lock="gate_buses"} 0
+sonda_server_lock_recoveries_total{lock="gate_pending"} 0
+sonda_server_lock_recoveries_total{lock="gate_subscribers"} 0
+sonda_server_lock_recoveries_total{lock="request_counters"} 0
+sonda_server_lock_recoveries_total{lock="request_histograms"} 0
+sonda_server_lock_recoveries_total{lock="scenarios"} 0
 # HELP sonda_server_uptime_seconds Seconds since the server process started.
 # TYPE sonda_server_uptime_seconds gauge
 sonda_server_uptime_seconds 18432.4
@@ -71,7 +79,7 @@ The endpoint is idempotent — two back-to-back scrapes return logically equival
 
 ### Series reference
 
-Eleven series. Operator-tense one-liners and the alerts that matter follow.
+Twelve series. Operator-tense one-liners and the alerts that matter follow.
 
 #### `sonda_server_active_scenarios`
 
@@ -199,6 +207,36 @@ rate(sonda_server_sink_errors_total[5m]) > 0
 ```
 
 This is the single most important alert on the page. Sustained sink errors mean some backend is unreachable or rejecting writes. Drill into individual scenarios with `GET /scenarios` and look at the `degraded` field, then inspect the offenders with `GET /scenarios/{id}/stats` for `last_sink_error`.
+
+#### `sonda_server_lock_recoveries_total`
+
+Counter. Acquisitions of a shared-state lock that had to be recovered because a previous holder panicked while writing to it. Zero on a healthy server, and every lock is reported so the series exist before anything goes wrong.
+
+| `lock` value | What it guards | What one recovery costs |
+|---|---|---|
+| `scenarios` | The map of scenarios the server is running. | A multi-entry `POST /scenarios` may have registered some of its entries and not the others. The ones it had not registered yet are stopped rather than left emitting. |
+| `request_counters`, `request_histograms` | The request counts and durations reported on this endpoint. | One request missing from `sonda_server_requests_total` or from the duration histogram. |
+| `gate_buses`, `gate_subscribers`, `gate_pending` | The cross-POST `while:` wiring. | A downstream scenario can settle in `unresolved` instead of waiting for an upstream that is gone. |
+
+The server keeps serving after a panic: the lock is recovered, the request that panicked is lost — the connection is dropped rather than answered — and everything else carries on. The counter is how you find out it happened at all. A panic marks the lock it was holding as poisoned, and that mark is never cleared while the process runs. Every later acquisition of that lock adds one, so the value climbs with traffic. Only a restart returns it to zero.
+
+```promql title="Alert: a handler panicked while holding shared state"
+sonda_server_lock_recoveries_total > 0
+```
+
+Alert on the level, not on `rate()` or `increase()`. Those measure how often the lock is being acquired, not whether it was ever poisoned. On a server with little traffic the rate falls back to zero while the lock is still poisoned, so the alert resolves itself and then returns with the next burst of requests. `> 0` stays true from the panic until the process restarts, which is exactly as long as the condition lasts.
+
+When it fires:
+
+1. Do not read it as an outage. The server is still answering requests; one request was lost.
+2. Find the panic in the log. The panic message names the code that failed, and a `recovered a poisoned lock` `WARN` names the lock. That `WARN` is written once, at the first recovery, so search back to the start of the incident rather than to the moment the alert fired.
+3. Read the table above for what the lost update was. For `lock="scenarios"`, compare `GET /scenarios` against what you expect to be running.
+4. Restart the process when you want certainty that nothing else was dropped. The mark stays for the life of the process, and the alert clears on restart.
+
+A handler that panics is a bug in the server. Keep the panic message and the `lock` label when you report it.
+
+!!! info "A `POST /scenarios` that panics does not keep the name it claimed"
+    If the panic lands while a POST is registering its entries, the server stops the entries it has not registered yet and frees the `scenario_name` they claimed, with an `admission panicked after launch` `WARN`. The name is available again, so you can re-send the same body without having to `DELETE` anything to free it first.
 
 #### `sonda_server_uptime_seconds`
 

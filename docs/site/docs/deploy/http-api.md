@@ -1075,7 +1075,7 @@ scrape_configs:
 ## Where to next
 
 - [Deploy as a server](server.md) — install, configure, network, and operate the server itself.
-- [Server metrics](server-metrics.md) — the eleven `/metrics` series and the alerts that matter.
+- [Server metrics](server-metrics.md) — the twelve `/metrics` series and the alerts that matter.
 - [Scenario file format](../build/scenario-files.md) — what to put in the body of `POST /scenarios`.
 - [Encoders](../build/encoders.md) and [Sinks](../build/sinks.md) — every encoder/sink option you can declare in a posted body.
 - [Cross-POST `while:` refs (YAML schema)](../build/scenario-files.md#cross-post-while-refs) — the file-side counterpart to the HTTP cross-POST surface.

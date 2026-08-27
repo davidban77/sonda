@@ -12,6 +12,8 @@ use sonda_core::schedule::stats::ScenarioStats;
 use sonda_core::ScenarioState;
 use sonda_core::UnresolvedBehavior;
 
+use crate::locks::RecoveringLock;
+
 type BusKey = (String, String);
 
 struct SubscriberRef {
@@ -54,16 +56,37 @@ impl SubscriberRef {
     }
 }
 
-#[derive(Default)]
+const BUSES_LOCK: &str = "gate_buses";
+const SUBSCRIBERS_LOCK: &str = "gate_subscribers";
+const PENDING_LOCK: &str = "gate_pending";
+
 pub struct GateBusRegistry {
-    buses: RwLock<HashMap<BusKey, Arc<GateBus>>>,
-    subscribers: RwLock<HashMap<BusKey, Vec<SubscriberRef>>>,
-    pending: RwLock<HashMap<String, PendingResolution>>,
+    buses: RecoveringLock<HashMap<BusKey, Arc<GateBus>>>,
+    subscribers: RecoveringLock<HashMap<BusKey, Vec<SubscriberRef>>>,
+    pending: RecoveringLock<HashMap<String, PendingResolution>>,
+}
+
+impl Default for GateBusRegistry {
+    fn default() -> Self {
+        Self {
+            buses: RecoveringLock::new(BUSES_LOCK, HashMap::new()),
+            subscribers: RecoveringLock::new(SUBSCRIBERS_LOCK, HashMap::new()),
+            pending: RecoveringLock::new(PENDING_LOCK, HashMap::new()),
+        }
+    }
 }
 
 impl GateBusRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn lock_recoveries(&self) -> [(&'static str, u64); 3] {
+        [
+            (self.buses.name(), self.buses.recoveries()),
+            (self.subscribers.name(), self.subscribers.recoveries()),
+            (self.pending.name(), self.pending.recoveries()),
+        ]
     }
 
     /// Rewrite tracking keys when the caller assigns a new external handle id
@@ -72,13 +95,13 @@ impl GateBusRegistry {
         if old_id == new_id {
             return;
         }
-        let mut pending = self.pending.write().unwrap_or_else(|p| p.into_inner());
+        let mut pending = self.pending.write();
         if let Some(mut entry) = pending.remove(old_id) {
             entry.handle_id = new_id.to_string();
             pending.insert(new_id.to_string(), entry);
         }
         drop(pending);
-        let mut subs = self.subscribers.write().unwrap_or_else(|p| p.into_inner());
+        let mut subs = self.subscribers.write();
         for refs in subs.values_mut() {
             for sub in refs.iter_mut() {
                 if sub.handle_id == old_id {
@@ -96,7 +119,7 @@ impl GateBusResolver for GateBusRegistry {
         entry_id: &str,
         bus: Arc<GateBus>,
     ) -> Result<(), RegistryError> {
-        let mut buses = self.buses.write().unwrap_or_else(|p| p.into_inner());
+        let mut buses = self.buses.write();
         let key = (scenario_name.to_string(), entry_id.to_string());
         if buses.contains_key(&key) {
             return Err(RegistryError::DuplicateScenarioName {
@@ -110,7 +133,6 @@ impl GateBusResolver for GateBusRegistry {
     fn lookup(&self, scenario_name: &str, entry_id: &str) -> Option<Arc<GateBus>> {
         self.buses
             .read()
-            .unwrap_or_else(|p| p.into_inner())
             .get(&(scenario_name.to_string(), entry_id.to_string()))
             .cloned()
     }
@@ -127,7 +149,7 @@ impl GateBusResolver for GateBusRegistry {
     }
 
     fn unregister(&self, scenario_name: &str) {
-        let mut buses = self.buses.write().unwrap_or_else(|p| p.into_inner());
+        let mut buses = self.buses.write();
         let removed_keys: Vec<BusKey> = buses
             .keys()
             .filter(|(name, _)| name == scenario_name)
@@ -148,8 +170,8 @@ impl GateBusResolver for GateBusRegistry {
             bus.broadcast_upstream_gone();
         }
 
-        let mut subs = self.subscribers.write().unwrap_or_else(|p| p.into_inner());
-        let mut pending = self.pending.write().unwrap_or_else(|p| p.into_inner());
+        let mut subs = self.subscribers.write();
+        let mut pending = self.pending.write();
 
         let stale_pending: Vec<String> = pending
             .iter()
@@ -160,10 +182,9 @@ impl GateBusResolver for GateBusRegistry {
             let entry = pending.remove(&handle_id).expect("just snapshotted");
             entry.edge_sender.send(GateEdge::UpstreamGone);
             if let Some(stats_arc) = entry.stats.upgrade() {
-                if let Ok(mut s) = stats_arc.write() {
-                    if s.state != ScenarioState::Finished {
-                        s.transition_state(ScenarioState::Unresolved);
-                    }
+                let mut s = stats_arc.write().unwrap_or_else(|p| p.into_inner());
+                if s.state != ScenarioState::Finished {
+                    s.transition_state(ScenarioState::Unresolved);
                 }
             }
         }
@@ -185,9 +206,9 @@ impl GateBusResolver for GateBusRegistry {
     }
 
     fn sweep_pending(&self) -> usize {
-        let buses = self.buses.read().unwrap_or_else(|p| p.into_inner());
-        let mut pending = self.pending.write().unwrap_or_else(|p| p.into_inner());
-        let mut subs = self.subscribers.write().unwrap_or_else(|p| p.into_inner());
+        let buses = self.buses.read();
+        let mut pending = self.pending.write();
+        let mut subs = self.subscribers.write();
 
         let mut promoted = 0usize;
         let keys: Vec<String> = pending.keys().cloned().collect();
@@ -206,10 +227,9 @@ impl GateBusResolver for GateBusRegistry {
             let mut entry = pending.remove(&handle_id).expect("just looked up");
             entry.attempts = entry.attempts.saturating_add(1);
             if let Some(stats_arc) = entry.stats.upgrade() {
-                if let Ok(mut s) = stats_arc.write() {
-                    s.cumulative_resolution_attempts =
-                        s.cumulative_resolution_attempts.saturating_add(1);
-                }
+                let mut s = stats_arc.write().unwrap_or_else(|p| p.into_inner());
+                s.cumulative_resolution_attempts =
+                    s.cumulative_resolution_attempts.saturating_add(1);
             }
             bus.subscribe_with_while_sender(entry.spec, entry.edge_sender.clone());
             let (key, sub) = SubscriberRef::from_pending(entry);
@@ -220,12 +240,12 @@ impl GateBusResolver for GateBusRegistry {
     }
 
     fn insert_pending(&self, pending: PendingResolution) {
-        let mut map = self.pending.write().unwrap_or_else(|p| p.into_inner());
+        let mut map = self.pending.write();
         map.insert(pending.handle_id.clone(), pending);
     }
 
     fn pending_for_handle(&self, handle_id: &str) -> Option<PendingRef> {
-        let map = self.pending.read().unwrap_or_else(|p| p.into_inner());
+        let map = self.pending.read();
         let entry = map.get(handle_id)?;
         Some(PendingRef::from_pending(
             entry,
@@ -234,12 +254,12 @@ impl GateBusResolver for GateBusRegistry {
     }
 
     fn scenario_name_in_use(&self, scenario_name: &str) -> bool {
-        let buses = self.buses.read().unwrap_or_else(|p| p.into_inner());
+        let buses = self.buses.read();
         buses.keys().any(|(name, _)| name == scenario_name)
     }
 
     fn track_subscriber(&self, pending: PendingResolution) {
-        let mut subs = self.subscribers.write().unwrap_or_else(|p| p.into_inner());
+        let mut subs = self.subscribers.write();
         let (key, sub) = SubscriberRef::from_pending(pending);
         subs.entry(key).or_default().push(sub);
     }
@@ -249,7 +269,7 @@ impl GateBusResolver for GateBusRegistry {
         scenario_name: &str,
         entry_id: &str,
     ) -> Vec<RegistryError> {
-        let mut pending = self.pending.write().unwrap_or_else(|p| p.into_inner());
+        let mut pending = self.pending.write();
         let matching: Vec<String> = pending
             .iter()
             .filter(|(_, p)| p.scenario_name == scenario_name && p.entry_id == entry_id)
@@ -260,10 +280,9 @@ impl GateBusResolver for GateBusRegistry {
             let entry = pending.remove(&handle_id).expect("just snapshotted");
             entry.edge_sender.send(GateEdge::UpstreamGone);
             if let Some(stats_arc) = entry.stats.upgrade() {
-                if let Ok(mut s) = stats_arc.write() {
-                    if s.state != ScenarioState::Finished {
-                        s.transition_state(ScenarioState::Unresolved);
-                    }
+                let mut s = stats_arc.write().unwrap_or_else(|p| p.into_inner());
+                if s.state != ScenarioState::Finished {
+                    s.transition_state(ScenarioState::Unresolved);
                 }
             }
             errors.push(RegistryError::UpstreamCancelled {
@@ -357,7 +376,7 @@ mod tests {
         let got = reg.subscribe(("post-a", "m"), "h1", weak.clone(), tx.clone());
         assert!(got.is_some());
         reg.track_subscriber(make_pending("h1", "post-a", "m", weak, tx));
-        let subs = reg.subscribers.read().unwrap();
+        let subs = reg.subscribers.read();
         let row = subs
             .get(&("post-a".to_string(), "m".to_string()))
             .expect("subscribers row exists");
@@ -391,7 +410,7 @@ mod tests {
         let promoted = reg.sweep_pending();
         assert_eq!(promoted, 1);
         assert!(reg.pending_for_handle("h1").is_none());
-        let subs = reg.subscribers.read().unwrap();
+        let subs = reg.subscribers.read();
         assert!(subs
             .get(&("upstream".to_string(), "m".to_string()))
             .is_some());
@@ -598,6 +617,91 @@ mod tests {
         assert!(matches!(err, RegistryError::DuplicateScenarioName { .. }));
     }
 
+    fn poison_stats(stats: &Arc<RwLock<ScenarioStats>>) {
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = stats.write().expect("first write must succeed");
+            panic!("intentional poison");
+        }));
+        assert!(panicked.is_err(), "the poisoning panic must have happened");
+        assert!(stats.is_poisoned());
+    }
+
+    fn state_of(stats: &Arc<RwLock<ScenarioStats>>) -> ScenarioState {
+        stats.read().unwrap_or_else(|p| p.into_inner()).state
+    }
+
+    #[test]
+    fn unregister_marks_a_downstream_unresolved_through_its_poisoned_stats_lock() {
+        let reg = GateBusRegistry::new();
+        let (alive, weak) = live_stats();
+        let (tx, _rx) = gate_edge_channel();
+        reg.insert_pending(make_pending("h1", "upstream", "m", weak, tx));
+        poison_stats(&alive);
+
+        reg.unregister("upstream");
+
+        assert_eq!(state_of(&alive), ScenarioState::Unresolved);
+    }
+
+    #[test]
+    fn cancelling_an_upstream_marks_a_downstream_unresolved_through_its_poisoned_stats_lock() {
+        let reg = GateBusRegistry::new();
+        let (alive, weak) = live_stats();
+        let (tx, _rx) = gate_edge_channel();
+        reg.insert_pending(make_pending("h1", "upstream", "m", weak, tx));
+        poison_stats(&alive);
+
+        reg.cancel_pending_for_upstream("upstream", "m");
+
+        assert_eq!(state_of(&alive), ScenarioState::Unresolved);
+    }
+
+    #[test]
+    fn sweep_counts_the_resolution_attempt_through_a_poisoned_stats_lock() {
+        let reg = GateBusRegistry::new();
+        let (alive, weak) = live_stats();
+        let (tx, _rx) = gate_edge_channel();
+        reg.insert_pending(make_pending("h1", "upstream", "m", weak, tx));
+        poison_stats(&alive);
+        let bus = Arc::new(GateBus::new());
+        bus.tick(1.0);
+        reg.register("upstream", "m", bus).expect("register");
+
+        assert_eq!(reg.sweep_pending(), 1);
+
+        let attempts = alive
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .cumulative_resolution_attempts;
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn poisoned_registry_locks_still_resolve_a_pending_subscriber() {
+        let reg = GateBusRegistry::new();
+        crate::locks::poison(&reg.buses);
+        crate::locks::poison(&reg.subscribers);
+        crate::locks::poison(&reg.pending);
+
+        let (alive, weak) = live_stats();
+        let (tx, _rx) = gate_edge_channel();
+        reg.insert_pending(make_pending("h1", "upstream", "m", weak, tx));
+        let bus = Arc::new(GateBus::new());
+        bus.tick(1.0);
+        reg.register("upstream", "m", bus).expect("register");
+
+        assert_eq!(reg.sweep_pending(), 1);
+        assert!(reg.pending_for_handle("h1").is_none());
+        assert!(reg
+            .subscribers
+            .read()
+            .contains_key(&("upstream".to_string(), "m".to_string())));
+        for (lock, recoveries) in reg.lock_recoveries() {
+            assert!(recoveries > 0, "{lock} must have counted its recoveries");
+        }
+        drop(alive);
+    }
+
     #[test]
     fn t22_concurrent_subscribe_does_not_deadlock() {
         let reg = Arc::new(GateBusRegistry::new());
@@ -622,7 +726,7 @@ mod tests {
         for t in threads {
             t.join().expect("join");
         }
-        let subs = reg.subscribers.read().unwrap();
+        let subs = reg.subscribers.read();
         assert_eq!(subs.values().map(|v| v.len()).sum::<usize>(), 8);
         drop(kept);
     }

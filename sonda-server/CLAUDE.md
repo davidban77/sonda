@@ -23,8 +23,11 @@ src/
 ├── autostart.rs        ← --autostart sweep: runnable_entries() enumerates pre-bind (a catalog
 │                         the operator must fix is fatal; transient I/O warns and yields none),
 │                         start_entries() admits each through routes::scenarios::admit_compiled
-│                         and logs+skips per-entry failures. Runs as a spawned task alongside
-│                         axum::serve; takes a CancellationToken that shutdown cancels and joins
+│                         and logs+skips per-entry failures. Each admission runs in its own
+│                         tokio::spawn and is awaited in turn, so an entry that panics is
+│                         skipped like any other failure and the sweep still finishes.
+│                         Runs as a spawned task alongside axum::serve; takes a
+│                         CancellationToken that shutdown cancels and joins
 ├── routes/
 │   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health, /ready),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
@@ -61,7 +64,10 @@ src/
 │                         or post_multi_scenario(), list_scenarios(),
 │                         get_scenario(), get_scenario_stats(),
 │                         get_scenario_metrics(), delete_scenario().
-└── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>> + optional api_key
+├── locks.rs            ← RecoveringLock: the RwLock wrapper that owns the poison policy —
+│                         recovers the guard, counts the recovery per lock, and carries the
+│                         per-lock safety argument in its module docs
+└── state.rs            ← AppState: Arc<RecoveringLock<HashMap<String, ScenarioHandle>>> + optional api_key
                         + SweepStatus: lock-free autostart sweep phase (not_configured /
                         in_progress / finished / failed) plus started and expected counts,
                         built before the listener binds so the denominator is never zero
@@ -103,11 +109,23 @@ tests/
 
 ## Error Handling
 
-All handlers use `.map_err()` with the `?` operator for lock acquisition and other fallible
-operations. No handler uses `.expect()` or `.unwrap()` on lock guards. If the `AppState` scenarios
-`RwLock` is poisoned (e.g., because a write handler panicked), all handlers return `500 Internal
-Server Error` with a JSON error body instead of panicking. The per-scenario stats `RwLock` in
-`ScenarioHandle` uses `into_inner()` to recover data from poisoned guards without panicking.
+All handlers use `.map_err()` with the `?` operator for fallible operations. Shared state is held in
+`locks::RecoveringLock`, whose `read()`/`write()` cannot fail: a poisoned lock is recovered, counted
+per lock, and exported as `sonda_server_lock_recoveries_total` on `/metrics`. The per-lock argument
+for why recovery is safe lives in the module docs of `src/locks.rs` — extend it there before putting
+new state behind the type. The per-scenario stats `RwLock` in `ScenarioHandle` is owned by
+sonda-core, which recovers it on its own read paths; the three places the server writes to it
+(`gate_registry.rs`) recover it the same way, so a scenario whose stats lock was poisoned still
+transitions state and still counts resolution attempts.
+
+`admit_compiled` holds its launched handles in an `AdoptionGuard` until they are in the scenario
+map, handing them over one at a time so the guard owns the whole tail it has not yet handed over.
+Dropping it on a panic stops what it still holds and unregisters the scenario name. Two gaps
+remain. The handle in flight at the moment of the panic is already out of the guard and not yet in
+the map, so it escapes still running, and it has dropped its permit — that orphan does not count
+against `--max-scenarios`. And `unregister` is keyed by scenario name alone, so rows the guard had
+already handed over keep running and stay listed but lose their gate buses; their downstreams
+receive `UpstreamGone`.
 
 ## Concurrency Model
 

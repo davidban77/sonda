@@ -285,7 +285,7 @@ Caused by:
     catalog /catalog contains duplicate entry name "web_traffic": /catalog/a.yaml and /catalog/b.yaml
 ```
 
-Everything else keeps the server up. A file the server cannot use — one it has no permission to open, a v1 body, a compile error, a validation failure, or a file that would push past `--max-scenarios` — is logged and skipped; one bad file never stops the ones after it:
+Everything else keeps the server up. A file the server cannot use — one it has no permission to open, a v1 body, a compile error, a validation failure, or a file that would push past `--max-scenarios` — is logged and skipped; one bad file never stops the ones after it. An entry that panics on its way in is skipped the same way, with a `panicked while starting` `WARN` naming the file:
 
 ```text
 warning: catalog: skipping unreadable file /catalog/locked.yaml: Permission denied (os error 13)
@@ -392,10 +392,10 @@ curl -i http://localhost:8080/ready
 A server without `--autostart` is ready from its first request, so putting a readiness probe on `/ready` is safe whether or not you autostart anything.
 
 !!! warning "`failed` is terminal — the process does not recover on its own"
-    Nothing retries a sweep that died. The status stays `failed` for the life of the process, so `/ready` answers 503 forever and a pod behind a readiness probe stays out of the Service indefinitely. It is not restarted either: the process is still alive and serving, so the liveness probe on `/health` keeps passing by design — a restart would only repeat the sweep that just failed, and the API keeps answering for whatever did start. Treat a `failed` sweep as a page: read the `ERROR` line, then restart the process (`kubectl delete pod`, `docker restart`) once you know why it died. [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) sitting below `sonda_server_autostart_expected` is the alertable signal.
+    A single entry does not get you here: an unreadable file, one that does not compile, one the server rejects, and one that panics on its way in are all skipped, and the sweep carries on to the next entry. `failed` means the sweep itself died, which leaves every entry it had not reached unstarted. Nothing retries a sweep that died. The status stays `failed` for the life of the process, so `/ready` answers 503 forever and a pod behind a readiness probe stays out of the Service indefinitely. It is not restarted either: the process is still alive and serving, so the liveness probe on `/health` keeps passing by design — a restart would only repeat the sweep that just failed, and the API keeps answering for whatever did start. Treat a `failed` sweep as a page: read the `ERROR` line, then restart the process (`kubectl delete pod`, `docker restart`) once you know why it died. [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) sitting below `sonda_server_autostart_expected` is the alertable signal.
 
 !!! info "A sweep that skipped files is still ready"
-    `status: finished` with `autostart_started` below `autostart_expected` means the sweep ran to the end and skipped something — a file that does not compile, or one that would have pushed past `--max-scenarios`. That is ready. One bad file in a catalog of twelve must not pull the whole server out of service; the skip is logged with the file that caused it, and the difference between the two counts is what you alert on. Both counts are exported as [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) and [`sonda_server_autostart_expected`](server-metrics.md#sonda_server_autostart_expected).
+    `status: finished` with `autostart_started` below `autostart_expected` means the sweep ran to the end and skipped something — a file that does not compile, one that would have pushed past `--max-scenarios`, or one that panicked on its way in. That is ready. One bad file in a catalog of twelve must not pull the whole server out of service; the skip is logged with the file that caused it, and the difference between the two counts is what you alert on. Both counts are exported as [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) and [`sonda_server_autostart_expected`](server-metrics.md#sonda_server_autostart_expected).
 
     This holds even when every entry is skipped. The server reports ready with nothing running, and a Kubernetes rollout of that catalog succeeds. Readiness answers "did the sweep run", not "was the catalog any good". The counts and the `WARN` line for each skipped entry answer the second question. Alert on those; do not expect a probe to catch a bad catalog. A catalog that yields no runnable entries at all is the one case this comparison cannot show — see [`sonda_server_autostart_expected`](server-metrics.md#sonda_server_autostart_expected).
 
@@ -484,7 +484,7 @@ See [Authentication conventions on HTTP API reference](http-api.md#authenticatio
 ## Where to next
 
 - [HTTP API reference](http-api.md) — every endpoint, request body, and response shape.
-- [Server metrics](server-metrics.md) — the eleven `/metrics` series and the alerts that matter.
+- [Server metrics](server-metrics.md) — the twelve `/metrics` series and the alerts that matter.
 - [Docker](docker.md) — Compose stacks and host-side `docker run` examples.
 - [Kubernetes](kubernetes.md) — Helm chart, Service DNS, cross-namespace access.
 - [Sinks](../build/sinks.md) — every sink type and its `url:` field.

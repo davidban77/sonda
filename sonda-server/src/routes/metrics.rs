@@ -24,6 +24,7 @@ pub async fn get_metrics(State(state): State<AppState>) -> Result<Response, Resp
     write_requests_total(&state, &mut buf).map_err(internal)?;
     write_request_duration_seconds(&state, &mut buf).map_err(internal)?;
     write_sink_errors_total(&state, &mut buf).map_err(internal)?;
+    write_lock_recoveries(&state, &mut buf).map_err(internal)?;
     write_uptime_seconds(&state, &mut buf).map_err(internal)?;
     write_build_info(&mut buf).map_err(internal)?;
 
@@ -49,10 +50,7 @@ fn write_active_scenarios(state: &AppState, buf: &mut String) -> std::fmt::Resul
         by_state.insert(op.as_label(), 0);
     }
     {
-        let scenarios = match state.scenarios.read() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let scenarios = state.scenarios.read();
         for handle in scenarios.values() {
             let snap = handle.stats_snapshot();
             if snap.state == ScenarioState::Finished {
@@ -82,10 +80,7 @@ fn write_active_scenarios(state: &AppState, buf: &mut String) -> std::fmt::Resul
 fn write_scenarios_finished_total(state: &AppState, buf: &mut String) -> std::fmt::Result {
     let mut finished: u64 = 0;
     {
-        let scenarios = match state.scenarios.read() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let scenarios = state.scenarios.read();
         for handle in scenarios.values() {
             if handle.stats_snapshot().state == ScenarioState::Finished {
                 finished += 1;
@@ -141,10 +136,7 @@ fn write_requests_total(state: &AppState, buf: &mut String) -> std::fmt::Result 
     )?;
     writeln!(buf, "# TYPE sonda_server_requests_total counter")?;
     let snapshot: Vec<((String, String, u16), u64)> = {
-        let guard = match state.request_counters.read() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let guard = state.request_counters.read();
         let mut rows: Vec<_> = guard
             .iter()
             .map(|((r, m, s), c)| ((r.clone(), m.clone(), *s), c.load(Ordering::Relaxed)))
@@ -175,10 +167,7 @@ fn write_request_duration_seconds(state: &AppState, buf: &mut String) -> std::fm
         "# TYPE sonda_server_request_duration_seconds histogram"
     )?;
     let snapshots: Vec<((String, String), _)> = {
-        let guard = match state.request_histograms.read() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let guard = state.request_histograms.read();
         let mut rows: Vec<_> = guard
             .iter()
             .map(|(k, shard)| (k.clone(), shard.snapshot()))
@@ -223,10 +212,7 @@ fn write_sink_errors_total(state: &AppState, buf: &mut String) -> std::fmt::Resu
     writeln!(buf, "# TYPE sonda_server_sink_errors_total counter")?;
     let mut totals: BTreeMap<&'static str, u64> = BTreeMap::new();
     {
-        let scenarios = match state.scenarios.read() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let scenarios = state.scenarios.read();
         for handle in scenarios.values() {
             let snap = handle.stats_snapshot();
             *totals.entry(handle.sink_type()).or_insert(0) += snap.total_sink_failures;
@@ -236,6 +222,21 @@ fn write_sink_errors_total(state: &AppState, buf: &mut String) -> std::fmt::Resu
         writeln!(
             buf,
             "sonda_server_sink_errors_total{{sink_type=\"{sink_type}\"}} {value}"
+        )?;
+    }
+    Ok(())
+}
+
+fn write_lock_recoveries(state: &AppState, buf: &mut String) -> std::fmt::Result {
+    writeln!(
+        buf,
+        "# HELP sonda_server_lock_recoveries_total Poisoned shared-state locks recovered, per lock. Non-zero means a handler panicked while holding it."
+    )?;
+    writeln!(buf, "# TYPE sonda_server_lock_recoveries_total counter")?;
+    for (lock, value) in state.lock_recoveries() {
+        writeln!(
+            buf,
+            "sonda_server_lock_recoveries_total{{lock=\"{lock}\"}} {value}"
         )?;
     }
     Ok(())
@@ -308,6 +309,44 @@ mod tests {
 
         assert!(buf.contains("\nsonda_server_autostart_started 0\n"));
         assert!(buf.contains("\nsonda_server_autostart_expected 0\n"));
+    }
+
+    #[test]
+    fn lock_recoveries_reports_every_lock_at_zero_on_a_healthy_server() {
+        let mut buf = String::new();
+        write_lock_recoveries(&AppState::new(), &mut buf).expect("write must succeed");
+
+        assert!(buf.contains("# TYPE sonda_server_lock_recoveries_total counter"));
+        for lock in [
+            "gate_buses",
+            "gate_pending",
+            "gate_subscribers",
+            "request_counters",
+            "request_histograms",
+            "scenarios",
+        ] {
+            assert!(
+                buf.contains(&format!(
+                    "\nsonda_server_lock_recoveries_total{{lock=\"{lock}\"}} 0\n"
+                )),
+                "{lock} must be reported, got:\n{buf}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_recoveries_counts_each_recovered_acquisition() {
+        let state = AppState::new();
+        crate::locks::poison(&state.scenarios);
+        drop(state.scenarios.read());
+
+        let mut buf = String::new();
+        write_lock_recoveries(&state, &mut buf).expect("write must succeed");
+
+        assert!(
+            buf.contains("\nsonda_server_lock_recoveries_total{lock=\"scenarios\"} 1\n"),
+            "got:\n{buf}"
+        );
     }
 
     #[test]

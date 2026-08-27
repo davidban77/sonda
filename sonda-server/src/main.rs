@@ -6,20 +6,19 @@
 mod auth;
 mod autostart;
 mod gate_registry;
+mod locks;
 mod middleware;
 mod routes;
 mod state;
 
-use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{exit, Command};
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -205,19 +204,13 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
     };
 
     let state = AppState {
-        scenarios: Arc::new(RwLock::new(HashMap::new())),
         api_key: api_key.map(Arc::new),
         catalog_dir: args.catalog.clone().map(Arc::new),
-        gate_bus_registry: Arc::new(crate::gate_registry::GateBusRegistry::new()),
         scenario_permits: Arc::new(permits),
-        started_at: Instant::now(),
         worker_threads: workers,
         max_scenarios: args.max_scenarios,
-        request_counters: Arc::new(RwLock::new(
-            HashMap::<crate::state::RouteKey, AtomicU64>::new(),
-        )),
-        request_histograms: Arc::new(RwLock::new(HashMap::new())),
         sweep_status,
+        ..AppState::new()
     };
 
     let inflight_semaphore = Arc::new(Semaphore::new(max_inflight_requests));
@@ -376,19 +369,13 @@ async fn shutdown_signal(
         let _ = sweep.await;
     }
 
-    if let Ok(scenarios) = state.scenarios.read() {
-        for handle in scenarios.values() {
-            handle.stop();
-        }
+    for handle in state.scenarios.read().values() {
+        handle.stop();
     }
 
     // Write lock: join consumes the inner JoinHandle.
-    let mut ids_handles: Vec<(String, sonda_core::ScenarioHandle)> = Vec::new();
-    if let Ok(mut scenarios) = state.scenarios.write() {
-        for (id, handle) in scenarios.drain() {
-            ids_handles.push((id, handle));
-        }
-    }
+    let ids_handles: Vec<(String, sonda_core::ScenarioHandle)> =
+        state.scenarios.write().drain().collect();
     for (id, mut handle) in ids_handles {
         match handle.join_async(Some(Duration::from_secs(5))).await {
             Ok(_) => info!(scenario = %id, "scenario task joined"),

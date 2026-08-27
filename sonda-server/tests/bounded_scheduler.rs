@@ -263,7 +263,7 @@ fn max_scenarios_zero_allows_unlimited_posts() {
 }
 
 #[test]
-fn server_metrics_emits_all_eleven_series_with_zero_state_rows() {
+fn server_metrics_emits_all_twelve_series_with_zero_state_rows() {
     let (port, _guard) = common::start_server();
     let client = common::http_client();
     let base = format!("http://127.0.0.1:{port}");
@@ -285,6 +285,7 @@ fn server_metrics_emits_all_eleven_series_with_zero_state_rows() {
         "sonda_server_requests_total",
         "sonda_server_request_duration_seconds",
         "sonda_server_sink_errors_total",
+        "sonda_server_lock_recoveries_total",
         "sonda_server_uptime_seconds",
         "sonda_server_build_info",
     ] {
@@ -302,9 +303,24 @@ fn server_metrics_emits_all_eleven_series_with_zero_state_rows() {
         );
     }
 
+    for lock in [
+        "gate_buses",
+        "gate_pending",
+        "gate_subscribers",
+        "request_counters",
+        "request_histograms",
+        "scenarios",
+    ] {
+        let needle = format!("sonda_server_lock_recoveries_total{{lock=\"{lock}\"}} 0");
+        assert!(
+            text.contains(&needle),
+            "expected zero-row `{needle}`. Got:\n{text}"
+        );
+    }
+
     assert_eq!(
         text.matches("# TYPE ").count(),
-        11,
+        12,
         "a series was added or removed — update the list above and the count. Got:\n{text}"
     );
 }

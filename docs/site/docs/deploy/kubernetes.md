@@ -324,7 +324,7 @@ With `server.autostart` enabled, `kubectl rollout status` therefore completes wh
     A sweep that finished but skipped a file still reports ready, so the pod goes into service and the rollout succeeds. That is deliberate. One bad file in a twelve-file ConfigMap must not pull the whole pod out of service. On a node drain, the same rule stops every pod coming back NotReady at once. The counts on [`GET /ready`](server.md#health-and-readiness) and on [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) are what surface the skip. This holds when every file is broken too: the pod is Ready with nothing running. Alert on the counts rather than relying on the rollout to fail.
 
 !!! warning "A failed sweep is terminal — the pod stays NotReady and is never restarted"
-    `/ready` reports `status: failed` and keeps answering 503 for the life of the process, so the pod never rejoins the Service. It is not restarted either: the process is alive, so the liveness probe on `/health` keeps passing by design. The pod needs a human. Read the `ERROR` line in the log, then `kubectl delete pod` to start a fresh sweep. Alert on it with [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started), since a pod that is permanently NotReady is otherwise quiet.
+    A single bad file does not get you here — those are skipped, including one that panics on its way in. `failed` means the sweep itself died. `/ready` then reports `status: failed` and keeps answering 503 for the life of the process, so the pod never rejoins the Service. It is not restarted either: the process is alive, so the liveness probe on `/health` keeps passing by design. The pod needs a human. Read the `ERROR` line in the log, then `kubectl delete pod` to start a fresh sweep. Alert on it with [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started), since a pod that is permanently NotReady is otherwise quiet.
 
 ## Accessing the server
 
@@ -375,7 +375,7 @@ For example, a Prometheus instance in the same namespace can scrape
 | `GET /scenarios/metrics` | Aggregate scenario data | Per-process scenario view |
 | `GET /metrics` | Server-process RED + saturation | Operational dashboards and alerts |
 
-`GET /scenarios/metrics` and `GET /scenarios/{id}/metrics` are idempotent snapshots — one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. `GET /metrics` returns the server's own RED and saturation telemetry — see [Server metrics](server-metrics.md) for the eleven series and the alerts that go with them. Most Prometheus setups want a job per endpoint; the aggregate `/scenarios/metrics` covers every scenario and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the `?label=k:v` AND-filter syntax.
+`GET /scenarios/metrics` and `GET /scenarios/{id}/metrics` are idempotent snapshots — one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. `GET /metrics` returns the server's own RED and saturation telemetry — see [Server metrics](server-metrics.md) for the twelve series and the alerts that go with them. Most Prometheus setups want a job per endpoint; the aggregate `/scenarios/metrics` covers every scenario and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the `?label=k:v` AND-filter syntax.
 
 ### Aggregate scrape config
 
@@ -620,6 +620,6 @@ Add `-n <namespace>` if you installed into a non-default namespace.
 
 - [Synthetic Monitoring guide](../test/synthetic-monitoring.md) -- deploy Sonda on Kubernetes, submit long-running scenarios, scrape with Prometheus, and build Grafana dashboards
 - [Server API](server.md) -- full endpoint reference for `sonda-server`
-- [Server metrics](server-metrics.md) -- the eleven `/metrics` series and the PromQL alerts that matter
+- [Server metrics](server-metrics.md) -- the twelve `/metrics` series and the PromQL alerts that matter
 - [Docker](docker.md) -- Docker image and Compose stacks for local development
 - [Scenario Fields](../reference/scenario-fields.md) -- full YAML schema for scenario configuration

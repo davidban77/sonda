@@ -271,10 +271,9 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
 /// in `pending` / `running` / `paused` state. Finished handles are stale
 /// and skipped. Future `ScenarioState` variants (`#[non_exhaustive]`) must
 /// opt in to blocking explicitly — a stalled or errored handle that the
-/// operator can't DELETE shouldn't lock its name forever. `Err(())`
-/// indicates a poisoned lock.
-fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<ConflictingScenario>, ()> {
-    let scenarios = state.scenarios.read().map_err(|_| ())?;
+/// operator can't DELETE shouldn't lock its name forever.
+fn collect_active_conflicts(state: &AppState, name: &str) -> Vec<ConflictingScenario> {
+    let scenarios = state.scenarios.read();
     let mut conflicts = Vec::new();
     for (id, handle) in scenarios.iter() {
         if handle.scenario_name.as_deref() != Some(name) {
@@ -298,7 +297,7 @@ fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<Conflict
             });
         }
     }
-    Ok(conflicts)
+    conflicts
 }
 
 // ---- Body parsing -----------------------------------------------------------
@@ -613,13 +612,11 @@ fn capacity_exceeded_response(state: &AppState, _needed: usize) -> Response {
     }
     by_state.insert(ScenarioState::Finished.as_label().to_string(), json!(0));
     let mut total = 0u64;
-    if let Ok(scenarios) = state.scenarios.read() {
-        for handle in scenarios.values() {
-            total += 1;
-            let label = handle.stats_snapshot().state.as_label();
-            if let Some(v) = by_state.get_mut(label) {
-                *v = json!(v.as_u64().unwrap_or(0) + 1);
-            }
+    for handle in state.scenarios.read().values() {
+        total += 1;
+        let label = handle.stats_snapshot().state.as_label();
+        if let Some(v) = by_state.get_mut(label) {
+            *v = json!(v.as_u64().unwrap_or(0) + 1);
         }
     }
     let max = state.max_scenarios;
@@ -653,6 +650,44 @@ pub enum AdmissionError {
     Internal(String),
 }
 
+/// Holds scenarios that are launched but not yet reachable through [`AppState`]; dropped without `release` — on a panic — it stops them and frees the scenario name.
+struct AdoptionGuard<'a> {
+    state: &'a AppState,
+    scenario_name: Option<String>,
+    handles: Vec<sonda_core::ScenarioHandle>,
+}
+
+impl<'a> AdoptionGuard<'a> {
+    fn new(
+        state: &'a AppState,
+        scenario_name: Option<String>,
+        handles: Vec<sonda_core::ScenarioHandle>,
+    ) -> Self {
+        Self {
+            state,
+            scenario_name,
+            handles,
+        }
+    }
+
+    fn release(mut self) {
+        self.scenario_name = None;
+        self.handles.clear();
+    }
+}
+
+impl Drop for AdoptionGuard<'_> {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.stop();
+        }
+        if let Some(name) = self.scenario_name.take() {
+            warn!(scenario_name = %name, stopped = self.handles.len(), "admission panicked after launch — stopped the scenarios it still held and freed the name");
+            self.state.gate_bus_registry.unregister(&name);
+        }
+    }
+}
+
 /// The single admission path: validate a compiled file, launch it, and store the
 /// resulting handles in [`AppState`]. `origin` labels the caller in the logs.
 pub async fn admit_compiled(
@@ -661,10 +696,7 @@ pub async fn admit_compiled(
     origin: &str,
 ) -> Result<Admitted, AdmissionError> {
     if let Some(name) = compiled.scenario_name.as_deref() {
-        let mut conflicts = collect_active_conflicts(state, name).map_err(|()| {
-            warn!(origin = %origin, "{origin}: scenarios lock is poisoned");
-            AdmissionError::Internal("internal state lock is poisoned".to_string())
-        })?;
+        let mut conflicts = collect_active_conflicts(state, name);
         if conflicts.is_empty() && state.gate_bus_registry.scenario_name_in_use(name) {
             conflicts.push(ConflictingScenario {
                 id: String::new(),
@@ -717,8 +749,9 @@ pub async fn admit_compiled(
         }
     };
 
+    let scenario_name = compiled.scenario_name.clone();
     let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
-    let mut handles = launch_multi_compiled(compiled, Some(resolver))
+    let handles = launch_multi_compiled(compiled, Some(resolver))
         .await
         .map_err(|e| {
             warn!(origin = %origin, error = %e, "{origin}: failed to launch scenarios");
@@ -735,8 +768,12 @@ pub async fn admit_compiled(
         ));
     }
 
-    let mut created: Vec<CreatedScenario> = Vec::with_capacity(handles.len());
-    for handle in handles.iter_mut() {
+    let mut launched = AdoptionGuard::new(state, scenario_name, handles);
+    #[cfg(test)]
+    tests::panic_after_launch_if_armed();
+
+    let mut created: Vec<CreatedScenario> = Vec::with_capacity(launched.handles.len());
+    for handle in launched.handles.iter_mut() {
         let new_id = Uuid::new_v4().to_string();
         let old_id = std::mem::replace(&mut handle.id, new_id.clone());
         state.gate_bus_registry.rename_handle(&old_id, &new_id);
@@ -754,17 +791,16 @@ pub async fn admit_compiled(
         });
     }
 
-    let mut scenarios = state.scenarios.write().map_err(|e| {
-        for handle in &handles {
-            handle.stop();
-        }
-        warn!(origin = %origin, error = %e, "{origin}: scenarios lock is poisoned");
-        AdmissionError::Internal("internal state lock is poisoned".to_string())
-    })?;
-    for (created_entry, handle) in created.iter().zip(handles) {
+    let mut scenarios = state.scenarios.write();
+    for created_entry in created.iter() {
+        // Hand one handle over at a time: whatever the guard still holds is what it stops.
+        let handle = launched.handles.remove(0);
+        #[cfg(test)]
+        tests::panic_during_adoption_if_armed();
         scenarios.insert(created_entry.id.clone(), handle);
     }
     drop(scenarios);
+    launched.release();
 
     Ok(Admitted { created, warnings })
 }
@@ -775,10 +811,7 @@ pub async fn admit_compiled(
 /// ID, name, status, and elapsed time. The list includes both running and
 /// stopped scenarios that have not been deleted.
 pub async fn list_scenarios(State(state): State<AppState>) -> Result<impl IntoResponse, Response> {
-    let scenarios = state
-        .scenarios
-        .read()
-        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+    let scenarios = state.scenarios.read();
 
     let now_unix_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -813,10 +846,7 @@ pub async fn get_scenario(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    let scenarios = state
-        .scenarios
-        .read()
-        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+    let scenarios = state.scenarios.read();
 
     let handle = scenarios
         .get(&id)
@@ -863,10 +893,7 @@ pub async fn delete_scenario(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
     let (mut handle, scenario_name_to_unregister) = {
-        let mut scenarios = state
-            .scenarios
-            .write()
-            .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+        let mut scenarios = state.scenarios.write();
         let handle = scenarios
             .remove(&id)
             .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
@@ -922,10 +949,7 @@ pub async fn get_scenario_stats(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    let scenarios = state
-        .scenarios
-        .read()
-        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+    let scenarios = state.scenarios.read();
 
     let handle = scenarios
         .get(&id)
@@ -976,10 +1000,7 @@ pub async fn get_scenario_metrics(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    let scenarios = state
-        .scenarios
-        .read()
-        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+    let scenarios = state.scenarios.read();
 
     let handle = scenarios
         .get(&id)
@@ -1129,10 +1150,7 @@ pub async fn get_aggregate_metrics(
     let filters = parse_label_filters(raw_query.as_deref()).map_err(bad_request)?;
     let state_filter = parse_include_state(raw_query.as_deref()).map_err(bad_request)?;
 
-    let scenarios = state
-        .scenarios
-        .read()
-        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+    let scenarios = state.scenarios.read();
 
     let mut ids: Vec<&String> = scenarios.keys().collect();
     ids.sort();
@@ -1320,12 +1338,236 @@ mod tests {
     fn router_with_handles(handles: Vec<ScenarioHandle>) -> axum::Router {
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             for h in handles {
                 map.insert(h.id.clone(), h);
             }
         }
         router(state)
+    }
+
+    thread_local! {
+        static PANIC_AFTER_LAUNCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn panic_after_launch_if_armed() {
+        if PANIC_AFTER_LAUNCH.with(|armed| armed.replace(false)) {
+            panic!("injected panic between launch and adoption");
+        }
+    }
+
+    fn arm_panic_after_launch() {
+        PANIC_AFTER_LAUNCH.with(|armed| armed.set(true));
+    }
+
+    thread_local! {
+        static PANIC_DURING_ADOPTION: std::cell::Cell<Option<usize>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn panic_during_adoption_if_armed() {
+        let fire = PANIC_DURING_ADOPTION.with(|countdown| match countdown.get() {
+            Some(0) => {
+                countdown.set(None);
+                true
+            }
+            Some(remaining) => {
+                countdown.set(Some(remaining - 1));
+                false
+            }
+            None => false,
+        });
+        if fire {
+            panic!("injected panic during adoption");
+        }
+    }
+
+    fn arm_panic_during_adoption(after_handles: usize) {
+        PANIC_DURING_ADOPTION.with(|countdown| countdown.set(Some(after_handles)));
+    }
+
+    fn drive_until_alive_tasks(rt: &tokio::runtime::Runtime, expected: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while rt.metrics().num_alive_tasks() != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected {expected} alive tasks, still {}",
+                rt.metrics().num_alive_tasks()
+            );
+            rt.block_on(async { tokio::time::sleep(Duration::from_millis(10)).await });
+        }
+    }
+
+    const ORPHAN_PROBE_YAML: &str = "\
+version: 2
+kind: runnable
+scenario_name: orphan_probe
+defaults:
+  rate: 5
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: orphan_probe_cpu
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    const ORPHAN_BATCH_YAML: &str = "\
+version: 2
+kind: runnable
+scenario_name: orphan_batch
+defaults:
+  rate: 5
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: first
+    signal_type: metrics
+    name: orphan_batch_first
+    generator:
+      type: constant
+      value: 1.0
+  - id: second
+    signal_type: metrics
+    name: orphan_batch_second
+    generator:
+      type: constant
+      value: 2.0
+  - id: third
+    signal_type: metrics
+    name: orphan_batch_third
+    generator:
+      type: constant
+      value: 3.0
+";
+
+    fn orphan_probe() -> CompiledFile {
+        compile_v2_text(ORPHAN_PROBE_YAML, None).expect("the probe body must compile")
+    }
+
+    fn orphan_batch() -> CompiledFile {
+        compile_v2_text(ORPHAN_BATCH_YAML, None).expect("the batch body must compile")
+    }
+
+    #[test]
+    fn a_panic_between_launch_and_adoption_stops_the_scenarios_and_frees_the_name() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = AppState::new();
+
+        arm_panic_after_launch();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(admit_compiled(&state, orphan_probe(), "test"))
+        }));
+        assert!(outcome.is_err(), "the injected panic must have propagated");
+
+        assert!(
+            state.scenarios.read().is_empty(),
+            "a scenario that never reached the map must not be listed"
+        );
+        assert!(
+            !state.gate_bus_registry.scenario_name_in_use("orphan_probe"),
+            "the scenario name must not stay held by the registry"
+        );
+        drive_until_alive_tasks(&rt, 0);
+
+        let readmitted = rt.block_on(admit_compiled(&state, orphan_probe(), "test"));
+        assert!(
+            readmitted.is_ok(),
+            "the name must be admissible again, got: {:?}",
+            readmitted.err()
+        );
+        rt.block_on(cleanup_scenarios(&state));
+    }
+
+    #[test]
+    fn a_panic_during_adoption_keeps_the_rows_already_inserted_and_stops_the_tail() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = AppState::new();
+
+        arm_panic_during_adoption(1);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(admit_compiled(&state, orphan_batch(), "test"))
+        }));
+        assert!(outcome.is_err(), "the injected panic must have propagated");
+        assert_eq!(
+            rt.metrics().num_alive_tasks(),
+            3,
+            "all three scenario tasks must still be registered at the panic"
+        );
+
+        let inserted: Vec<Arc<std::sync::atomic::AtomicBool>> = {
+            let map = state.scenarios.read();
+            map.values().map(|h| Arc::clone(&h.alive)).collect()
+        };
+        assert_eq!(
+            inserted.len(),
+            1,
+            "the row inserted before the panic must stay reachable"
+        );
+        assert!(
+            !state.gate_bus_registry.scenario_name_in_use("orphan_batch"),
+            "the scenario name must not stay held by the registry"
+        );
+
+        // Exactly one task exits: the handle the guard still held. The inserted row keeps
+        // running, and the handle in flight at the panic escapes.
+        drive_until_alive_tasks(&rt, 2);
+        assert!(
+            inserted[0].load(std::sync::atomic::Ordering::SeqCst),
+            "an adopted scenario must not be stopped by the guard"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_adoption_guard_stops_the_scenarios_it_holds() {
+        let state = AppState::new();
+        let resolver: Arc<dyn GateBusResolver> = state.gate_bus_registry.clone();
+        let handles = launch_multi_compiled(orphan_probe(), Some(resolver))
+            .await
+            .expect("launch must succeed");
+        assert!(!handles.is_empty());
+        let alive: Vec<Arc<std::sync::atomic::AtomicBool>> =
+            handles.iter().map(|h| Arc::clone(&h.alive)).collect();
+        assert!(
+            state.gate_bus_registry.scenario_name_in_use("orphan_probe"),
+            "the launch must have taken the name, or this test proves nothing"
+        );
+
+        drop(AdoptionGuard::new(
+            &state,
+            Some("orphan_probe".to_string()),
+            handles,
+        ));
+
+        assert!(
+            !state.gate_bus_registry.scenario_name_in_use("orphan_probe"),
+            "the guard must free the name it took"
+        );
+        for flag in alive {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while flag.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the guard must stop every scenario it holds"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
     }
 
     /// Build the router with fresh empty state for test use (returns state for POST tests).
@@ -1348,16 +1590,12 @@ mod tests {
     /// lock to join the threads.
     async fn cleanup_scenarios(state: &AppState) {
         // Phase 1: signal all scenarios to stop (read lock).
-        if let Ok(scenarios) = state.scenarios.read() {
-            for handle in scenarios.values() {
-                handle.stop();
-            }
+        for handle in state.scenarios.read().values() {
+            handle.stop();
         }
         // Phase 2: drain handles under the write lock, then await join_async outside it.
-        let handles: Vec<ScenarioHandle> = match state.scenarios.write() {
-            Ok(mut scenarios) => scenarios.drain().map(|(_, h)| h).collect(),
-            Err(_) => return,
-        };
+        let handles: Vec<ScenarioHandle> =
+            state.scenarios.write().drain().map(|(_, h)| h).collect();
         for mut handle in handles {
             let _ = handle.join_async(Some(Duration::from_secs(2))).await;
         }
@@ -1735,7 +1973,7 @@ scenarios:
         let h = make_handle("id-events", "events_check", 500, Duration::from_millis(10));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -1855,7 +2093,7 @@ scenarios:
         let created_at = Instant::now();
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2032,7 +2270,7 @@ scenarios:
 
         // Verify the handle was stored in AppState.
         {
-            let scenarios = state.scenarios.read().expect("lock must not be poisoned");
+            let scenarios = state.scenarios.read();
             let id = body["id"].as_str().unwrap();
             assert!(
                 scenarios.contains_key(id),
@@ -2196,7 +2434,7 @@ scenarios:
 
         // Check that the handle reports is_running() == true.
         {
-            let scenarios = state.scenarios.read().expect("lock must not be poisoned");
+            let scenarios = state.scenarios.read();
             let handle = scenarios
                 .get(&id)
                 .expect("handle must exist in AppState after POST");
@@ -2722,7 +2960,7 @@ scenarios:
         let h = make_handle("id-del-run", "del_running", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2752,7 +2990,7 @@ scenarios:
         let h = make_handle("id-del-stats", "del_stats", 1000, Duration::from_millis(10));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2782,7 +3020,7 @@ scenarios:
         let h = make_stopped_handle("id-del-stopped", "del_stopped");
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2837,7 +3075,7 @@ scenarios:
         let h = make_handle("id-del-shape", "del_shape", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2876,7 +3114,7 @@ scenarios:
         let h = make_handle("id-del-match", "del_match", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2901,7 +3139,7 @@ scenarios:
         let h = make_handle("id-del-twice", "del_twice", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -2934,13 +3172,13 @@ scenarios:
         let h = make_handle("id-del-map", "del_map", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
         // Precondition: map has exactly 1 entry.
         assert_eq!(
-            state.scenarios.read().unwrap().len(),
+            state.scenarios.read().len(),
             1,
             "precondition: map must have 1 entry before DELETE"
         );
@@ -2950,7 +3188,7 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         // After DELETE, the handle must be gone.
-        let map = state.scenarios.read().unwrap();
+        let map = state.scenarios.read();
         assert_eq!(map.len(), 0, "map must be empty after DELETE");
         assert!(
             map.get("id-del-map").is_none(),
@@ -2972,7 +3210,7 @@ scenarios:
         );
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h_keep.id.clone(), h_keep);
             map.insert(h_delete.id.clone(), h_delete);
         }
@@ -3047,7 +3285,7 @@ scenarios:
         let h = make_handle("id-del-ct", "del_ct", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -3261,7 +3499,7 @@ scenarios:
         );
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -3720,7 +3958,7 @@ scenarios:
         let h = make_handle_with_metrics("id-idem", "idem", events);
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -3969,7 +4207,7 @@ scenarios:
         );
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -3993,7 +4231,7 @@ scenarios:
         );
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -4455,7 +4693,7 @@ scenarios:
         let h = make_unjoinable_handle("id-force", "force_stop");
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -4481,7 +4719,7 @@ scenarios:
         );
 
         // Verify the handle was removed from the map despite being force-stopped.
-        let map = state.scenarios.read().unwrap();
+        let map = state.scenarios.read();
         assert!(
             map.get("id-force").is_none(),
             "force-stopped scenario must still be removed from the map"
@@ -4497,7 +4735,7 @@ scenarios:
         let h = make_panicking_handle("id-panic", "panic_scenario");
         let state = AppState::new();
         {
-            let mut map = state.scenarios.write().unwrap();
+            let mut map = state.scenarios.write();
             map.insert(h.id.clone(), h);
         }
 
@@ -4518,38 +4756,35 @@ scenarios:
         );
 
         // Verify the handle was removed from the map.
-        let map = state.scenarios.read().unwrap();
+        let map = state.scenarios.read();
         assert!(
             map.get("id-panic").is_none(),
             "panicked scenario must be removed from the map"
         );
     }
 
-    // ---- L3: Poisoned map lock returns 500 in read handlers ----------------
-
-    /// Helper: build an AppState with a poisoned scenarios lock.
-    fn make_poisoned_state() -> AppState {
+    fn poisoned_state() -> AppState {
         let state = AppState::new();
-        // Poison the lock by panicking inside a write guard.
-        let scenarios_clone = Arc::clone(&state.scenarios);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = scenarios_clone.write().unwrap();
-            panic!("intentional panic to poison map lock");
-        }));
-        assert!(result.is_err(), "panic must have occurred");
-        // Verify the lock is actually poisoned.
-        assert!(
-            state.scenarios.read().is_err(),
-            "map lock must be poisoned after panic"
-        );
+        crate::locks::poison(&state.scenarios);
         state
     }
 
-    /// GET /scenarios returns 500 when the map lock is poisoned.
+    fn poisoned_state_holding(handles: Vec<ScenarioHandle>) -> AppState {
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write();
+            for h in handles {
+                map.insert(h.id.clone(), h);
+            }
+        }
+        crate::locks::poison(&state.scenarios);
+        state
+    }
+
     #[tokio::test]
-    async fn list_scenarios_poisoned_lock_returns_500() {
-        let state = make_poisoned_state();
-        let app = router(state);
+    async fn list_scenarios_still_serves_the_map_contents_after_the_lock_is_poisoned() {
+        let state = poisoned_state_holding(vec![make_stopped_handle("kept-id", "kept_scenario")]);
+        let app = router(state.clone());
 
         let req = Request::builder()
             .uri("/scenarios")
@@ -4557,25 +4792,38 @@ scenarios:
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "poisoned map lock on list must return 500"
-        );
+        assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_json(resp).await;
-        assert_eq!(
-            body["error"].as_str().unwrap(),
-            "internal_server_error",
-            "500 response must have error='internal_server_error'"
-        );
+        let listed = body["scenarios"].as_array().expect("scenarios array");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], "kept-id");
+        assert!(state.scenarios.recoveries() > 0);
     }
 
-    /// GET /scenarios/{id} returns 500 when the map lock is poisoned.
     #[tokio::test]
-    async fn get_scenario_poisoned_lock_returns_500() {
-        let state = make_poisoned_state();
-        let app = router(state);
+    async fn get_scenario_still_serves_the_map_contents_after_the_lock_is_poisoned() {
+        let state = poisoned_state_holding(vec![make_stopped_handle("kept-id", "kept_scenario")]);
+        let app = router(state.clone());
+
+        let req = Request::builder()
+            .uri("/scenarios/kept-id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["name"], "kept_scenario");
+        assert!(state.scenarios.recoveries() > 0);
+    }
+
+    #[tokio::test]
+    async fn get_scenario_reports_not_found_for_an_unknown_id_after_the_lock_is_poisoned() {
+        let app = router(poisoned_state_holding(vec![make_stopped_handle(
+            "kept-id",
+            "kept_scenario",
+        )]));
 
         let req = Request::builder()
             .uri("/scenarios/any-id")
@@ -4583,76 +4831,105 @@ scenarios:
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "poisoned map lock on get must return 500"
-        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    /// GET /scenarios/{id}/stats returns 500 when the map lock is poisoned.
     #[tokio::test]
-    async fn get_scenario_stats_poisoned_lock_returns_500() {
-        let state = make_poisoned_state();
-        let app = router(state);
+    async fn get_scenario_stats_reports_not_found_after_the_map_lock_is_poisoned() {
+        let state = poisoned_state();
+        let app = router(state.clone());
 
         let resp = get_stats_req(app, "any-id").await;
-        assert_eq!(
-            resp.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "poisoned map lock on stats must return 500"
-        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(state.scenarios.recoveries() > 0);
     }
 
-    /// GET /scenarios/{id}/metrics returns 500 when the map lock is poisoned.
     #[tokio::test]
-    async fn get_scenario_metrics_poisoned_lock_returns_500() {
-        let state = make_poisoned_state();
-        let app = router(state);
+    async fn get_scenario_metrics_reports_not_found_after_the_map_lock_is_poisoned() {
+        let state = poisoned_state();
+        let app = router(state.clone());
 
         let resp = get_metrics_req(app, "any-id").await;
-        assert_eq!(
-            resp.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "poisoned map lock on metrics must return 500"
-        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(state.scenarios.recoveries() > 0);
     }
 
-    /// DELETE /scenarios/{id} returns 500 when the map lock is poisoned.
     #[tokio::test]
-    async fn delete_scenario_poisoned_lock_returns_500() {
-        let state = make_poisoned_state();
-        let app = router(state);
+    async fn delete_scenario_reports_not_found_after_the_map_lock_is_poisoned() {
+        let state = poisoned_state();
+        let app = router(state.clone());
 
         let resp = delete_scenario_req(app, "any-id").await;
-        assert_eq!(
-            resp.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "poisoned map lock on delete must return 500"
-        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(state.scenarios.recoveries() > 0);
     }
 
-    /// POST /scenarios returns 500 when the map lock is poisoned (lock
-    /// acquisition for storing the handle fails).
     #[tokio::test]
-    async fn post_scenario_poisoned_lock_returns_500() {
-        let state = make_poisoned_state();
-        let app = router(state);
+    async fn post_scenario_still_admits_after_the_map_lock_is_poisoned() {
+        let state = poisoned_state();
+        let app = router(state.clone());
 
         let response = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
-
-        assert_eq!(
-            response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "poisoned map lock on post must return 500"
-        );
+        assert_eq!(response.status(), StatusCode::CREATED);
 
         let body = body_json(response).await;
-        assert_eq!(
-            body["error"].as_str().unwrap(),
-            "internal_server_error",
-            "500 response must have error='internal_server_error'"
-        );
+        let id = body["id"]
+            .as_str()
+            .expect("id must be a string")
+            .to_string();
+        assert!(state.scenarios.read().contains_key(&id));
+
+        cleanup_scenarios(&state).await;
+    }
+
+    #[tokio::test]
+    async fn a_poisoned_map_lock_leaves_scenarios_metrics_and_ready_all_serving() {
+        let state = poisoned_state();
+
+        let list = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/scenarios")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+
+        let ready = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+
+        let metrics = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metrics.status(), StatusCode::OK);
+
+        let text = body_string(metrics).await;
+        let row = text
+            .lines()
+            .find(|l| l.starts_with("sonda_server_lock_recoveries_total{lock=\"scenarios\"}"))
+            .expect("the scenarios lock must have a recoveries series");
+        let value: u64 = row
+            .rsplit(' ')
+            .next()
+            .and_then(|v| v.parse().ok())
+            .expect("the series must carry a numeric value");
+        assert!(value > 0, "recoveries must be reported, got: {row}");
     }
 
     // ========================================================================
@@ -4775,7 +5052,7 @@ scenarios:
         let body = body_json(response).await;
         let scenarios = body["scenarios"].as_array().unwrap();
         {
-            let map = state.scenarios.read().expect("lock must not be poisoned");
+            let map = state.scenarios.read();
             for entry in scenarios {
                 let id = entry["id"].as_str().unwrap();
                 assert!(
@@ -4895,7 +5172,7 @@ scenarios:
         );
 
         // Verify nothing was launched (atomic batch semantics).
-        let map = state.scenarios.read().expect("lock must not be poisoned");
+        let map = state.scenarios.read();
         assert!(
             map.is_empty(),
             "no scenarios must be launched when batch validation fails"
@@ -5023,7 +5300,7 @@ scenarios:
         }
 
         // Verify all are gone.
-        let map = state.scenarios.read().unwrap();
+        let map = state.scenarios.read();
         assert!(
             map.is_empty(),
             "all multi-scenario handles must be removed after DELETE"
