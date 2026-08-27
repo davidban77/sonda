@@ -1,6 +1,6 @@
 ---
 title: Server metrics
-description: Three Prometheus endpoints on sonda-server, the nine /metrics series, and PromQL alerts for the load-bearing ones.
+description: Three Prometheus endpoints on sonda-server, the eleven /metrics series, and PromQL alerts for the load-bearing ones.
 ---
 
 # Server metrics
@@ -40,6 +40,12 @@ sonda_server_worker_threads 8
 # HELP sonda_server_max_scenarios Configured scenario row cap (0 means unlimited).
 # TYPE sonda_server_max_scenarios gauge
 sonda_server_max_scenarios 500
+# HELP sonda_server_autostart_started Catalog entries the startup sweep has started.
+# TYPE sonda_server_autostart_started gauge
+sonda_server_autostart_started 12
+# HELP sonda_server_autostart_expected Runnable catalog entries the startup sweep set out to start.
+# TYPE sonda_server_autostart_expected gauge
+sonda_server_autostart_expected 12
 # HELP sonda_server_requests_total HTTP requests served, per matched route, method, and status.
 # TYPE sonda_server_requests_total counter
 sonda_server_requests_total{route="/scenarios",method="POST",status="201"} 14
@@ -65,7 +71,7 @@ The endpoint is idempotent — two back-to-back scrapes return logically equival
 
 ### Series reference
 
-Nine series. Operator-tense one-liners and the alerts that matter follow.
+Eleven series. Operator-tense one-liners and the alerts that matter follow.
 
 #### `sonda_server_active_scenarios`
 
@@ -100,6 +106,41 @@ Gauge. The tokio multi-thread worker count configured at startup — that is, th
 #### `sonda_server_max_scenarios`
 
 Gauge. The configured value of [`--max-scenarios`](server.md#tuning-resource-limits). Reports `0` when the cap is disabled (unlimited).
+
+#### `sonda_server_autostart_started`
+
+Gauge. Catalog entries the [`--autostart`](server.md#autostarting-a-catalog) sweep has started so far. Rises during the sweep and then stays flat for the life of the process. Reports `0` on a server started without `--autostart`.
+
+#### `sonda_server_autostart_expected`
+
+Gauge. Runnable catalog entries the sweep set out to start, fixed when the catalog is enumerated at startup. Reports `0` on a server started without `--autostart`, and also when `--autostart` found nothing to start.
+
+```promql title="Alert: the sweep skipped catalog entries"
+sonda_server_autostart_started < sonda_server_autostart_expected
+```
+
+A `started` count that stays below `expected` means the sweep either skipped entries — a file that does not compile, one the server could not read, or one that would have pushed past `--max-scenarios` — or died partway through. The server stays [ready](server.md#health-and-readiness) when entries are skipped, on purpose, so this alert is how you find out; the `WARN` line for each skipped entry names the file, and a sweep that died logs an `ERROR` and flips `GET /ready` to `status: failed`.
+
+The expression is also briefly true while a large catalog is still starting, so pair it with a `for:` clause longer than your sweep takes:
+
+```yaml
+- alert: SondaAutostartIncomplete
+  expr: sonda_server_autostart_started < sonda_server_autostart_expected
+  for: 5m
+```
+
+!!! warning "This alert cannot see an empty catalog"
+    `started < expected` is false when both counts are `0`, and both are `0` whenever the sweep found no runnable entries. Three cases produce that:
+
+    - the catalog directory is empty
+    - it holds only `kind: composable` packs, which are never started
+    - the server could not read it, and logged a `WARN` naming the directory
+
+    In all three the server reports [ready](server.md#health-and-readiness) with nothing running, because the sweep did run and had nothing to do. On a deployment you expect to autostart something, alert on the count itself:
+
+    ```promql
+    sonda_server_autostart_expected == 0
+    ```
 
 #### `sonda_server_requests_total`
 

@@ -256,7 +256,7 @@ By default the server boots empty and waits for you to `POST /scenarios`. Add `-
 sonda-server --port 8080 --catalog ./catalog --autostart
 ```
 
-The sweep runs alongside the server, not ahead of it. `/health` answers as soon as the port is open, so a readiness probe with a tight `timeoutSeconds` never waits on the catalog, and entries appear in `GET /scenarios` as they start — a large catalog reads as a growing list rather than an empty one. The `INFO` summary below is the point at which the list is complete. A shutdown signal that arrives mid-sweep stops the sweep at the next entry, and every scenario it did start is stopped with the rest.
+The sweep runs alongside the server, not ahead of it. `/health` answers as soon as the port is open, and entries appear in `GET /scenarios` as they start — a large catalog reads as a growing list rather than an empty one. [`GET /ready`](#health-and-readiness) is the endpoint that tells you when that list is complete: it returns 503 while the sweep is starting entries and 200 once it is done. It has already flipped to 200 by the time the `INFO` summary below is logged, so waiting on that line and waiting on `/ready` never disagree. A shutdown signal that arrives mid-sweep stops the sweep at the next entry, and every scenario it did start is stopped with the rest.
 
 `--autostart` requires `--catalog`. Passing it alone (or setting `SONDA_AUTOSTART` without `SONDA_CATALOG`) exits before the server binds a port:
 
@@ -357,9 +357,53 @@ The maximum request body size on control-plane routes. Bodies above the limit re
 
 The flag does not apply to the observability sub-router.
 
+## Health and readiness
+
+Two public endpoints answer two different questions. `/health` says the process is alive; `/ready` says it is doing what it was configured to do.
+
+| Endpoint | Question it answers | Use it for |
+|---|---|---|
+| `GET /health` | Is the process up and serving HTTP? | Liveness probes, load-balancer checks |
+| `GET /ready` | Has the [`--autostart`](#autostarting-a-catalog) sweep finished starting the catalog? | Readiness probes, deploy gates, scripts that wait before asserting on data |
+
+`/health` is static. It returns `{"status":"ok"}` with 200 as soon as the port is open and never reads server state — which is exactly what you want from a liveness probe, since a restart is the only thing a failing liveness check can do.
+
+`/ready` reports the state of the startup sweep and the two counts behind it:
+
+```bash
+# While the sweep is starting entries
+curl -i http://localhost:8080/ready
+# HTTP/1.1 503 Service Unavailable
+# {"autostart_expected":120,"autostart_started":38,"status":"in_progress"}
+
+# Once it has finished
+curl -i http://localhost:8080/ready
+# HTTP/1.1 200 OK
+# {"autostart_expected":120,"autostart_started":120,"status":"finished"}
+```
+
+| `status` | HTTP | Meaning |
+|---|---|---|
+| `not_configured` | 200 | The server was started without `--autostart`, so there is nothing to wait for. |
+| `in_progress` | 503 | The sweep is still starting catalog entries. |
+| `finished` | 200 | The sweep has been through every entry. |
+| `failed` | 503 | The sweep died before it finished. An `ERROR` line names the cause; the scenarios it had not reached will not start. |
+
+A server without `--autostart` is ready from its first request, so putting a readiness probe on `/ready` is safe whether or not you autostart anything.
+
+!!! warning "`failed` is terminal — the process does not recover on its own"
+    Nothing retries a sweep that died. The status stays `failed` for the life of the process, so `/ready` answers 503 forever and a pod behind a readiness probe stays out of the Service indefinitely. It is not restarted either: the process is still alive and serving, so the liveness probe on `/health` keeps passing by design — a restart would only repeat the sweep that just failed, and the API keeps answering for whatever did start. Treat a `failed` sweep as a page: read the `ERROR` line, then restart the process (`kubectl delete pod`, `docker restart`) once you know why it died. [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) sitting below `sonda_server_autostart_expected` is the alertable signal.
+
+!!! info "A sweep that skipped files is still ready"
+    `status: finished` with `autostart_started` below `autostart_expected` means the sweep ran to the end and skipped something — a file that does not compile, or one that would have pushed past `--max-scenarios`. That is ready. One bad file in a catalog of twelve must not pull the whole server out of service; the skip is logged with the file that caused it, and the difference between the two counts is what you alert on. Both counts are exported as [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) and [`sonda_server_autostart_expected`](server-metrics.md#sonda_server_autostart_expected).
+
+    This holds even when every entry is skipped. The server reports ready with nothing running, and a Kubernetes rollout of that catalog succeeds. Readiness answers "did the sweep run", not "was the catalog any good". The counts and the `WARN` line for each skipped entry answer the second question. Alert on those; do not expect a probe to catch a bad catalog. A catalog that yields no runnable entries at all is the one case this comparison cannot show — see [`sonda_server_autostart_expected`](server-metrics.md#sonda_server_autostart_expected).
+
+Both endpoints stay public when [API key authentication](#authentication) is enabled, so probes work without credentials.
+
 ## Authentication
 
-You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /metrics`, `GET /scenarios/metrics`, and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
+You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /metrics`, `GET /scenarios/metrics`, and `POST /events` must include a bearer token. The `/health` and `/ready` endpoints are always public, so health and readiness probes work without credentials.
 
 ### Enabling authentication
 
@@ -391,6 +435,7 @@ INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /me
 | Endpoint | Auth required |
 |----------|---------------|
 | `GET /health` | No -- always public |
+| `GET /ready` | No -- always public |
 | `POST /scenarios` | Yes |
 | `GET /scenarios` | Yes |
 | `GET /scenarios/{id}` | Yes |
@@ -439,7 +484,7 @@ See [Authentication conventions on HTTP API reference](http-api.md#authenticatio
 ## Where to next
 
 - [HTTP API reference](http-api.md) — every endpoint, request body, and response shape.
-- [Server metrics](server-metrics.md) — the nine `/metrics` series and the alerts that matter.
+- [Server metrics](server-metrics.md) — the eleven `/metrics` series and the alerts that matter.
 - [Docker](docker.md) — Compose stacks and host-side `docker run` examples.
 - [Kubernetes](kubernetes.md) — Helm chart, Service DNS, cross-namespace access.
 - [Sinks](../build/sinks.md) — every sink type and its `url:` field.

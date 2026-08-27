@@ -11,7 +11,7 @@ description: REST endpoints exposed by sonda-server — scenarios, events, metri
 
 ### Authentication
 
-When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request to `/scenarios/*`, `/events`, `/metrics`, and `/scenarios/metrics` must include `Authorization: Bearer <key>`. The `/health` endpoint is always public. When no key is configured, all endpoints are public.
+When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request to `/scenarios/*`, `/events`, `/metrics`, and `/scenarios/metrics` must include `Authorization: Bearer <key>`. The `/health` and `/ready` endpoints are always public. When no key is configured, all endpoints are public.
 
 ```bash title="Authenticated request"
 curl -X POST http://localhost:8080/scenarios \
@@ -54,7 +54,7 @@ Most error responses share the format `{"error": "<short_code>", "detail": "<mes
 
 ### Capacity and resource errors
 
-Three status codes signal that a request was rejected by the server's resource-limit guards rather than by validation. They apply only to the control-plane sub-router (`POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, list/inspect). The observability endpoints (`/metrics`, `/scenarios/metrics`, `/scenarios/{id}/metrics`, `/scenarios/{id}/stats`, `/health`) are not subject to these limits and stay reachable under saturation. Every rejection is counted on [`sonda_server_requests_total{status="..."}`](server-metrics.md#sonda_server_requests_total).
+Three status codes signal that a request was rejected by the server's resource-limit guards rather than by validation. They apply only to the control-plane sub-router (`POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, list/inspect). The observability endpoints (`/metrics`, `/scenarios/metrics`, `/scenarios/{id}/metrics`, `/scenarios/{id}/stats`, `/health`, `/ready`) are not subject to these limits and stay reachable under saturation. Every rejection is counted on [`sonda_server_requests_total{status="..."}`](server-metrics.md#sonda_server_requests_total).
 
 #### `429 Too Many Requests` — capacity_exceeded
 
@@ -100,7 +100,30 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
-Returns 200 OK with `{"status":"ok"}` when the server process is alive.
+Returns 200 OK with `{"status":"ok"}` when the server process is alive. It reads no server state, so it answers as soon as the port is open and keeps answering regardless of what the scenarios are doing.
+
+### `GET /ready`
+
+Readiness probe. Always public. No `Authorization` header required.
+
+```bash
+curl -i http://localhost:8080/ready
+# HTTP/1.1 200 OK
+# {"autostart_expected":12,"autostart_started":12,"status":"finished"}
+```
+
+Returns 200 when the [`--autostart`](server.md#autostarting-a-catalog) sweep has nothing left to start, and 503 while it is still running or after it failed. Every response carries the sweep status and both counts.
+
+| `status` | HTTP | Meaning |
+|---|---|---|
+| `not_configured` | 200 | The server was started without `--autostart`. |
+| `in_progress` | 503 | The sweep is still starting catalog entries. |
+| `finished` | 200 | The sweep has been through every entry. |
+| `failed` | 503 | The sweep died before it finished; an `ERROR` line names the cause. |
+
+`finished` with `autostart_started` below `autostart_expected` is still ready — the sweep ran to the end and logged the entries it skipped. Use the two counts (also exported as [`sonda_server_autostart_started`](server-metrics.md#sonda_server_autostart_started) and [`sonda_server_autostart_expected`](server-metrics.md#sonda_server_autostart_expected)) to detect skips; do not gate traffic on them.
+
+Use `/health` for liveness and `/ready` for readiness: the first says the process is alive, the second says it is doing what it was configured to do. See [Health and readiness](server.md#health-and-readiness).
 
 ### `GET /scenarios/{id}/stats`
 
@@ -1037,7 +1060,8 @@ scrape_configs:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check |
+| GET | `/health` | Liveness check — 200 whenever the process is up |
+| GET | `/ready` | Readiness check — 200 when the `--autostart` sweep has nothing left to start, 503 while it runs |
 | POST | `/scenarios` | Start one or more scenarios from YAML/JSON body |
 | GET | `/scenarios` | List all running scenarios |
 | GET | `/scenarios/{id}` | Inspect a scenario: config, stats, elapsed |
@@ -1051,7 +1075,7 @@ scrape_configs:
 ## Where to next
 
 - [Deploy as a server](server.md) — install, configure, network, and operate the server itself.
-- [Server metrics](server-metrics.md) — the nine `/metrics` series and the alerts that matter.
+- [Server metrics](server-metrics.md) — the eleven `/metrics` series and the alerts that matter.
 - [Scenario file format](../build/scenario-files.md) — what to put in the body of `POST /scenarios`.
 - [Encoders](../build/encoders.md) and [Sinks](../build/sinks.md) — every encoder/sink option you can declare in a posted body.
 - [Cross-POST `while:` refs (YAML schema)](../build/scenario-files.md#cross-post-while-refs) — the file-side counterpart to the HTTP cross-POST surface.

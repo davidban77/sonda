@@ -20,6 +20,7 @@ pub async fn get_metrics(State(state): State<AppState>) -> Result<Response, Resp
     write_scenarios_finished_total(&state, &mut buf).map_err(internal)?;
     write_worker_threads(&state, &mut buf).map_err(internal)?;
     write_max_scenarios(&state, &mut buf).map_err(internal)?;
+    write_autostart_progress(&state, &mut buf).map_err(internal)?;
     write_requests_total(&state, &mut buf).map_err(internal)?;
     write_request_duration_seconds(&state, &mut buf).map_err(internal)?;
     write_sink_errors_total(&state, &mut buf).map_err(internal)?;
@@ -115,6 +116,22 @@ fn write_max_scenarios(state: &AppState, buf: &mut String) -> std::fmt::Result {
     )?;
     writeln!(buf, "# TYPE sonda_server_max_scenarios gauge")?;
     writeln!(buf, "sonda_server_max_scenarios {}", state.max_scenarios)
+}
+
+fn write_autostart_progress(state: &AppState, buf: &mut String) -> std::fmt::Result {
+    let sweep = state.sweep_status.snapshot();
+    writeln!(
+        buf,
+        "# HELP sonda_server_autostart_started Catalog entries the startup sweep has started."
+    )?;
+    writeln!(buf, "# TYPE sonda_server_autostart_started gauge")?;
+    writeln!(buf, "sonda_server_autostart_started {}", sweep.started)?;
+    writeln!(
+        buf,
+        "# HELP sonda_server_autostart_expected Runnable catalog entries the startup sweep set out to start."
+    )?;
+    writeln!(buf, "# TYPE sonda_server_autostart_expected gauge")?;
+    writeln!(buf, "sonda_server_autostart_expected {}", sweep.expected)
 }
 
 fn write_requests_total(state: &AppState, buf: &mut String) -> std::fmt::Result {
@@ -266,6 +283,32 @@ fn escape_label(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autostart_progress_reports_started_and_expected() {
+        let mut state = AppState::new();
+        let status = crate::state::SweepStatus::in_progress(4);
+        status.record_started();
+        status.finish();
+        state.sweep_status = std::sync::Arc::new(status);
+
+        let mut buf = String::new();
+        write_autostart_progress(&state, &mut buf).expect("write must succeed");
+
+        assert!(buf.contains("# TYPE sonda_server_autostart_started gauge"));
+        assert!(buf.contains("\nsonda_server_autostart_started 1\n"));
+        assert!(buf.contains("# TYPE sonda_server_autostart_expected gauge"));
+        assert!(buf.contains("\nsonda_server_autostart_expected 4\n"));
+    }
+
+    #[test]
+    fn autostart_progress_is_zeroed_when_autostart_is_off() {
+        let mut buf = String::new();
+        write_autostart_progress(&AppState::new(), &mut buf).expect("write must succeed");
+
+        assert!(buf.contains("\nsonda_server_autostart_started 0\n"));
+        assert!(buf.contains("\nsonda_server_autostart_expected 0\n"));
+    }
 
     #[test]
     fn escape_label_handles_backslash_quote_and_newline() {
