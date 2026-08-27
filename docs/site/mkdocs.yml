@@ -232,6 +232,7 @@ nav:
   - Import real data:
       - import/index.md
       - From a CSV file: import/from-csv.md
+      - From a live Prometheus: import/from-prometheus.md
       - Grafana exports: import/grafana-exports.md
       - Log files: import/log-files.md
   - Deploy:
