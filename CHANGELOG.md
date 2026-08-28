@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.22.0](https://github.com/davidban77/sonda/compare/v1.21.0...v1.22.0) (2026-08-27)
+
+
+### Features
+
+* **cli:** capture a live Prometheus range query as a replayable scenario ([#594](https://github.com/davidban77/sonda/issues/594)) ([42cb0fa](https://github.com/davidban77/sonda/commit/42cb0faa9c02da50ff0db6105c35032ae3c75a00))
+* **cli:** shell completions, and make --dry-run agree with the runtime ([#565](https://github.com/davidban77/sonda/issues/565)) ([c92b756](https://github.com/davidban77/sonda/commit/c92b7567b6d1f846fae41153837d612d581326fa))
+* **core:** absence — capture a TSDB range and replay its silence as silence ([#571](https://github.com/davidban77/sonda/issues/571)) ([3a3a60f](https://github.com/davidban77/sonda/commit/3a3a60fc6fa9c2edbc4285818b83e92bc971746e))
+* **core:** capture absence as blanks plus the windows that describe it ([#587](https://github.com/davidban77/sonda/issues/587)) ([2262108](https://github.com/davidban77/sonda/commit/22621081a3739151da84cbcecb45640d26255b2f))
+* **core:** emit the scenario that replays a capture ([#588](https://github.com/davidban77/sonda/issues/588)) ([2abfc5d](https://github.com/davidban77/sonda/commit/2abfc5d72961e0d6617e2e8f93085f86fab26419))
+* **server:** add /ready so probes can tell alive from doing its job ([#595](https://github.com/davidban77/sonda/issues/595)) ([bc00abc](https://github.com/davidban77/sonda/commit/bc00abc5f63c7f10689afa48bd87f9c0f73bf03d))
+* **server:** start catalog scenarios at boot with --autostart ([#590](https://github.com/davidban77/sonda/issues/590)) ([c63300a](https://github.com/davidban77/sonda/commit/c63300aa53cda4405c4983453a6c2c8026d9485f))
+
+
+### Bug Fixes
+
+* **ci:** retire the floor-staleness probe now that v1.21.0 answered it ([#563](https://github.com/davidban77/sonda/issues/563)) ([f78fbfa](https://github.com/davidban77/sonda/commit/f78fbfa52fb2a7657896ff5db3174babc346465e))
+* **cli:** --dry-run must refuse what run refuses ([#583](https://github.com/davidban77/sonda/issues/583)) ([e58a9d3](https://github.com/davidban77/sonda/commit/e58a9d3d4abb16e6657c87c458121687295ceb4e))
+* **core:** a capture with no recorded silence still owes its rows ([#584](https://github.com/davidban77/sonda/issues/584)) ([d8b3b5a](https://github.com/davidban77/sonda/commit/d8b3b5a2406d057e455a2adcca3b122680042672))
+* **deps:** bump h2 to 0.4.16 for RUSTSEC-2026-0258 ([#566](https://github.com/davidban77/sonda/issues/566)) ([9e077cd](https://github.com/davidban77/sonda/commit/9e077cd997c739a0c8d03b9c91b53b77c25c8703))
+* **docs:** gate prose verb counts and waveform SVG drift ([#567](https://github.com/davidban77/sonda/issues/567)) ([ac99fb1](https://github.com/davidban77/sonda/commit/ac99fb1af47d6926f15624ffd012122c139ac2ac))
+* **server:** contain a panic to the operation that panicked ([#596](https://github.com/davidban77/sonda/issues/596)) ([8e86294](https://github.com/davidban77/sonda/commit/8e86294c70b7827d696982ad6528c984e91822d8))
+
+
+### Documentation
+
+* complete the stale verb list in the CLI usage line ([#570](https://github.com/davidban77/sonda/issues/570)) ([dbff48d](https://github.com/davidban77/sonda/commit/dbff48db05039014d04eae355ba1f3556c449cb2))
+* how to add a check, and a timeout on every CI job ([#568](https://github.com/davidban77/sonda/issues/568)) ([9befa29](https://github.com/davidban77/sonda/commit/9befa2927ff8053dfa9cad2568fc42d2d65495be))
+* the capture page, and let --timescale -1 reach its own error ([#600](https://github.com/davidban77/sonda/issues/600)) ([c7adedd](https://github.com/davidban77/sonda/commit/c7adeddc5a0d4db0592a36fd3baea74e9e8bad7d))
+
+
+### CI/CD
+
+* prune the check surface using the gate audit ([#569](https://github.com/davidban77/sonda/issues/569)) ([b6dc2ed](https://github.com/davidban77/sonda/commit/b6dc2ed8fdee73f66bbb33318a09a6a63b218e5e))
+
 ## [1.21.0](https://github.com/davidban77/sonda/compare/v1.20.0...v1.21.0) (2026-08-17)
 
 
