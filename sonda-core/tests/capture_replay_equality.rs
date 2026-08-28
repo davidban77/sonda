@@ -176,17 +176,22 @@ fn capture(cap: &Capture) -> Artifacts {
     );
     // Pairing is by order, so two rows sharing a value would let a swap between
     // them pass. Checked rather than left as a convention the next fixture has
-    // to remember.
-    let mut distinct: Vec<&str> = cap.slots.iter().flatten().copied().collect();
-    let served_count = distinct.len();
-    distinct.sort_unstable();
-    distinct.dedup();
-    assert_eq!(
-        distinct.len(),
-        served_count,
-        "fixture values must be pairwise distinct: {:?}",
-        cap.slots
-    );
+    // to remember, and checked with `eq` — the same predicate the pairwise
+    // comparison uses. Deduping the text instead would call "48" and "48.0"
+    // distinct while the comparison they guard calls them equal.
+    let parsed: Vec<f64> = cap
+        .slots
+        .iter()
+        .flatten()
+        .map(|s| s.parse().expect("the fixture serves numbers"))
+        .collect();
+    for (i, a) in parsed.iter().enumerate() {
+        assert!(
+            !parsed[i + 1..].iter().any(|b| eq(*a, *b)),
+            "fixture values must be pairwise distinct: {:?}",
+            cap.slots
+        );
+    }
     let body = format!(
         r#"{{"status":"success","data":{{"resultType":"matrix","result":[
              {{"metric":{{"__name__":"up","job":"api"}},"values":[{}]}}]}}}}"#,
