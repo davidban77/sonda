@@ -8,6 +8,9 @@ mod progress;
 mod scenario_loader;
 mod sink_format;
 mod status;
+// `sonda test` verifies against a Prometheus or Alertmanager, so it exists only
+// where the HTTP client does.
+#[cfg(feature = "http")]
 mod test_cmd;
 
 use std::process;
@@ -74,6 +77,7 @@ fn run() -> anyhow::Result<()> {
         Commands::List(ref args) => list_catalog(args, catalog)?,
         Commands::Show(ref args) => show_entry(args, catalog)?,
         Commands::New(ref args) => new::run(args)?,
+        #[cfg(feature = "http")]
         Commands::Test(ref args) => test_cmd::run(&rt, args, &cli, catalog, verbosity, &cancel)?,
         // Returned above, before the runtime exists.
         Commands::Completions(_) => unreachable!("completions is handled before the runtime"),
