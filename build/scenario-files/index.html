@@ -3426,9 +3426,19 @@
 <ul>
 <li><strong>Initial POST</strong>: the downstream lands in <code>unresolved</code>. Its <a href="../../deploy/http-api/#pending_ref-field-on-get-scenariosid"><code>pending_ref</code> field on <code>GET /scenarios/{id}</code></a> shows the upstream it is waiting on.</li>
 <li><strong>Upstream POSTs</strong>: the downstream resolves automatically. The server's resolver wires the subscription and the downstream transitions to <code>running</code> (or to <code>paused</code> if the predicate is already false). No client orchestration is needed.</li>
-<li><strong>Upstream is DELETEd, or finishes its duration</strong>: the downstream transitions back to <code>unresolved</code> and applies the <code>if_unresolved:</code> mode again. <code>open</code> keeps it emitting, <code>closed</code> pauses, <code>pending</code> halts.</li>
-<li><strong>A new POST arrives with the same <code>scenario_name:</code></strong>: the downstream re-resolves to the new upstream automatically. The downstream keeps its accumulated state across the <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr>; counters preserve their value through pause/resume cycles.</li>
+<li><strong>The upstream entry is DELETEd, or finishes its duration</strong>: the downstream transitions back to <code>unresolved</code> and applies the <code>if_unresolved:</code> mode again. <code>open</code> keeps it emitting, <code>closed</code> pauses, <code>pending</code> halts.</li>
+<li><strong>A new POST arrives with the same <code>scenario_name:</code></strong>: the downstream re-resolves automatically, as long as that body carries an entry whose <code>id:</code> matches the downstream's <code>ref:</code>. The downstream keeps its accumulated state across the <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr>; counters preserve their value through pause/resume cycles.</li>
 </ul>
+<p>Each of those bullets is about the one upstream <strong>entry</strong> named by <code>ref:</code>, not about the whole upstream body. An upstream body can hold several entries under a single <code>scenario_name:</code>, and every entry carries its own gate signal. A downstream is connected to exactly one of them.</p>
+<div class="admonition info">
+<p class="admonition-title">What entries of one body share, and what they do not</p>
+<p>Entries in the same POST body share the <code>scenario_name:</code> that addresses them, and the <a href="../../deploy/http-api/#duplicate-scenario_name-returns-409">409 Conflict rule</a> that protects that name. They do not share gate lifetimes.</p>
+<ul>
+<li>Another entry of the upstream body finishing its <code>duration:</code>, or being DELETEd, leaves your downstream connected. Only the entry named by <code>ref:</code> sends it back to <code>unresolved</code>.</li>
+<li>A downstream still waiting for an upstream that has never been POSTed keeps waiting. Entries of that <code>scenario_name:</code> starting and ending in the meantime do not cancel the wait. The downstream resolves when an entry with a matching <code>ref:</code> arrives.</li>
+<li>The <code>scenario_name:</code> itself stays taken while any one entry of that body is still live. It frees when the last one finishes or is DELETEd. A new POST with that name then returns <code>201</code>.</li>
+</ul>
+</div>
 <p><code>GET /scenarios/{id}</code> exposes the wait target as <code>pending_ref</code> whenever <code>state</code> is <code>unresolved</code>. The field is omitted in every other state.</p>
 <div class="language-json highlight"><span class="filename">GET /scenarios/{id} — unresolved downstream</span><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="p">{</span>
 </span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="w">  </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"01HX..."</span><span class="p">,</span>
@@ -3744,7 +3754,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 13, 2026 12:22:06 UTC">August 13, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 28, 2026 12:26:57 UTC">August 28, 2026</span>
   </span>
 
     
