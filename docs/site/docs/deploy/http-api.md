@@ -506,7 +506,7 @@ Without `--catalog`, a body that references a pack by name is rejected with `400
 
 When a request body sets a top-level `scenario_name`, the server scans the active scenario map for a matching handle. A match is any handle with the same `scenario_name` in `pending`, `running`, `paused`, `held`, or `unresolved` state. If at least one match is found, the POST is rejected with `409 Conflict`. Nothing is launched. The rule is explicit: the operator must `DELETE` the conflicting scenarios first, then re-send the body. There is no `?force=true` override. The explicit DELETE is the only way to free the name.
 
-Anonymous bodies (no top-level `scenario_name`) skip this check entirely. Two consecutive POSTs of the same anonymous body both return 201. Finished handles do not block a new POST. Once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
+Anonymous bodies (no top-level `scenario_name`) skip this check entirely. Two consecutive POSTs of the same anonymous body both return 201. Finished handles do not block a new POST. A body with several entries holds its name while any one of them is still live. Once all of them have finished or been DELETEd, a new body with the same name returns 201.
 
 The conflict check is best-effort. The server scans the active scenarios before launching the new one. Two simultaneous POSTs of the same `scenario_name` can both pass the check if they race within the launch window. Both register and their Prometheus streams will collide on duplicate timestamps. Sequential operator use is unaffected. High-concurrency callers should serialize POSTs that share a `scenario_name`.
 
@@ -583,7 +583,7 @@ A scenario with a cross-POST `while:` clause may have no registered upstream yet
 | `unresolved` | Cross-POST `while.scenario_name:` has not been received yet (with `if_unresolved: pending`), or its upstream was deleted. |
 | `finished` | `duration:` elapsed or shutdown signalled. Terminal. |
 
-A scenario can transition `unresolved → pending → running` once the upstream registers. It returns to `unresolved` when the upstream is deleted or finishes its own duration. Re-sending the same `scenario_name:` re-resolves the downstream automatically. No client orchestration is required. See [Cross-POST `while:` refs](../build/scenario-files.md#cross-post-while-refs) for the YAML schema and the `if_unresolved:` mode reference.
+A scenario can transition `unresolved → pending → running` once the upstream registers. It returns to `unresolved` when the upstream **entry** it names is deleted or finishes its own duration. Other entries of that upstream body starting or ending do not affect it. Re-sending the same `scenario_name:` re-resolves the downstream automatically. No client orchestration is required. See [Cross-POST `while:` refs](../build/scenario-files.md#cross-post-while-refs) for the YAML schema and the `if_unresolved:` mode reference. [Lifecycle](../build/scenario-files.md#lifecycle) covers what entries of one body share.
 
 !!! warning "Add `unresolved` and `held` to your dashboards"
     If you maintain Prometheus recording rules or Grafana dashboards that enumerate `state=~"pending|running|paused|finished"`, add `unresolved` and `held` to the alternation (`state=~"pending|running|paused|held|unresolved|finished"`). Or rewrite the matcher as a negation (`state!="finished"`). A matcher that lists every known state drops scenarios in `unresolved` or `held` silently.

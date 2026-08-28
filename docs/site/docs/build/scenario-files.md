@@ -711,8 +711,17 @@ A cross-POST-gated scenario adds one state to the `while:` lifecycle: **`unresol
 
 - **Initial POST**: the downstream lands in `unresolved`. Its [`pending_ref` field on `GET /scenarios/{id}`](../deploy/http-api.md#pending_ref-field-on-get-scenariosid) shows the upstream it is waiting on.
 - **Upstream POSTs**: the downstream resolves automatically. The server's resolver wires the subscription and the downstream transitions to `running` (or to `paused` if the predicate is already false). No client orchestration is needed.
-- **Upstream is DELETEd, or finishes its duration**: the downstream transitions back to `unresolved` and applies the `if_unresolved:` mode again. `open` keeps it emitting, `closed` pauses, `pending` halts.
-- **A new POST arrives with the same `scenario_name:`**: the downstream re-resolves to the new upstream automatically. The downstream keeps its accumulated state across the gap; counters preserve their value through pause/resume cycles.
+- **The upstream entry is DELETEd, or finishes its duration**: the downstream transitions back to `unresolved` and applies the `if_unresolved:` mode again. `open` keeps it emitting, `closed` pauses, `pending` halts.
+- **A new POST arrives with the same `scenario_name:`**: the downstream re-resolves automatically, as long as that body carries an entry whose `id:` matches the downstream's `ref:`. The downstream keeps its accumulated state across the gap; counters preserve their value through pause/resume cycles.
+
+Each of those bullets is about the one upstream **entry** named by `ref:`, not about the whole upstream body. An upstream body can hold several entries under a single `scenario_name:`, and every entry carries its own gate signal. A downstream is connected to exactly one of them.
+
+!!! info "What entries of one body share, and what they do not"
+    Entries in the same POST body share the `scenario_name:` that addresses them, and the [409 Conflict rule](../deploy/http-api.md#duplicate-scenario_name-returns-409) that protects that name. They do not share gate lifetimes.
+
+    - Another entry of the upstream body finishing its `duration:`, or being DELETEd, leaves your downstream connected. Only the entry named by `ref:` sends it back to `unresolved`.
+    - A downstream still waiting for an upstream that has never been POSTed keeps waiting. Entries of that `scenario_name:` starting and ending in the meantime do not cancel the wait. The downstream resolves when an entry with a matching `ref:` arrives.
+    - The `scenario_name:` itself stays taken while any one entry of that body is still live. It frees when the last one finishes or is DELETEd. A new POST with that name then returns `201`.
 
 `GET /scenarios/{id}` exposes the wait target as `pending_ref` whenever `state` is `unresolved`. The field is omitted in every other state.
 

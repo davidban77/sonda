@@ -237,8 +237,9 @@ pub async fn launch_scenario_with_gates(
     let cleaned_up_for_task = Arc::clone(&cleaned_up);
     let resolver_for_task = resolver.clone();
     let scenario_name_for_task = scenario_name.clone();
+    let entry_id_for_task = id.clone();
 
-    // Cross-POST scenarios broadcast via resolver.unregister; broadcasting
+    // Cross-POST scenarios broadcast via resolver.unregister_entries; broadcasting
     // here too races the registry's subscriber migration.
     let bus_for_finish_guard = if scenario_name_for_task.is_some() && resolver_for_task.is_some() {
         None
@@ -254,11 +255,12 @@ pub async fn launch_scenario_with_gates(
             flag: alive_for_task,
         };
 
-        // Marks Finished on drop; unregisters when a resolver is wired.
+        // Marks Finished on drop; unregisters this entry's bus when a resolver is wired.
         let _state_guard = StateGuard {
             stats: Arc::clone(&stats_for_state),
             resolver: resolver_for_task,
             scenario_name: scenario_name_for_task,
+            entry_id: entry_id_for_task,
             cleaned_up: cleaned_up_for_task,
         };
 
@@ -429,6 +431,7 @@ struct StateGuard {
     stats: Arc<RwLock<ScenarioStats>>,
     resolver: Option<Arc<dyn GateBusResolver>>,
     scenario_name: Option<String>,
+    entry_id: String,
     cleaned_up: Arc<AtomicBool>,
 }
 
@@ -446,7 +449,7 @@ impl Drop for StateGuard {
         if let (Some(name), Some(resolver)) =
             (self.scenario_name.as_deref(), self.resolver.as_ref())
         {
-            resolver.unregister(name);
+            resolver.unregister_entries(name, &[self.entry_id.as_str()]);
         }
     }
 }
@@ -1624,6 +1627,7 @@ mod tests {
                 stats: Arc::clone(&stats),
                 resolver: None,
                 scenario_name: None,
+                entry_id: String::new(),
                 cleaned_up: Arc::new(AtomicBool::new(false)),
             };
         }
@@ -1642,6 +1646,7 @@ mod tests {
                     stats: stats_for_thread,
                     resolver: None,
                     scenario_name: None,
+                    entry_id: String::new(),
                     cleaned_up: Arc::new(AtomicBool::new(false)),
                 };
                 panic!("intentional panic for StateGuard test");

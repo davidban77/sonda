@@ -650,11 +650,13 @@ pub enum AdmissionError {
     Internal(String),
 }
 
-/// Holds scenarios that are launched but not yet reachable through [`AppState`]; dropped without `release` — on a panic — it stops them and frees the scenario name.
+/// Holds scenarios that are launched but not yet reachable through [`AppState`]; dropped without `release` — on a panic — it stops them and unregisters their gate buses.
 struct AdoptionGuard<'a> {
     state: &'a AppState,
     scenario_name: Option<String>,
-    handles: Vec<sonda_core::ScenarioHandle>,
+    held: Vec<sonda_core::ScenarioHandle>,
+    // The one handle between leaving `held` and entering the scenario map.
+    in_flight: Option<sonda_core::ScenarioHandle>,
 }
 
 impl<'a> AdoptionGuard<'a> {
@@ -666,24 +668,37 @@ impl<'a> AdoptionGuard<'a> {
         Self {
             state,
             scenario_name,
-            handles,
+            held: handles,
+            in_flight: None,
         }
+    }
+
+    fn owned(&self) -> impl Iterator<Item = &sonda_core::ScenarioHandle> {
+        self.held.iter().chain(self.in_flight.iter())
     }
 
     fn release(mut self) {
         self.scenario_name = None;
-        self.handles.clear();
+        self.held.clear();
+        self.in_flight = None;
     }
 }
 
 impl Drop for AdoptionGuard<'_> {
     fn drop(&mut self) {
-        for handle in &self.handles {
+        for handle in self.owned() {
+            // Claim the cleanup before stopping so the task's own teardown does not race this one.
+            handle
+                .cleaned_up
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             handle.stop();
         }
         if let Some(name) = self.scenario_name.take() {
-            warn!(scenario_name = %name, stopped = self.handles.len(), "admission panicked after launch — stopped the scenarios it still held and freed the name");
-            self.state.gate_bus_registry.unregister(&name);
+            let entry_ids: Vec<&str> = self.owned().map(|h| h.entry_id.as_str()).collect();
+            warn!(scenario_name = %name, stopped = entry_ids.len(), "admission panicked after launch — stopped the scenarios it still held and unregistered their gate buses");
+            self.state
+                .gate_bus_registry
+                .unregister_entries(&name, &entry_ids);
         }
     }
 }
@@ -772,8 +787,8 @@ pub async fn admit_compiled(
     #[cfg(test)]
     tests::panic_after_launch_if_armed();
 
-    let mut created: Vec<CreatedScenario> = Vec::with_capacity(launched.handles.len());
-    for handle in launched.handles.iter_mut() {
+    let mut created: Vec<CreatedScenario> = Vec::with_capacity(launched.held.len());
+    for handle in launched.held.iter_mut() {
         let new_id = Uuid::new_v4().to_string();
         let old_id = std::mem::replace(&mut handle.id, new_id.clone());
         state.gate_bus_registry.rename_handle(&old_id, &new_id);
@@ -793,11 +808,15 @@ pub async fn admit_compiled(
 
     let mut scenarios = state.scenarios.write();
     for created_entry in created.iter() {
-        // Hand one handle over at a time: whatever the guard still holds is what it stops.
-        let handle = launched.handles.remove(0);
+        // Via in_flight, so the guard owns every handle it has not yet inserted.
+        let row_id = created_entry.id.clone();
+        launched.in_flight = Some(launched.held.remove(0));
         #[cfg(test)]
         tests::panic_during_adoption_if_armed();
-        scenarios.insert(created_entry.id.clone(), handle);
+        scenarios.insert(
+            row_id,
+            launched.in_flight.take().expect("in_flight was just set"),
+        );
     }
     drop(scenarios);
     launched.release();
@@ -922,7 +941,9 @@ pub async fn delete_scenario(
     let final_stats = handle.stats_snapshot();
 
     if let Some(name) = scenario_name_to_unregister {
-        state.gate_bus_registry.unregister(&name);
+        state
+            .gate_bus_registry
+            .unregister_entries(&name, &[handle.entry_id.as_str()]);
     }
 
     info!(id = %id, status = %status, total_events = final_stats.total_events, "scenario deleted");
@@ -1450,12 +1471,42 @@ scenarios:
       value: 3.0
 ";
 
+    const ORPHAN_BATCH_WATCHER_YAML: &str = "\
+version: 2
+kind: runnable
+scenario_name: orphan_batch_watcher
+defaults:
+  rate: 5
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: watcher
+    signal_type: metrics
+    name: orphan_batch_watcher
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: first
+      op: \">\"
+      value: 0
+      scenario_name: orphan_batch
+      if_unresolved: pending
+";
+
     fn orphan_probe() -> CompiledFile {
         compile_v2_text(ORPHAN_PROBE_YAML, None).expect("the probe body must compile")
     }
 
     fn orphan_batch() -> CompiledFile {
         compile_v2_text(ORPHAN_BATCH_YAML, None).expect("the batch body must compile")
+    }
+
+    fn orphan_batch_watcher() -> CompiledFile {
+        compile_v2_text(ORPHAN_BATCH_WATCHER_YAML, None).expect("the watcher body must compile")
     }
 
     #[test]
@@ -1519,18 +1570,249 @@ scenarios:
             1,
             "the row inserted before the panic must stay reachable"
         );
-        assert!(
-            !state.gate_bus_registry.scenario_name_in_use("orphan_batch"),
-            "the scenario name must not stay held by the registry"
-        );
-
-        // Exactly one task exits: the handle the guard still held. The inserted row keeps
-        // running, and the handle in flight at the panic escapes.
-        drive_until_alive_tasks(&rt, 2);
+        // Only the adopted row survives: the guard owns the tail and the handle in flight.
+        drive_until_alive_tasks(&rt, 1);
         assert!(
             inserted[0].load(std::sync::atomic::Ordering::SeqCst),
             "an adopted scenario must not be stopped by the guard"
         );
+        assert!(
+            state
+                .gate_bus_registry
+                .lookup("orphan_batch", "first")
+                .is_some(),
+            "an adopted row must keep its gate bus"
+        );
+        for orphan in ["second", "third"] {
+            assert!(
+                state
+                    .gate_bus_registry
+                    .lookup("orphan_batch", orphan)
+                    .is_none(),
+                "the guard must unregister '{orphan}': the tail it held and the handle in flight"
+            );
+        }
+    }
+
+    #[test]
+    fn a_panic_during_adoption_leaves_a_downstream_of_an_adopted_row_subscribed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = AppState::new();
+
+        let watcher = rt
+            .block_on(admit_compiled(&state, orphan_batch_watcher(), "test"))
+            .expect("the watcher must be admitted");
+        let watcher_id = watcher.created[0].id.clone();
+        assert!(
+            state
+                .gate_bus_registry
+                .pending_for_handle(&watcher_id)
+                .is_some(),
+            "the watcher must start out waiting for an upstream that does not exist yet"
+        );
+
+        arm_panic_during_adoption(1);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(admit_compiled(&state, orphan_batch(), "test"))
+        }));
+        assert!(outcome.is_err(), "the injected panic must have propagated");
+
+        let attempts = state
+            .scenarios
+            .read()
+            .get(&watcher_id)
+            .expect("the watcher must still be listed")
+            .stats_snapshot()
+            .cumulative_resolution_attempts;
+        assert!(
+            attempts >= 1,
+            "the batch launch must have resolved the watcher onto the adopted row's bus, \
+             otherwise this test proves nothing"
+        );
+        drive_until_alive_tasks(&rt, 2);
+        assert!(
+            state
+                .gate_bus_registry
+                .lookup("orphan_batch", "first")
+                .is_some(),
+            "the adopted row must keep its gate bus once the stopped tail has finished"
+        );
+        assert!(
+            state
+                .gate_bus_registry
+                .pending_for_handle(&watcher_id)
+                .is_none(),
+            "a downstream of an adopted row must stay subscribed, not be sent back to pending"
+        );
+    }
+
+    #[test]
+    fn the_batch_name_stays_conflicted_after_an_adoption_panic_until_the_adopted_row_is_deleted() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = AppState::new();
+
+        arm_panic_during_adoption(1);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(admit_compiled(&state, orphan_batch(), "test"))
+        }));
+        assert!(outcome.is_err(), "the injected panic must have propagated");
+
+        let rejected = rt.block_on(admit_compiled(&state, orphan_batch(), "test"));
+        assert!(
+            matches!(&rejected, Err(AdmissionError::Conflict { .. })),
+            "the name must stay conflicted while the adopted row runs, got: {:?}",
+            rejected.err()
+        );
+        assert!(
+            state
+                .gate_bus_registry
+                .lookup("orphan_batch", "first")
+                .is_some(),
+            "the adopted row is the only thing that may still hold the name"
+        );
+        for orphan in ["second", "third"] {
+            assert!(
+                state
+                    .gate_bus_registry
+                    .lookup("orphan_batch", orphan)
+                    .is_none(),
+                "'{orphan}' was never adopted, so nothing must hold its bus"
+            );
+        }
+
+        let adopted: Vec<String> = state.scenarios.read().keys().cloned().collect();
+        assert_eq!(adopted.len(), 1, "one row must have been adopted");
+        for id in adopted {
+            assert!(
+                rt.block_on(delete_scenario(State(state.clone()), Path(id)))
+                    .is_ok(),
+                "deleting an adopted row must succeed"
+            );
+        }
+
+        assert!(
+            !state.gate_bus_registry.scenario_name_in_use("orphan_batch"),
+            "deleting the last row under the name must leave no bus behind"
+        );
+        let readmitted = rt.block_on(admit_compiled(&state, orphan_batch(), "test"));
+        assert!(
+            readmitted.is_ok(),
+            "the name must be admissible once the adopted rows are deleted, got: {:?}",
+            readmitted.err()
+        );
+        rt.block_on(cleanup_scenarios(&state));
+    }
+
+    fn row_id_for_entry(state: &AppState, entry_id: &str) -> String {
+        state
+            .scenarios
+            .read()
+            .iter()
+            .find(|(_, h)| h.entry_id == entry_id)
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| panic!("no row for entry '{entry_id}'"))
+    }
+
+    #[test]
+    fn deleting_one_row_of_a_batch_leaves_its_siblings_bus_and_downstream_alone() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = AppState::new();
+
+        rt.block_on(admit_compiled(&state, orphan_batch(), "test"))
+            .expect("the batch must be admitted");
+        let watcher = rt
+            .block_on(admit_compiled(&state, orphan_batch_watcher(), "test"))
+            .expect("the watcher must be admitted");
+        let watcher_id = watcher.created[0].id.clone();
+        assert!(
+            state
+                .gate_bus_registry
+                .pending_for_handle(&watcher_id)
+                .is_none(),
+            "the watcher must have resolved onto 'first', or this test proves nothing"
+        );
+
+        let third = row_id_for_entry(&state, "third");
+        rt.block_on(delete_scenario(State(state.clone()), Path(third)))
+            .expect("deleting one row must succeed");
+
+        assert!(
+            state
+                .gate_bus_registry
+                .lookup("orphan_batch", "third")
+                .is_none(),
+            "the deleted row must retire its own bus"
+        );
+        for sibling in ["first", "second"] {
+            assert!(
+                state
+                    .gate_bus_registry
+                    .lookup("orphan_batch", sibling)
+                    .is_some(),
+                "'{sibling}' is still running and must keep its bus"
+            );
+        }
+        assert!(
+            state
+                .gate_bus_registry
+                .pending_for_handle(&watcher_id)
+                .is_none(),
+            "a downstream of a sibling that was not deleted must stay subscribed"
+        );
+        rt.block_on(cleanup_scenarios(&state));
+    }
+
+    #[test]
+    fn the_batch_name_frees_only_once_its_last_row_is_deleted() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = AppState::new();
+
+        rt.block_on(admit_compiled(&state, orphan_batch(), "test"))
+            .expect("the batch must be admitted");
+
+        for entry_id in ["first", "second"] {
+            let row = row_id_for_entry(&state, entry_id);
+            rt.block_on(delete_scenario(State(state.clone()), Path(row)))
+                .expect("deleting a row must succeed");
+            assert!(
+                state.gate_bus_registry.scenario_name_in_use("orphan_batch"),
+                "the name must stay held while entries after '{entry_id}' are running"
+            );
+            let rejected = rt.block_on(admit_compiled(&state, orphan_batch(), "test"));
+            assert!(
+                matches!(&rejected, Err(AdmissionError::Conflict { .. })),
+                "the name must stay conflicted after deleting '{entry_id}', got: {:?}",
+                rejected.err()
+            );
+        }
+
+        let last = row_id_for_entry(&state, "third");
+        rt.block_on(delete_scenario(State(state.clone()), Path(last)))
+            .expect("deleting the last row must succeed");
+
+        assert!(
+            !state.gate_bus_registry.scenario_name_in_use("orphan_batch"),
+            "the name must free once the last entry under it is gone"
+        );
+        let readmitted = rt.block_on(admit_compiled(&state, orphan_batch(), "test"));
+        assert!(
+            readmitted.is_ok(),
+            "the name must be admissible again, got: {:?}",
+            readmitted.err()
+        );
+        rt.block_on(cleanup_scenarios(&state));
     }
 
     #[tokio::test]

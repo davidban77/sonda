@@ -110,6 +110,53 @@ impl GateBusRegistry {
             }
         }
     }
+
+    fn retire_buses(&self, scenario_name: &str, entry_ids: &[&str]) -> Vec<BusKey> {
+        let mut buses = self.buses.write();
+        let keys: Vec<BusKey> = buses
+            .keys()
+            .filter(|(name, entry_id)| {
+                name == scenario_name && entry_ids.contains(&entry_id.as_str())
+            })
+            .cloned()
+            .collect();
+        let mut removed: Vec<BusKey> = Vec::with_capacity(keys.len());
+        let mut retired: Vec<Arc<GateBus>> = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(bus) = buses.remove(&key) {
+                removed.push(key);
+                retired.push(bus);
+            }
+        }
+        drop(buses);
+
+        // Broadcast on the bus first so in-flight subscribers (those that called
+        // subscribe_with_while_sender but whose track_subscriber has not yet landed
+        // in the registry) still receive UpstreamGone.
+        for bus in retired {
+            bus.broadcast_upstream_gone();
+        }
+        removed
+    }
+
+    fn requeue_subscribers(&self, keys: &[BusKey]) {
+        let mut subs = self.subscribers.write();
+        let mut pending = self.pending.write();
+        for key in keys {
+            let Some(refs) = subs.remove(key) else {
+                continue;
+            };
+            for sub in refs {
+                if sub.stats.strong_count() == 0 {
+                    continue;
+                }
+                sub.sender.send(GateEdge::UpstreamGone);
+                let handle_id = sub.handle_id.clone();
+                let pending_entry = sub.into_pending(key.0.clone(), key.1.clone());
+                pending.insert(handle_id, pending_entry);
+            }
+        }
+    }
 }
 
 impl GateBusResolver for GateBusRegistry {
@@ -148,61 +195,9 @@ impl GateBusResolver for GateBusRegistry {
         self.lookup(upstream.0, upstream.1)
     }
 
-    fn unregister(&self, scenario_name: &str) {
-        let mut buses = self.buses.write();
-        let removed_keys: Vec<BusKey> = buses
-            .keys()
-            .filter(|(name, _)| name == scenario_name)
-            .cloned()
-            .collect();
-        let mut removed_buses: Vec<(BusKey, Arc<GateBus>)> = Vec::with_capacity(removed_keys.len());
-        for key in &removed_keys {
-            if let Some(bus) = buses.remove(key) {
-                removed_buses.push((key.clone(), bus));
-            }
-        }
-        drop(buses);
-
-        // Broadcast on the bus first so in-flight subscribers (those that called
-        // subscribe_with_while_sender but whose track_subscriber has not yet landed
-        // in the registry) still receive UpstreamGone.
-        for (_, bus) in &removed_buses {
-            bus.broadcast_upstream_gone();
-        }
-
-        let mut subs = self.subscribers.write();
-        let mut pending = self.pending.write();
-
-        let stale_pending: Vec<String> = pending
-            .iter()
-            .filter(|(_, entry)| entry.scenario_name == scenario_name)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for handle_id in stale_pending {
-            let entry = pending.remove(&handle_id).expect("just snapshotted");
-            entry.edge_sender.send(GateEdge::UpstreamGone);
-            if let Some(stats_arc) = entry.stats.upgrade() {
-                let mut s = stats_arc.write().unwrap_or_else(|p| p.into_inner());
-                if s.state != ScenarioState::Finished {
-                    s.transition_state(ScenarioState::Unresolved);
-                }
-            }
-        }
-
-        for key in removed_keys {
-            let Some(refs) = subs.remove(&key) else {
-                continue;
-            };
-            for sub in refs {
-                if sub.stats.strong_count() == 0 {
-                    continue;
-                }
-                sub.sender.send(GateEdge::UpstreamGone);
-                let handle_id = sub.handle_id.clone();
-                let pending_entry = sub.into_pending(key.0.clone(), key.1.clone());
-                pending.insert(handle_id, pending_entry);
-            }
-        }
+    fn unregister_entries(&self, scenario_name: &str, entry_ids: &[&str]) {
+        let removed = self.retire_buses(scenario_name, entry_ids);
+        self.requeue_subscribers(&removed);
     }
 
     fn sweep_pending(&self) -> usize {
@@ -418,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn t_reg_5_unregister_moves_subscribers_to_pending_and_signals_gone() {
+    fn t_reg_5_unregister_entries_moves_subscribers_to_pending_and_signals_gone() {
         let reg = GateBusRegistry::new();
         let bus = Arc::new(GateBus::new());
         reg.register("post-a", "m", Arc::clone(&bus)).expect("reg");
@@ -428,7 +423,7 @@ mod tests {
             .expect("sub");
         reg.track_subscriber(make_pending("h1", "post-a", "m", weak, tx));
 
-        reg.unregister("post-a");
+        reg.unregister_entries("post-a", &["m"]);
         let edge =
             recv_timeout(&mut rx, Duration::from_millis(200)).expect("UpstreamGone within 200ms");
         assert_eq!(edge, GateEdge::UpstreamGone);
@@ -441,7 +436,97 @@ mod tests {
     }
 
     #[test]
-    fn t_reg_6_re_register_after_unregister_re_wires_existing_sender() {
+    fn unregister_entries_removes_only_the_named_entries_buses() {
+        let reg = GateBusRegistry::new();
+        reg.register("post-a", "m1", Arc::new(GateBus::new()))
+            .expect("reg a/m1");
+        reg.register("post-a", "m2", Arc::new(GateBus::new()))
+            .expect("reg a/m2");
+        reg.register("post-b", "m1", Arc::new(GateBus::new()))
+            .expect("reg b/m1");
+
+        reg.unregister_entries("post-a", &["m1"]);
+
+        assert!(reg.lookup("post-a", "m1").is_none());
+        assert!(
+            reg.lookup("post-a", "m2").is_some(),
+            "an entry of the same scenario name that was not named must stay registered"
+        );
+        assert!(reg.lookup("post-b", "m1").is_some());
+        assert!(reg.scenario_name_in_use("post-a"));
+    }
+
+    #[test]
+    fn unregister_entries_requeues_only_the_removed_entrys_subscribers() {
+        let reg = GateBusRegistry::new();
+        let bus_1 = Arc::new(GateBus::new());
+        let bus_2 = Arc::new(GateBus::new());
+        reg.register("post-a", "m1", Arc::clone(&bus_1))
+            .expect("reg m1");
+        reg.register("post-a", "m2", Arc::clone(&bus_2))
+            .expect("reg m2");
+        let (tx_1, mut rx_1) = gate_edge_channel();
+        let (tx_2, mut rx_2) = gate_edge_channel();
+        let (alive_1, weak_1) = live_stats();
+        let (alive_2, weak_2) = live_stats();
+        reg.subscribe(("post-a", "m1"), "h1", weak_1.clone(), tx_1.clone())
+            .expect("sub m1");
+        reg.subscribe(("post-a", "m2"), "h2", weak_2.clone(), tx_2.clone())
+            .expect("sub m2");
+        reg.track_subscriber(make_pending("h1", "post-a", "m1", weak_1, tx_1));
+        reg.track_subscriber(make_pending("h2", "post-a", "m2", weak_2, tx_2));
+
+        reg.unregister_entries("post-a", &["m1"]);
+
+        assert_eq!(
+            recv_timeout(&mut rx_1, Duration::from_millis(200)),
+            Ok(GateEdge::UpstreamGone)
+        );
+        assert!(reg.pending_for_handle("h1").is_some());
+        assert!(
+            recv_timeout(&mut rx_2, Duration::from_millis(50)).is_err(),
+            "a subscriber of an entry that stays registered must not be signalled"
+        );
+        assert!(reg.pending_for_handle("h2").is_none());
+        drop((alive_1, alive_2));
+    }
+
+    #[test]
+    fn unregister_entries_leaves_pending_waiters_on_other_entries_of_the_same_name() {
+        let reg = GateBusRegistry::new();
+        reg.register("post-a", "m1", Arc::new(GateBus::new()))
+            .expect("reg m1");
+        let (tx, mut rx) = gate_edge_channel();
+        let (alive, weak) = live_stats();
+        reg.insert_pending(make_pending("h-waiting", "post-a", "m2", weak, tx));
+
+        reg.unregister_entries("post-a", &["m1"]);
+
+        assert!(
+            reg.pending_for_handle("h-waiting").is_some(),
+            "a waiter on an entry that was never removed must keep waiting"
+        );
+        assert!(
+            recv_timeout(&mut rx, Duration::from_millis(50)).is_err(),
+            "a waiter on an entry that was never removed must not be signalled"
+        );
+        drop(alive);
+    }
+
+    #[test]
+    fn unregister_entries_with_no_entry_ids_removes_nothing() {
+        let reg = GateBusRegistry::new();
+        reg.register("post-a", "m1", Arc::new(GateBus::new()))
+            .expect("reg m1");
+
+        reg.unregister_entries("post-a", &[]);
+        reg.unregister_entries("post-a", &["not-an-entry"]);
+
+        assert!(reg.lookup("post-a", "m1").is_some());
+    }
+
+    #[test]
+    fn t_reg_6_re_register_after_unregister_entries_re_wires_existing_sender() {
         let reg = GateBusRegistry::new();
         let bus_a = Arc::new(GateBus::new());
         bus_a.tick(1.0);
@@ -453,7 +538,7 @@ mod tests {
             .expect("sub");
         reg.track_subscriber(make_pending("h1", "post-a", "m", weak, tx));
 
-        reg.unregister("post-a");
+        reg.unregister_entries("post-a", &["m"]);
         let _ = recv_timeout(&mut rx, Duration::from_millis(200));
 
         let bus_b = Arc::new(GateBus::new());
@@ -480,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn t_reg_8_dead_weak_is_silently_skipped_on_unregister_and_sweep() {
+    fn t_reg_8_dead_weak_is_silently_skipped_on_unregister_entries_and_sweep() {
         let reg = GateBusRegistry::new();
         let bus = Arc::new(GateBus::new());
         reg.register("post-a", "m", Arc::clone(&bus)).expect("reg");
@@ -492,7 +577,7 @@ mod tests {
             reg.track_subscriber(make_pending("h-dead", "post-a", "m", weak, tx));
             drop(alive_local);
         }
-        reg.unregister("post-a");
+        reg.unregister_entries("post-a", &["m"]);
         let _ = recv_timeout(&mut rx, Duration::from_millis(100));
         assert!(reg.pending_for_handle("h-dead").is_none());
     }
@@ -580,24 +665,23 @@ mod tests {
     }
 
     #[test]
-    fn unregister_signals_pending_downstreams_waiting_on_that_upstream() {
+    fn unregister_entries_leaves_an_unresolved_waiter_on_the_removed_entry_pending() {
         let reg = GateBusRegistry::new();
+        reg.register("post-a", "m1", Arc::new(GateBus::new()))
+            .expect("reg m1");
         let (tx, mut rx) = gate_edge_channel();
         let (alive, weak) = live_stats();
-        reg.insert_pending(make_pending("h-pending", "nope", "entry-x", weak, tx));
+        reg.insert_pending(make_pending("h-pending", "post-a", "m1", weak, tx));
+
+        reg.unregister_entries("post-a", &["m1"]);
+
         assert!(
             reg.pending_for_handle("h-pending").is_some(),
-            "pending entry must be present before unregister"
+            "a waiter that never resolved must keep waiting for a re-POST of the same name"
         );
-
-        reg.unregister("nope");
-
-        let edge = recv_timeout(&mut rx, Duration::from_millis(200))
-            .expect("waiter must receive UpstreamGone within 200ms");
-        assert_eq!(edge, GateEdge::UpstreamGone);
         assert!(
-            reg.pending_for_handle("h-pending").is_none(),
-            "pending entry must be removed after unregister"
+            recv_timeout(&mut rx, Duration::from_millis(50)).is_err(),
+            "a waiter that never resolved must not be signalled"
         );
         drop(alive);
     }
@@ -628,19 +712,6 @@ mod tests {
 
     fn state_of(stats: &Arc<RwLock<ScenarioStats>>) -> ScenarioState {
         stats.read().unwrap_or_else(|p| p.into_inner()).state
-    }
-
-    #[test]
-    fn unregister_marks_a_downstream_unresolved_through_its_poisoned_stats_lock() {
-        let reg = GateBusRegistry::new();
-        let (alive, weak) = live_stats();
-        let (tx, _rx) = gate_edge_channel();
-        reg.insert_pending(make_pending("h1", "upstream", "m", weak, tx));
-        poison_stats(&alive);
-
-        reg.unregister("upstream");
-
-        assert_eq!(state_of(&alive), ScenarioState::Unresolved);
     }
 
     #[test]

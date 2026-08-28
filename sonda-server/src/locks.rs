@@ -11,21 +11,20 @@
 //! argument, per lock:
 //!
 //! - `scenarios` — rows are independent. A panic between two inserts of one batch leaves the
-//!   earlier rows admitted and reachable and `AdoptionGuard` stops the tail it still holds. What
-//!   the map itself holds reads exactly like a batch whose later entries were never admitted.
-//!   Two things survive the guard: the one handle in flight at the panic escapes still running,
-//!   and having dropped its permit it no longer counts against `--max-scenarios`; and the guard's
-//!   `unregister` is keyed by scenario name alone, so the rows it already handed over keep
-//!   running and stay listed but lose their gate buses, and their downstreams see `UpstreamGone`.
+//!   earlier rows admitted and reachable, and `AdoptionGuard` stops every handle it has not yet
+//!   inserted — the tail plus the one in flight — unregistering the gate buses of those entries
+//!   alone, so the rows already handed over keep running with their gate buses and their
+//!   downstreams' `while:` wiring intact. What the map itself holds reads exactly like a batch
+//!   whose later entries were never admitted, and nothing escapes still running.
 //! - `request_counters`, `request_histograms` — values are atomics and the update run under the
 //!   guard cannot panic, so at worst one observation is lost.
-//! - `gate_buses` — rows are independent and keyed by `(scenario_name, entry_id)`. `unregister`
-//!   removes a pre-collected key set one key at a time, so a panic mid-loop leaves the keys it
-//!   has not reached registered rather than any row half-removed.
+//! - `gate_buses` — rows are independent and keyed by `(scenario_name, entry_id)`.
+//!   `unregister_entries` removes a pre-collected key set one key at a time, so a panic mid-loop
+//!   leaves the keys it has not reached registered rather than any row half-removed.
 //! - `gate_subscribers`, `gate_pending` — a subscriber moves between the two maps while both
 //!   guards are held, so a panic mid-move can drop an in-flight reference; its edge sender drops
 //!   with it, which the downstream reads as `UpstreamGone` and settles in `unresolved` rather
-//!   than waiting forever. A panic part-way through `unregister` likewise leaves the subscriber
+//!   than waiting forever. A panic part-way through `unregister_entries` likewise leaves the subscriber
 //!   rows it has not reached in place after their bus is gone: those downstreams have already had
 //!   `UpstreamGone` broadcast to them, and since only `pending` is ever re-resolved they will not
 //!   be re-resolved again while the process lives. Nothing reads a row left behind as something

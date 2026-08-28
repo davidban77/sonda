@@ -30,6 +30,8 @@ impl std::error::Error for JoinTimeout {}
 #[non_exhaustive]
 pub struct ScenarioHandle {
     pub id: String,
+    /// Compiler entry id this scenario's gate bus is keyed by; never rewritten when `id` is.
+    pub entry_id: String,
     pub name: String,
     pub scenario_name: Option<String>,
     /// Per-handle cancellation token. `stop()` on one handle never affects another.
@@ -68,6 +70,7 @@ impl ScenarioHandle {
         cleaned_up: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            entry_id: id.clone(),
             id,
             name,
             scenario_name,
