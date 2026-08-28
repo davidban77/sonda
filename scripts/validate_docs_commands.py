@@ -551,18 +551,11 @@ def supports_dry_run(cmd: ExtractedCommand) -> bool:
 
 _FLAG_IN_HELP_RE = re.compile(r"(?<![\w-])(--[a-zA-Z][a-zA-Z0-9-]*)")
 
-# Flags clap declares `global = true`, accepted by every subcommand. They appear
-# in the root `--help` but not in each subcommand's, so they are unioned in.
-_GLOBAL_FLAGS: frozenset[str] = frozenset(
-    {"--quiet", "--verbose", "--dry-run", "--catalog", "--format", "--help", "--version"}
-)
-
-
-# Set by `_known_flags` the first time any verb yields a flag of its own. The
-# vacuity guard is corpus-level rather than per-verb because a verb with no
-# flags is legitimate — `sonda completions` takes a positional shell and
-# nothing else — while a `--help` format this cannot parse would make EVERY
-# documented flag look unknown. `assert_flag_parse_worked` checks it once.
+# Set by `_known_flags` the first time any verb yields a flag. The vacuity guard
+# is corpus-level rather than per-verb because a verb with no flags is
+# legitimate — `sonda completions` takes a positional shell and nothing else —
+# while a `--help` format this cannot parse would make EVERY documented flag
+# look unknown. `assert_flag_parse_worked` checks it once.
 _flag_parse_produced_something = False
 
 
@@ -580,10 +573,12 @@ def _known_flags(sonda_bin: str, verb: str, timeout: float) -> frozenset[str]:
         timeout=timeout,
         check=False,
     )
-    own = frozenset(_FLAG_IN_HELP_RE.findall(proc.stdout)) - _GLOBAL_FLAGS
-    if own:
+    # Globals (`--dry-run`, `--catalog`, …) need no special case: clap renders
+    # them in every subcommand's help, so the parser already returns them.
+    found = frozenset(_FLAG_IN_HELP_RE.findall(proc.stdout))
+    if found:
         _flag_parse_produced_something = True
-    return own | _GLOBAL_FLAGS
+    return found
 
 
 def assert_flag_parse_worked(checked_any: bool) -> None:
@@ -605,6 +600,11 @@ def flags_used(argv: Sequence[str]) -> list[str]:
     """Long flags appearing in a documented command line, `--flag=value` included.
 
     Stops at `--`, after which tokens are operands however they are spelled.
+
+    Two limitations, both covered by tests below. Short flags are not collected,
+    so `-o`/`-q`/`-v` go unchecked; and a value that looks like a flag is
+    reported as one, so `--query --foo` yields both. Narrowing either needs
+    per-flag argv semantics, i.e. a second list that would drift.
     """
     used: list[str] = []
     for tok in argv[1:]:
@@ -1473,29 +1473,29 @@ class _BuildDryRunArgvTests(unittest.TestCase):
         )
 
 
-# The floor exists because this list used to be written out by hand, and a
-# class added without also being named here ran zero tests while `--self-test`
-# reported OK. Discovery removed that; the floor catches the other direction,
-# where a rename or a bad glob makes discovery itself find nothing.
-_MIN_SELF_TEST_CLASSES = 12
+# A floor, not a tally: it fails a discovery that finds nothing, or nearly
+# nothing, instead of reporting OK over a shrunken suite. Keep it at the
+# current class count.
+_MIN_SELF_TEST_CLASSES = 15
 
 
 def _run_self_tests() -> int:
-    """Run every `_*Tests` class in this module.
+    """Run every `unittest.TestCase` defined in this module.
 
     Discovered rather than listed: a hand-maintained roster silently skips a
     class somebody forgot to add, which is a passing run that tested less than
-    it claimed.
+    it claimed. Selection is by type and defining module rather than by name,
+    so renaming a class cannot drop it out of the suite either.
     """
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     classes = [
         obj
-        for name, obj in sorted(globals().items())
-        if name.startswith("_")
-        and name.endswith("Tests")
-        and isinstance(obj, type)
+        for _, obj in sorted(globals().items(), key=lambda kv: kv[0])
+        if isinstance(obj, type)
         and issubclass(obj, unittest.TestCase)
+        and obj is not unittest.TestCase
+        and obj.__module__ == __name__
     ]
     if len(classes) < _MIN_SELF_TEST_CLASSES:
         print(
