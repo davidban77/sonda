@@ -174,6 +174,19 @@ fn capture(cap: &Capture) -> Artifacts {
         !samples.is_empty(),
         "a fixture that serves no points would make every downstream assertion vacuous"
     );
+    // Pairing is by order, so two rows sharing a value would let a swap between
+    // them pass. Checked rather than left as a convention the next fixture has
+    // to remember.
+    let mut distinct: Vec<&str> = cap.slots.iter().flatten().copied().collect();
+    let served_count = distinct.len();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        served_count,
+        "fixture values must be pairwise distinct: {:?}",
+        cap.slots
+    );
     let body = format!(
         r#"{{"status":"success","data":{{"resultType":"matrix","result":[
              {{"metric":{{"__name__":"up","job":"api"}},"values":[{}]}}]}}}}"#,
@@ -250,20 +263,21 @@ fn expected_rows(art: &Artifacts) -> Vec<(usize, f64)> {
         "the CSV's blank rows are the points the mock left out"
     );
 
-    // Anchor: one written cell equals the text the server sent for it. This is
-    // the single assertion tying the writer to the source.
-    let anchor = art
-        .served
-        .iter()
-        .position(|v| v.is_some())
-        .expect("the fixture serves at least one point");
-    let served_text = art.served[anchor].expect("anchor row is present");
-    let want: f64 = served_text.parse().expect("the fixture serves numbers");
-    assert!(
-        eq(values[anchor], want),
-        "row {anchor} of the written CSV is {}, but the mock served {served_text}",
-        values[anchor]
-    );
+    // Every written cell equals the text the server sent for it. This ties the
+    // writer to the source; everything downstream is read back out of this same
+    // file, so a defect the writer and the reader share would otherwise agree
+    // with itself. One row is not enough: a writer that rounded every value
+    // survived a single-row anchor, because each fixture's first present value
+    // is a whole number.
+    for (i, served) in art.served.iter().enumerate() {
+        let Some(served_text) = served else { continue };
+        let want: f64 = served_text.parse().expect("the fixture serves numbers");
+        assert!(
+            eq(values[i], want),
+            "row {i} of the written CSV is {}, but the mock served {served_text}",
+            values[i]
+        );
+    }
 
     let rows: Vec<(usize, f64)> = values
         .iter()
