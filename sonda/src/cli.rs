@@ -61,6 +61,7 @@ pub enum Commands {
     /// Scaffold a new scenario YAML.
     New(NewArgs),
     /// Run a scenario and verify its `expect:` alert expectations.
+    #[cfg(feature = "http")]
     Test(TestArgs),
     /// Print a shell completion script to stdout.
     Completions(CompletionsArgs),
@@ -133,6 +134,7 @@ pub struct ShowArgs {
 }
 
 #[derive(Debug, Args)]
+#[cfg(feature = "http")]
 pub struct TestArgs {
     /// Path to a v2 YAML file with an `expect:` block, or `@name` for a
     /// catalog reference.

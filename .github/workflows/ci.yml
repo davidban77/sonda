@@ -139,6 +139,25 @@ jobs:
       - name: Doctests without default features
         run: cargo test -p sonda-core --no-default-features --doc
 
+      # The CLI's feature flags were decorative until this step existed: nothing
+      # built `sonda` in any non-default configuration, so `test_cmd.rs` imported
+      # the http-only verify modules ungated and `--no-default-features` had not
+      # compiled for as long as `sonda test` had shipped. Every combination is
+      # listed rather than swept because each is a claim the feature line makes.
+      - name: Build the CLI in every feature combination
+        run: |
+          set -euo pipefail
+          for features in "" "config" "http" "config,http"; do
+            if [ -z "$features" ]; then
+              echo "::group::cargo build -p sonda --no-default-features"
+              cargo build -p sonda --no-default-features
+            else
+              echo "::group::cargo build -p sonda --no-default-features --features $features"
+              cargo build -p sonda --no-default-features --features "$features"
+            fi
+            echo "::endgroup::"
+          done
+
       # `schema` implies `config` and nothing else. That is the whole claim of
       # the feature line, and `--all-features` cannot check it: there, every
       # other feature is on, so a hidden dependency on `runtime` (or on `http`,

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import re
 import shlex
 import subprocess
@@ -529,6 +530,91 @@ def supports_dry_run(cmd: ExtractedCommand) -> bool:
     return sub is not None and sub in DRY_RUNNABLE_SINGLE
 
 
+# --- Flag validation -------------------------------------------------------
+#
+# The subcommand check above catches an invented verb. Nothing caught an
+# invented FLAG: `sonda new --from-promethus …` documented a typo that no
+# gate saw, because every downstream check keys off the verb alone.
+#
+# The comparison is exact rather than heuristic: the flags a verb accepts come
+# from `sonda <verb> --help`, which is clap rendering the parser itself. Two
+# things follow from that and are load-bearing:
+#
+#   * Without a binary there is no source of truth, so the check does not run.
+#     `main` prints a SKIP line in that case rather than letting the summary
+#     read as coverage — a flag check that quietly does nothing looks exactly
+#     like one that found nothing wrong.
+#   * `_known_flags` asserts it parsed a non-empty set. If `--help` output ever
+#     stops matching the pattern, every documented flag would look unknown, or
+#     (worse, with the set empty and the check short-circuiting) every one would
+#     look fine. Failing loudly on an empty parse is the only honest option.
+
+_FLAG_IN_HELP_RE = re.compile(r"(?<![\w-])(--[a-zA-Z][a-zA-Z0-9-]*)")
+
+# Set by `_known_flags` the first time any verb yields a flag. The vacuity guard
+# is corpus-level rather than per-verb because a verb with no flags is
+# legitimate — `sonda completions` takes a positional shell and nothing else —
+# while a `--help` format this cannot parse would make EVERY documented flag
+# look unknown. `assert_flag_parse_worked` checks it once.
+_flag_parse_produced_something = False
+
+
+@functools.lru_cache(maxsize=None)
+def _known_flags(sonda_bin: str, verb: str, timeout: float) -> frozenset[str]:
+    """Every long flag ``sonda <verb>`` accepts, read from its own ``--help``.
+
+    Cached: one `--help` per verb rather than one per documented command.
+    """
+    global _flag_parse_produced_something
+    proc = subprocess.run(  # noqa: S603
+        [sonda_bin, verb, "--help"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    # Globals (`--dry-run`, `--catalog`, …) need no special case: clap renders
+    # them in every subcommand's help, so the parser already returns them.
+    found = frozenset(_FLAG_IN_HELP_RE.findall(proc.stdout))
+    if found:
+        _flag_parse_produced_something = True
+    return found
+
+
+def assert_flag_parse_worked(checked_any: bool) -> None:
+    """Fail if the flag check ran over commands and never parsed a single flag.
+
+    Raises:
+        RuntimeError: when `--help` was read but yielded nothing anywhere, which
+            is what a changed help format looks like from in here.
+    """
+    if checked_any and not _flag_parse_produced_something:
+        raise RuntimeError(
+            "the flag check read `--help` for every documented verb and parsed "
+            "no flags from any of them; `--help` output no longer matches "
+            "_FLAG_IN_HELP_RE, so nothing was really compared"
+        )
+
+
+def flags_used(argv: Sequence[str]) -> list[str]:
+    """Long flags appearing in a documented command line, `--flag=value` included.
+
+    Stops at `--`, after which tokens are operands however they are spelled.
+
+    Two limitations, both covered by tests below. Short flags are not collected,
+    so `-o`/`-q`/`-v` go unchecked; and a value that looks like a flag is
+    reported as one, so `--query --foo` yields both. Narrowing either needs
+    per-flag argv semantics, i.e. a second list that would drift.
+    """
+    used: list[str] = []
+    for tok in argv[1:]:
+        if tok == "--":
+            break
+        if tok.startswith("--") and len(tok) > 2:
+            used.append(tok.split("=", 1)[0])
+    return used
+
+
 def validate_command(
     cmd: ExtractedCommand,
     repo_root: Path,
@@ -549,6 +635,24 @@ def validate_command(
                 f"expected one of {', '.join(sorted(KNOWN_SUBCOMMANDS))}"
             ),
         )
+
+    # An invented flag is the same class of defect as an invented verb, and
+    # nothing below would notice it. Needs a binary; see `_known_flags`.
+    if sonda_bin is not None and cmd.subcommand is not None:
+        try:
+            known = _known_flags(str(sonda_bin), cmd.subcommand, subprocess_timeout)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return ValidationResult(command=cmd, ok=False, message=str(exc))
+        unknown = [f for f in flags_used(cmd.argv) if f not in known]
+        if unknown:
+            return ValidationResult(
+                command=cmd,
+                ok=False,
+                message=(
+                    f"`sonda {cmd.subcommand}` does not accept "
+                    f"{', '.join(unknown)} — not in its `--help`"
+                ),
+            )
 
     run_target = extract_run_target(cmd.argv) if cmd.subcommand == "run" else None
     target_is_repo_path = (
@@ -739,6 +843,11 @@ def run_validation(
         )
         if not result.ok:
             failures.append(result)
+    # One check that the flag comparison meant anything at all; see
+    # `assert_flag_parse_worked`. Raises rather than returning a failure
+    # because it is the checker that is broken, not a document.
+    assert_flag_parse_worked(checked_any=sonda_bin is not None and bool(all_commands))
+
     return len(all_commands), failures
 
 
@@ -826,6 +935,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     for failure in failures:
         print(format_failure(failure, repo_root), file=sys.stderr)
+    if sonda_bin is None:
+        # Named rather than left to the summary line, which would otherwise
+        # read as coverage: without a binary there is no `--help` to compare
+        # documented flags against, and no dry-run either.
+        print(
+            "SKIP flag and dry-run checks: no sonda binary (--no-binary)",
+            file=sys.stderr,
+        )
     print(
         f"{checked} commands checked, {len(failures)} failed",
         file=sys.stderr,
@@ -834,6 +951,59 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 # --- Self-tests --------------------------------------------------------------
+
+
+class _FlagsUsedTests(unittest.TestCase):
+    """`flags_used` — the half of the flag check that needs no binary."""
+
+    def test_long_flags_are_collected(self) -> None:
+        argv = ("sonda", "new", "--template", "-o", "x.yaml", "--from", "a.csv")
+        self.assertEqual(flags_used(argv), ["--template", "--from"])
+
+    def test_equals_form_reports_the_flag_not_the_value(self) -> None:
+        self.assertEqual(flags_used(("sonda", "run", "--rate=5")), ["--rate"])
+
+    def test_a_value_that_looks_like_a_flag_is_still_a_value(self) -> None:
+        # `--query --foo` would be a query of "--foo"; the checker cannot know
+        # that, so this documents the known over-report rather than hiding it.
+        self.assertEqual(
+            flags_used(("sonda", "new", "--query", "--foo")), ["--query", "--foo"]
+        )
+
+    def test_short_flags_and_operands_are_ignored(self) -> None:
+        self.assertEqual(flags_used(("sonda", "run", "-o", "out", "scenario.yaml")), [])
+
+    def test_bare_double_dash_ends_the_scan(self) -> None:
+        argv = ("sonda", "run", "--rate", "5", "--", "--not-a-flag")
+        self.assertEqual(flags_used(argv), ["--rate"])
+
+    def test_the_verb_itself_is_never_a_flag(self) -> None:
+        self.assertEqual(flags_used(("--sonda", "run")), [])
+
+
+class _FlagParseGuardTests(unittest.TestCase):
+    """The corpus-level vacuity guard, which is the whole check's safety net."""
+
+    def test_it_raises_when_nothing_was_ever_parsed(self) -> None:
+        import validate_docs_commands as mod
+
+        saved = mod._flag_parse_produced_something
+        try:
+            mod._flag_parse_produced_something = False
+            with self.assertRaises(RuntimeError):
+                mod.assert_flag_parse_worked(checked_any=True)
+        finally:
+            mod._flag_parse_produced_something = saved
+
+    def test_it_stays_quiet_when_no_commands_were_checked(self) -> None:
+        import validate_docs_commands as mod
+
+        saved = mod._flag_parse_produced_something
+        try:
+            mod._flag_parse_produced_something = False
+            mod.assert_flag_parse_worked(checked_any=False)
+        finally:
+            mod._flag_parse_produced_something = saved
 
 
 class _ExtractBashBlocksTests(unittest.TestCase):
@@ -1303,23 +1473,39 @@ class _BuildDryRunArgvTests(unittest.TestCase):
         )
 
 
+# A floor, not a tally: it fails a discovery that finds nothing, or nearly
+# nothing, instead of reporting OK over a shrunken suite. Keep it at the
+# current class count.
+_MIN_SELF_TEST_CLASSES = 15
+
+
 def _run_self_tests() -> int:
+    """Run every `unittest.TestCase` defined in this module.
+
+    Discovered rather than listed: a hand-maintained roster silently skips a
+    class somebody forgot to add, which is a passing run that tested less than
+    it claimed. Selection is by type and defining module rather than by name,
+    so renaming a class cannot drop it out of the suite either.
+    """
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
-    for cls in (
-        _ExtractBashBlocksTests,
-        _JoinContinuationsTests,
-        _StripPromptAndEnvTests,
-        _TrimShellTrailersTests,
-        _CliPlaceholderTokenTests,
-        _ExtractSondaCommandsTests,
-        _ExtractRunTargetTests,
-        _ExtractNewFromFileTests,
-        _ExtractCatalogDirTests,
-        _RepoRelativePathTests,
-        _SupportsDryRunTests,
-        _BuildDryRunArgvTests,
-    ):
+    classes = [
+        obj
+        for _, obj in sorted(globals().items(), key=lambda kv: kv[0])
+        if isinstance(obj, type)
+        and issubclass(obj, unittest.TestCase)
+        and obj is not unittest.TestCase
+        and obj.__module__ == __name__
+    ]
+    if len(classes) < _MIN_SELF_TEST_CLASSES:
+        print(
+            f"self-test discovery found {len(classes)} test classes, fewer than "
+            f"the {_MIN_SELF_TEST_CLASSES} this module is known to have; "
+            "discovery is broken, not the tests",
+            file=sys.stderr,
+        )
+        return 1
+    for cls in classes:
         suite.addTests(loader.loadTestsFromTestCase(cls))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
