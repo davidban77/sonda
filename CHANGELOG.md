@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.22.1](https://github.com/davidban77/sonda/compare/v1.22.0...v1.22.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **cli:** make the feature flags real; feat(gate): the docs gate checks flags ([#603](https://github.com/davidban77/sonda/issues/603)) ([47d06eb](https://github.com/davidban77/sonda/commit/47d06ebaaf9bd0db5248c603777bfa08f6b24dd8))
+* **core:** a finishing entry no longer tears down its siblings' gate refs ([#606](https://github.com/davidban77/sonda/issues/606)) ([30e3545](https://github.com/davidban77/sonda/commit/30e3545ebec8398cab3a2d9ebd31433da877a6c7))
+
 ## [1.22.0](https://github.com/davidban77/sonda/compare/v1.21.0...v1.22.0) (2026-08-27)
 
 
