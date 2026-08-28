@@ -1404,11 +1404,11 @@ scenarios:
                     .cloned()
             }
 
-            fn unregister(&self, scenario_name: &str) {
+            fn unregister_entries(&self, scenario_name: &str, entry_ids: &[&str]) {
                 let mut buses = self.buses.lock().unwrap();
                 let keys: Vec<_> = buses
                     .keys()
-                    .filter(|(s, _)| s == scenario_name)
+                    .filter(|(s, e)| s == scenario_name && entry_ids.contains(&e.as_str()))
                     .cloned()
                     .collect();
                 for key in keys {
@@ -1612,10 +1612,10 @@ scenarios:
             stop_and_join(upstream_handles);
         }
 
-        // Re-resolution after `unregister` (so a downstream Unresolved can pick up a fresh
-        // upstream with the same scenario_name) requires the registry to push affected
-        // downstreams back into `pending` on unregister — that mechanism lives with the
-        // production `GateBusRegistry` implementation, not the test resolver.
+        // Re-resolution after the upstream's bus is retired (so a downstream Unresolved can
+        // pick up a fresh upstream with the same scenario_name) requires the registry to push
+        // affected downstreams back into `pending` — that mechanism lives with the production
+        // `GateBusRegistry` implementation, not the test resolver.
         #[tokio::test(flavor = "multi_thread")]
         async fn t10_unregister_drives_downstream_back_to_unresolved() {
             let registry = TestRegistry::new();
@@ -1642,7 +1642,7 @@ scenarios:
                 Duration::from_secs(2),
             );
 
-            resolver.unregister("upstream_post");
+            resolver.unregister_entries("upstream_post", &["upstream_metric"]);
             wait_for_state(
                 &downstream_handles[0],
                 ScenarioState::Unresolved,
@@ -1666,6 +1666,131 @@ scenarios:
             );
 
             stop_and_join(downstream_handles);
+        }
+
+        fn sibling_batch_yaml() -> String {
+            r#"
+version: 2
+kind: runnable
+scenario_name: sibling_batch
+defaults:
+  rate: 50
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: shortlived
+    signal_type: metrics
+    name: shortlived
+    duration: 300ms
+    generator:
+      type: constant
+      value: 1.0
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    duration: 30s
+    generator:
+      type: constant
+      value: 1.0
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    duration: 30s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: ">"
+      value: 0
+"#
+            .to_string()
+        }
+
+        fn handle_for<'h>(handles: &'h [ScenarioHandle], id: &str) -> &'h ScenarioHandle {
+            handles
+                .iter()
+                .find(|h| h.entry_id == id)
+                .unwrap_or_else(|| panic!("no handle for entry '{id}'"))
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_finished_entry_retires_only_its_own_bus_leaving_its_siblings_registered() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+            let compiled =
+                compile_scenario_file_compiled(&sibling_batch_yaml(), &InMemoryPackResolver::new())
+                    .expect("compile batch");
+            let handles = launch_multi_compiled(compiled, Some(resolver))
+                .await
+                .expect("launch batch");
+
+            wait_for_state(
+                handle_for(&handles, "shortlived"),
+                ScenarioState::Finished,
+                Duration::from_secs(5),
+            );
+
+            assert!(
+                registry.lookup("sibling_batch", "shortlived").is_none(),
+                "the entry that finished must retire its own bus"
+            );
+            assert!(
+                registry.lookup("sibling_batch", "upstream").is_some(),
+                "a sibling that is still running must keep its bus"
+            );
+            assert!(
+                registry.lookup("sibling_batch", "downstream").is_some(),
+                "a sibling that is still running must keep its bus"
+            );
+            stop_and_join(handles);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_gated_entry_survives_a_sibling_finishing_and_stops_only_with_its_upstream() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+            let compiled =
+                compile_scenario_file_compiled(&sibling_batch_yaml(), &InMemoryPackResolver::new())
+                    .expect("compile batch");
+            let handles = launch_multi_compiled(compiled, Some(resolver))
+                .await
+                .expect("launch batch");
+
+            wait_for_state(
+                handle_for(&handles, "downstream"),
+                ScenarioState::Running,
+                Duration::from_secs(5),
+            );
+            wait_for_state(
+                handle_for(&handles, "shortlived"),
+                ScenarioState::Finished,
+                Duration::from_secs(5),
+            );
+
+            let downstream = handle_for(&handles, "downstream");
+            let before = downstream.stats_snapshot().total_events;
+            thread::sleep(Duration::from_millis(300));
+            let after = downstream.stats_snapshot().total_events;
+            assert_eq!(
+                downstream.stats_snapshot().state,
+                ScenarioState::Running,
+                "a sibling finishing must not close the gate on an unrelated upstream"
+            );
+            assert!(
+                after > before,
+                "the gated entry must keep emitting after its sibling finished: {before} -> {after}"
+            );
+
+            handle_for(&handles, "upstream").stop();
+            wait_for_state(
+                handle_for(&handles, "downstream"),
+                ScenarioState::Finished,
+                Duration::from_secs(5),
+            );
+            stop_and_join(handles);
         }
 
         #[tokio::test(flavor = "multi_thread")]

@@ -606,7 +606,10 @@ pub trait GateBusResolver: Send + Sync {
         edge_sender: GateEdgeSender,
     ) -> Option<Arc<GateBus>>;
 
-    fn unregister(&self, scenario_name: &str);
+    /// Remove the gate buses of `entry_ids` under `scenario_name`, leaving that name's other
+    /// entries registered. Pending waiters are left in place: an entry that has not registered
+    /// yet may still do so.
+    fn unregister_entries(&self, scenario_name: &str, entry_ids: &[&str]);
 
     /// Discard pending entries whose downstream stats handle has been dropped.
     fn sweep_pending(&self) -> usize;
@@ -617,7 +620,7 @@ pub trait GateBusResolver: Send + Sync {
 
     fn scenario_name_in_use(&self, scenario_name: &str) -> bool;
 
-    /// Record an active subscriber so [`unregister`](Self::unregister) can
+    /// Record an active subscriber so [`unregister_entries`](Self::unregister_entries) can
     /// re-pend it for cross-POST re-resolution. Default impl is a no-op for
     /// resolvers that do not implement re-resolution tracking.
     fn track_subscriber(&self, _pending: PendingResolution) {}
@@ -964,7 +967,7 @@ mod tests {
             None
         }
 
-        fn unregister(&self, _scenario_name: &str) {}
+        fn unregister_entries(&self, _scenario_name: &str, _entry_ids: &[&str]) {}
 
         fn sweep_pending(&self) -> usize {
             0

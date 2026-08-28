@@ -114,18 +114,14 @@ All handlers use `.map_err()` with the `?` operator for fallible operations. Sha
 per lock, and exported as `sonda_server_lock_recoveries_total` on `/metrics`. The per-lock argument
 for why recovery is safe lives in the module docs of `src/locks.rs` — extend it there before putting
 new state behind the type. The per-scenario stats `RwLock` in `ScenarioHandle` is owned by
-sonda-core, which recovers it on its own read paths; the three places the server writes to it
+sonda-core, which recovers it on its own read paths; the two places the server writes to it
 (`gate_registry.rs`) recover it the same way, so a scenario whose stats lock was poisoned still
-transitions state and still counts resolution attempts.
+counts its resolution attempts. Only one of those two is on a live path — `cancel_pending_for_upstream`
+has no production caller.
 
-`admit_compiled` holds its launched handles in an `AdoptionGuard` until they are in the scenario
-map, handing them over one at a time so the guard owns the whole tail it has not yet handed over.
-Dropping it on a panic stops what it still holds and unregisters the scenario name. Two gaps
-remain. The handle in flight at the moment of the panic is already out of the guard and not yet in
-the map, so it escapes still running, and it has dropped its permit — that orphan does not count
-against `--max-scenarios`. And `unregister` is keyed by scenario name alone, so rows the guard had
-already handed over keep running and stay listed but lose their gate buses; their downstreams
-receive `UpstreamGone`.
+`admit_compiled` holds its launched handles in an `AdoptionGuard` until they are in the scenario map, handing them over one at a time through the guard's `in_flight` slot so the guard owns every handle it has not yet inserted. Dropping it on a panic stops what it still holds, claims their registry cleanup so the stopping tasks do not tear down their buses twice, and removes only those entries' gate buses — rows already handed over keep running, stay listed, and keep the buses their downstreams' `while:` refs are subscribed to. Nothing escapes still running, so no orphan keeps a `--max-scenarios` slot it is no longer reachable through.
+
+Gate-bus teardown is per entry everywhere. `GateBusResolver::unregister_entries` is the only teardown verb: `StateGuard` in sonda-core passes the single entry the finishing task owns, `DELETE /scenarios/{id}` passes the deleted row's `ScenarioHandle::entry_id`, and `AdoptionGuard` passes the entries it never handed over. `entry_id` is the compiler entry id the bus is keyed by and survives the UUID rewrite `admit_compiled` applies to `handle.id`. A `scenario_name` therefore stays in use until the last entry under it is gone.
 
 ## Concurrency Model
 
