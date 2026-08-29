@@ -10,8 +10,9 @@
 //!
 //! # The comparison
 //!
-//! Emissions are paired with rows **by order** — ticks emit strictly
-//! increasing, so the i-th emission is the i-th expected row. Values compare
+//! Emissions are paired with rows **by order**, per series — ticks emit
+//! strictly increasing, so the i-th emission is the i-th expected row of the
+//! column that scenario reads. Values compare
 //! exactly, with `NaN` equal to `NaN` because a literal `NaN` cell is a sample
 //! the database reported. Instants are asserted **one-sided**: an emission may
 //! never carry a timestamp earlier than its row's slot, and no upper bound is
@@ -65,6 +66,7 @@ use sonda_core::acquire::tsdb::{Auth, TsdbClient};
 use sonda_core::acquire::{csv_out, yaml_out};
 use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::config::{expand_entry, ScenarioEntry};
+use sonda_core::generator::GeneratorConfig;
 use sonda_core::schedule::runner;
 use sonda_core::sink::Sink;
 use sonda_core::{CancellationToken, SondaError};
@@ -145,13 +147,34 @@ impl Sink for LineSink {
     }
 }
 
-/// A capture as the fixture describes it: one entry per grid point, `None`
-/// where the database had nothing.
+/// One series the mock serves: its identity and one slot per grid point.
 ///
-/// The values are the literal text the server returns, so a case can serve
-/// `"NaN"` and keep it distinct from an absent point.
-struct Capture {
+/// Slot values are the literal text the server returns, so a case can serve
+/// `"NaN"` and keep it distinct from an absent point. The single label is what
+/// separates two series of the same metric, which is the ordinary shape of a
+/// range query.
+struct Series {
+    name: &'static str,
+    label: (&'static str, &'static str),
     slots: &'static [Option<&'static str>],
+}
+
+impl Series {
+    fn present(&self) -> usize {
+        self.slots.iter().filter(|s| s.is_some()).count()
+    }
+
+    fn blanks(&self) -> Vec<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.is_none().then_some(i))
+            .collect()
+    }
+}
+
+struct Capture {
+    series: &'static [Series],
     timescale: f64,
 }
 
@@ -165,8 +188,9 @@ impl Capture {
         self.file_step() / self.timescale
     }
 
-    fn present(&self) -> usize {
-        self.slots.iter().filter(|s| s.is_some()).count()
+    /// Grid points, which every series shares.
+    fn rows(&self) -> usize {
+        self.series[0].slots.len()
     }
 }
 
@@ -174,8 +198,6 @@ impl Capture {
 struct Artifacts {
     csv_text: String,
     yaml: String,
-    /// Values the mock served, in grid order, as the text it sent.
-    served: Vec<Option<&'static str>>,
     _dir: tempfile::TempDir,
 }
 
@@ -185,60 +207,77 @@ struct Artifacts {
 /// broken writer and a broken reader could agree with each other and the
 /// pairwise comparison downstream would pass on two wrong halves.
 fn capture(cap: &Capture) -> Artifacts {
-    let samples: Vec<String> = cap
-        .slots
-        .iter()
-        .enumerate()
-        .filter_map(|(i, v)| v.map(|v| format!(r#"[{},"{v}"]"#, i as f64 * cap.file_step())))
-        .collect();
-    assert!(
-        !samples.is_empty(),
-        "a fixture that serves no points would make every downstream assertion vacuous"
-    );
-    // Pairing is by order, so two rows sharing a value would let a swap between
-    // them pass. Checked rather than left as a convention the next fixture has
-    // to remember, and checked with `eq` — the same predicate the pairwise
-    // comparison uses. Deduping the text instead would call "48" and "48.0"
-    // distinct while the comparison they guard calls them equal.
-    let parsed: Vec<f64> = cap
-        .slots
-        .iter()
-        .flatten()
-        .map(|s| s.parse().expect("the fixture serves numbers"))
-        .collect();
-    for (i, a) in parsed.iter().enumerate() {
-        assert!(
-            !parsed[i + 1..].iter().any(|b| eq(*a, *b)),
-            "fixture values must be pairwise distinct: {:?}",
-            cap.slots
+    assert!(!cap.series.is_empty(), "a fixture must serve a series");
+    let mut results = Vec::new();
+    for s in cap.series {
+        assert_eq!(
+            s.slots.len(),
+            cap.rows(),
+            "every series shares the grid, so every one has the same slot count"
         );
+        assert!(
+            s.present() > 0,
+            "a series with no points would make every assertion about it vacuous"
+        );
+        // Pairing is by order, so two rows of one series sharing a value would
+        // let a swap between them pass. Checked rather than left as a
+        // convention the next fixture has to remember, and checked with `eq` —
+        // the same predicate the pairwise comparison uses. Deduping the text
+        // instead would call "48" and "48.0" distinct while the comparison they
+        // guard calls them equal.
+        let parsed: Vec<f64> = s
+            .slots
+            .iter()
+            .flatten()
+            .map(|v| v.parse().expect("the fixture serves numbers"))
+            .collect();
+        for (i, a) in parsed.iter().enumerate() {
+            assert!(
+                !parsed[i + 1..].iter().any(|b| eq(*a, *b)),
+                "values within a series must be pairwise distinct: {:?}",
+                s.slots
+            );
+        }
+
+        let samples: Vec<String> = s
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.map(|v| format!(r#"[{},"{v}"]"#, i as f64 * cap.file_step())))
+            .collect();
+        results.push(format!(
+            r#"{{"metric":{{"__name__":"{}","{}":"{}"}},"values":[{}]}}"#,
+            s.name,
+            s.label.0,
+            s.label.1,
+            samples.join(",")
+        ));
     }
     let body = format!(
-        r#"{{"status":"success","data":{{"resultType":"matrix","result":[
-             {{"metric":{{"__name__":"up","job":"api"}},"values":[{}]}}]}}}}"#,
-        samples.join(",")
+        r#"{{"status":"success","data":{{"resultType":"matrix","result":[{}]}}}}"#,
+        results.join(",")
     );
 
     let base = mock_tsdb(&body);
-    let end = (cap.slots.len() - 1) as f64 * cap.file_step();
+    let end = (cap.rows() - 1) as f64 * cap.file_step();
     let series = TsdbClient::new(&base, Auth::None, Duration::from_secs(5))
-        .fetch_range("up", 0.0, end, Duration::from_secs_f64(cap.file_step()))
+        .fetch_range(
+            cap.series[0].name,
+            0.0,
+            end,
+            Duration::from_secs_f64(cap.file_step()),
+        )
         .expect("fetch must succeed");
-    assert_eq!(series.len(), 1, "the fixture serves exactly one series");
+    assert_eq!(
+        series.len(),
+        cap.series.len(),
+        "every fixture series came back"
+    );
 
     let grid = Grid::new(0.0, end, cap.file_step()).expect("grid");
-    assert_eq!(
-        grid.len,
-        cap.slots.len(),
-        "the grid covers every fixture slot"
-    );
+    assert_eq!(grid.len, cap.rows(), "the grid covers every fixture slot");
 
     let normalized: Vec<_> = series.iter().map(|s| normalize(s, grid)).collect();
-    assert_eq!(
-        normalized[0].values.len() - normalized[0].gap_count(),
-        cap.present(),
-        "every point the mock served survived normalization"
-    );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let csv_path = dir.path().join("capture.csv");
@@ -257,36 +296,33 @@ fn capture(cap: &Capture) -> Artifacts {
     Artifacts {
         csv_text,
         yaml,
-        served: cap.slots.to_vec(),
         _dir: dir,
     }
 }
 
-/// The rows the recording says should play, read back out of the written CSV
-/// with the reader the runtime itself uses.
+/// The rows one series' recording says should play, read back out of the
+/// written CSV with the reader the runtime itself uses.
 ///
-/// Returns `(row_index, value)` for every non-blank row. Driving
+/// Returns `(row_index, value)` for every non-blank row of `column`. Driving
 /// `column_values_and_gaps` rather than a test-side CSV parser is what stops
 /// this from becoming a transcription that diverges on the line a bug is on.
-fn expected_rows(art: &Artifacts) -> Vec<(usize, f64)> {
+fn expected_rows(art: &Artifacts, series: &Series, column: usize) -> Vec<(usize, f64)> {
     let (values, blanks) =
-        sonda_core::generator::csv_replay::column_values_and_gaps(&art.csv_text, 1)
+        sonda_core::generator::csv_replay::column_values_and_gaps(&art.csv_text, column)
             .expect("the written CSV must read back");
 
     assert_eq!(
         values.len(),
-        art.served.len(),
+        series.slots.len(),
         "the CSV holds one row per grid point"
     );
-    let served_blanks: Vec<usize> = art
-        .served
-        .iter()
-        .enumerate()
-        .filter_map(|(i, v)| v.is_none().then_some(i))
-        .collect();
     assert_eq!(
-        blanks, served_blanks,
-        "the CSV's blank rows are the points the mock left out"
+        blanks,
+        series.blanks(),
+        "column {column}'s blank rows are the points the mock left out for {}{{{}={}}}",
+        series.name,
+        series.label.0,
+        series.label.1
     );
 
     // Every written cell equals the text the server sent for it. This ties the
@@ -295,12 +331,12 @@ fn expected_rows(art: &Artifacts) -> Vec<(usize, f64)> {
     // with itself. One row is not enough: a writer that rounded every value
     // survived a single-row anchor, because each fixture's first present value
     // is a whole number.
-    for (i, served) in art.served.iter().enumerate() {
+    for (i, served) in series.slots.iter().enumerate() {
         let Some(served_text) = served else { continue };
         let want: f64 = served_text.parse().expect("the fixture serves numbers");
         assert!(
             eq(values[i], want),
-            "row {i} of the written CSV is {}, but the mock served {served_text}",
+            "row {i} of CSV column {column} is {}, but the mock served {served_text}",
             values[i]
         );
     }
@@ -324,13 +360,22 @@ fn eq(a: f64, b: f64) -> bool {
     a == b || (a.is_nan() && b.is_nan())
 }
 
-/// Load the written artifacts and run them, returning what reached the sink and
-/// the instant the run was started from.
+/// One expanded scenario, paired with the fixture series it claims to replay.
+struct Played<'a> {
+    series: &'a Series,
+    column: usize,
+    seen: Vec<Emitted>,
+}
+
+/// Load the written artifacts and run every scenario in them, concurrently.
 ///
 /// The YAML contributes nothing to the expectations — that asymmetry is what
-/// lets a mutation to its `rate:` fail rather than move the expectation with
-/// it.
-async fn replay(art: &Artifacts, cap: &Capture) -> (Vec<Emitted>, SystemTime) {
+/// lets a mutation to its geometry fail rather than move the expectation with
+/// it. What the YAML *does* supply is which column each scenario reads and
+/// which series it claims to be; a capture that wired those together wrongly
+/// would replay one series' numbers under another's name, and the pairing
+/// below is what catches it.
+async fn replay<'a>(art: &Artifacts, cap: &'a Capture) -> (Vec<Played<'a>>, SystemTime) {
     let entries = sonda_core::compile_scenario_file(&art.yaml, &InMemoryPackResolver::default())
         .unwrap_or_else(|e| panic!("the compiler rejected the capture: {e}\n{}", art.yaml));
     let mut expanded = Vec::new();
@@ -340,14 +385,88 @@ async fn replay(art: &Artifacts, cap: &Capture) -> (Vec<Emitted>, SystemTime) {
                 .unwrap_or_else(|e| panic!("the emitted columns must expand: {e}\n{}", art.yaml)),
         );
     }
-    assert_eq!(expanded.len(), 1, "single-series fixture, one scenario");
+    assert_eq!(
+        expanded.len(),
+        cap.series.len(),
+        "one scenario per captured series\n{}",
+        art.yaml
+    );
 
-    let ScenarioEntry::Metrics(config) = expanded.remove(0) else {
-        panic!("a metrics capture must expand to a metrics scenario");
-    };
+    let mut jobs = Vec::new();
+    let mut claimed: Vec<usize> = Vec::new();
+    for entry in expanded {
+        let ScenarioEntry::Metrics(config) = entry else {
+            panic!("a metrics capture must expand to a metrics scenario");
+        };
+        conformance(&config, cap);
 
-    // Conformance: the geometry this gate's arithmetic assumes is the geometry
-    // the importer writes. Both are read off the artifact rather than trusted.
+        let column = match &config.generator {
+            GeneratorConfig::CsvReplay { column, .. } => {
+                column.expect("expansion fans out to a single column per scenario")
+            }
+            other => panic!("a capture must replay a CSV, got {other:?}"),
+        };
+
+        // Match the scenario back to the fixture series it names. Identity is
+        // the metric name plus the label that separates the series, which is
+        // what the importer carries through from the query result.
+        let labels = config.base.labels.clone().unwrap_or_default();
+        let series = cap
+            .series
+            .iter()
+            .find(|s| {
+                config.base.name == s.name
+                    && labels.get(s.label.0).map(String::as_str) == Some(s.label.1)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "scenario {:?} with labels {labels:?} matches no fixture series",
+                    config.base.name
+                )
+            });
+        assert!(
+            !claimed.contains(&column),
+            "two scenarios read CSV column {column}; each series has its own"
+        );
+        claimed.push(column);
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        jobs.push((series, column, config, seen));
+    }
+
+    // Taken strictly before the run so each loop's own anchor resolves at or
+    // after it, which is what makes the never-early inequality safe.
+    let t_call = SystemTime::now();
+    let mut handles = Vec::new();
+    let mut meta = Vec::new();
+    for (series, column, config, seen) in jobs {
+        let sink_seen = Arc::clone(&seen);
+        handles.push(tokio::spawn(async move {
+            let mut sink: Box<dyn Sink> = Box::new(LineSink { seen: sink_seen });
+            runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None).await
+        }));
+        meta.push((series, column, seen));
+    }
+    for h in handles {
+        h.await
+            .expect("a scenario task panicked")
+            .expect("run must succeed");
+    }
+
+    let played = meta
+        .into_iter()
+        .map(|(series, column, seen)| Played {
+            series,
+            column,
+            seen: seen.lock().expect("line sink mutex poisoned").clone(),
+        })
+        .collect();
+    (played, t_call)
+}
+
+/// The geometry this gate's arithmetic assumes is the geometry the importer
+/// writes. Both are read off the artifact rather than trusted.
+fn conformance(config: &sonda_core::config::ScenarioConfig, cap: &Capture) {
     assert!(
         config.base.start_time.is_none(),
         "a capture that set start_time: would shift every emitted instant away \
@@ -359,45 +478,36 @@ async fn replay(art: &Artifacts, cap: &Capture) -> (Vec<Emitted>, SystemTime) {
         .duration
         .as_deref()
         .expect("captures set duration");
-    let want_duration = cap.slots.len() as f64 * cap.play_step();
+    let want_duration = cap.rows() as f64 * cap.play_step();
     assert_eq!(
         duration,
         format!("{want_duration}s"),
         "duration must be rows x playback step; with repeat: false a longer run \
          holds the last slot and a shorter one truncates the recording"
     );
-
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let mut sink: Box<dyn Sink> = Box::new(LineSink {
-        seen: Arc::clone(&seen),
-    });
-
-    // Taken strictly before the run so the loop's own anchor resolves at or
-    // after it, which is what makes the never-early inequality safe.
-    let t_call = SystemTime::now();
-    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
-        .await
-        .expect("run must succeed");
-
-    let out = seen.lock().expect("line sink mutex poisoned").clone();
-    (out, t_call)
 }
 
-/// Compare what came out against what the recording says, in that order:
-/// count first, then values and instants pairwise.
+/// Compare what one series emitted against what its recording says, in that
+/// order: count first, then values and instants pairwise.
 fn assert_round_trip(
-    seen: &[Emitted],
+    played: &Played,
     expected: &[(usize, f64)],
     t_call: SystemTime,
     cap: &Capture,
 ) {
+    let who = format!(
+        "{}{{{}={}}} (CSV column {})",
+        played.series.name, played.series.label.0, played.series.label.1, played.column
+    );
+    let seen = &played.seen;
+
     if seen.len() != expected.len() {
         let spacing: Vec<i64> = seen
             .windows(2)
             .map(|w| w[1].ts_ms as i64 - w[0].ts_ms as i64)
             .collect();
         panic!(
-            "expected {} emissions, got {}. Gaps between consecutive emissions, in ms: \
+            "{who}: expected {} emissions, got {}. Gaps between consecutive emissions, in ms: \
              {spacing:?}. All {:.0} means the replay ran on its own grid and the host dropped \
              the tail — see the known exposure in the module docs. Any other spacing is a \
              replay defect.",
@@ -415,15 +525,15 @@ fn assert_round_trip(
     for (i, (got, (row, want))) in seen.iter().zip(expected.iter()).enumerate() {
         assert!(
             eq(got.value, *want),
-            "emission {i} (data row {row}) carried {}, the recording says {want}",
+            "{who}: emission {i} (data row {row}) carried {}, the recording says {want}",
             got.value
         );
 
         let slot_ms = (*row as f64 * cap.play_step() * 1000.0) as u64;
         assert!(
             got.ts_ms >= base_ms + slot_ms,
-            "emission {i} (data row {row}) is stamped {}ms, {}ms before its slot at {}ms. \
-             A row can play late; playing early means the replay ran fast.",
+            "{who}: emission {i} (data row {row}) is stamped {}ms, {}ms before its slot at \
+             {}ms. A row can play late; playing early means the replay ran fast.",
             got.ts_ms,
             base_ms + slot_ms - got.ts_ms,
             base_ms + slot_ms,
@@ -433,9 +543,11 @@ fn assert_round_trip(
 
 async fn round_trip(cap: Capture) {
     let art = capture(&cap);
-    let expected = expected_rows(&art);
-    let (seen, t_call) = replay(&art, &cap).await;
-    assert_round_trip(&seen, &expected, t_call, &cap);
+    let (played, t_call) = replay(&art, &cap).await;
+    for p in &played {
+        let expected = expected_rows(&art, p.series, p.column);
+        assert_round_trip(p, &expected, t_call, &cap);
+    }
 }
 
 const fn v(s: &'static str) -> Option<&'static str> {
@@ -447,23 +559,27 @@ const NONE: Option<&'static str> = None;
 ///
 /// Distinct values are a rule of these fixtures, not a convenience. Pairing is
 /// by order, so two rows sharing a value would let a swap between them pass.
-const DENSE: &[Option<&str>] = &[
-    v("41"),
-    v("42.5"),
-    v("43.25"),
-    v("44"),
-    v("45.5"),
-    v("46"),
-    v("47.75"),
-    v("48"),
-    v("49.5"),
-    v("50"),
-];
+const DENSE: &[Series] = &[Series {
+    name: "up",
+    label: ("job", "api"),
+    slots: &[
+        v("41"),
+        v("42.5"),
+        v("43.25"),
+        v("44"),
+        v("45.5"),
+        v("46"),
+        v("47.75"),
+        v("48"),
+        v("49.5"),
+        v("50"),
+    ],
+}];
 
 #[tokio::test]
 async fn a_dense_capture_replays_every_recorded_value_in_order() {
     round_trip(Capture {
-        slots: DENSE,
+        series: DENSE,
         timescale: TIMESCALE,
     })
     .await;
@@ -471,23 +587,27 @@ async fn a_dense_capture_replays_every_recorded_value_in_order() {
 
 /// Silence mid-recording: the blank rows emit nothing, and the first row after
 /// the silence still carries its own slot rather than moving up into the space.
-const MID_SILENCE: &[Option<&str>] = &[
-    v("11"),
-    v("12.5"),
-    v("13"),
-    NONE,
-    NONE,
-    v("16.25"),
-    v("17"),
-    v("18.5"),
-    v("19"),
-    v("20.75"),
-];
+const MID_SILENCE: &[Series] = &[Series {
+    name: "up",
+    label: ("job", "api"),
+    slots: &[
+        v("11"),
+        v("12.5"),
+        v("13"),
+        NONE,
+        NONE,
+        v("16.25"),
+        v("17"),
+        v("18.5"),
+        v("19"),
+        v("20.75"),
+    ],
+}];
 
 #[tokio::test]
 async fn silence_inside_a_capture_suppresses_only_its_own_rows() {
     round_trip(Capture {
-        slots: MID_SILENCE,
+        series: MID_SILENCE,
         timescale: TIMESCALE,
     })
     .await;
@@ -497,12 +617,16 @@ async fn silence_inside_a_capture_suppresses_only_its_own_rows() {
 /// held for every later tick, so this is the case where the importer's window
 /// has to reach the end of the run — driven from the wire rather than from a
 /// hand-written config.
-const TRAILING_SILENCE: &[Option<&str>] = &[v("7"), v("8.5"), NONE, NONE];
+const TRAILING_SILENCE: &[Series] = &[Series {
+    name: "up",
+    label: ("job", "api"),
+    slots: &[v("7"), v("8.5"), NONE, NONE],
+}];
 
 #[tokio::test]
 async fn a_capture_ending_in_silence_emits_nothing_after_its_last_sample() {
     round_trip(Capture {
-        slots: TRAILING_SILENCE,
+        series: TRAILING_SILENCE,
         timescale: TIMESCALE,
     })
     .await;
@@ -512,12 +636,16 @@ async fn a_capture_ending_in_silence_emits_nothing_after_its_last_sample() {
 ///
 /// The pair to the silence cases: both are `f64::NAN` in the values vector and
 /// only the recorded blanks are silence.
-const WITH_NAN: &[Option<&str>] = &[v("31"), v("32.5"), v("NaN"), v("34"), v("35.25"), v("36")];
+const WITH_NAN: &[Series] = &[Series {
+    name: "up",
+    label: ("job", "api"),
+    slots: &[v("31"), v("32.5"), v("NaN"), v("34"), v("35.25"), v("36")],
+}];
 
 #[tokio::test]
 async fn a_recorded_nan_replays_as_a_sample_not_as_silence() {
     round_trip(Capture {
-        slots: WITH_NAN,
+        series: WITH_NAN,
         timescale: TIMESCALE,
     })
     .await;
@@ -525,12 +653,16 @@ async fn a_recorded_nan_replays_as_a_sample_not_as_silence() {
 
 /// A capture taken mid-outage: row 0 is blank, so the importer writes a window
 /// at `0s` and the run opens silent.
-const LEADING_SILENCE: &[Option<&str>] = &[NONE, v("22"), v("23.5"), v("24"), v("25.25"), v("26")];
+const LEADING_SILENCE: &[Series] = &[Series {
+    name: "up",
+    label: ("job", "api"),
+    slots: &[NONE, v("22"), v("23.5"), v("24"), v("25.25"), v("26")],
+}];
 
 #[tokio::test]
 async fn silence_at_the_first_row_delays_the_first_emission_to_its_own_slot() {
     round_trip(Capture {
-        slots: LEADING_SILENCE,
+        series: LEADING_SILENCE,
         timescale: TIMESCALE,
     })
     .await;
@@ -538,13 +670,64 @@ async fn silence_at_the_first_row_delays_the_first_emission_to_its_own_slot() {
 
 /// The undilated path. `timescale: 4` is the geometry every case above runs on,
 /// which makes 1 the variant worth its own case.
-const UNDILATED: &[Option<&str>] = &[v("61"), v("62.5"), v("63")];
+const UNDILATED: &[Series] = &[Series {
+    name: "up",
+    label: ("job", "api"),
+    slots: &[v("61"), v("62.5"), v("63")],
+}];
 
 #[tokio::test]
 async fn an_undilated_capture_replays_at_the_recorded_step() {
     round_trip(Capture {
-        slots: UNDILATED,
+        series: UNDILATED,
         timescale: 1.0,
+    })
+    .await;
+}
+
+/// Two series of one metric, each with its own absence pattern.
+///
+/// This is the configuration the importer's one-scenario-per-absence-pattern
+/// rule exists for: the two cannot share a block, so the capture must emit two
+/// scenarios reading two columns. Same metric name, different `job` — the
+/// ordinary result of a range query, and the shape that makes the column each
+/// scenario reads the only thing keeping them apart.
+const TWO_SERIES: &[Series] = &[
+    Series {
+        name: "up",
+        label: ("job", "api"),
+        slots: &[
+            v("11"),
+            v("12.5"),
+            v("13"),
+            NONE,
+            NONE,
+            v("16.25"),
+            v("17"),
+            v("18.5"),
+        ],
+    },
+    Series {
+        name: "up",
+        label: ("job", "db"),
+        slots: &[
+            v("21"),
+            NONE,
+            v("23.5"),
+            v("24"),
+            v("25.5"),
+            v("26"),
+            NONE,
+            v("28.75"),
+        ],
+    },
+];
+
+#[tokio::test]
+async fn two_series_with_different_silence_each_replay_their_own_column() {
+    round_trip(Capture {
+        series: TWO_SERIES,
+        timescale: TIMESCALE,
     })
     .await;
 }
