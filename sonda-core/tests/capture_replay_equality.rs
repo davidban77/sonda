@@ -23,6 +23,27 @@
 //! emission late. Bounding lateness instead would gate the documented
 //! degradation of a busy runner, which is how a test becomes a weather report.
 //!
+//! # Red-verifying never-early
+//!
+//! No mutation of the written artifacts reaches this assertion — the three
+//! conformance checks (no `start_time:`, `duration:` equals rows x step, the
+//! count) catch every artifact-level way to make a run play early. It answers
+//! only to a regression in the timestamp path, so proving it fires means
+//! sabotaging that path. In `core_loop::WallClock::wall_at`:
+//!
+//! ```text
+//! -    self.base + scenario_elapsed
+//! +    self.base + scenario_elapsed.mul_f64(0.5)
+//! ```
+//!
+//! All six cases then fail. The instants are wall-clock and differ per run;
+//! what reproduces is the row and the margin — half a 250ms step:
+//!
+//! ```text
+//! emission 1 (data row 1) is stamped <t>ms, 125ms before its slot at <t+125>ms.
+//! A row can play late; playing early means the replay ran fast.
+//! ```
+//!
 //! # The known exposure
 //!
 //! `core_loop` ends a run when the *emission* instant passes `duration:`, so a
