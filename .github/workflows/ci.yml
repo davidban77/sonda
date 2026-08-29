@@ -41,7 +41,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.4
         with:
           tool: nextest
 
@@ -90,7 +90,7 @@ jobs:
             ${{ runner.os }}-cargo-server-
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.4
         with:
           tool: nextest
 
@@ -129,7 +129,7 @@ jobs:
             ${{ runner.os }}-cargo-no-default-
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.4
         with:
           tool: nextest
 
@@ -194,7 +194,7 @@ jobs:
             ${{ runner.os }}-cargo-all-features-
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.4
         with:
           tool: nextest
 
