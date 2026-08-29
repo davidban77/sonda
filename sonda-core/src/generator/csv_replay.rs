@@ -233,11 +233,17 @@ impl CsvReplayGenerator {
 
 /// Parse one column of CSV text into values plus the rows that were blank.
 ///
-/// The crate-internal entry point to
-/// [`CsvReplayGenerator::parse_values_and_gaps`], for callers that need the
-/// blank rows without building a generator — notably the config expansion that
-/// cross-checks them against `gap_windows:`.
-pub(crate) fn column_values_and_gaps(
+/// Read one CSV column back as values plus the rows that were blank.
+///
+/// The entry point to [`CsvReplayGenerator::parse_values_and_gaps`] for callers
+/// that need the blank rows without building a generator: the config expansion
+/// that cross-checks them against `gap_windows:`, and anything verifying a
+/// written capture against what it replays.
+///
+/// Blank rows come back as indices rather than as `NaN` in the values, because
+/// a literal `NaN` cell is a reported sample and the two are indistinguishable
+/// once merged.
+pub fn column_values_and_gaps(
     content: &str,
     column: usize,
 ) -> Result<(Vec<f64>, Vec<usize>), SondaError> {
