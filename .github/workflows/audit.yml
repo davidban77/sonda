@@ -39,7 +39,7 @@ jobs:
       # RUSTSEC-2026-0258 (#566), and an advisory should fail on the PR that
       # introduces the vulnerable dependency, not on a weekly sweep afterwards.
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.86.4
+        uses: taiki-e/install-action@v2.87.0
         with:
           tool: cargo-audit
 
