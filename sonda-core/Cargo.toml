@@ -13,7 +13,7 @@ readme = "../README.md"
 
 [features]
 default = ["config", "runtime"]
-config = ["dep:serde_yaml_ng", "dep:chrono", "chrono/serde"]
+config = ["dep:serde_yaml_ng", "dep:serde_ignored", "dep:chrono", "chrono/serde"]
 # The async scheduling and delivery layer (tokio). Disable for pure-engine
 # consumers — e.g. compiling generators/encoders/compiler to WebAssembly.
 runtime = ["dep:tokio", "dep:tokio-util"]
@@ -32,6 +32,7 @@ schema = ["config", "dep:schemars"]
 [dependencies]
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true, optional = true }
+serde_ignored = { workspace = true, optional = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = "0.1"
