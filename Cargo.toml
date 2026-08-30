@@ -28,7 +28,7 @@ codegen-units = 1
 strip = "debuginfo"
 
 [workspace.package]
-version = "1.22.2"
+version = "1.22.3"
 edition = "2021"
 rust-version = "1.75"
 authors = ["David Flores <davidflores77@gmail.com>"]
@@ -40,7 +40,7 @@ keywords = ["telemetry", "metrics", "observability", "testing", "synthetic"]
 categories = ["command-line-utilities", "development-tools::testing"]
 
 [workspace.dependencies]
-sonda-core = { path = "sonda-core", version = "1.22.2" }
+sonda-core = { path = "sonda-core", version = "1.22.3" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_ignored = "0.1"

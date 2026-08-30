@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.22.3](https://github.com/davidban77/sonda/compare/v1.22.2...v1.22.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **config:** reject unknown keys in nested scenario blocks ([#611](https://github.com/davidban77/sonda/issues/611)) ([3dfcc1e](https://github.com/davidban77/sonda/commit/3dfcc1e032d24dea28ecaff4029ca3577ef4edf8))
+* **docs:** correct the derived-rate formula and regenerate the capture fence ([#615](https://github.com/davidban77/sonda/issues/615)) ([114a6e8](https://github.com/davidban77/sonda/commit/114a6e805eb473bf0c8069df70f060e11ef0ce9a))
+* **import:** check timestamp monotonicity across the whole file ([#612](https://github.com/davidban77/sonda/issues/612)) ([24fe9d4](https://github.com/davidban77/sonda/commit/24fe9d4578137e72feb7ac4cac733a4dfd372517))
+
+
+### Miscellaneous
+
+* annotate the derived rate, bound every job, note a public API ([#613](https://github.com/davidban77/sonda/issues/613)) ([5be4d09](https://github.com/davidban77/sonda/commit/5be4d09a71a5731133f385e7934878c410fcd054))
+
+
+### CI/CD
+
+* bump grafana/grafana from 13.1.3 to 13.2.0 in /examples ([#618](https://github.com/davidban77/sonda/issues/618)) ([b476098](https://github.com/davidban77/sonda/commit/b476098744061b12b78df5eb05d0771d7e992919))
+* bump grafana/loki from 3.7.6 to 3.7.7 in /examples ([#616](https://github.com/davidban77/sonda/issues/616)) ([930e854](https://github.com/davidban77/sonda/commit/930e8544530de50c2839d899b6e3d8d67e829c11))
+* bump taiki-e/install-action from 2.86.4 to 2.87.0 ([#622](https://github.com/davidban77/sonda/issues/622)) ([fa353ed](https://github.com/davidban77/sonda/commit/fa353ed597f6d1ec57b1ceb185f414c0ec058e28))
+* bump victoriametrics/victoria-metrics in /examples ([#617](https://github.com/davidban77/sonda/issues/617)) ([01e8cca](https://github.com/davidban77/sonda/commit/01e8cca48783ea7a9616704c0541933420ef8994))
+
 ## [1.22.2](https://github.com/davidban77/sonda/compare/v1.22.1...v1.22.2) (2026-08-29)
 
 
