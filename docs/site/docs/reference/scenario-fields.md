@@ -84,12 +84,30 @@ sonda run full-example.yaml
 
 Sonda rejects any key it does not recognise, naming the full path to each one:
 
+```yaml title="a stray key under gaps:"
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu_pct
+    rate: 1
+    gaps: { every: 5s, for: 1s, untl: 3s }
+    generator: { type: constant, value: 1.0 }
+```
+
 ```
 error: failed to parse v2 scenario capture.yaml: unknown field in scenario file:
-scenarios[0].gaps.evry
+scenarios[0].gaps.untl
 
   hint: check spelling against the scenario reference; sonda ignores nothing
 ```
+
+!!! note "A typo on a *required* field reports differently"
+
+    `gaps: { evry: 5s, for: 1s }` does not name `evry`. Serde fails on the
+    absent `every` before the unknown-key collector is read, so you get
+    `scenarios[0].gaps: missing field 'every'` — which points at the same line
+    and is just as actionable. The check above is what closed the *silent*
+    case: a stray key that displaced nothing and produced no error at all.
 
 A misspelled key is a scenario that does not do what it says, so it fails at load
 rather than at run time. `sonda --dry-run run` reports it without emitting

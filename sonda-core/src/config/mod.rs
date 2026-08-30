@@ -1091,6 +1091,14 @@ pub(crate) fn median_delta_seconds(timestamps: &[f64]) -> Result<f64, String> {
 /// median, which is the same divergence the shared reduction exists to prevent.
 pub(crate) const CSV_DELTA_SAMPLE_ROWS: usize = 100;
 
+/// The replay rate in words, for prose that has to state it.
+///
+/// One definition because two places say it and they were allowed to disagree:
+/// the emitted capture header shipped it inverted. It sits beside
+/// `derived_rate = timescale / delta` so the sentence and the arithmetic move
+/// together.
+pub(crate) const RATE_FORMULA_PROSE: &str = "timescale ÷ median Δt";
+
 /// Expand a `csv_replay` scenario into one config per data column, deriving
 /// `rate` from the CSV's column-0 timestamps (`rate = timescale / median Δt`).
 /// Non-`csv_replay` configs pass through unchanged.

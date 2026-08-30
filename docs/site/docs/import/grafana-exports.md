@@ -77,7 +77,7 @@ The scenario `name: incident_replay` is replaced with `cpu` because each CSV col
 
 The column has exactly two jobs:
 
-1. **Rate derivation** — the median Δt across the sampled rows, scaled by `timescale`.
+1. **Rate derivation** — the replay rate is `timescale / median_delta`, the median Δt taken across the sampled rows.
 2. **Row alignment** — which row a `gap_windows:` entry covers, checked against the same instants.
 
 It does **not** set a per-event emission time. Replay runs on a **uniform grid** at the derived rate: rows are emitted in file order, evenly spaced, and each event is stamped from the scenario clock (anchored by `start_time:`), not from its row's cell.
