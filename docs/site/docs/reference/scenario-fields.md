@@ -95,7 +95,19 @@ A misspelled key is a scenario that does not do what it says, so it fails at loa
 rather than at run time. `sonda --dry-run run` reports it without emitting
 anything, and the HTTP API answers `422 Unprocessable Entity`.
 
-!!! warning "One exception: `dynamic_labels`"
+!!! info "The browser playground does not run this check"
+
+    The check ships behind sonda-core's `strict-config` feature, which the
+    binaries enable and the WebAssembly build does not. `serde_ignored` compiles
+    a second copy of the whole scenario deserializer: measured at **+170 KB**
+    on the playground bundle after optimization, 22% more for every visitor to
+    these docs to download.
+
+    The playground is an editor, and it already flags unknown keys the way an
+    editor should — the [JSON Schema](editor-schema.md) backing its completions
+    underlines them as you type. `sonda run` is the authority, and it refuses.
+
+!!! warning "One exception in `sonda run` too: `dynamic_labels`"
 
     Unknown keys inside a `dynamic_labels:` entry are still ignored silently.
     That block is deserialized through a serde `flatten`, which routes leftover

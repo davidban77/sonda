@@ -13,7 +13,7 @@ readme = "../README.md"
 
 [features]
 default = ["config", "http"]
-config = ["sonda-core/config"]
+config = ["sonda-core/config", "sonda-core/strict-config"]
 http = ["sonda-core/http"]
 remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]

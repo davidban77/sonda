@@ -12,8 +12,14 @@ description = "Core engine for Sonda — synthetic telemetry generation library"
 readme = "../README.md"
 
 [features]
-default = ["config", "runtime"]
-config = ["dep:serde_yaml_ng", "dep:serde_ignored", "dep:chrono", "chrono/serde"]
+default = ["config", "runtime", "strict-config"]
+config = ["dep:serde_yaml_ng", "dep:chrono", "chrono/serde"]
+# Rejecting unknown YAML keys. Split from `config` rather than folded into it
+# because `serde_ignored` monomorphizes the whole ScenarioFile deserialize tree
+# a second time: measured at +349,758 bytes of wasm before `wasm-opt` and
+# +170,669 after, 22% on a bundle every docs visitor downloads. The binaries
+# turn it on; sonda-wasm deliberately does not. See compiler/parse.rs.
+strict-config = ["config", "dep:serde_ignored"]
 # The async scheduling and delivery layer (tokio). Disable for pure-engine
 # consumers — e.g. compiling generators/encoders/compiler to WebAssembly.
 runtime = ["dep:tokio", "dep:tokio-util"]

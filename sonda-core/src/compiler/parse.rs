@@ -119,6 +119,10 @@ pub enum ParseError {
     ComposablePackInvalid(#[source] serde_yaml_ng::Error),
 
     /// The file carries keys no scenario field declares — almost always a typo.
+    ///
+    /// Only produced by a `strict-config` build. sonda-wasm omits that feature,
+    /// so the playground parses exactly as it did before — see the module docs.
+    #[cfg(feature = "strict-config")]
     #[error("unknown field{} in scenario file: {}\n\n  hint: check spelling against the scenario reference; sonda ignores nothing", if .0.len() == 1 { "" } else { "s" }, .0.join(", "))]
     UnknownFields(Vec<String>),
 
@@ -414,12 +418,16 @@ pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
         return parse_composable(yaml);
     }
 
+    #[cfg(feature = "strict-config")]
     let (file, unknown) = deserialize(yaml)?;
+    #[cfg(not(feature = "strict-config"))]
+    let file = deserialize(yaml)?;
 
     if file.version != 2 {
         return Err(ParseError::InvalidVersion(file.version));
     }
 
+    #[cfg(feature = "strict-config")]
     if !unknown.is_empty() {
         return Err(ParseError::UnknownFields(unknown));
     }
@@ -520,6 +528,14 @@ fn has_top_level_scenarios_key(yaml: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(feature = "strict-config"))]
+fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
+    serde_yaml_ng::from_str::<crate::packs::MetricPackDef>(yaml)
+        .map(|_| ())
+        .map_err(ParseError::ComposablePackInvalid)
+}
+
+#[cfg(feature = "strict-config")]
 fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
     let mut unknown = Vec::new();
     serde_ignored::deserialize::<_, _, crate::packs::MetricPackDef>(
@@ -547,6 +563,43 @@ fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
 /// produces confusing errors when a canonical file has a structural mistake), we
 /// peek for the `scenarios` key first. If present, we parse as canonical. If
 /// absent, we parse as flat shorthand. No fallback.
+/// Non-strict builds (sonda-wasm) keep the original behaviour: unknown keys are
+/// ignored. Kept as a separate body rather than a runtime branch so the wasm
+/// build compiles byte-for-byte what it compiled before this feature existed.
+#[cfg(not(feature = "strict-config"))]
+fn deserialize(yaml: &str) -> Result<ScenarioFile, ParseError> {
+    #[derive(serde::Deserialize)]
+    struct ShapeProbe {
+        scenarios: Option<serde_yaml_ng::Value>,
+        signal_type: Option<serde_yaml_ng::Value>,
+        generator: Option<serde_yaml_ng::Value>,
+        log_generator: Option<serde_yaml_ng::Value>,
+        distribution: Option<serde_yaml_ng::Value>,
+        pack: Option<serde_yaml_ng::Value>,
+    }
+
+    let probe: ShapeProbe = serde_yaml_ng::from_str(yaml)?;
+
+    if probe.scenarios.is_some() {
+        let file: ScenarioFile = serde_yaml_ng::from_str(yaml)?;
+        return Ok(file);
+    }
+
+    let has_flat_body = probe.signal_type.is_some()
+        || probe.generator.is_some()
+        || probe.log_generator.is_some()
+        || probe.distribution.is_some()
+        || probe.pack.is_some();
+
+    if has_flat_body {
+        let flat: FlatFile = serde_yaml_ng::from_str(yaml)?;
+        Ok(flat.into_scenario_file())
+    } else {
+        Err(ParseError::RunnableMissingBody)
+    }
+}
+
+#[cfg(feature = "strict-config")]
 fn deserialize(yaml: &str) -> Result<(ScenarioFile, Vec<String>), ParseError> {
     #[derive(serde::Deserialize)]
     struct ShapeProbe {
@@ -581,6 +634,7 @@ fn deserialize(yaml: &str) -> Result<(ScenarioFile, Vec<String>), ParseError> {
     }
 }
 
+#[cfg(feature = "strict-config")]
 /// Deserialize `yaml` into `T`, collecting every key `T` does not declare.
 ///
 /// One choke point rather than `deny_unknown_fields` per struct: that
@@ -605,6 +659,7 @@ fn deserialize_recording_unknown<T: serde::de::DeserializeOwned>(
     Ok((value, unknown))
 }
 
+#[cfg(feature = "strict-config")]
 /// Render a `serde_ignored` path as the reader would write it in YAML:
 /// `scenarios[2].gaps.evry`.
 ///
@@ -791,7 +846,7 @@ fn is_valid_id(id: &str) -> bool {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "strict-config"))]
 mod unknown_field_tests {
     use super::*;
 
