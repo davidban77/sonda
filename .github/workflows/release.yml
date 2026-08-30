@@ -20,6 +20,7 @@ jobs:
   binaries:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +106,7 @@ jobs:
     name: Create GitHub Release
     needs: binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # Needed by the major-tag step below: this job otherwise never checks
       # the repo out, so there would be no git to tag with.
@@ -197,6 +199,7 @@ jobs:
   docker:
     name: Build & Push Multi-arch Docker Image
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
