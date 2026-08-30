@@ -875,8 +875,7 @@ fn read_csv_first_lines(path: &str, max_lines: usize) -> Result<Vec<String>, Son
                 source: e,
             })
         })?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if is_csv_skippable_line(&line) {
             continue;
         }
         out.push(line);
@@ -885,6 +884,85 @@ fn read_csv_first_lines(path: &str, max_lines: usize) -> Result<Vec<String>, Son
         }
     }
     Ok(out)
+}
+
+/// A line carrying no data: blank, or a `#` comment.
+///
+/// One definition because two readers walk the same file and must agree on
+/// which lines are rows — the sampled rate derivation and the full-file
+/// monotonicity check. If they disagreed, the row numbers in an error message
+/// would not point at the row the reader has to fix.
+fn is_csv_skippable_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
+/// Refuse a timestamp column that does not strictly increase.
+///
+/// [`compute_csv_delta_seconds`] reads only [`CSV_DELTA_SAMPLE_ROWS`] rows, so
+/// the monotonicity it enforces covers the head of the file. This walks every
+/// row: a repeated or out-of-order stamp anywhere is wrong data, not a pacing
+/// choice, and replaying it would silently reorder the capture.
+///
+/// Streams rather than collecting — a capture is not bounded in length.
+///
+/// # Errors
+///
+/// Names the first offending row and both stamps. Row numbers count data rows
+/// from 0, matching [`compute_csv_delta_seconds`].
+fn validate_csv_timestamps_monotonic(path: &str, ts_col_idx: usize) -> Result<(), SondaError> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path).map_err(|e| {
+        SondaError::Generator(crate::GeneratorError::FileRead {
+            path: path.to_string(),
+            source: e,
+        })
+    })?;
+
+    let mut prev: Option<f64> = None;
+    let mut row_idx = 0usize;
+    let mut header_checked = false;
+
+    for line_result in std::io::BufReader::new(file).lines() {
+        let line = line_result.map_err(|e| {
+            SondaError::Generator(crate::GeneratorError::FileRead {
+                path: path.to_string(),
+                source: e,
+            })
+        })?;
+        if is_csv_skippable_line(&line) {
+            continue;
+        }
+        if !header_checked {
+            header_checked = true;
+            if is_csv_header_line(&line) {
+                continue;
+            }
+        }
+
+        let cell = line.split(',').nth(ts_col_idx).unwrap_or("");
+        let ts = parse_csv_timestamp(cell).ok_or_else(|| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "csv_replay: failed to parse timestamp at data row {row_idx} column {ts_col_idx}: {cell:?}"
+            )))
+        })?;
+
+        if let Some(previous) = prev {
+            if ts <= previous {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: file {path:?} has non-monotonic timestamps at data row \
+                     {row_idx}: {ts} is not greater than the previous row's {previous}.\n\n  \
+                     hint: the timestamp column must strictly increase; sonda replays rows in \
+                     file order and derives the rate from it"
+                ))));
+            }
+        }
+        prev = Some(ts);
+        row_idx += 1;
+    }
+
+    Ok(())
 }
 
 fn parse_csv_timestamp(cell: &str) -> Option<f64> {
@@ -1061,6 +1139,7 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
         auto_discover_specs(parsed, default_name_opt.as_deref())?
     };
 
+    validate_csv_timestamps_monotonic(&file, 0)?;
     let delta = compute_csv_delta_seconds(&file, 0)?;
     let derived_rate = timescale / delta;
 
@@ -1409,6 +1488,7 @@ pub fn expand_log_scenario(
     let timescale = validate_csv_timescale(timescale_opt)?;
     let ts_col_idx =
         crate::generator::log_csv_replay::resolve_timestamp_column_index(&file, columns.as_ref())?;
+    validate_csv_timestamps_monotonic(&file, ts_col_idx)?;
     let delta = compute_csv_delta_seconds(&file, ts_col_idx)?;
     let derived_rate = timescale / delta;
     let user_rate = config.base.rate;
@@ -5063,5 +5143,94 @@ generator:
             msg.contains("non-monotonic"),
             "error message must mention non-monotonic, got: {msg}"
         );
+    }
+
+    // ======================================================================
+    // Timestamp column monotonicity (full file, not just the sampled head)
+    // ======================================================================
+
+    /// Write a CSV whose timestamps are a clean 10s grid, then overwrite one
+    /// row's stamp with `bad_ts` — returning the path and the row's index.
+    fn csv_with_bad_row(rows: usize, bad_row: usize, bad_ts: f64) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "timestamp,cpu").expect("write header");
+        for i in 0..rows {
+            let ts = if i == bad_row {
+                bad_ts
+            } else {
+                1_700_000_000.0 + (i as f64) * 10.0
+            };
+            writeln!(tmp, "{ts},42.5").expect("write row");
+        }
+        tmp.flush().expect("flush");
+        tmp
+    }
+
+    #[test]
+    fn monotonic_timestamps_are_accepted() {
+        let tmp = csv_with_bad_row(150, usize::MAX, 0.0);
+        validate_csv_timestamps_monotonic(&tmp.path().to_string_lossy(), 0)
+            .expect("a strictly increasing column must be accepted");
+    }
+
+    #[test]
+    fn repeated_timestamp_is_refused_naming_the_row() {
+        // Row 4 repeats row 3's stamp.
+        let tmp = csv_with_bad_row(20, 4, 1_700_000_030.0);
+        let err = validate_csv_timestamps_monotonic(&tmp.path().to_string_lossy(), 0)
+            .expect_err("a repeated timestamp must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("non-monotonic"), "got: {msg}");
+        assert!(msg.contains("data row 4"), "must name the row, got: {msg}");
+    }
+
+    #[test]
+    fn out_of_order_timestamp_is_refused_naming_the_row() {
+        // Row 7 jumps backwards behind row 6.
+        let tmp = csv_with_bad_row(20, 7, 1_700_000_000.0);
+        let err = validate_csv_timestamps_monotonic(&tmp.path().to_string_lossy(), 0)
+            .expect_err("an out-of-order timestamp must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("non-monotonic"), "got: {msg}");
+        assert!(msg.contains("data row 7"), "must name the row, got: {msg}");
+    }
+
+    /// The gap this check exists to close.
+    ///
+    /// `compute_csv_delta_seconds` reads only `CSV_DELTA_SAMPLE_ROWS` rows, so
+    /// its own monotonicity guard cannot see a defect past that window. Row 120
+    /// is beyond it by construction: the assertion below pins that, so shrinking
+    /// the sample constant cannot quietly turn this case into a duplicate of the
+    /// head-of-file ones above.
+    #[test]
+    fn non_monotonic_row_beyond_the_sample_window_is_refused() {
+        let bad_row = CSV_DELTA_SAMPLE_ROWS + 20;
+        assert!(
+            bad_row > CSV_DELTA_SAMPLE_ROWS,
+            "the defect must sit outside the sampled window for this to test anything"
+        );
+
+        let tmp = csv_with_bad_row(bad_row + 30, bad_row, 1_700_000_000.0);
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        // The sampled derivation is blind to it — that is the defect.
+        compute_csv_delta_seconds(&path, 0)
+            .expect("the sampled head is clean, so rate derivation still succeeds");
+
+        let err = validate_csv_timestamps_monotonic(&path, 0)
+            .expect_err("a defect past the sample window must still be refused");
+        assert!(
+            err.to_string().contains(&format!("data row {bad_row}")),
+            "must name the row, got: {err}"
+        );
+    }
+
+    #[test]
+    fn importer_output_passes_the_monotonicity_check() {
+        // The emitter writes a uniform grid; its own output must load.
+        let tmp = write_temp_timing_csv("Time,cpu,mem,disk,net", 200);
+        validate_csv_timestamps_monotonic(&tmp.path().to_string_lossy(), 0)
+            .expect("importer-emitted CSV must pass");
     }
 }
