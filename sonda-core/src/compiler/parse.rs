@@ -661,7 +661,10 @@ fn deserialize_recording_unknown<T: serde::de::DeserializeOwned>(
 
 #[cfg(feature = "strict-config")]
 /// Render a `serde_ignored` path as the reader would write it in YAML:
-/// `scenarios[2].gaps.evry`.
+/// `scenarios[2].gaps.untl`.
+///
+/// A typo on a *required* field never reaches here — serde fails on the absent
+/// field first — so the example is a stray key, which is the case this collects.
 ///
 /// Sequence indices become `[n]`; the synthetic `Some`/newtype hops serde
 /// inserts for `Option<T>` are skipped — they name no key in the file. Walked
@@ -866,7 +869,11 @@ mod unknown_field_tests {
     /// from the added key — not from a missing one.
     #[rustfmt::skip]
     const NESTED_BLOCKS: &[(&str, &str, &str)] = &[
-        ("gaps",               "    gaps: { every: 5s, for: 1s{X} }\n",                                    "scenarios[0].gaps.zzz_typo"),
+        // The path scenario-fields.md prints as its worked example. Pinned so
+        // the page cannot document an error the parser does not produce — it
+        // did once, with `evry`, which serde rejects as a missing required
+        // field long before the collector runs.
+        ("gaps (docs example)", "    gaps: { every: 5s, for: 1s{X} }\n",                                    "scenarios[0].gaps.zzz_typo"),
         ("gap_windows",        "    gap_windows: [{ at: 1s, for: 1s{X} }]\n",                              "scenarios[0].gap_windows[0].zzz_typo"),
         ("bursts",             "    bursts: { every: 5s, for: 1s, multiplier: 3{X} }\n",                   "scenarios[0].bursts.zzz_typo"),
         ("cardinality_spikes", "    cardinality_spikes: [{ label: l, every: 5s, for: 1s, cardinality: 2, strategy: counter{X} }]\n", "scenarios[0].cardinality_spikes[0].zzz_typo"),
@@ -900,6 +907,40 @@ mod unknown_field_tests {
                 other => panic!("{label}: expected UnknownFields, got {other}"),
             }
         }
+    }
+
+    /// The exact error `docs/site/docs/reference/scenario-fields.md` prints.
+    ///
+    /// Driven by the real parser rather than transcribed, because the page had
+    /// documented an error the parser does not produce for the input shown.
+    #[test]
+    fn the_documented_worked_example_produces_the_documented_path() {
+        let yaml = entry_with("    gaps: { every: 5s, for: 1s, untl: 3s }\n");
+        let err = parse(&yaml).expect_err("the documented input must be rejected");
+        match &err {
+            ParseError::UnknownFields(paths) => assert_eq!(
+                paths,
+                &["scenarios[0].gaps.untl".to_string()],
+                "scenario-fields.md prints exactly this path"
+            ),
+            other => panic!("expected UnknownFields, got {other}"),
+        }
+    }
+
+    /// The counter-example the same page states, also driven rather than read.
+    #[test]
+    fn a_typo_on_a_required_field_reports_the_missing_field_instead() {
+        let yaml = entry_with("    gaps: { evry: 5s, for: 1s }\n");
+        let err = parse(&yaml).expect_err("must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing field `every`"),
+            "the page says this reports a missing field, got: {msg}"
+        );
+        assert!(
+            !msg.contains("evry"),
+            "the page says this does NOT name the typo, got: {msg}"
+        );
     }
 
     #[test]
