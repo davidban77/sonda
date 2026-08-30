@@ -73,6 +73,31 @@ The scenario `name: incident_replay` is replaced with `cpu` because each CSV col
 !!! info "How the derivation works"
     Sonda reads column 0 as a timestamp series. It parses each cell as a number and computes the **median** of consecutive differences across up to the first 100 data rows. Values larger than `1e12` are read as epoch milliseconds. Smaller values are read as epoch seconds. Both Grafana, which exports milliseconds, and VictoriaMetrics, which exports seconds, are covered. The derived rate is `timescale / median_delta`.
 
+### What the timestamp column does, and does not, control
+
+The column has exactly two jobs:
+
+1. **Rate derivation** — the median Δt across the sampled rows, scaled by `timescale`.
+2. **Row alignment** — which row a `gap_windows:` entry covers, checked against the same instants.
+
+It does **not** set a per-event emission time. Replay runs on a **uniform grid** at the derived rate: rows are emitted in file order, evenly spaced, and each event is stamped from the scenario clock (anchored by `start_time:`), not from its row's cell.
+
+!!! warning "Irregular spacing is honored in rate only"
+    If you hand-write a file whose rows are unevenly spaced — say 10s apart for the first half and 60s apart for the second — sonda does not reproduce that pacing. It takes the median of the two, and replays every row at that one interval.
+
+    This is a deliberate limitation, not an oversight. Driving per-event instants from the column would create a second source of truth for emission times that can disagree with the uniform grid the scheduler and the `gap_windows:` cross-check both rely on. Irregular pacing is a scheduling mode, and the capture pipeline does not have one.
+
+    To model a real pause in the data, use [`gap_windows:`](../reference/scenario-fields.md), which the importer emits for you. That expresses absence explicitly rather than implying it through row spacing.
+
+**Timestamps must strictly increase.** A repeated or out-of-order stamp is wrong data — replaying it would silently reorder the capture — so it is refused at load, naming the row:
+
+```
+error: csv_replay: file "capture.csv" has non-monotonic timestamps at data row 120:
+1700000000 is not greater than the previous row's 1700001190
+```
+
+Every row is checked, not just the first 100 the rate derivation samples.
+
 ### Speeding up or slowing down with `timescale`
 
 Use `timescale:` to replay the recording faster or slower without rewriting the CSV.
@@ -273,7 +298,7 @@ Naming rules:
 |---------------|-------|-----|
 | `csv_replay: 'timescale' must be a positive finite number, got 0` | `timescale: 0`, a negative value, or `NaN`/`Inf`. | Set `timescale` to a positive number, or remove it to use the default `1.0`. |
 | `csv_replay: file "..." has fewer than 2 data rows; cannot derive replay rate` | The CSV only has a header and one data row (or zero). | At least two data rows are needed to measure the sample interval. Re-export with a wider time range. |
-| `csv_replay: non-monotonic timestamps in "..." (row N value X <= previous Y)` | A timestamp goes backward or repeats. Common with concatenated exports or paused recordings. | Sort the file by timestamp, deduplicate, or split it at the discontinuity. |
+| `csv_replay: file "..." has non-monotonic timestamps at data row N` | A timestamp goes backward or repeats. Common with concatenated exports or paused recordings. Every row is checked, so this can name a row far into the file. | Sort the file by timestamp, deduplicate, or split it at the discontinuity. |
 | `csv_replay: column N has no metric name (header has labels only with no __name__); set 'default_metric_name' on the generator config` | Auto-discovery found a `{labels...}` header without a metric name. | Add `default_metric_name:` to the generator, or switch to explicit `columns:`. |
 | `generator error: cannot read file "..."` | The CSV path does not exist or is not readable. | Paths are relative to the directory where `sonda` is launched, not to the scenario file. |
 
