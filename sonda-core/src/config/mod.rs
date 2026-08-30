@@ -1097,6 +1097,7 @@ pub(crate) const CSV_DELTA_SAMPLE_ROWS: usize = 100;
 /// the emitted capture header shipped it inverted. It sits beside
 /// `derived_rate = timescale / delta` so the sentence and the arithmetic move
 /// together.
+#[cfg(feature = "config")]
 pub(crate) const RATE_FORMULA_PROSE: &str = "timescale ÷ median Δt";
 
 /// Expand a `csv_replay` scenario into one config per data column, deriving

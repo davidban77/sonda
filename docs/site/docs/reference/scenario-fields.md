@@ -85,6 +85,10 @@ sonda run full-example.yaml
 Sonda rejects any key it does not recognise, naming the full path to each one:
 
 ```yaml title="a stray key under gaps:"
+# sonda:static -- this fence is deliberately INVALID: it is the input for the
+# error below. The compile gate would rightly reject it. The path it produces
+# is pinned instead by `the_documented_worked_example_produces_the_documented_path`
+# in compiler/parse.rs, which drives the real parser over this exact input.
 scenarios:
   - id: cpu
     signal_type: metrics

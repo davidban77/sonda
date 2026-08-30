@@ -9,6 +9,10 @@
 //!
 //! Drives the real emitter over the page's own stated fixture and compares
 //! against the fence, so the two cannot drift apart again.
+//!
+//! `acquire::yaml_out` is behind `config`, so this whole file is too — without
+//! the gate the `--no-default-features` job cannot compile it.
+#![cfg(feature = "config")]
 
 use sonda_core::acquire::normalize::{Grid, NormalizedSeries};
 use sonda_core::acquire::yaml_out;
