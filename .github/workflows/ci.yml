@@ -273,6 +273,12 @@ jobs:
       - name: No raw-markup assignment in hand-written docs JS
         run: bash scripts/check_no_raw_html.sh
 
+      # A job without timeout-minutes inherits GitHub's 6-hour default, so a
+      # hung step reads as a slow one until the runner is burned. Guarding the
+      # class rather than the seven jobs that were missing it.
+      - name: Every workflow job declares timeout-minutes
+        run: python3 scripts/check_workflow_timeouts.py
+
       # The wasm bundle downloads on every page carrying a live widget, so its
       # size is a user-facing property. Ratchet, not a ceiling to grow into.
       - name: Playground wasm bundle is within its size budget

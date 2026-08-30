@@ -15,6 +15,7 @@ jobs:
   commitlint:
     name: Conventional commit check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: amannn/action-semantic-pull-request@v6
         env:

@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.22.2](https://github.com/davidban77/sonda/compare/v1.22.1...v1.22.2) (2026-08-29)
 
 
+### Public API
+
+* **core:** `generator::csv_replay::column_values_and_gaps(content, column)` is public. Returns a column's values alongside the indices of its blank rows, keeping the two apart so a literal `NaN` cell stays distinguishable from an absent one. Added in ([#607](https://github.com/davidban77/sonda/issues/607)) under a `test:` commit type, so it did not appear in the generated notes for this release.
+
+
 ### CI/CD
 
 * bump otel/opentelemetry-collector-contrib in /examples ([#572](https://github.com/davidban77/sonda/issues/572)) ([2f111f7](https://github.com/davidban77/sonda/commit/2f111f7268693c5fad182aa2aaef5d71b1e2cf9c))
