@@ -118,6 +118,14 @@ pub enum ParseError {
     #[error("kind: composable body is not a valid pack definition")]
     ComposablePackInvalid(#[source] serde_yaml_ng::Error),
 
+    /// The file carries keys no scenario field declares — almost always a typo.
+    ///
+    /// Only produced by a `strict-config` build. sonda-wasm omits that feature,
+    /// so the playground parses exactly as it did before — see the module docs.
+    #[cfg(feature = "strict-config")]
+    #[error("unknown field{} in scenario file: {}\n\n  hint: check spelling against the scenario reference; sonda ignores nothing", if .0.len() == 1 { "" } else { "s" }, .0.join(", "))]
+    UnknownFields(Vec<String>),
+
     /// A `while:` clause sets `if_unresolved:` without `scenario_name:`.
     #[error(
         "entry {index}: `while.if_unresolved` requires `while.scenario_name` to be set; \
@@ -410,10 +418,18 @@ pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
         return parse_composable(yaml);
     }
 
+    #[cfg(feature = "strict-config")]
+    let (file, unknown) = deserialize(yaml)?;
+    #[cfg(not(feature = "strict-config"))]
     let file = deserialize(yaml)?;
 
     if file.version != 2 {
         return Err(ParseError::InvalidVersion(file.version));
+    }
+
+    #[cfg(feature = "strict-config")]
+    if !unknown.is_empty() {
+        return Err(ParseError::UnknownFields(unknown));
     }
 
     if file.scenarios.is_empty() {
@@ -512,10 +528,33 @@ fn has_top_level_scenarios_key(yaml: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(feature = "strict-config"))]
 fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
     serde_yaml_ng::from_str::<crate::packs::MetricPackDef>(yaml)
         .map(|_| ())
         .map_err(ParseError::ComposablePackInvalid)
+}
+
+#[cfg(feature = "strict-config")]
+fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
+    let mut unknown = Vec::new();
+    serde_ignored::deserialize::<_, _, crate::packs::MetricPackDef>(
+        serde_yaml_ng::Deserializer::from_str(yaml),
+        |path| unknown.push(render_ignored_path(&path)),
+    )
+    .map_err(ParseError::ComposablePackInvalid)?;
+
+    // `kind`, `version`, `tags` and `description` are the composable file
+    // header, read by parse_composable rather than by the pack body.
+    unknown.retain(|k| !matches!(k.as_str(), "kind" | "version" | "tags" | "description"));
+    unknown.sort();
+    unknown.dedup();
+
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(ParseError::UnknownFields(unknown))
+    }
 }
 
 /// Determine the file shape and deserialize accordingly.
@@ -524,6 +563,10 @@ fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
 /// produces confusing errors when a canonical file has a structural mistake), we
 /// peek for the `scenarios` key first. If present, we parse as canonical. If
 /// absent, we parse as flat shorthand. No fallback.
+/// Non-strict builds (sonda-wasm) keep the original behaviour: unknown keys are
+/// ignored. Kept as a separate body rather than a runtime branch so the wasm
+/// build compiles byte-for-byte what it compiled before this feature existed.
+#[cfg(not(feature = "strict-config"))]
 fn deserialize(yaml: &str) -> Result<ScenarioFile, ParseError> {
     #[derive(serde::Deserialize)]
     struct ShapeProbe {
@@ -554,6 +597,101 @@ fn deserialize(yaml: &str) -> Result<ScenarioFile, ParseError> {
     } else {
         Err(ParseError::RunnableMissingBody)
     }
+}
+
+#[cfg(feature = "strict-config")]
+fn deserialize(yaml: &str) -> Result<(ScenarioFile, Vec<String>), ParseError> {
+    #[derive(serde::Deserialize)]
+    struct ShapeProbe {
+        scenarios: Option<serde_yaml_ng::Value>,
+        signal_type: Option<serde_yaml_ng::Value>,
+        generator: Option<serde_yaml_ng::Value>,
+        log_generator: Option<serde_yaml_ng::Value>,
+        distribution: Option<serde_yaml_ng::Value>,
+        pack: Option<serde_yaml_ng::Value>,
+    }
+
+    // The probes above deliberately accept anything; only the full-fidelity
+    // deserialize below is held to the declared field set.
+    let probe: ShapeProbe = serde_yaml_ng::from_str(yaml)?;
+
+    if probe.scenarios.is_some() {
+        let (file, unknown) = deserialize_recording_unknown::<ScenarioFile>(yaml)?;
+        return Ok((file, unknown));
+    }
+
+    let has_flat_body = probe.signal_type.is_some()
+        || probe.generator.is_some()
+        || probe.log_generator.is_some()
+        || probe.distribution.is_some()
+        || probe.pack.is_some();
+
+    if has_flat_body {
+        let (flat, unknown) = deserialize_recording_unknown::<FlatFile>(yaml)?;
+        Ok((flat.into_scenario_file(), unknown))
+    } else {
+        Err(ParseError::RunnableMissingBody)
+    }
+}
+
+#[cfg(feature = "strict-config")]
+/// Deserialize `yaml` into `T`, collecting every key `T` does not declare.
+///
+/// One choke point rather than `deny_unknown_fields` per struct: that
+/// attribute is documented as not composing with `#[serde(flatten)]`, so
+/// scattering it would silently not apply to the flattened types.
+///
+/// `serde_ignored` has the same blind spot, but confined to it: a struct that
+/// *itself* carries `#[serde(flatten)]` hides all of its unknown keys, because
+/// serde routes leftovers to the flattened field's own deserializer rather
+/// than through the wrapper. `parser_reachable_flatten_types_are_declared`
+/// in `tests/unknown_field_coverage.rs` pins the reachable set so a new
+/// `flatten` cannot quietly widen the hole.
+fn deserialize_recording_unknown<T: serde::de::DeserializeOwned>(
+    yaml: &str,
+) -> Result<(T, Vec<String>), ParseError> {
+    let mut unknown = Vec::new();
+    let value = serde_ignored::deserialize(serde_yaml_ng::Deserializer::from_str(yaml), |path| {
+        unknown.push(render_ignored_path(&path));
+    })?;
+    unknown.sort();
+    unknown.dedup();
+    Ok((value, unknown))
+}
+
+#[cfg(feature = "strict-config")]
+/// Render a `serde_ignored` path as the reader would write it in YAML:
+/// `scenarios[2].gaps.evry`.
+///
+/// Sequence indices become `[n]`; the synthetic `Some`/newtype hops serde
+/// inserts for `Option<T>` are skipped — they name no key in the file. Walked
+/// structurally rather than by post-processing the `Display` form, so a map
+/// key that happens to be numeric stays a key.
+fn render_ignored_path(path: &serde_ignored::Path<'_>) -> String {
+    use serde_ignored::Path;
+
+    let mut out = String::new();
+    fn walk(path: &Path<'_>, out: &mut String) {
+        match path {
+            Path::Root => {}
+            Path::Seq { parent, index } => {
+                walk(parent, out);
+                out.push_str(&format!("[{index}]"));
+            }
+            Path::Map { parent, key } => {
+                walk(parent, out);
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(key);
+            }
+            Path::Some { parent }
+            | Path::NewtypeStruct { parent }
+            | Path::NewtypeVariant { parent } => walk(parent, out),
+        }
+    }
+    walk(path, &mut out);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -707,6 +845,92 @@ fn is_valid_id(id: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "strict-config"))]
+mod unknown_field_tests {
+    use super::*;
+
+    /// Wrap `body` (indented entry fields) in a minimal valid runnable file.
+    fn entry_with(body: &str) -> String {
+        format!(
+            "version: 2\nkind: runnable\nscenarios:\n  - id: a\n    signal_type: metrics\n    \
+             name: cpu_pct\n    rate: 1\n{body}    generator: {{ type: constant, value: 1.0 }}\n"
+        )
+    }
+
+    /// Nested config blocks reached from an entry. `deny_unknown_fields` on
+    /// the compiler AST stops at the entry boundary; these types are plain
+    /// serde structs, so before the choke point a stray key here was ignored.
+    ///
+    /// Each row carries every required field, so a rejection can only come
+    /// from the added key — not from a missing one.
+    #[rustfmt::skip]
+    const NESTED_BLOCKS: &[(&str, &str, &str)] = &[
+        ("gaps",               "    gaps: { every: 5s, for: 1s{X} }\n",                                    "scenarios[0].gaps.zzz_typo"),
+        ("gap_windows",        "    gap_windows: [{ at: 1s, for: 1s{X} }]\n",                              "scenarios[0].gap_windows[0].zzz_typo"),
+        ("bursts",             "    bursts: { every: 5s, for: 1s, multiplier: 3{X} }\n",                   "scenarios[0].bursts.zzz_typo"),
+        ("cardinality_spikes", "    cardinality_spikes: [{ label: l, every: 5s, for: 1s, cardinality: 2, strategy: counter{X} }]\n", "scenarios[0].cardinality_spikes[0].zzz_typo"),
+    ];
+
+    #[test]
+    fn nested_block_typo_is_rejected_and_names_its_path() {
+        assert!(
+            !NESTED_BLOCKS.is_empty(),
+            "case table is empty — the check would pass vacuously"
+        );
+
+        for (label, template, expected_path) in NESTED_BLOCKS {
+            // Control: the same block without the stray key must parse. This
+            // is what proves the rejection below is caused by the added key.
+            let clean = entry_with(&template.replace("{X}", ""));
+            parse(&clean).unwrap_or_else(|e| {
+                panic!("{label}: control case must parse, got: {e}");
+            });
+
+            let dirty = entry_with(&template.replace("{X}", ", zzz_typo: 1"));
+            let err = parse(&dirty)
+                .err()
+                .unwrap_or_else(|| panic!("{label}: stray key must be rejected"));
+
+            match &err {
+                ParseError::UnknownFields(paths) => assert!(
+                    paths.iter().any(|p| p == expected_path),
+                    "{label}: expected path {expected_path:?}, got {paths:?}"
+                ),
+                other => panic!("{label}: expected UnknownFields, got {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn top_level_and_entry_typos_stay_rejected() {
+        let top = "version: 2\nkind: runnable\ndescriptio: x\nscenarios: []\n";
+        assert!(parse(top).is_err(), "top-level typo must be rejected");
+
+        let entry = entry_with("    jiter: 0.5\n");
+        assert!(parse(&entry).is_err(), "entry-level typo must be rejected");
+    }
+
+    /// The single blind spot, asserted rather than left to be discovered.
+    ///
+    /// `DynamicLabelConfig` carries `#[serde(flatten)]`, and serde routes
+    /// leftover keys to the flattened field's own deserializer rather than
+    /// through the `serde_ignored` wrapper — so unknown keys alongside a
+    /// flatten are invisible. `serde` rejects `deny_unknown_fields` as a
+    /// variant attribute, so the untagged strategy enum cannot close it
+    /// either. Documented in `docs/site/docs/reference/scenario-fields.md`.
+    ///
+    /// If this test starts failing, the hole closed: delete it and the
+    /// limitation note with it.
+    #[test]
+    fn dynamic_labels_flatten_hole_is_still_open() {
+        let yaml = entry_with("    dynamic_labels: [{ key: k, values: [a], zzz_typo: 1 }]\n");
+        assert!(
+            parse(&yaml).is_ok(),
+            "the documented dynamic_labels blind spot appears to have closed"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

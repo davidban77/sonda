@@ -2443,6 +2443,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2569,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "sonda"
-version = "1.22.1"
+version = "1.22.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2592,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-core"
-version = "1.22.1"
+version = "1.22.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2608,6 +2618,7 @@ dependencies = [
  "rustls-pki-types",
  "schemars",
  "serde",
+ "serde_ignored",
  "serde_json",
  "serde_yaml_ng",
  "snap",
@@ -2625,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-server"
-version = "1.22.1"
+version = "1.22.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2653,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-wasm"
-version = "1.22.1"
+version = "1.22.2"
 dependencies = [
  "serde",
  "serde_json",

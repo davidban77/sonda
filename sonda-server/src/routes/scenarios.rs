@@ -423,6 +423,8 @@ fn is_semantic_schema_error(err: &sonda_core::CompileError, text: &str) -> bool 
         CompileError::Parse(ParseError::Yaml(_)) => {
             serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text).is_ok()
         }
+        // Well-formed YAML naming fields no scenario declares.
+        CompileError::Parse(ParseError::UnknownFields(_)) => true,
         CompileError::Normalize(
             NormalizeError::WhileValueIsNan { .. }
             | NormalizeError::CloseSnapToIsNan { .. }

@@ -80,6 +80,47 @@ scenarios:
 sonda run full-example.yaml
 ```
 
+## Unknown fields are errors
+
+Sonda rejects any key it does not recognise, naming the full path to each one:
+
+```
+error: failed to parse v2 scenario capture.yaml: unknown field in scenario file:
+scenarios[0].gaps.evry
+
+  hint: check spelling against the scenario reference; sonda ignores nothing
+```
+
+A misspelled key is a scenario that does not do what it says, so it fails at load
+rather than at run time. `sonda --dry-run run` reports it without emitting
+anything, and the HTTP API answers `422 Unprocessable Entity`.
+
+!!! info "The browser playground does not run this check"
+
+    The check ships behind sonda-core's `strict-config` feature, which the
+    binaries enable and the WebAssembly build does not. `serde_ignored` compiles
+    a second copy of the whole scenario deserializer: measured at **+170 KB**
+    on the playground bundle after optimization, 22% more for every visitor to
+    these docs to download.
+
+    The playground is an editor, and it already flags unknown keys the way an
+    editor should — the [JSON Schema](editor-schema.md) backing its completions
+    underlines them as you type. `sonda run` is the authority, and it refuses.
+
+!!! warning "One exception in `sonda run` too: `dynamic_labels`"
+
+    Unknown keys inside a `dynamic_labels:` entry are still ignored silently.
+    That block is deserialized through a serde `flatten`, which routes leftover
+    keys past the check. Both of serde's opt-outs for this
+    (`deny_unknown_fields`, and the same attribute on the strategy variants) are
+    rejected by the compiler on a flattened field, so the gap is real rather
+    than an oversight. Check `dynamic_labels` spelling against
+    [Dynamic labels](#dynamic-labels) by hand.
+
+    Every other block — `gaps`, `gap_windows`, `bursts`, `cardinality_spikes`,
+    `generator`, `encoder`, `sink`, and all entry- and file-level keys — is
+    checked.
+
 ## Field reference
 
 ### Core fields
