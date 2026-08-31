@@ -1,18 +1,17 @@
 # Example: using a metric pack in a scenario file.
 #
 # When `sonda run` encounters a v2 entry with a `pack:` field, it expands the
-# pack into one metric scenario per metric in the pack. The pack is resolved
-# from the directory passed via `--catalog <dir>`.
+# pack into one metric scenario per metric in the pack.
 #
 # This example uses the `telegraf_snmp_interface` pack with user labels for
 # a specific device and interface.
 #
 # Run with:
-#   sonda --catalog examples/packs run examples/pack-scenario.yaml
+#   sonda run examples/pack-scenario.yaml
 #
-# The pack referenced below (`telegraf_snmp_interface`) is shipped alongside
-# this file under `examples/packs/`, so the command above runs against a
-# self-contained catalog without depending on the repo's test fixtures.
+# `telegraf_snmp_interface` is a builtin pack, embedded in the binary, so no
+# `--catalog` is needed. Pass `--catalog <dir>` to override it with your own
+# pack of the same name.
 
 version: 2
 kind: runnable

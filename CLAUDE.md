@@ -17,6 +17,15 @@ This is a Cargo workspace with three crates:
 
 No business logic lives outside sonda-core. If the CLI or server needs new behavior, it goes in core.
 
+## The builtin pack catalog
+
+`packs/` at the repo root holds the curated metric packs. It is the single copy: `sonda-core`
+embeds those files with `include_str!` (`src/catalog/builtin.rs`) so the static binary needs no
+runtime file discovery, `docker-compose.yml` mounts the same directory at `/packs`, and the
+schema corpus validates it. The directory is flat — packs group by their `category:` field, not
+by subdirectory. Adding one means adding its `include_str!` entry *and* moving `PACK_COUNT`;
+the count gate fails if you do only one.
+
 Each crate has its own `CLAUDE.md` with module layout, patterns, and conventions.
 
 ## Agent Workflow

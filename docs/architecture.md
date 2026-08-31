@@ -205,7 +205,14 @@ A catalog is any directory containing v2 scenario YAML files. Each file declares
 - **`kind: runnable`** — a scenario you can launch (`sonda run @name --catalog <dir>` or `sonda run path/to/file.yaml`).
 - **`kind: composable`** — a metric pack definition, referenced from a runnable scenario via `pack: <name>` and resolved against the same catalog.
 
-The CLI peeks the frontmatter of every YAML file in `--catalog <dir>`, indexes them by name (file stem, overridable via the `name:` field), and hard-errors on duplicate names. `sonda list --catalog <dir>` prints the index (filterable by `--kind` and `--tag`); `sonda show @name --catalog <dir>` prints the file's raw YAML. There is no built-in catalog, no env-var override, and no implicit search path — `--catalog` is the single discovery surface.
+The CLI peeks the frontmatter of every YAML file in `--catalog <dir>`, indexes them by name (file stem, overridable via the `name:` field), and hard-errors on duplicate names. `sonda list` prints the index (filterable by `--kind` and `--tag`); `sonda show @name` prints the entry's raw YAML.
+
+Two sources feed the index, chained in `sonda_core::catalog`:
+
+1. **`--catalog <dir>`**, when given.
+2. **The builtin catalog**, a curated set of packs compiled into the binary with `include_str!` from the repo-root `packs/` directory. Sonda ships as a static binary, so these are embedded rather than discovered — there is no runtime file discovery and no implicit search path.
+
+The user directory wins on a name collision, so a pack named `node_exporter_cpu` in `--catalog <dir>` replaces the builtin of that name; `sonda list` marks the winner `(shadows builtin)`. The chain lives in `CatalogPackResolver`, which the CLI, the server's `POST /scenarios` and `--autostart` all already construct — so every surface inherits the builtins without wiring of its own. There is still no env-var override.
 
 > **Design note:** Scenarios are first-class artifacts of the system the user models. They live in the user's repo (versioned alongside the alert rules and dashboards they exercise) rather than being pinned to a sonda release.
 
@@ -280,8 +287,8 @@ Primary CLI surface (six verbs):
 
 ```
 sonda run <file-or-@name> [OPTIONS]              # launch a v2 scenario
-sonda list --catalog <dir> [--kind ...] [--tag ...]
-sonda show <@name> --catalog <dir>               # print the raw YAML
+sonda list [--catalog <dir>] [--kind ...] [--tag ...]
+sonda show <@name> [--catalog <dir>]             # print the raw YAML
 sonda new [--template | --from <csv>] [-o <path>]
 sonda test <file-or-@name> --prometheus-url ...  # verify expect: alerts
 sonda completions <shell>                        # shell completion script

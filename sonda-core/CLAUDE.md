@@ -16,7 +16,16 @@ src/
 ├── packs/
 │   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec, PackScenarioConfig,
 │                          MetricOverride, expand_pack(). Engine types and expansion logic only.
-│                          Pack YAML files are user-supplied data; sonda-core does not ship any.
+├── catalog/
+│   ├── mod.rs          ← catalog enumeration and `@name` resolution: CatalogEntry, EntryKind,
+│   │                      EntryOrigin, SkipReason/SkippedFile/CatalogListing, header_entry()
+│   │                      (the ONE classifier both sources go through), enumerate(),
+│   │                      enumerate_with_skips(), merged(), CatalogPackResolver — the
+│   │                      `--catalog <dir>` directory chained in front of the builtins.
+│   └── builtin.rs      ← the packs compiled into the binary via include_str! from the
+│                          repo-root `packs/` directory. PACK_COUNT is declared beside the
+│                          list and gated: a half-wired embedded set fails rather than
+│                          listing fewer packs successfully. BuiltinPackResolver.
 ├── analysis/
 │   └── pattern.rs      ← time-series pattern detection: detect_pattern() → Pattern enum
 │                          (Steady / Spike / Climb / Sawtooth / Flap / Step). Pure statistics,

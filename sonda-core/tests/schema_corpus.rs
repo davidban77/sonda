@@ -182,6 +182,105 @@ fn parser_accepted_scenarios() -> Vec<(PathBuf, String)> {
     corpus
 }
 
+/// Every pack definition in the repo, selected by the real pack parser.
+///
+/// The scenario corpus above cannot reach these: a pack is not a scenario,
+/// so `parse` refuses it and `parser_accepted_scenarios` filters it out.
+/// That left the schema's third root branch — `MetricPackDef` — with no real
+/// document behind it, checked only by the synthetic probes in
+/// `the_corpus_covers_every_root_branch`. `packs/` is the corpus for it, and
+/// it is the same directory `catalog::builtin` embeds, so every pack the
+/// binary ships is a pack the schema has been held to.
+fn parser_accepted_packs() -> Vec<(PathBuf, String)> {
+    let mut corpus = Vec::new();
+    for path in yaml_files(&repo_root().join("packs")) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if serde_yaml_ng::from_str::<sonda_core::packs::MetricPackDef>(&text).is_ok() {
+            corpus.push((path, text));
+        }
+    }
+    corpus
+}
+
+/// Guards `every_repo_pack_validates` against a renamed or emptied `packs/`.
+///
+/// The floor is the builtin count rather than a literal, so removing a pack
+/// from the directory without removing it from the binary fails here instead
+/// of shrinking the corpus in silence.
+#[test]
+fn the_pack_corpus_is_not_empty() {
+    let corpus = parser_accepted_packs();
+    assert!(
+        corpus.len() >= sonda_core::catalog::builtin::PACK_COUNT,
+        "expected at least the {} embedded packs under packs/, got {}",
+        sonda_core::catalog::builtin::PACK_COUNT,
+        corpus.len()
+    );
+}
+
+/// The pack half of "the schema must not reject what the parser accepts".
+#[test]
+fn every_repo_pack_validates() {
+    let validator = validator();
+    let mut failures = Vec::new();
+
+    for (path, text) in parser_accepted_packs() {
+        let yaml: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("{}: YAML did not load: {e}", path.display()));
+                continue;
+            }
+        };
+        let json = yaml_to_json(yaml);
+
+        let errors: Vec<String> = validator
+            .iter_errors(&json)
+            .map(|e| format!("    at {}: {e}", e.instance_path()))
+            .collect();
+
+        if !errors.is_empty() {
+            failures.push(format!(
+                "{}: the pack parser accepts this file but the schema rejects it:\n{}",
+                path.display(),
+                errors.join("\n")
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "the schema must not reject packs sonda accepts:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Every pack the binary embeds must be one of the files on disk that the
+/// check above validated — otherwise the schema gate covers `packs/` while
+/// the binary ships something else.
+#[test]
+fn every_embedded_pack_is_a_validated_file_from_the_packs_directory() {
+    let corpus = parser_accepted_packs();
+    for pack in sonda_core::catalog::builtin::PACKS {
+        let matched = corpus
+            .iter()
+            .find(|(path, _)| path.file_name().and_then(|n| n.to_str()) == Some(pack.file));
+        let (_, text) = matched.unwrap_or_else(|| {
+            panic!(
+                "embedded pack {} is not among the validated files under packs/",
+                pack.file
+            )
+        });
+        assert_eq!(
+            text, pack.yaml,
+            "{} on disk differs from the copy compiled into the binary",
+            pack.file
+        );
+    }
+}
+
 #[test]
 fn the_corpus_is_not_empty() {
     // Guards the check below against the failure mode where a path change
@@ -238,7 +337,11 @@ fn the_corpus_covers_every_root_branch() {
         })
         .collect();
 
-    let corpus = parser_accepted_scenarios();
+    // Both corpora, because the root `anyOf` describes both shapes: the
+    // scenario roots cannot cover `MetricPackDef` (a pack is not a scenario,
+    // so `parse` refuses it) and `packs/` cannot cover the other two.
+    let mut corpus = parser_accepted_scenarios();
+    corpus.extend(parser_accepted_packs());
     let mut hits: Vec<usize> = vec![0; probes.len()];
 
     for (_, text) in &corpus {

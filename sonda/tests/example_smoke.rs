@@ -21,8 +21,8 @@ fn example(name: &str) -> PathBuf {
     workspace_root().join("examples").join(name)
 }
 
-fn fixtures_packs_dir() -> PathBuf {
-    workspace_root().join("sonda-core/tests/fixtures/packs")
+fn packs_dir() -> PathBuf {
+    workspace_root().join("packs")
 }
 
 // ---- basic-metrics.yaml -------------------------------------------------------
@@ -167,10 +167,10 @@ fn example_network_link_failure_runs_multi_scenario_and_emits_all_metrics() {
 
 #[test]
 fn example_pack_scenario_expands_via_catalog_and_emits_all_pack_metrics() {
-    let catalog = fixtures_packs_dir();
+    let catalog = packs_dir();
     assert!(
         catalog.exists(),
-        "fixtures packs dir must exist at: {}",
+        "packs dir must exist at: {}",
         catalog.display()
     );
 
