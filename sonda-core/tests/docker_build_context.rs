@@ -26,22 +26,31 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The crate source directories the Dockerfile's `cargo build` compiles.
+/// Everything the Dockerfile's `cargo build` compiles: each crate's `src/`
+/// and its build script.
 ///
-/// `src/` only, and that is a load-bearing narrowing rather than a
-/// convenience: the image runs `cargo build --release -p sonda -p
-/// sonda-server`, which never compiles `tests/`, `benches/` or `examples/`.
-/// An `include_str!` under `tests/` genuinely does not need to be in the
-/// build context — `sonda/tests/cli_subcommand_parity.rs` embeds
+/// The narrowing to `src/` is load-bearing rather than convenient — the image
+/// runs `cargo build --release -p sonda -p sonda-server`, which never
+/// compiles `tests/`, `benches/` or `examples/`. An `include_str!` under
+/// `tests/` genuinely does not need to be in the build context:
+/// `sonda/tests/cli_subcommand_parity.rs` embeds
 /// `scripts/validate_docs_commands.py` and is correct as it stands.
+///
+/// **`build.rs` is neither `src/` nor one of those three**, and cargo
+/// compiles it before everything else, so it belongs here. No build script
+/// embeds anything today; the entry exists so the next one that does is
+/// covered without anyone remembering this.
 ///
 /// `sonda-wasm` is included although the image does not build it: the
 /// Dockerfile copies it, and if it ever were built the same rule would hold.
-const CRATE_SOURCE_DIRS: [&str; 4] = [
+///
+/// Entries may be directories (walked) or single files.
+const COMPILED_SOURCES: [&str; 5] = [
     "sonda-core/src",
     "sonda/src",
     "sonda-server/src",
     "sonda-wasm/src",
+    "sonda-server/build.rs",
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -64,14 +73,19 @@ fn escaping_includes() -> Vec<(PathBuf, PathBuf)> {
     let root = repo_root();
     let mut found = Vec::new();
 
-    for src_dir in CRATE_SOURCE_DIRS {
-        let crate_dir = root
-            .join(src_dir)
+    for entry in COMPILED_SOURCES {
+        let path = root.join(entry);
+        // The crate directory is the parent of `src/` or of `build.rs` alike.
+        let crate_dir = path
             .parent()
-            .expect("src has a parent")
+            .expect("a compiled source has a parent")
             .to_path_buf();
         let mut files = Vec::new();
-        rust_files(&root.join(src_dir), &mut files);
+        if path.is_dir() {
+            rust_files(&path, &mut files);
+        } else if path.is_file() {
+            files.push(path);
+        }
         files.sort();
 
         for file in files {

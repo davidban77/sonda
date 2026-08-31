@@ -429,11 +429,17 @@ fn autostart_skips_an_unreadable_file_and_starts_the_rest() {
     let run = run_catalog(catalog.path(), &["--autostart"], &[]);
 
     assert_eq!(run.metric_names, BTreeSet::from(["alpha_cpu".to_string()]));
-    // The wording is the unified `SkipReason` form — `skipping <path>:
-    // unreadable: <os error>` — shared by all four skip reasons rather than
-    // one sentence per reason.
+    // The wording is the unified `SkipReason` form — `catalog: skipping
+    // <path>: unreadable: <os error>` — shared by all four skip reasons
+    // rather than one sentence per reason.
+    //
+    // The leading `: ` is load-bearing. A bare `unreadable:` would also match
+    // `<unreadable: …>`, which `catalog::CatalogPackResolver` emits when it
+    // cannot read a catalog directory while listing an unknown pack's
+    // candidates. That path cannot fire here — nothing resolves a pack
+    // reference — so this decouples the two rather than fixing a collision.
     assert_eq!(
-        run.count("unreadable:"),
+        run.count(": unreadable:"),
         1,
         "the file the server could not open must be reported: {}",
         run.stderr
