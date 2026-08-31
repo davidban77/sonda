@@ -225,6 +225,19 @@ pub enum ExpandError {
         message: String,
     },
 
+    /// Two override keys address the same metric spec.
+    ///
+    /// A spec whose name is unique *and* which declares an `id:` answers to
+    /// both `name` and `name.id`. Writing both would apply one and discard
+    /// the other without a diagnostic.
+    #[error("override {message}")]
+    ConflictingOverrideKeys {
+        /// The pack definition name that was being expanded.
+        pack_name: String,
+        /// The [`crate::packs::OverrideKeyError`] rendered.
+        message: String,
+    },
+
     /// Two entries ended up with the same identifier after pack expansion.
     ///
     /// The parser already rejects duplicate **user-provided** ids, but this
@@ -724,7 +737,7 @@ fn expand_pack_entry<R: PackResolver>(
     for (spec_index, metric) in pack.metrics.iter().enumerate() {
         let override_for_metric = override_indices
             .get(&spec_index)
-            .and_then(|key| entry.overrides.as_ref().and_then(|map| map.get(key)));
+            .and_then(|key| entry.overrides.as_ref().and_then(|map| map.get(*key)));
 
         let labels = compose_pack_metric_labels(
             defaults_labels,
@@ -804,39 +817,49 @@ fn expand_pack_entry<R: PackResolver>(
     Ok(())
 }
 
-/// Reject overrides whose keys do not match any metric name in the pack.
+/// Resolve each override key to the one spec index it addresses, mapping
+/// [`crate::packs::resolve_override_keys`]'s outcome onto this pass's errors.
 ///
-/// Matches the message shape produced by
-/// [`crate::packs::expand_pack`] so v1 and v2 surfaces stay consistent.
-fn resolve_override_selectors(
+/// The keying rule itself lives in `packs` so this path and the v1
+/// [`crate::packs::expand_pack`] path cannot drift apart.
+fn resolve_override_selectors<'a>(
     pack: &MetricPackDef,
-    overrides: Option<&BTreeMap<String, MetricOverride>>,
-) -> Result<BTreeMap<usize, String>, ExpandError> {
-    let mut by_spec: BTreeMap<usize, String> = BTreeMap::new();
+    overrides: Option<&'a BTreeMap<String, MetricOverride>>,
+) -> Result<BTreeMap<usize, &'a str>, ExpandError> {
     let Some(overrides) = overrides else {
-        return Ok(by_spec);
+        return Ok(BTreeMap::new());
     };
 
-    for key in overrides.keys() {
-        let index = crate::packs::resolve_selector(pack, key).map_err(|e| match e {
+    crate::packs::resolve_override_keys(pack, overrides.keys().map(String::as_str)).map_err(|e| {
+        match e {
             // A key naming a metric the pack does not have keeps the older,
             // more specific diagnostic — it is a different mistake from
             // naming one ambiguously.
-            crate::packs::SelectorError::NoMatch { available, .. } => {
-                ExpandError::UnknownOverrideKey {
-                    key: key.clone(),
-                    pack_name: pack.name.clone(),
+            crate::packs::OverrideKeyError::Unresolvable(
+                crate::packs::SelectorError::NoMatch {
+                    selector,
                     available,
+                    ..
+                },
+            ) => ExpandError::UnknownOverrideKey {
+                key: selector,
+                pack_name: pack.name.clone(),
+                available,
+            },
+            crate::packs::OverrideKeyError::Unresolvable(ambiguous) => {
+                ExpandError::UnresolvableOverrideKey {
+                    pack_name: pack.name.clone(),
+                    message: ambiguous.to_string(),
                 }
             }
-            ambiguous => ExpandError::UnresolvableOverrideKey {
-                pack_name: pack.name.clone(),
-                message: ambiguous.to_string(),
-            },
-        })?;
-        by_spec.insert(index, key.clone());
-    }
-    Ok(by_spec)
+            conflict @ crate::packs::OverrideKeyError::Conflict { .. } => {
+                ExpandError::ConflictingOverrideKeys {
+                    pack_name: pack.name.clone(),
+                    message: conflict.to_string(),
+                }
+            }
+        }
+    })
 }
 
 /// Compose the final label map for a single pack-expanded metric.
@@ -2054,6 +2077,54 @@ scenarios:
             matches!(gens[1], Some(GeneratorConfig::Step { .. })),
             "its sibling keeps the pack's own generator, got: {:?}",
             gens[1]
+        );
+    }
+
+    /// A unique name that also declares an id answers to both `name` and
+    /// `name.id`. Writing both used to apply whichever sorted last and
+    /// discard the other without a word.
+    #[test]
+    fn two_override_keys_addressing_one_spec_are_refused() {
+        const YAML: &str = r#"
+version: 2
+kind: runnable
+defaults: { rate: 1 }
+scenarios:
+  - id: iface
+    signal_type: metrics
+    pack: single
+    overrides:
+      ifOperStatus:
+        generator: { type: constant, value: 111.0 }
+      ifOperStatus.up:
+        generator: { type: constant, value: 222.0 }
+"#;
+        let pack = MetricPackDef {
+            name: "single".to_string(),
+            description: "test".to_string(),
+            category: "network".to_string(),
+            shared_labels: None,
+            metrics: vec![MetricSpec {
+                name: "ifOperStatus".to_string(),
+                id: Some("up".to_string()),
+                labels: None,
+                generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+            }],
+        };
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("single", pack);
+        let parsed = parse(YAML).expect("parse must succeed");
+        let normalized = normalize(parsed).expect("normalize must succeed");
+
+        let err = expand(normalized, &resolver).expect_err("one spec, two keys, must not pick");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ifOperStatus") && msg.contains("ifOperStatus.up"),
+            "the message must name both keys: {msg}"
+        );
+        assert!(
+            matches!(err, ExpandError::ConflictingOverrideKeys { .. }),
+            "got: {err:?}"
         );
     }
 

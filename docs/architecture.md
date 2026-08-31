@@ -189,9 +189,10 @@ The architecture separates **engine** (in `sonda-core`) from **data** (YAML file
 Key types (in `sonda-core`):
 
 - **MetricPackDef** — a pack definition: name, description, shared labels, and a list of `MetricSpec` entries.
-- **MetricSpec** — a single metric within a pack: name, optional per-metric labels, optional default generator.
+- **MetricSpec** — a single metric within a pack: name, optional `id:` disambiguator, optional per-metric labels, optional default generator.
+- **validate_pack() / resolve_override_keys()** — the one definition of pack addressability and override keying. A metric name is unique within a pack or every spec sharing it declares a unique `id:`; names may not contain `.`. Both expansion paths go through them, so a key addresses exactly one spec and no spec is addressed twice.
 - **PackScenarioConfig** — user-facing YAML config that references a pack by name and provides rate, duration, sink, encoder, labels, and per-metric overrides.
-- **expand_pack()** — the expansion function. Takes a `MetricPackDef` and a `PackScenarioConfig`, returns `Vec<ScenarioEntry>`. Label merge order: shared → per-metric → user → override. Generator selection: override → spec → constant(0.0).
+- **expand_pack()** — the expansion function. Takes a `MetricPackDef` and a `PackScenarioConfig`, returns `Vec<ScenarioEntry>`. Label merge order: shared → per-metric → user → override. Generator selection: override → spec → constant(0.0).  Overrides are keyed by selector, not by raw name.
 - **PackResolver** trait — abstract pack-lookup; `CatalogPackResolver` (CLI-side) scans the `--catalog <dir>` directory, while `InMemoryPackResolver` (test-side) takes pre-built definitions.
 
 Packs like `node_exporter_cpu` contain multiple specs with the same metric name but different label sets (e.g., one `node_cpu_seconds_total` per CPU mode). Overrides key on metric name, so a single override entry applies to all specs sharing that name.

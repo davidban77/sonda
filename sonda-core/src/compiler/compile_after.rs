@@ -102,13 +102,17 @@
 //! Pack entries are not themselves referenceable — the expand pass does
 //! not emit an [`ExpandedEntry`] whose `id` matches the bare pack entry
 //! id (e.g. `B`). Only the individual sub-signals materialize as
-//! addressable entries, using the dotted form `{entry}.{metric}` (and
-//! `{entry}.{metric}#{spec_index}` for duplicate-name packs). Writing
-//! `after.ref: B` against a pack entry therefore fails with
-//! [`CompileAfterError::UnknownRef`]; the `available` list in the
-//! diagnostic shows the valid dotted ids. To attach `after:` to the whole
-//! pack, set it on the pack entry itself — the expand pass propagates it
-//! to every sub-signal — or use a specific dotted metric path.
+//! addressable entries, using the dotted form `{entry}.{metric}`, or
+//! `{entry}.{metric}.{id}` for a spec that declares an `id:`.
+//!
+//! Writing `after.ref: B` against a pack entry that produced two or more
+//! sub-signals fails with
+//! [`CompileAfterError::AmbiguousSubSignalRef`], which lists them; a pack
+//! entry with a single sub-signal falls through to
+//! [`CompileAfterError::UnknownRef`], whose `available` list shows the
+//! valid dotted ids. To attach `after:` to the whole pack, set it on the
+//! pack entry itself — the expand pass propagates it to every sub-signal
+//! — or use a specific dotted metric path.
 //!
 //! # Clock-group string equality
 //!

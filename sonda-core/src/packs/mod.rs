@@ -160,8 +160,10 @@ pub struct PackScenarioConfig {
     /// Output encoder. Defaults to `prometheus_text`.
     #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
-    /// Per-metric overrides keyed by metric name. Each override can replace
-    /// the generator and/or add extra labels for a specific metric.
+    /// Per-metric overrides keyed by selector — `name`, or `name.id` for a
+    /// spec whose name the pack repeats (see [`resolve_override_keys`]).
+    /// Each override can replace the generator and/or add extra labels for
+    /// the one metric its key addresses.
     #[cfg_attr(feature = "config", serde(default))]
     pub overrides: Option<HashMap<String, MetricOverride>>,
 }
@@ -264,7 +266,13 @@ pub enum PackValidationError {
     },
 }
 
-/// Check that every spec in `pack` is addressable by exactly one selector.
+/// Check that every spec in `pack` is addressable, and that no selector
+/// addresses two of them.
+///
+/// One spec may still answer to two selectors — a unique name that also
+/// declares an id is reachable as both `name` and `name.id`. That is
+/// harmless for lookup and rejected where it would silently discard work
+/// (see [`ExpandError::ConflictingOverrideKeys`](crate::compiler::expand::ExpandError)).
 ///
 /// The rule, and the whole of it: a metric **name** is either unique within
 /// the pack, or *every* spec sharing it declares an **id** unique among them.
@@ -424,6 +432,67 @@ pub fn available_selectors(pack: &MetricPackDef) -> String {
         .join(", ")
 }
 
+/// Why a set of override keys does not map cleanly onto a pack's specs.
+#[derive(Debug, thiserror::Error)]
+pub enum OverrideKeyError {
+    /// One key addressed no spec, or more than one.
+    #[error(transparent)]
+    Unresolvable(#[from] SelectorError),
+
+    /// Two keys addressed the same spec, so one would be discarded.
+    #[error(
+        "keys '{first}' and '{second}' both address metric '{selector}' in pack '{pack_name}'"
+    )]
+    Conflict {
+        /// The pack being expanded.
+        pack_name: String,
+        /// The lexicographically earlier key.
+        first: String,
+        /// The key that collided with it.
+        second: String,
+        /// The canonical selector both keys resolve to.
+        selector: String,
+    },
+}
+
+/// Map each override key to the one spec index it addresses.
+///
+/// The only definition of override keying — both the v1 [`expand_pack`] path
+/// and the v2 compiler go through it, so they cannot drift.
+///
+/// Two properties, and neither implies the other: every key addresses exactly
+/// one spec, and no spec is addressed twice. A spec with a unique name that
+/// also declares an `id:` answers to both `name` and `name.id`, so two
+/// distinct keys can land on one index; writing both would silently discard
+/// one of them. Keys are visited in sorted order, so the pair a conflict
+/// names does not depend on the caller's map type.
+///
+/// # Errors
+///
+/// [`OverrideKeyError::Unresolvable`] for a key matching no spec or an
+/// ambiguous one; [`OverrideKeyError::Conflict`] when two keys collide.
+pub fn resolve_override_keys<'a>(
+    pack: &MetricPackDef,
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<usize, &'a str>, OverrideKeyError> {
+    let mut sorted: Vec<&str> = keys.into_iter().collect();
+    sorted.sort_unstable();
+
+    let mut by_spec: BTreeMap<usize, &str> = BTreeMap::new();
+    for key in sorted {
+        let index = resolve_selector(pack, key)?;
+        if let Some(previous) = by_spec.insert(index, key) {
+            return Err(OverrideKeyError::Conflict {
+                pack_name: pack.name.clone(),
+                first: previous.to_string(),
+                second: key.to_string(),
+                selector: pack.metrics[index].selector(),
+            });
+        }
+    }
+    Ok(by_spec)
+}
+
 // ---------------------------------------------------------------------------
 // Pack expansion
 // ---------------------------------------------------------------------------
@@ -450,7 +519,9 @@ pub fn available_selectors(pack: &MetricPackDef) -> String {
 ///
 /// Returns [`SondaError::Config`] if:
 /// - The pack definition has no metrics.
-/// - An override references a metric name not present in the pack.
+/// - The pack is not addressable (see [`validate_pack`]).
+/// - An override key does not address exactly one spec, or two keys address
+///   the same one (see [`resolve_override_keys`]).
 pub fn expand_pack(
     pack: &MetricPackDef,
     config: &PackScenarioConfig,
@@ -461,24 +532,17 @@ pub fn expand_pack(
         )));
     }
 
-    // Validate that all override keys match a metric in the pack.
-    if let Some(ref overrides) = config.overrides {
-        let metric_names: Vec<&str> = pack.metrics.iter().map(|m| m.name.as_str()).collect();
-        for key in overrides.keys() {
-            if !metric_names.contains(&key.as_str()) {
-                return Err(SondaError::Config(ConfigError::invalid(format!(
-                    "override references unknown metric {:?}; pack {:?} contains: {}",
-                    key,
-                    pack.name,
-                    metric_names.join(", ")
-                ))));
-            }
-        }
-    }
+    validate_pack(pack).map_err(|e| SondaError::Config(ConfigError::invalid(e.to_string())))?;
+
+    let override_keys = match config.overrides.as_ref() {
+        Some(overrides) => resolve_override_keys(pack, overrides.keys().map(String::as_str))
+            .map_err(|e| SondaError::Config(ConfigError::invalid(format!("override {e}"))))?,
+        None => BTreeMap::new(),
+    };
 
     let mut entries = Vec::with_capacity(pack.metrics.len());
 
-    for spec in &pack.metrics {
+    for (spec_index, spec) in pack.metrics.iter().enumerate() {
         // 1. Start with shared labels.
         let mut labels: HashMap<String, String> =
             pack.shared_labels.as_ref().cloned().unwrap_or_default();
@@ -497,12 +561,14 @@ pub fn expand_pack(
             }
         }
 
-        // Look up override for this metric (by name).
-        // For packs like node_exporter_cpu where the same metric name appears
-        // multiple times with different `mode` labels, the override applies to
-        // all instances sharing that name. This is intentional — the override
-        // replaces the generator/labels for every series of that metric.
-        let metric_override = config.overrides.as_ref().and_then(|o| o.get(&spec.name));
+        // Look up the override addressed at this spec, if any. Keyed by
+        // resolved index rather than by name: a name the pack repeats
+        // addresses no single spec, and `resolve_override_keys` has already
+        // refused such a key rather than fanning one override across all of
+        // them.
+        let metric_override = override_keys
+            .get(&spec_index)
+            .and_then(|key| config.overrides.as_ref().and_then(|o| o.get(*key)));
 
         // 4. Merge override labels.
         if let Some(ov) = metric_override {
@@ -1169,6 +1235,85 @@ sink:
     fn selector_resolves_a_name_dot_id() {
         let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
         assert_eq!(resolve_selector(&pack, "cpu.idle"), Ok(1));
+    }
+
+    /// The mirror of the fan-out: one spec addressed by two keys, one of
+    /// which would be applied and the other dropped in silence.
+    #[test]
+    fn two_override_keys_reaching_one_spec_are_refused() {
+        let pack = pack_of(vec![spec("ifOperStatus", Some("up"))]);
+        for key in ["ifOperStatus", "ifOperStatus.up"] {
+            resolve_override_keys(&pack, [key])
+                .unwrap_or_else(|e| panic!("'{key}' alone must resolve, got {e}"));
+        }
+
+        let err = resolve_override_keys(&pack, ["ifOperStatus", "ifOperStatus.up"])
+            .expect_err("both together must not silently pick one");
+        match &err {
+            OverrideKeyError::Conflict {
+                first,
+                second,
+                selector,
+                ..
+            } => {
+                assert_eq!(first, "ifOperStatus");
+                assert_eq!(second, "ifOperStatus.up");
+                assert_eq!(selector, "ifOperStatus.up");
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    /// Keys are visited in sorted order, so the pair a conflict names does
+    /// not depend on the caller handing them over in a particular order —
+    /// `PackScenarioConfig` keeps its overrides in a `HashMap`.
+    #[test]
+    fn a_conflict_names_the_same_pair_whichever_order_the_keys_arrive_in() {
+        let pack = pack_of(vec![spec("ifOperStatus", Some("up"))]);
+        let forward = resolve_override_keys(&pack, ["ifOperStatus", "ifOperStatus.up"])
+            .expect_err("must conflict")
+            .to_string();
+        let reverse = resolve_override_keys(&pack, ["ifOperStatus.up", "ifOperStatus"])
+            .expect_err("must conflict")
+            .to_string();
+        assert_eq!(forward, reverse);
+    }
+
+    /// The v1 oracle used to fan a bare key across every spec sharing the
+    /// name, with a comment saying so on purpose. It now goes through the
+    /// same keying rule as the compiler.
+    #[test]
+    fn expand_pack_refuses_a_bare_key_against_a_repeated_name() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "cpu".to_string(),
+            MetricOverride {
+                generator: Some(GeneratorConfig::Constant { value: 12345.0 }),
+                labels: None,
+                after: None,
+                while_clause: None,
+                delay_clause: None,
+            },
+        );
+        let config = PackScenarioConfig {
+            pack: "test".to_string(),
+            rate: 1.0,
+            duration: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            overrides: Some(overrides),
+        };
+
+        let msg = expand_pack(&pack, &config)
+            .expect_err("v1 must not fan one override across both specs")
+            .to_string();
+        assert!(msg.contains("ambiguous"), "got: {msg}");
+        assert!(
+            msg.contains("cpu.user") && msg.contains("cpu.idle"),
+            "must list the ids to pick from: {msg}"
+        );
     }
 
     /// The defect this whole change exists to kill: a bare name against a

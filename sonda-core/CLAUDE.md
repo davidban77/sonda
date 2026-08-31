@@ -20,7 +20,12 @@ src/
 │                          name is unique within a pack, or every spec sharing it declares a
 │                          unique `id:`; names may not contain `.`. An invalid pack does not
 │                          load, so MetricSelector/resolve_selector never meet an ambiguous
-│                          one and do not re-derive the rule. Engine types and expansion only.
+│                          one and do not re-derive the rule. resolve_override_keys() is the
+│                          ONE definition of override keying — v1 expand_pack and the v2
+│                          compiler both call it, so they cannot drift; it also refuses two
+│                          keys reaching one spec, which addressability alone permits (a
+│                          unique name that declares an id answers to both name and name.id).
+│                          Engine types and expansion only.
 ├── catalog/
 │   ├── mod.rs          ← catalog enumeration and `@name` resolution: CatalogEntry, EntryKind,
 │   │                      EntryOrigin, SkipReason/SkippedFile/CatalogListing, header_entry()
