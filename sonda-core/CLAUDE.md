@@ -14,8 +14,13 @@ src/
 │                          flush, drop. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
-│   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec, PackScenarioConfig,
-│                          MetricOverride, expand_pack(). Engine types and expansion logic only.
+│   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec (name + optional id),
+│                          PackScenarioConfig, MetricOverride, expand_pack().
+│                          validate_pack() is the ONE definition of addressability: a metric
+│                          name is unique within a pack, or every spec sharing it declares a
+│                          unique `id:`; names may not contain `.`. An invalid pack does not
+│                          load, so MetricSelector/resolve_selector never meet an ambiguous
+│                          one and do not re-derive the rule. Engine types and expansion only.
 ├── catalog/
 │   ├── mod.rs          ← catalog enumeration and `@name` resolution: CatalogEntry, EntryKind,
 │   │                      EntryOrigin, SkipReason/SkippedFile/CatalogListing, header_entry()
@@ -122,8 +127,13 @@ src/
 │   │                      and entry-level after propagation. Auto-ID scheme is
 │   │                      `{pack_def_name}_{entry_index}` for anonymous pack
 │   │                      entries; sub-signal IDs are `{entry_id}.{metric}`
-│   │                      (bare) or `{entry_id}.{metric}#{spec_index}` when
-│   │                      the pack ships duplicate metric names. Post-
+│   │                      (bare) or `{entry_id}.{metric}.{id}` for a spec that
+│   │                      declares an id, which a repeated name requires. The
+│   │                      earlier positional `#{spec_index}` form is retired:
+│   │                      it renumbered every later spec when one was inserted
+│   │                      ahead of it. Overrides are keyed by that same
+│   │                      selector — a bare name against a repeated one is an
+│   │                      error listing the ids, never a fan-out. Post-
 │   │                      expansion uniqueness check rejects user/auto id
 │   │                      collisions via ExpandError::DuplicateEntryId.
 │   │                      Feature-gated (config).

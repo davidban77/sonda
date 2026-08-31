@@ -18,6 +18,7 @@ shared_labels:
 
 metrics:
   - name: node_cpu_seconds_total
+    id: user
     labels:
       mode: user
     generator:
@@ -26,6 +27,7 @@ metrics:
       step_size: 0.25
 
   - name: node_cpu_seconds_total
+    id: system
     labels:
       mode: system
     generator:
@@ -34,6 +36,7 @@ metrics:
       step_size: 0.10
 
   - name: node_cpu_seconds_total
+    id: idle
     labels:
       mode: idle
     generator:
@@ -42,6 +45,7 @@ metrics:
       step_size: 0.55
 
   - name: node_cpu_seconds_total
+    id: iowait
     labels:
       mode: iowait
     generator:
@@ -50,6 +54,7 @@ metrics:
       step_size: 0.03
 
   - name: node_cpu_seconds_total
+    id: irq
     labels:
       mode: irq
     generator:
@@ -58,6 +63,7 @@ metrics:
       step_size: 0.01
 
   - name: node_cpu_seconds_total
+    id: softirq
     labels:
       mode: softirq
     generator:
@@ -66,6 +72,7 @@ metrics:
       step_size: 0.02
 
   - name: node_cpu_seconds_total
+    id: nice
     labels:
       mode: nice
     generator:
@@ -74,6 +81,7 @@ metrics:
       step_size: 0.01
 
   - name: node_cpu_seconds_total
+    id: steal
     labels:
       mode: steal
     generator:

@@ -2484,6 +2484,16 @@
           ],
           "default": null
         },
+        "id": {
+          "description": "Disambiguator among specs sharing a [`name`](Self::name), and the\nsecond half of this spec's selector.\n\nRequired — and unique — on every member of a repeated name; optional\nwhen the name occurs once. It stands for what the repetition is *by*:\nthe CPU mode, the memory field, the SNMP column.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
         "labels": {
           "description": "Labels specific to this metric, merged on top of the pack's shared labels.",
           "type": [
@@ -2500,7 +2510,7 @@
           "default": null
         },
         "name": {
-          "description": "The metric name (e.g. `\"ifHCInOctets\"`, `\"node_cpu_seconds_total\"`).",
+          "description": "The metric name (e.g. `\"ifHCInOctets\"`, `\"node_cpu_seconds_total\"`).\n\nMay not contain `.` — that is the selector separator, and\n[`validate_pack`] enforces the exclusion so `name.id` can never be\nambushed by a dotted name.",
           "type": [
             "string",
             "number",

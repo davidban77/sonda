@@ -26,6 +26,11 @@ schema corpus validates it. The directory is flat — packs group by their `cate
 by subdirectory. Adding one means adding its `include_str!` entry *and* moving `PACK_COUNT`;
 the count gate fails if you do only one.
 
+A pack must be addressable: within it a metric `name` is either unique, or *every* spec sharing
+it declares a unique `id:` (`node_exporter_cpu` uses the CPU modes). Names may not contain `.`,
+which separates `name` from `id` in a selector. An unaddressable pack does not load — that is
+what lets `overrides:` and `after.ref` refuse a bare ambiguous name instead of guessing.
+
 Each crate has its own `CLAUDE.md` with module layout, patterns, and conventions.
 
 ## Agent Workflow

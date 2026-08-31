@@ -59,13 +59,17 @@
 //! When two or more [`MetricSpec`][crate::packs::MetricSpec] entries in a
 //! single pack share a `name` (the `node_exporter_cpu` pack ships eight
 //! `node_cpu_seconds_total` specs differentiated only by `labels.mode`), the
-//! bare `{effective_entry_id}.{metric_name}` id would collide. This pass
-//! appends `"#{spec_index}"` **only to the colliding specs**, producing ids
-//! such as `cpu.node_cpu_seconds_total#0`, `cpu.node_cpu_seconds_total#1`,
-//! etc., where `spec_index` is the metric's zero-based position in
-//! [`MetricPackDef::metrics`]. Unique metric names keep their clean form so
-//! dotted `after.ref` into a pack sub-signal (matrix row 11.7) is still
-//! ergonomic for the majority of packs.
+//! bare `{effective_entry_id}.{metric_name}` id would collide. Such a pack
+//! must give every one of those specs a unique `id:` —
+//! [`crate::packs::validate_pack`] refuses it otherwise — and the sub-signal
+//! id is then `{effective_entry_id}.{name}.{id}`, e.g.
+//! `cpu.node_cpu_seconds_total.user`. Unique metric names keep their clean
+//! form, so a dotted `after.ref` into a pack sub-signal (matrix row 11.7)
+//! stays ergonomic for the majority of packs.
+//!
+//! The id is the spec's own handle rather than its position: an earlier
+//! scheme suffixed `"#{spec_index}"`, which renumbered every later spec when
+//! one was inserted ahead of it.
 //!
 //! ## Worked example
 //!
@@ -138,7 +142,7 @@
 //!   an auto-generated pack-entry id, or sub-signal ids colliding with one
 //!   another).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::normalize::{NormalizedEntry, NormalizedFile};
 use super::{AfterClause, DelayClause, WhileClause};
@@ -193,6 +197,32 @@ pub enum ExpandError {
     EmptyPack {
         /// The pack definition name that was being expanded.
         pack_name: String,
+    },
+
+    /// The pack itself is not addressable: a repeated metric name without
+    /// unique ids, or a metric name containing the selector separator.
+    ///
+    /// Raised before any selector is resolved, so no reference can encounter
+    /// an ambiguous pack.
+    #[error("pack '{pack_name}' is not addressable: {message}")]
+    InvalidPack {
+        /// The pack definition name that failed validation.
+        pack_name: String,
+        /// The [`crate::packs::PackValidationError`] rendered.
+        message: String,
+    },
+
+    /// An override key did not address exactly one metric spec.
+    ///
+    /// Either it matched nothing, or it was a bare name against a metric
+    /// name the pack repeats — which previously applied the override to
+    /// every spec sharing that name.
+    #[error("override {message}")]
+    UnresolvableOverrideKey {
+        /// The pack definition name that was being expanded.
+        pack_name: String,
+        /// The [`crate::packs::SelectorError`] rendered.
+        message: String,
     },
 
     /// Two entries ended up with the same identifier after pack expansion.
@@ -658,7 +688,15 @@ fn expand_pack_entry<R: PackResolver>(
         });
     }
 
-    validate_override_keys(&pack, entry.overrides.as_ref())?;
+    // Every spec must be addressable by exactly one selector before anything
+    // tries to address one. This is what lets `resolve_selector` below treat
+    // ambiguity as impossible rather than re-deriving the rule.
+    crate::packs::validate_pack(&pack).map_err(|e| ExpandError::InvalidPack {
+        pack_name: pack.name.clone(),
+        message: e.to_string(),
+    })?;
+
+    let override_indices = resolve_override_selectors(&pack, entry.overrides.as_ref())?;
 
     let (effective_entry_id, effective_id_source) = match entry.id.clone() {
         Some(id) => (id.clone(), format!("pack entry '{id}' (user-provided id)")),
@@ -683,19 +721,10 @@ fn expand_pack_entry<R: PackResolver>(
     // shadow an auto-generated pack-entry id and vice versa.
     record_id(id_registry, &effective_entry_id, effective_id_source)?;
 
-    // Per the module docs, sub-signal ids default to
-    // `"{effective_entry_id}.{metric_name}"` but metrics whose name collides
-    // with another spec in the same pack receive an additional
-    // `"#{spec_index}"` suffix. This keeps the common case clean while
-    // preventing id collisions for packs like `node_exporter_cpu` where
-    // multiple `MetricSpec`s share a metric name.
-    let duplicate_metric_names = duplicate_metric_names(&pack);
-
     for (spec_index, metric) in pack.metrics.iter().enumerate() {
-        let override_for_metric = entry
-            .overrides
-            .as_ref()
-            .and_then(|map| map.get(&metric.name));
+        let override_for_metric = override_indices
+            .get(&spec_index)
+            .and_then(|key| entry.overrides.as_ref().and_then(|map| map.get(key)));
 
         let labels = compose_pack_metric_labels(
             defaults_labels,
@@ -721,11 +750,12 @@ fn expand_pack_entry<R: PackResolver>(
             .and_then(|o| o.delay_clause.clone())
             .or_else(|| entry.delay_clause.clone());
 
-        let sub_signal_id = if duplicate_metric_names.contains(metric.name.as_str()) {
-            format!("{}.{}#{}", effective_entry_id, metric.name, spec_index)
-        } else {
-            format!("{}.{}", effective_entry_id, metric.name)
-        };
+        // `{entry}.{selector}` — the selector being `name` or `name.id`. The
+        // spec's own selector is the handle, so the id a user writes in an
+        // override is the id they see in the compiled signal. This replaces
+        // the positional `#{spec_index}` suffix, which renumbered whenever a
+        // spec was inserted into the pack ahead of it.
+        let sub_signal_id = format!("{}.{}", effective_entry_id, metric.selector());
         record_id(
             id_registry,
             &sub_signal_id,
@@ -774,50 +804,39 @@ fn expand_pack_entry<R: PackResolver>(
     Ok(())
 }
 
-/// Return the set of metric names that appear more than once in `pack`.
-///
-/// Used by [`expand_pack_entry`] to decide which sub-signal ids need a
-/// `"#{spec_index}"` disambiguator per the scheme documented in the module
-/// docs. Unique metric names stay out of this set and keep their clean
-/// `{effective_entry_id}.{metric_name}` form.
-fn duplicate_metric_names(pack: &MetricPackDef) -> BTreeSet<&str> {
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut duplicates: BTreeSet<&str> = BTreeSet::new();
-    for metric in &pack.metrics {
-        if !seen.insert(metric.name.as_str()) {
-            duplicates.insert(metric.name.as_str());
-        }
-    }
-    duplicates
-}
-
 /// Reject overrides whose keys do not match any metric name in the pack.
 ///
 /// Matches the message shape produced by
 /// [`crate::packs::expand_pack`] so v1 and v2 surfaces stay consistent.
-fn validate_override_keys(
+fn resolve_override_selectors(
     pack: &MetricPackDef,
     overrides: Option<&BTreeMap<String, MetricOverride>>,
-) -> Result<(), ExpandError> {
+) -> Result<BTreeMap<usize, String>, ExpandError> {
+    let mut by_spec: BTreeMap<usize, String> = BTreeMap::new();
     let Some(overrides) = overrides else {
-        return Ok(());
+        return Ok(by_spec);
     };
-    if overrides.is_empty() {
-        return Ok(());
-    }
 
-    let metric_names: BTreeSet<&str> = pack.metrics.iter().map(|m| m.name.as_str()).collect();
     for key in overrides.keys() {
-        if !metric_names.contains(key.as_str()) {
-            let available: Vec<&str> = pack.metrics.iter().map(|m| m.name.as_str()).collect();
-            return Err(ExpandError::UnknownOverrideKey {
-                key: key.clone(),
+        let index = crate::packs::resolve_selector(pack, key).map_err(|e| match e {
+            // A key naming a metric the pack does not have keeps the older,
+            // more specific diagnostic — it is a different mistake from
+            // naming one ambiguously.
+            crate::packs::SelectorError::NoMatch { available, .. } => {
+                ExpandError::UnknownOverrideKey {
+                    key: key.clone(),
+                    pack_name: pack.name.clone(),
+                    available,
+                }
+            }
+            ambiguous => ExpandError::UnresolvableOverrideKey {
                 pack_name: pack.name.clone(),
-                available: available.join(", "),
-            });
-        }
+                message: ambiguous.to_string(),
+            },
+        })?;
+        by_spec.insert(index, key.clone());
     }
-    Ok(())
+    Ok(by_spec)
 }
 
 /// Compose the final label map for a single pack-expanded metric.
@@ -926,11 +945,13 @@ mod tests {
             metrics: vec![
                 MetricSpec {
                     name: "ifOperStatus".to_string(),
+                    id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                 },
                 MetricSpec {
                     name: "ifHCInOctets".to_string(),
+                    id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Step {
                         start: Some(0.0),
@@ -960,6 +981,7 @@ mod tests {
             metrics: vec![
                 MetricSpec {
                     name: "node_cpu_seconds_total".to_string(),
+                    id: Some("user".to_string()),
                     labels: Some(user_labels),
                     generator: Some(GeneratorConfig::Step {
                         start: Some(0.0),
@@ -969,6 +991,7 @@ mod tests {
                 },
                 MetricSpec {
                     name: "node_cpu_seconds_total".to_string(),
+                    id: Some("system".to_string()),
                     labels: Some(system_labels),
                     generator: Some(GeneratorConfig::Step {
                         start: Some(0.0),
@@ -1159,6 +1182,7 @@ scenarios:
             shared_labels: Some(shared),
             metrics: vec![MetricSpec {
                 name: "m".to_string(),
+                id: None,
                 labels: Some(metric_labels),
                 generator: Some(GeneratorConfig::Constant { value: 0.0 }),
             }],
@@ -1232,6 +1256,7 @@ scenarios:
             shared_labels: Some(shared),
             metrics: vec![MetricSpec {
                 name: "m".to_string(),
+                id: None,
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 0.0 }),
             }],
@@ -1327,6 +1352,7 @@ scenarios:
             shared_labels: None,
             metrics: vec![MetricSpec {
                 name: "x".to_string(),
+                id: None,
                 labels: None,
                 generator: None,
             }],
@@ -1758,8 +1784,8 @@ scenarios:
     fn repeated_metric_names_produce_unique_sub_signal_ids() {
         // Regression anchor: every ExpandedEntry.id must be unique even
         // when a pack ships multiple MetricSpec entries under one name
-        // (e.g. node_exporter_cpu). Duplicate names receive a
-        // "#{spec_index}" suffix per the module-level auto-ID docs.
+        // (e.g. node_exporter_cpu). Such a pack must give every one of those
+        // specs a unique `id:`, and that id is the sub-signal handle.
         let yaml = r#"
 version: 2
 kind: runnable
@@ -1790,16 +1816,16 @@ scenarios:
             "sub-signal ids must be unique; saw {ids:?}"
         );
 
-        // Exact id shape: first two node_cpu_seconds_total specs live at
-        // pack metric indices 0 and 1.
-        assert_eq!(ids[0], "cpu.node_cpu_seconds_total#0");
-        assert_eq!(ids[1], "cpu.node_cpu_seconds_total#1");
+        // Exact id shape: the spec's own `id:` is the handle, so inserting a
+        // spec ahead of these two would not renumber them.
+        assert_eq!(ids[0], "cpu.node_cpu_seconds_total.user");
+        assert_eq!(ids[1], "cpu.node_cpu_seconds_total.system");
     }
 
     #[test]
     fn unique_metric_names_keep_clean_sub_signal_ids() {
-        // The `#{spec_index}` disambiguator is applied only when a metric
-        // name collides with another spec in the same pack. Packs whose
+        // The `.{id}` suffix appears only for a spec that declares one —
+        // which a repeated name requires. Packs whose
         // metrics are unique by name (like telegraf_snmp_interface) keep
         // the clean `{effective_entry_id}.{metric_name}` form so dotted
         // `after.ref` into a pack sub-signal stays ergonomic.
@@ -1965,5 +1991,140 @@ scenarios:
         assert_send_sync::<ExpandedFile>();
         assert_send_sync::<ExpandedEntry>();
         assert_send_sync::<ExpandError>();
+    }
+
+    // -----------------------------------------------------------------------
+    // Selector-keyed overrides (W4 phase 1b)
+    // -----------------------------------------------------------------------
+
+    const CPU_SCENARIO: &str = r#"
+version: 2
+kind: runnable
+defaults: { rate: 1 }
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    pack: node_exporter_cpu
+    overrides:
+      SELECTOR:
+        generator: { type: constant, value: 12345.0 }
+"#;
+
+    fn expand_cpu_with_override(selector: &str) -> Result<ExpandedFile, ExpandError> {
+        let yaml = CPU_SCENARIO.replace("SELECTOR", selector);
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("node_exporter_cpu", node_cpu_pack());
+        let parsed = parse(&yaml).expect("parse must succeed");
+        let normalized = normalize(parsed).expect("normalize must succeed");
+        expand(normalized, &resolver)
+    }
+
+    fn generators(file: &ExpandedFile) -> Vec<Option<&GeneratorConfig>> {
+        file.entries.iter().map(|e| e.generator.as_ref()).collect()
+    }
+
+    /// The measured defect: `node_cpu_seconds_total` names two specs, and a
+    /// bare key used to replace the generator of BOTH. It is now refused.
+    #[test]
+    fn a_bare_override_key_against_a_repeated_name_is_refused() {
+        let err = expand_cpu_with_override("node_cpu_seconds_total")
+            .expect_err("a bare key naming two specs must not be guessed at");
+        let msg = format!("{err}");
+        assert!(msg.contains("ambiguous"), "got: {msg}");
+        assert!(
+            msg.contains("node_cpu_seconds_total.user")
+                && msg.contains("node_cpu_seconds_total.system"),
+            "the message must list the ids to pick from: {msg}"
+        );
+    }
+
+    /// And the corrected twin passes, touching exactly one spec.
+    #[test]
+    fn a_name_dot_id_override_key_reaches_exactly_one_spec() {
+        let expanded = expand_cpu_with_override("node_cpu_seconds_total.user")
+            .expect("an unambiguous key must expand");
+        let gens = generators(&expanded);
+        assert_eq!(gens.len(), 2);
+        assert!(
+            matches!(gens[0], Some(GeneratorConfig::Constant { value }) if *value == 12345.0),
+            "the addressed spec takes the override, got: {:?}",
+            gens[0]
+        );
+        assert!(
+            matches!(gens[1], Some(GeneratorConfig::Step { .. })),
+            "its sibling keeps the pack's own generator, got: {:?}",
+            gens[1]
+        );
+    }
+
+    #[test]
+    fn an_override_key_naming_no_spec_lists_the_real_selectors() {
+        let err = expand_cpu_with_override("node_cpu_seconds_total.nope")
+            .expect_err("an unknown id must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("nope"), "got: {msg}");
+        assert!(
+            msg.contains("node_cpu_seconds_total.user"),
+            "must name what the pack does have: {msg}"
+        );
+    }
+
+    /// A pack whose repeated name carries no ids cannot be expanded at all —
+    /// the refusal is the pack's, before any selector is resolved.
+    #[test]
+    fn a_pack_with_a_repeated_name_and_no_ids_is_refused_at_expansion() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults: { rate: 1 }
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    pack: node_exporter_cpu
+"#;
+        let mut pack = node_cpu_pack();
+        for spec in pack.metrics.iter_mut() {
+            spec.id = None;
+        }
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("node_exporter_cpu", pack);
+        let parsed = parse(yaml).expect("parse must succeed");
+        let normalized = normalize(parsed).expect("normalize must succeed");
+        let err = expand(normalized, &resolver).expect_err("an unaddressable pack must not load");
+        assert!(
+            matches!(err, ExpandError::InvalidPack { .. }),
+            "got: {err:?}"
+        );
+        assert!(format!("{err}").contains("unique `id:`"), "got: {err}");
+    }
+
+    /// A unique name still takes a bare key — the common case is unchanged.
+    #[test]
+    fn a_bare_override_key_against_a_unique_name_still_works() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults: { rate: 1 }
+scenarios:
+  - id: net
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    overrides:
+      ifOperStatus:
+        generator: { type: constant, value: 7.0 }
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let expanded = expand_yaml(yaml, &resolver);
+        let target = expanded
+            .entries
+            .iter()
+            .find(|e| e.name == "ifOperStatus")
+            .expect("ifOperStatus present");
+        assert!(
+            matches!(&target.generator, Some(GeneratorConfig::Constant { value }) if *value == 7.0),
+            "got: {:?}",
+            target.generator
+        );
     }
 }
