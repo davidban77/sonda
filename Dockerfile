@@ -66,7 +66,12 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
     cargo build --release --target "${RUST_TARGET}" --features remote-write,kafka,otlp -p sonda -p sonda-server 2>/dev/null || true
 
-# Copy real source and build
+# Copy real source and build.
+#
+# `packs/` is source as far as the build is concerned: sonda-core embeds those
+# files with `include_str!("../../../packs/…")`, so the crate does not compile
+# without them in the context. It is not only the compose mount.
+COPY packs/ packs/
 COPY sonda-core/ sonda-core/
 COPY sonda/ sonda/
 COPY sonda-server/ sonda-server/
