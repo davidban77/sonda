@@ -5,7 +5,7 @@
 # a flap alias to simulate interface up/down toggling.
 #
 # Run with:
-#   sonda --catalog sonda-core/tests/fixtures/packs run examples/pack-with-overrides.yaml
+#   sonda run examples/pack-with-overrides.yaml
 
 version: 2
 kind: runnable

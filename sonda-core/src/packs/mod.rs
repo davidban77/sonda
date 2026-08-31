@@ -12,9 +12,10 @@
 //! - [`MetricOverride`]: per-metric overrides for generators and labels.
 //! - [`expand_pack`]: the expansion function that produces `Vec<ScenarioEntry>`.
 //!
-//! Pack YAML files are **not embedded** in this crate. They live as standalone
-//! files on the filesystem, discovered by the CLI via a search path. See the
-//! `sonda` CLI crate for catalog/discovery logic.
+//! This module is the engine only. The pack YAML the binary ships lives in
+//! [`crate::catalog::builtin`], embedded with `include_str!` from the
+//! repo-root `packs/` directory; user packs are read from `--catalog <dir>`.
+//! [`crate::catalog::CatalogPackResolver`] chains the two.
 
 use std::collections::{BTreeMap, HashMap};
 

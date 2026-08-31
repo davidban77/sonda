@@ -77,9 +77,10 @@ pub fn parity_fixture(name: &str) -> String {
         .unwrap_or_else(|e| panic!("cannot read fixture {}: {}", path.display(), e))
 }
 
-/// Load and parse a pack YAML from `sonda-core/tests/fixtures/packs/`.
+/// Load and parse a pack YAML from the repo-root `packs/` directory —
+/// the same files `catalog::builtin` embeds into the binary.
 pub fn load_repo_pack(file_name: &str) -> MetricPackDef {
-    let path = fixtures_dir().join("packs").join(file_name);
+    let path = repo_root().join("packs").join(file_name);
     let yaml = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read pack {}: {}", path.display(), e));
     serde_yaml_ng::from_str::<MetricPackDef>(&yaml)

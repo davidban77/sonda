@@ -1390,7 +1390,7 @@ class _RepoRelativePathTests(unittest.TestCase):
         self.assertTrue(is_repo_relative_path("tests/alerts/high-cpu.yaml"))
 
     def test_sonda_core_path_is_repo_relative(self) -> None:
-        self.assertTrue(is_repo_relative_path("sonda-core/tests/fixtures/packs/foo.yaml"))
+        self.assertTrue(is_repo_relative_path("sonda-core/tests/fixtures/v2-examples/foo.yaml"))
 
     def test_bare_filename_is_not_repo_relative(self) -> None:
         self.assertFalse(is_repo_relative_path("my-scenario.yaml"))

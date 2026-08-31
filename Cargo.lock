@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "sonda"
-version = "1.22.2"
+version = "1.22.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2602,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-core"
-version = "1.22.2"
+version = "1.22.3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-server"
-version = "1.22.2"
+version = "1.22.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-wasm"
-version = "1.22.2"
+version = "1.22.3"
 dependencies = [
  "serde",
  "serde_json",

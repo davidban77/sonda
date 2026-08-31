@@ -3,6 +3,11 @@ services:
     build: .
     ports:
       - "8080:8080"
+    # The builtin packs need no catalog at all — `pack: node_exporter_cpu`
+    # resolves from inside the binary. Pointing --catalog at the mount is
+    # what makes ./packs an override surface: a pack dropped in there wins
+    # over the builtin of the same name.
+    command: ["--catalog", "/packs"]
     volumes:
       - ./examples:/scenarios
       - ./packs:/packs

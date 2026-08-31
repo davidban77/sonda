@@ -11,11 +11,21 @@ use crate::cli::RunArgs;
 
 /// Resolve a `--scenario` argument string (path or `@name`) to a YAML string.
 ///
-/// When the string starts with `@`, `catalog_dir` is required.
+/// When the string starts with `@`, `catalog_dir` is required: the builtin
+/// catalog holds packs, and a pack is composable, so no `@name` the builtins
+/// answer for could be run directly.
 pub fn resolve_scenario_source(scenario_ref: &str, catalog_dir: Option<&Path>) -> Result<String> {
     if let Some(name) = scenario_ref.strip_prefix('@') {
-        let dir = catalog_dir
-            .ok_or_else(|| anyhow!("--catalog <dir> is required to resolve @name references"))?;
+        let Some(dir) = catalog_dir else {
+            if sonda_core::catalog::builtin::find(name).is_some() {
+                bail!(
+                    "{name:?} is a builtin metric pack (kind: composable), not a runnable \
+                     scenario. Reference it from a scenario entry's `pack: {name}` key, or \
+                     print it with `sonda show @{name}`."
+                );
+            }
+            bail!("--catalog <dir> is required to resolve @name references");
+        };
         let path = sonda_core::catalog::resolve(dir, name)?;
         fs::read_to_string(&path)
             .map_err(|e| anyhow!("failed to read catalog entry {}: {e}", path.display()))

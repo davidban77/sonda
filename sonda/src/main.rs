@@ -226,9 +226,11 @@ fn run_scenario(
     Ok(())
 }
 
+/// The group heading for entries that declare no `category:`. Runnable
+/// scenarios generally do not — only packs carry one.
+const UNCATEGORIZED: &str = "uncategorized";
+
 fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyhow::Result<()> {
-    let dir =
-        catalog.ok_or_else(|| anyhow::anyhow!("--catalog <dir> is required for `sonda list`"))?;
     let kind_filter = match args.kind.as_deref() {
         None => None,
         Some("runnable") => Some(sonda_core::catalog::EntryKind::Runnable),
@@ -238,7 +240,9 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
         }
     };
 
-    let mut entries = sonda_core::catalog::enumerate(dir)?;
+    // No `--catalog` lists the builtins alone, which is the zero-setup path.
+    let listing = sonda_core::catalog::merged(catalog)?;
+    let mut entries = listing.entries;
     if let Some(k) = kind_filter {
         entries.retain(|e| e.kind == k);
     }
@@ -254,8 +258,14 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
                     "name": e.name,
                     "kind": e.kind.as_str(),
                     "description": e.description,
+                    "category": e.category,
                     "tags": e.tags,
                     "source": e.source_path.display().to_string(),
+                    "origin": match e.origin {
+                        sonda_core::catalog::EntryOrigin::Builtin => "builtin",
+                        sonda_core::catalog::EntryOrigin::UserDir => "catalog",
+                    },
+                    "shadows_builtin": e.shadows_builtin,
                 })
             })
             .collect();
@@ -264,31 +274,105 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
         println!("{out}");
     } else {
         println!("KIND\tNAME\tTAGS\tDESCRIPTION");
-        for e in &entries {
-            let tags = e.tags.join(",");
-            println!(
-                "{}\t{}\t{}\t{}",
-                e.kind.as_str(),
-                e.name,
-                tags,
-                e.description
-            );
+        for (category, group) in group_by_category(&entries) {
+            println!("\n[{category}]");
+            for e in group {
+                let name = if e.shadows_builtin {
+                    format!("{} (shadows builtin)", e.name)
+                } else {
+                    e.name.clone()
+                };
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    e.kind.as_str(),
+                    name,
+                    e.tags.join(","),
+                    e.description
+                );
+            }
         }
     }
+
+    report_skipped(catalog, &listing.skipped);
     Ok(())
+}
+
+/// Group entries by `category:`, categories alphabetical and
+/// [`UNCATEGORIZED`] last.
+fn group_by_category(
+    entries: &[sonda_core::catalog::CatalogEntry],
+) -> Vec<(&str, Vec<&sonda_core::catalog::CatalogEntry>)> {
+    let mut groups: std::collections::BTreeMap<&str, Vec<&sonda_core::catalog::CatalogEntry>> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let key = entry.category.as_deref().unwrap_or(UNCATEGORIZED);
+        groups.entry(key).or_default().push(entry);
+    }
+    let uncategorized = groups.remove(UNCATEGORIZED);
+    let mut out: Vec<(&str, Vec<&sonda_core::catalog::CatalogEntry>)> =
+        groups.into_iter().collect();
+    if let Some(rest) = uncategorized {
+        out.push((UNCATEGORIZED, rest));
+    }
+    out
+}
+
+/// Name the YAML files in the user's catalog directory that were not listed.
+///
+/// `enumerate` drops a YAML file with no recognized `kind:` header. Doing
+/// that in silence reads as coverage — the user sees a catalog that simply
+/// does not contain their file, with nothing to explain why. Builtins cannot
+/// be skipped (the count gate in `catalog::builtin` covers them), so this is
+/// about the `--catalog <dir>` half only.
+fn report_skipped(catalog: Option<&std::path::Path>, skipped: &[sonda_core::catalog::SkippedFile]) {
+    let (Some(dir), false) = (catalog, skipped.is_empty()) else {
+        return;
+    };
+    eprintln!(
+        "note: {} YAML file(s) in {} were not listed:",
+        skipped.len(),
+        dir.display()
+    );
+    for skip in skipped {
+        let name = skip
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| skip.path.display().to_string());
+        eprintln!("  {name}: {}", skip.reason.describe());
+    }
 }
 
 fn show_entry(args: &cli::ShowArgs, catalog: Option<&std::path::Path>) -> anyhow::Result<()> {
     let name = args.name.strip_prefix('@').unwrap_or(args.name.as_str());
-    let dir =
-        catalog.ok_or_else(|| anyhow::anyhow!("--catalog <dir> is required for `sonda show`"))?;
-    let entries = sonda_core::catalog::enumerate(dir)?;
-    let entry = entries
+    let listing = sonda_core::catalog::merged(catalog)?;
+    let entry = listing
+        .entries
         .iter()
         .find(|e| e.name == name)
-        .ok_or_else(|| anyhow::anyhow!("unknown catalog entry {:?}", name))?;
-    let raw = std::fs::read_to_string(&entry.source_path)
-        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", entry.source_path.display()))?;
+        .ok_or_else(|| {
+            let available: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+            anyhow::anyhow!(
+                "unknown catalog entry {name:?}; available: {}",
+                if available.is_empty() {
+                    "<empty>".to_string()
+                } else {
+                    available.join(", ")
+                }
+            )
+        })?;
+
+    // A builtin's YAML is in the binary; `source_path` is a `<builtin>/...`
+    // marker and is deliberately not openable.
+    let raw = match entry.origin {
+        sonda_core::catalog::EntryOrigin::Builtin => {
+            sonda_core::catalog::builtin::find(&entry.name)
+                .map(|p| p.yaml.to_string())
+                .ok_or_else(|| anyhow::anyhow!("builtin entry {name:?} has no embedded YAML"))?
+        }
+        sonda_core::catalog::EntryOrigin::UserDir => std::fs::read_to_string(&entry.source_path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", entry.source_path.display()))?,
+    };
     print!("{raw}");
     Ok(())
 }

@@ -31,11 +31,6 @@ src/
 ├── scenario_loader.rs  ← thin loader: reads a YAML path, runs it through
 │                          `compile_scenario_file_compiled`, returns the CompiledFile.
 │                          Shared by `dry_run` and the `run` dispatch in main.rs.
-├── catalog_dir.rs      ← filesystem catalog discovery: enumerate(dir) walks YAML files
-│                          and peeks frontmatter (kind / name / tags) without full
-│                          deserialization; resolve(dir, name) does @name lookup.
-│                          First-match-wins is a HARD ERROR on duplicate names —
-│                          ambiguity is never silently resolved.
 ├── sink_format.rs      ← single source of truth for sink-display rendering shared
 │                          between `dry_run` and `status` (so the "config" view and
 │                          the "start" banner agree on how a sink prints).
@@ -74,8 +69,8 @@ requires multiple tightly-coupled files.
 
 ```
 sonda [GLOBAL FLAGS] run <SCENARIO> [OPTIONS]
-sonda [GLOBAL FLAGS] list --catalog <DIR> [--kind <runnable|composable>] [--tag <TAG>] [--json]
-sonda [GLOBAL FLAGS] show <@NAME> --catalog <DIR>
+sonda [GLOBAL FLAGS] list [--catalog <DIR>] [--kind <runnable|composable>] [--tag <TAG>] [--json]
+sonda [GLOBAL FLAGS] show <@NAME> [--catalog <DIR>]
 sonda [GLOBAL FLAGS] new [--template | --from <CSV> | --from-prometheus <URL>] [-o <PATH>]
 sonda [GLOBAL FLAGS] test <SCENARIO> --prometheus-url <URL> | --alertmanager-url <URL>
 sonda completions <bash|zsh|fish|powershell|elvish>
@@ -84,8 +79,8 @@ sonda completions <bash|zsh|fish|powershell|elvish>
 `<SCENARIO>` is either a path to a v2 YAML file or `@name` for catalog lookup. Every scenario file
 must declare `version: 2` and `kind: runnable` (pack files declare `kind: composable`). Pre-v2
 shapes are rejected with a migration hint. Pack references inside a v2 file (`pack: <name>` under
-a `scenarios:` entry) are resolved by `CatalogPackResolver`, which reads the `--catalog <dir>`
-directory.
+a `scenarios:` entry) are resolved by `CatalogPackResolver`, which chains the `--catalog <dir>`
+directory in front of the builtin catalog embedded in the binary.
 
 ### Global Flags
 
@@ -93,11 +88,13 @@ directory.
 |------|-------|-------------|
 | `--quiet` | `-q` | Suppress status banners. Errors still print to stderr. |
 | `--verbose` | `-v` | Show the resolved scenario config at startup. Mutually exclusive with `--quiet`. |
-| `--catalog` | | Directory containing scenario and pack YAML files for `@name` resolution. Mandatory whenever a `@name` reference appears. |
+| `--catalog` | | Directory containing scenario and pack YAML files for `@name` resolution. Optional: it extends and overrides the builtin pack catalog. Mandatory only for a `@name` the builtins do not answer for. |
 | `--dry-run` | | `run` subcommand only: parse and validate the scenario, print it, exit without emitting events. Use `--format json` for machine-readable output. |
 
-There is no `SONDA_CATALOG` env var, no implicit search path, no built-in catalog. `--catalog` is
-the single discovery surface. The verbosity model is captured in the `Verbosity` enum (`Quiet`,
+There is no `SONDA_CATALOG` env var and no implicit search path. Discovery is the `--catalog`
+directory chained in front of the builtin catalog (`sonda_core::catalog::builtin`), which is
+embedded with `include_str!` — the static-binary law admits no runtime file discovery. A user
+entry wins over a builtin of the same name. The verbosity model is captured in the `Verbosity` enum (`Quiet`,
 `Normal`, `Verbose`), constructed from `--quiet` and `--verbose` via `Verbosity::from_flags()`.
 
 ### Subcommand summary
@@ -107,10 +104,12 @@ the single discovery surface. The verbosity model is captured in the `Verbosity`
   `--on-sink-error`. `--dry-run` parses and prints without emitting. Multi-scenario v2 files
   (multiple entries under `scenarios:`) run concurrently and respect per-entry `phase_offset`
   and `after:` clauses; final summary line aggregates totals.
-- **`sonda list --catalog <dir>`** — enumerate every YAML in the catalog. Filters: `--kind`,
-  `--tag`. `--json` emits machine-readable output. No dry-run (the operation is purely
-  observational).
-- **`sonda show <@name> --catalog <dir>`** — print the raw source YAML for a catalog entry,
+- **`sonda list`** — enumerate the catalog, grouped by `category:`. With no arguments this is the
+  builtin packs; `--catalog <dir>` merges that directory over them, marking any entry that
+  shadows a builtin. Filters: `--kind`, `--tag`. `--json` emits machine-readable output. YAML
+  files skipped for lacking a `kind:` header are named on stderr rather than dropped in silence.
+  No dry-run (the operation is purely observational).
+- **`sonda show <@name>`** — print the raw source YAML for a catalog entry, builtin or on disk,
   round-trippable through `sonda run`.
 - **`sonda new`** — scaffold a v2 scenario YAML. Default mode is interactive (signal type →
   scenario id → generator → rate → duration → sink). `--template` dumps a minimal valid YAML

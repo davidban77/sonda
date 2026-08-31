@@ -6,7 +6,24 @@ use std::io::Write;
 use std::process::Command;
 
 use common::sonda_bin;
+use sonda_core::catalog::builtin::PACK_COUNT;
 use tempfile::TempDir;
+
+/// A user pack that takes the name of a builtin. Its single metric is the
+/// distinguishing value: the builtin `node_exporter_cpu` ships eight
+/// `node_cpu_seconds_total` specs and nothing called this.
+const SHADOWING_PACK_YAML: &str = "version: 2
+kind: composable
+name: node_exporter_cpu
+description: My own CPU pack
+category: infrastructure
+
+metrics:
+  - name: only_in_the_user_copy
+    generator:
+      type: constant
+      value: 99.0
+";
 
 const RUNNABLE_YAML: &str = "version: 2
 kind: runnable
@@ -153,14 +170,203 @@ fn list_json_output_is_machine_readable() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("must be valid JSON");
     let arr = parsed.as_array().expect("must be array");
-    assert_eq!(arr.len(), 2);
+    assert_eq!(
+        arr.len(),
+        2 + PACK_COUNT,
+        "the two catalog entries plus every builtin, got: {stdout}"
+    );
     for entry in arr {
         let obj = entry.as_object().expect("object");
         assert!(obj.contains_key("name"));
         assert!(obj.contains_key("kind"));
         assert!(obj.contains_key("description"));
         assert!(obj.contains_key("tags"));
+        assert!(obj.contains_key("category"));
+        assert!(obj.contains_key("origin"));
+        assert!(obj.contains_key("shadows_builtin"));
     }
+}
+
+// ---- the builtin catalog ------------------------------------------------------
+
+/// The zero-setup path: no `--catalog`, no files, still a catalog.
+#[test]
+fn list_with_no_catalog_prints_the_builtin_packs() {
+    let output = Command::new(sonda_bin())
+        .args(["list"])
+        .output()
+        .expect("spawn sonda");
+    assert!(
+        output.status.success(),
+        "`sonda list` must work with no arguments; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for name in [
+        "node_exporter_cpu",
+        "node_exporter_memory",
+        "telegraf_snmp_interface",
+    ] {
+        assert!(stdout.contains(name), "must list {name}, got: {stdout}");
+    }
+}
+
+#[test]
+fn list_json_with_no_catalog_is_exactly_the_builtin_set() {
+    let output = Command::new(sonda_bin())
+        .args(["list", "--json"])
+        .output()
+        .expect("spawn sonda");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("must be valid JSON");
+    let arr = parsed.as_array().expect("must be array");
+    assert_eq!(arr.len(), PACK_COUNT, "got: {stdout}");
+    for entry in arr {
+        assert_eq!(entry["origin"], "builtin", "got: {entry}");
+        assert_eq!(
+            entry["shadows_builtin"], false,
+            "nothing can shadow a builtin with no catalog dir: {entry}"
+        );
+    }
+}
+
+/// Grouped by `category:`, which is what keeps the flat directory readable.
+#[test]
+fn list_groups_entries_under_their_category() {
+    let output = Command::new(sonda_bin())
+        .args(["list"])
+        .output()
+        .expect("spawn sonda");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[infrastructure]"), "got: {stdout}");
+    assert!(stdout.contains("[network]"), "got: {stdout}");
+
+    let infra = stdout
+        .find("[infrastructure]")
+        .expect("infrastructure group");
+    let network = stdout.find("[network]").expect("network group");
+    let cpu = stdout.find("node_exporter_cpu").expect("cpu pack");
+    let snmp = stdout.find("telegraf_snmp_interface").expect("snmp pack");
+    assert!(
+        infra < cpu && cpu < network,
+        "cpu belongs to infrastructure: {stdout}"
+    );
+    assert!(network < snmp, "snmp belongs to network: {stdout}");
+}
+
+/// A pack in `--catalog <dir>` named after a builtin wins, and says so.
+/// The other direction — no marker without the user dir — is
+/// `list_json_with_no_catalog_is_exactly_the_builtin_set`.
+#[test]
+fn list_marks_a_user_pack_that_shadows_a_builtin() {
+    let cat = write_catalog();
+    std::fs::write(cat.path().join("mine.yaml"), SHADOWING_PACK_YAML).expect("write shadow pack");
+
+    let output = Command::new(sonda_bin())
+        .args(["--catalog"])
+        .arg(cat.path())
+        .args(["list"])
+        .output()
+        .expect("spawn sonda");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("node_exporter_cpu (shadows builtin)"),
+        "the winner must be marked, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("My own CPU pack"),
+        "the user's description must be the one shown, got: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("node_exporter_cpu").count(),
+        1,
+        "the hidden builtin must not also list, got: {stdout}"
+    );
+}
+
+/// The silent skip, made visible. `enumerate` drops a YAML file with no
+/// `kind:` header; a skip the user cannot see reads as coverage.
+#[test]
+fn list_names_a_yaml_file_it_skipped_for_having_no_kind_header() {
+    let cat = write_catalog();
+    std::fs::write(cat.path().join("notes.yaml"), "version: 2\njust: data\n")
+        .expect("write non-entry YAML");
+
+    let output = Command::new(sonda_bin())
+        .args(["--catalog"])
+        .arg(cat.path())
+        .args(["list"])
+        .output()
+        .expect("spawn sonda");
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("notes.yaml"),
+        "the skipped file must be named: {stderr}"
+    );
+    assert!(
+        stderr.contains("kind"),
+        "the note must say why it was skipped: {stderr}"
+    );
+}
+
+#[test]
+fn show_prints_a_builtin_pack_with_no_catalog() {
+    let output = Command::new(sonda_bin())
+        .args(["show", "@node_exporter_cpu"])
+        .output()
+        .expect("spawn sonda");
+    assert!(
+        output.status.success(),
+        "`sonda show` must reach the builtins; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("kind: composable"), "got: {stdout}");
+    assert!(stdout.contains("node_cpu_seconds_total"), "got: {stdout}");
+    assert!(
+        stdout.contains("name: node_exporter_cpu"),
+        "the embedded YAML verbatim, got: {stdout}"
+    );
+}
+
+/// `show` reads the embedded bytes, never the `<builtin>/…` marker that
+/// stands in for a source path.
+#[test]
+fn show_of_a_builtin_matches_the_file_in_the_packs_directory() {
+    let output = Command::new(sonda_bin())
+        .args(["show", "@telegraf_snmp_interface"])
+        .output()
+        .expect("spawn sonda");
+    assert!(output.status.success());
+    let on_disk = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("packs/telegraf-snmp-interface.yaml"),
+    )
+    .expect("the source pack must exist at packs/");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        on_disk,
+        "the embedded copy must be the file in packs/, byte for byte"
+    );
+}
+
+#[test]
+fn show_unknown_name_lists_what_is_available() {
+    let output = Command::new(sonda_bin())
+        .args(["show", "@no_such_entry"])
+        .output()
+        .expect("spawn sonda");
+    assert!(!output.status.success(), "unknown entry must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no_such_entry"), "got: {stderr}");
+    assert!(
+        stderr.contains("node_exporter_cpu"),
+        "must name the builtins it does have: {stderr}"
+    );
 }
 
 #[test]
