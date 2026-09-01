@@ -581,3 +581,12 @@ jobs:
       # release-please no-assets window, missing checksums, version floors.
       - name: Release resolver unit tests
         run: python3 scripts/resolve_release.py --self-test
+
+      # The parity check in the argv harness compares files that name a feature
+      # set. A compose service names none — it inherits the Dockerfile default,
+      # so lowering that default drops a sink out from under a stack whose own
+      # environment still wires scenarios to it. Derived, not enumerated.
+      - name: Compose builds carry the features their scenarios wire up
+        run: |
+          python3 scripts/check_compose_features.py --self-test
+          python3 scripts/check_compose_features.py

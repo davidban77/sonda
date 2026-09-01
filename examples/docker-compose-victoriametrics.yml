@@ -47,6 +47,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        # Named, not inherited: this stack's own profiles need the otlp sink, which the image default does not carry.
+        FEATURES: remote-write,kafka,otlp
     ports:
       - "8080:8080"
     volumes:

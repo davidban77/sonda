@@ -159,8 +159,11 @@ Pair this encoder with the `remote_write` sink. The sink handles batching, snapp
 
 OTLP protobuf format. Encodes metrics as OTLP `Gauge` data points and logs as OTLP `LogRecord` messages, using length-prefixed protobuf serialization.
 
-!!! warning "Feature flag and build requirement"
-    This encoder requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker images do **not** include this feature. Build from source: `cargo build --features otlp -p sonda`.
+!!! warning "Not included in the pre-built binaries"
+    OTLP is an optional feature. The release binaries and the published Docker image do **not** include it. Two ways to get it:
+
+    - **As a binary** — build from source: `cargo build --features otlp -p sonda`.
+    - **As a container** — build the image yourself with OTLP compiled in. See [Building the image](../deploy/docker.md#building-the-image).
 
 No additional parameters.
 

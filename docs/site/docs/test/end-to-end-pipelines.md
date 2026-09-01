@@ -315,7 +315,7 @@ Pick the tab that matches your scenario.
 
     ### Coverage matrix
 
-    Every row below is a real `examples/*.yaml`. All of them run with the pre-built binaries, except the two marked † — those need a custom build. Start the matching backend profile from `examples/docker-compose-victoriametrics.yml` first.
+    Every row below is a real `examples/*.yaml`. All of them run with the pre-built binaries, except the two marked †. Start the matching backend profile from `examples/docker-compose-victoriametrics.yml` first.
 
     | Signal | Encoder | Sink | Scenario | Verify |
     |---|---|---|---|---|
@@ -335,7 +335,7 @@ Pick the tab that matches your scenario.
     | Metrics | `remote_write` | `remote_write` (VM + vmalert → Alertmanager) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --alertmanager-url http://localhost:9093 --interval 5s` — same scenario one hop further: exit 0 means the *notification* reached Alertmanager and cleared |
     | Metrics | `remote_write` | `remote_write` (Alertmanager, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `--alertmanager-url` shape — must exit 1 with `did not fire within` |
 
-    † The two marked rows need a custom build. See [What the pre-built binaries include](#prebuilt-binaries) below.
+    † These two rows need OTLP, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see [What the pre-built binaries include](#prebuilt-binaries) below.
 
     !!! info "Compose profiles"
         Loki, Kafka, Prometheus, the OTel Collector, and the alerting stack (vmalert + Alertmanager, needed by the four `sonda test` rows) are behind profiles to keep the base stack lean. Bring up only what each row needs. The vmagent row uses the default stack — no extra profile.
@@ -348,9 +348,15 @@ Pick the tab that matches your scenario.
     <a id="prebuilt-binaries"></a>
 
     !!! tip "What the pre-built binaries include"
-        The `remote_write` and `kafka` sinks are included in the pre-built binaries from the install script and the Docker image.
+        The `remote_write` and `kafka` sinks are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
 
-        The `otlp` encoder and the `otlp_grpc` sink are not. To run the two OTLP rows above, you need a custom build. See [Encoders — `otlp`](../build/encoders.md#otlp) and [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc) for the build command.
+        The two OTLP rows still work. How much setup they need depends on where Sonda runs:
+
+        - **Sonda inside the Compose stack** — nothing extra to do. The stack builds its own `sonda-server` image from the repository, with OTLP included. POST `examples/otlp-metrics.yaml` or `examples/otlp-logs.yaml` to `http://localhost:8080/scenarios` and the data reaches the collector.
+        - **Sonda on your host** — the `sonda run` commands in the matrix use the installed CLI, which has no OTLP. Build the binary from source with `cargo build --features otlp -p sonda`.
+        - **The published `ghcr.io/davidban77/sonda` image** — it has no OTLP either. Build your own image with OTLP compiled in.
+
+        See [Encoders — `otlp`](../build/encoders.md#otlp), [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc), and [Building the image](../deploy/docker.md#building-the-image).
 
     ### Intentionally out of scope
 
