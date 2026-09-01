@@ -354,45 +354,19 @@ else
 fi
 
 echo
-echo "== the major-version tag moves only where it should =="
-# release.yml force-moves `vN` onto each release so `uses: …@v1` tracks the
-# newest 1.x. A major tag that moves when it should not is worse than one
-# that never moves — it silently reassigns every consumer pinned to it — so
-# the guard gets a table.
-major_for() {
-  # Verbatim derivation from release.yml's "Move the major-version tag".
-  local RELEASE_TAG="$1"
-  if ! printf '%s' "$RELEASE_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-    printf 'SKIP'
-    return
-  fi
-  printf '%s' "${RELEASE_TAG%%.*}"
-}
+echo "== the moving tags move only where they should =="
+# `latest`, `vN`/`N` and `N.M` all follow one rule — a moving tag may point
+# at a release only if that release is the highest among the releases the
+# tag denotes — and one implementation, scripts/moving_tags.sh, shared by
+# the git-tag guard and the image-tag guard. A moving tag that moves when it
+# should not silently reassigns every consumer pinned to it, so it gets a
+# table, run against a REAL git repo: `sort -V` and `git tag -l` globbing
+# are exactly the parts a reimplementation here would get right while
+# production got them wrong.
+MOVING_TAGS="$(cd "$(dirname "$0")/../.." && pwd)/scripts/moving_tags.sh"
+RELEASE_YML="$(dirname "$0")/../../.github/workflows/release.yml"
 
-check_major() {
-  local tag="$1" want="$2" got
-  got="$(major_for "$tag")"
-  if [ "$got" = "$want" ]; then
-    pass "${tag} -> ${want}"
-  else
-    fail "${tag} -> ${want}" "got ${got}"
-  fi
-}
-
-check_major "v1.20.0"    "v1"
-check_major "v1.0.0"     "v1"
-check_major "v2.0.0"     "v2"      # a 2.0 release must NOT touch v1
-check_major "v10.3.1"    "v10"
-# Anything that is not a plain release tag leaves major tags alone.
-check_major "v2.0.0-rc.1" "SKIP"
-check_major "v1.20"       "SKIP"
-check_major "nightly"     "SKIP"
-check_major "v1"          "SKIP"   # the major tag itself must not recurse
-
-# The backward-move guard, run against a REAL git repo rather than a
-# reimplementation of it — `sort -V` and `git tag -l` are the parts most
-# likely to behave differently from what the shell here assumes.
-moves_to() {
+decide() {
   local release_tag="$1"; shift
   local repo="$TMP/tagrepo"
   rm -rf "$repo"; mkdir -p "$repo"
@@ -401,29 +375,105 @@ moves_to() {
     git init -q .; git config user.email t@t; git config user.name t
     git commit -q --allow-empty -m x
     for t in "$@"; do git tag "$t"; done
-    major="${release_tag%%.*}"
-    highest="$(git tag -l "${major}.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
-    if [ -n "$highest" ] && [ "$highest" != "$release_tag" ]; then
-      printf 'SKIP(%s)' "$highest"
+    bash "$MOVING_TAGS" "$release_tag" 2> /dev/null | tr '\n' ' ' | sed 's/ $//'
+  )
+}
+
+check_moving() {
+  local label="$1" want="$2" got; shift 2
+  got="$(decide "$@")"
+  if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got '${got}', want '${want}'"; fi
+}
+
+all_true="MOVE_LATEST=true MOVE_MAJOR=true MOVE_MINOR=true"
+all_false="MOVE_LATEST=false MOVE_MAJOR=false MOVE_MINOR=false"
+
+check_moving "the newest release moves everything" \
+  "$all_true" "v2.0.0" v1.21.0 v1.22.3 v2.0.0
+check_moving "newest of the v1 line moves 1 and 1.22, not latest" \
+  "MOVE_LATEST=false MOVE_MAJOR=true MOVE_MINOR=true" "v1.22.3" v1.21.0 v1.22.3 v2.0.0
+check_moving "an older minor moves only its own minor tag" \
+  "MOVE_LATEST=false MOVE_MAJOR=false MOVE_MINOR=true" "v1.21.0" v1.21.0 v1.22.3 v2.0.0
+check_moving "a backport does NOT move its minor tag back" \
+  "MOVE_LATEST=false MOVE_MAJOR=false MOVE_MINOR=false" "v1.21.0" v1.21.0 v1.21.4 v1.22.3
+check_moving "v1.9.0 vs v1.20.0 is compared numerically" \
+  "MOVE_LATEST=false MOVE_MAJOR=false MOVE_MINOR=true" "v1.9.0" v1.9.0 v1.20.0
+check_moving "the v10 line is not part of the v1 line" \
+  "MOVE_LATEST=false MOVE_MAJOR=true MOVE_MINOR=true" "v1.20.0" v1.20.0 v10.3.1
+check_moving "the first release of all moves everything" \
+  "$all_true" "v1.0.0" v1.0.0
+# Anything that is not a plain release tag publishes the exact version only.
+check_moving "a pre-release moves nothing"   "$all_false" "v2.0.0-rc.1" v1.20.0 v2.0.0-rc.1
+check_moving "a two-part tag moves nothing"  "$all_false" "v1.20"       v1.20
+check_moving "a named tag moves nothing"     "$all_false" "nightly"     v1.20.0 nightly
+check_moving "the major tag cannot recurse"  "$all_false" "v1"          v1 v1.20.0
+
+# An empty tag list reads as "nothing is newer", so the two ways of getting
+# one — no argument, no repository — must not answer `true` to anything.
+if ! bash "$MOVING_TAGS" > "$TMP/noargs.out" 2> /dev/null && ! grep -q 'true' "$TMP/noargs.out"; then
+  pass "no argument is refused rather than answered"
+else
+  fail "no argument is refused rather than answered" "$(cat "$TMP/noargs.out")"
+fi
+mkdir -p "$TMP/notarepo"
+if ! (cd "$TMP/notarepo" && GIT_CEILING_DIRECTORIES="$TMP" bash "$MOVING_TAGS" v1.0.0) \
+  > "$TMP/norepo.out" 2> /dev/null && ! grep -q 'true' "$TMP/norepo.out"; then
+  pass "a missing git repository is refused rather than answered"
+else
+  fail "a missing git repository is refused rather than answered" "$(cat "$TMP/norepo.out")"
+fi
+
+# THE REAL STEP, NOT A COPY. The table above covers the decision; this
+# covers the step that consumes it, in a scratch repo with a bare origin
+# where the answer becomes an actual moved tag. A reader that exits on its
+# first match once left the script dead of SIGPIPE and every "move" reading
+# as "leave" — a defect entirely invisible to a needle.
+MAJOR_STEP="$TMP/major_step.sh"
+: > "$MAJOR_STEP"
+for n in $(seq 1 20); do
+  body="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$RELEASE_YML" "block:$n" 2> /dev/null)" || continue
+  case "$body" in
+    *'git push --force origin'*) printf '%s\n' "$body" > "$MAJOR_STEP"; break ;;
+  esac
+done
+if [ ! -s "$MAJOR_STEP" ]; then
+  echo "could not find the major-tag step in release.yml — refusing to test the wrong thing" >&2
+  exit 1
+fi
+
+moved_major() {
+  local release_tag="$1"; shift
+  local repo="$TMP/steprepo" major="${release_tag%%.*}"
+  rm -rf "$repo" "$repo.git"; mkdir -p "$repo"
+  (
+    git init -q --bare "${repo}.git"
+    cd "$repo"
+    git init -q .; git config user.email t@t; git config user.name t
+    git remote add origin "${repo}.git"
+    git commit -q --allow-empty -m older
+    git tag "$major" # the moving tag, already published, on an older commit
+    git commit -q --allow-empty -m release
+    for t in "$@"; do git tag "$t"; done
+    mkdir -p scripts && cp "$MOVING_TAGS" scripts/
+    RELEASE_TAG="$release_tag" bash "$MAJOR_STEP" > /dev/null 2>&1
+    if [ "$(git rev-parse "${major}^{commit}")" = "$(git rev-parse HEAD)" ]; then
+      printf 'MOVED'
     else
-      printf '%s' "$major"
+      printf 'LEFT'
     fi
   )
 }
 
-check_move() {
+check_step() {
   local label="$1" want="$2" got; shift 2
-  got="$(moves_to "$@")"
+  got="$(moved_major "$@")"
   if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got ${got}, want ${want}"; fi
 }
 
-check_move "newest release moves v1"          "v1"            "v1.20.0" v1.19.0 v1.20.0
-check_move "a backport does NOT move v1 back" "SKIP(v1.20.0)" "v1.19.1" v1.19.0 v1.19.1 v1.20.0
-check_move "v1.9.0 vs v1.20.0 is numeric"     "SKIP(v1.20.0)" "v1.9.0"  v1.9.0 v1.20.0
-check_move "a 2.0 release moves v2 only"      "v2"            "v2.0.0"  v1.20.0 v2.0.0
-check_move "first release of a line moves it" "v1"            "v1.0.0"  v1.0.0
+check_step "the step really moves v1 onto the newest 1.x" MOVED "v1.22.3" v1.21.0 v1.22.3 v2.0.0
+check_step "the step leaves v1 alone on an older 1.x"     LEFT  "v1.21.0" v1.21.0 v1.22.3 v2.0.0
+check_step "the step moves v2 and never touches v1"       MOVED "v2.0.0"  v1.22.3 v2.0.0
 
-RELEASE_YML="$(dirname "$0")/../../.github/workflows/release.yml"
 # Read release.yml the way action.yml is read. Round 1's fix — needles
 # against run: bodies with comments dropped — went to action.yml only, so
 # the ORIGINAL defect stayed reachable in the file that decides where @v1
@@ -457,17 +507,35 @@ else
 fi
 release_missing=()
 for needle in \
-  '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  'decisions="$(bash scripts/moving_tags.sh "$RELEASE_TAG")"' \
+  '*MOVE_MAJOR=true*) ;;' \
+  'bash scripts/moving_tags.sh "$RELEASE_TAG" | tee -a "$GITHUB_ENV"' \
   'major="${RELEASE_TAG%%.*}"' \
-  'sort -V | tail -1)"' \
   'git push --force origin "refs/tags/${major}"'
 do
   printf '%s\n' "$RELEASE_CODE" | grep -qF -- "$needle" || release_missing+=("$needle")
 done
+for needle in \
+  '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  'sort -V | tail -1)"'
+do
+  grep -qF -- "$needle" "$MOVING_TAGS" || release_missing+=("moving_tags.sh: ${needle}")
+done
 if [ ${#release_missing[@]} -eq 0 ]; then
-  pass "the derivation under test is present in release.yml"
+  pass "the derivation under test is the one both jobs call"
 else
-  fail "the derivation under test is present in release.yml" "absent: ${release_missing[*]}"
+  fail "the derivation under test is the one both jobs call" "absent: ${release_missing[*]}"
+fi
+
+# The script's answer reaches the image tags as env: renaming a key in one
+# file leaves every `enable=` false forever, and a moving tag that stops
+# moving is invisible until someone pulls `latest` and gets an old release.
+script_keys="$(grep -oE 'MOVE_[A-Z]+=' "$MOVING_TAGS" | tr -d '=' | sort -u | tr '\n' ' ')"
+yaml_keys="$(grep -oE 'env\.MOVE_[A-Z]+' "$RELEASE_YML" | sed 's/env\.//' | sort -u | tr '\n' ' ')"
+if [ "$script_keys" = "$yaml_keys" ] && [ -n "$script_keys" ]; then
+  pass "release.yml gates on exactly the keys moving_tags.sh prints (${script_keys% })"
+else
+  fail "release.yml gates on exactly the keys moving_tags.sh prints" "script prints '${script_keys}', release.yml reads '${yaml_keys}'"
 fi
 # The move must happen after the release exists, or @v1 can point at a tag
 # whose assets have not uploaded yet.

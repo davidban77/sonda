@@ -7,3 +7,6 @@ tests/
 helm/
 *.md
 !README.md
+
+# Downloaded release tarballs; the build reads dist/ instead.
+assets/

@@ -30,3 +30,7 @@ docs/site/tools/browser/.playwright/
 # bytecode and the docs jobs run 3.12, so CI could never have loaded it.
 __pycache__/
 *.py[cod]
+
+# Created by the release workflow when it builds the image from the published
+# tarballs. ~50 MB of binaries, and untracked, so `git add .` would stage them.
+dist/

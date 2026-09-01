@@ -173,35 +173,29 @@ jobs:
       # tag whose assets exist. Moving it earlier would make `@v1` resolve
       # to a release the installer cannot download yet.
       #
-      # Guarded three ways, because a major tag that moves when it should
-      # not is worse than one that never moves: pre-releases are skipped,
-      # non-`vX.Y.Z` tags are skipped, and the tag moved is derived from
-      # THIS release's own major — so cutting v2.0.0 creates/moves `v2` and
-      # leaves `v1` pointing where it was, for everyone still pinned to it.
+      # Whether `v1` may move at all is decided by scripts/moving_tags.sh,
+      # which the image-tag guard in the `docker` job also calls: a major tag
+      # that moves when it should not silently downgrades everyone pinned to
+      # it, and two copies of that rule is one copy too many. The tag moved is
+      # derived from THIS release's own major — so cutting v2.0.0 creates or
+      # moves `v2` and leaves `v1` pointing where it was.
       - name: Move the major-version tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$RELEASE_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "note: ${RELEASE_TAG} is not a plain vX.Y.Z tag; leaving major tags untouched"
-            exit 0
-          fi
           major="${RELEASE_TAG%%.*}"          # v1.20.0 -> v1
-
-          # Never move the major tag BACKWARDS. A patch backported onto an
-          # older line — 1.19.1 cut after 1.20.0 — is a normal thing to do
-          # precisely once a newer line exists, and moving `v1` onto it
-          # would silently downgrade everyone pinned to `@v1`
-          # (#554 review W3). Compare by version, not by what was released
-          # most recently, and not as strings (v1.9.0 > v1.20.0 as text).
-          highest="$(git tag -l "${major}.*" \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V | tail -1)"
-          if [ -n "$highest" ] && [ "$highest" != "$RELEASE_TAG" ]; then
-            echo "note: ${highest} is newer than ${RELEASE_TAG}; leaving ${major} where it is"
-            exit 0
-          fi
+          # Matched without a pipe: a reader that exits on the first match
+          # (`grep -q`) leaves the script killed by SIGPIPE, which pipefail
+          # then reads as "do not move" on exactly the releases that should.
+          decisions="$(bash scripts/moving_tags.sh "$RELEASE_TAG")"
+          case "$decisions" in
+            *MOVE_MAJOR=true*) ;;
+            *)
+              echo "note: leaving ${major} where it is"
+              exit 0
+              ;;
+          esac
 
           echo "moving ${major} to ${RELEASE_TAG} ($(git rev-parse --short HEAD))"
           git tag -f "$major"
@@ -226,7 +220,7 @@ jobs:
     # the dependent unless a status function is used here.
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -254,29 +248,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Same hazard, and the same reasoning, as the "Move the major-version tag"
+      # Same hazard, same rule, same script as the "Move the major-version tag"
       # step above (#554 review W3): rebuilding an older tag must not drag
-      # `latest`, `{{major}}` and `{{major}}.{{minor}}` backwards onto it. The
+      # `latest`, `{{major}}` or `{{major}}.{{minor}}` backwards onto it. The
       # dispatch input makes that reachable, so the guard is required, not
-      # decorative. Compared with `sort -V`, because v1.9.0 > v1.20.0 as strings.
-      - name: Decide whether the moving tags may apply
+      # decorative.
+      - name: Decide which moving tags may apply
         run: |
           set -euo pipefail
-          if ! printf '%s' "$RELEASE_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "note: ${RELEASE_TAG} is not a plain vX.Y.Z tag; publishing the exact version tag only"
-            echo "IS_HIGHEST_RELEASE=false" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          highest="$(git tag -l 'v*' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V | tail -1)"
-          if [ -n "$highest" ] && [ "$highest" != "$RELEASE_TAG" ]; then
-            echo "note: ${highest} is newer than ${RELEASE_TAG}; leaving latest/major/minor tags where they are"
-            echo "IS_HIGHEST_RELEASE=false" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          echo "${RELEASE_TAG} is the highest published release; the moving tags will point at it"
-          echo "IS_HIGHEST_RELEASE=true" >> "$GITHUB_ENV"
+          bash scripts/moving_tags.sh "$RELEASE_TAG" | tee -a "$GITHUB_ENV"
 
       - name: Extract metadata (tags, labels)
         id: meta
@@ -287,9 +267,9 @@ jobs:
           # ref, which on a workflow_dispatch is a branch, not a tag.
           tags: |
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ env.IS_HIGHEST_RELEASE == 'true' }}
-            type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }},enable=${{ env.IS_HIGHEST_RELEASE == 'true' }}
-            type=raw,value=latest,enable=${{ env.IS_HIGHEST_RELEASE == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ env.MOVE_MINOR == 'true' }}
+            type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }},enable=${{ env.MOVE_MAJOR == 'true' }}
+            type=raw,value=latest,enable=${{ env.MOVE_LATEST == 'true' }}
 
       - name: Download the released binaries
         env:
