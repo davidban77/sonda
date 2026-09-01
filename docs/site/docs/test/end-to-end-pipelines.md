@@ -315,7 +315,7 @@ Pick the tab that matches your scenario.
 
     ### Coverage matrix
 
-    Every row below is a real `examples/*.yaml` you can run today. Start the matching backend profile from `examples/docker-compose-victoriametrics.yml` first.
+    Every row below is a real `examples/*.yaml`. All of them run with the pre-built binaries, except the two marked † — those need a custom build. Start the matching backend profile from `examples/docker-compose-victoriametrics.yml` first.
 
     | Signal | Encoder | Sink | Scenario | Verify |
     |---|---|---|---|---|
@@ -324,8 +324,8 @@ Pick the tab that matches your scenario.
     | Metrics | `remote_write` | `remote_write` (VictoriaMetrics) | `examples/remote-write-vm.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage_rw' \| jq '.data.result \| length'` |
     | Metrics | `remote_write` | `remote_write` (vmagent → VM) | `examples/remote-write-vmagent.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage_vmagent' \| jq '.data.result \| length'` |
     | Metrics | `remote_write` | `remote_write` (Prometheus) | `examples/remote-write-prometheus.yaml` | `curl -s 'http://localhost:9090/api/v1/query?query=cpu_usage_prom' \| jq '.data.result \| length'` |
-    | Metrics | `otlp` | `otlp_grpc` (OTel Collector → VM) | `examples/otlp-metrics.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage' \| jq '.data.result \| length'` |
-    | Logs | `otlp` | `otlp_grpc` (OTel Collector → Loki) | `examples/otlp-logs.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={service_name="sonda"}' \| jq '.data.result \| length'` |
+    | Metrics | `otlp` [†](#prebuilt-binaries) | `otlp_grpc` (OTel Collector → VM) | `examples/otlp-metrics.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage' \| jq '.data.result \| length'` |
+    | Logs | `otlp` [†](#prebuilt-binaries) | `otlp_grpc` (OTel Collector → Loki) | `examples/otlp-logs.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={service_name="sonda"}' \| jq '.data.result \| length'` |
     | Metrics | `prometheus_text` | `kafka` | `examples/kafka-sink.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-metrics --from-beginning --timeout-ms 5000` |
     | Logs | `json_lines` | `loki` | `examples/loki-json-lines.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={job="sonda"}' \| jq '.data.result \| length'` |
     | Logs | `json_lines` | `kafka` | `examples/kafka-json-logs.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-logs --from-beginning --timeout-ms 5000` |
@@ -335,6 +335,8 @@ Pick the tab that matches your scenario.
     | Metrics | `remote_write` | `remote_write` (VM + vmalert → Alertmanager) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --alertmanager-url http://localhost:9093 --interval 5s` — same scenario one hop further: exit 0 means the *notification* reached Alertmanager and cleared |
     | Metrics | `remote_write` | `remote_write` (Alertmanager, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `--alertmanager-url` shape — must exit 1 with `did not fire within` |
 
+    † The two marked rows need a custom build. See [What the pre-built binaries include](#prebuilt-binaries) below.
+
     !!! info "Compose profiles"
         Loki, Kafka, Prometheus, the OTel Collector, and the alerting stack (vmalert + Alertmanager, needed by the four `sonda test` rows) are behind profiles to keep the base stack lean. Bring up only what each row needs. The vmagent row uses the default stack — no extra profile.
         ```bash
@@ -342,6 +344,8 @@ Pick the tab that matches your scenario.
           --profile loki --profile kafka --profile prometheus --profile otel-collector up -d
         ```
         The OTLP-logs row needs both `--profile otel-collector` and `--profile loki` so the collector has somewhere to forward log records.
+
+    <a id="prebuilt-binaries"></a>
 
     !!! tip "What the pre-built binaries include"
         The `remote_write` and `kafka` sinks are included in the pre-built binaries from the install script and the Docker image.
