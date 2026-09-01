@@ -32,6 +32,10 @@ src/
 │   │                      (the ONE classifier both sources go through), enumerate(),
 │   │                      enumerate_with_skips(), merged(), CatalogPackResolver — the
 │   │                      `--catalog <dir>` directory chained in front of the builtins.
+│   │                      A composable entry that would not resolve carries the reason in
+│   │                      CatalogEntry::pack_error, computed by the same parse+validate_pack
+│   │                      the resolver runs, so a listing and a run cannot disagree. Marked,
+│   │                      not skipped: `sonda show` is how the user reads the broken file.
 │   └── builtin.rs      ← the packs compiled into the binary via include_str! from the
 │                          repo-root `packs/` directory. PACK_COUNT is declared beside the
 │                          list and gated: a half-wired embedded set fails rather than

@@ -183,7 +183,7 @@ A metric pack is a reusable bundle of metric names and label schemas that expand
 
 The architecture separates **engine** (in `sonda-core`) from **data** (YAML files supplied by the user):
 
-- **sonda-core `packs/` module** — engine types and expansion logic only. No pack YAML is embedded in the library; sonda ships no built-in packs.
+- **sonda-core `packs/` module** — engine types and expansion logic only. The curated pack YAML lives at the repo root in `packs/` and is embedded by `include_str!` in `catalog/builtin.rs`, so the static binary resolves the builtins with no file discovery.
 - **User-supplied catalog directory** — pack YAML files (with `kind: composable` at the top level) live alongside runnable scenarios in a catalog directory the user owns. The CLI resolves pack references via the `--catalog <dir>` flag.
 
 Key types (in `sonda-core`):
@@ -195,7 +195,7 @@ Key types (in `sonda-core`):
 - **expand_pack()** — the expansion function. Takes a `MetricPackDef` and a `PackScenarioConfig`, returns `Vec<ScenarioEntry>`. Label merge order: shared → per-metric → user → override. Generator selection: override → spec → constant(0.0).  Overrides are keyed by selector, not by raw name.
 - **PackResolver** trait — abstract pack-lookup; `CatalogPackResolver` (CLI-side) scans the `--catalog <dir>` directory, while `InMemoryPackResolver` (test-side) takes pre-built definitions.
 
-Packs like `node_exporter_cpu` contain multiple specs with the same metric name but different label sets (e.g., one `node_cpu_seconds_total` per CPU mode). Overrides key on metric name, so a single override entry applies to all specs sharing that name.
+Packs like `node_exporter_cpu` contain multiple specs with the same metric name but different label sets (e.g., one `node_cpu_seconds_total` per CPU mode). Each such spec declares a unique `id:`, and an override key addresses one of them as `name.id`. A bare name against a repeated one is refused, listing the ids — touching all eight modes is eight explicit lines.
 
 > **Design note:** Packs deliberately do not carry rate, duration, sink, or encoder — those are delivery concerns supplied by the user at run time. This separation means the same pack definition works unchanged across stdout testing, remote-write to production, and Kafka ingest.
 
@@ -214,6 +214,8 @@ Two sources feed the index, chained in `sonda_core::catalog`:
 2. **The builtin catalog**, a curated set of packs compiled into the binary with `include_str!` from the repo-root `packs/` directory. Sonda ships as a static binary, so these are embedded rather than discovered — there is no runtime file discovery and no implicit search path.
 
 The user directory wins on a name collision, so a pack named `node_exporter_cpu` in `--catalog <dir>` replaces the builtin of that name; `sonda list` marks the winner `(shadows builtin)`. The chain lives in `CatalogPackResolver`, which the CLI, the server's `POST /scenarios` and `--autostart` all already construct — so every surface inherits the builtins without wiring of its own. There is still no env-var override.
+
+A `kind: composable` file can parse as a catalog entry and still not resolve as a pack — an unaddressable one, or one missing `metrics:`. `header_entry` runs the same parse and `validate_pack` the resolver runs and records the reason in `CatalogEntry::pack_error`, so the listing and a run cannot give different verdicts. Such an entry is marked `(unusable)` rather than dropped, because `sonda show <name>` is how the user reads the file to find out what is wrong with it.
 
 > **Design note:** Scenarios are first-class artifacts of the system the user models. They live in the user's repo (versioned alongside the alert rules and dashboards they exercise) rather than being pinned to a sonda release.
 

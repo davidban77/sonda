@@ -52,7 +52,9 @@ sonda --catalog ~/sonda-catalog list --kind runnable
 sonda --catalog ~/sonda-catalog list --tag cpu
 ```
 
-For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `tags`, and the resolved `source` path. Use it as the contract when you script catalog discovery.
+For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `category`, `tags`, the resolved `source` path, `origin` (`builtin` or `catalog`), `shadows_builtin`, and `pack_error`. Use it as the contract when you script catalog discovery.
+
+A pack that parses as a catalog entry but cannot be referenced — a repeated metric name with no ids, say — is still listed, marked `(unusable)`, with the reason on stderr and in `pack_error`. It is listed rather than hidden because `sonda show <name>` is how you read the file and find the problem.
 
 ### Run a scenario
 
@@ -322,7 +324,7 @@ An override key is a **selector**: a metric name on its own, or `name.id` when t
 | `labels` | map | Additional labels merged on top of all other label sources for this metric. |
 
 !!! warning "Every override key must address exactly one metric"
-    Sonda returns an error if a key matches no metric — which catches typos early — and also if a bare name matches several, listing the ids to choose from. A key never applies to more than one metric. Two keys addressing the same metric (`name` and `name.id` for the same spec) are refused too, since one would silently win. Run `sonda show <pack-name>` to see the metric names and ids the pack actually declares.
+    Sonda returns an error if a key matches no metric — which catches typos early — and also if a bare name matches several, listing the ids to choose from. A key never applies to more than one metric. Two keys addressing the same metric (`name` and `name.id` for the same spec) are refused too, since one would silently win. Run `sonda show <pack-name> --catalog <dir>` to see the metric names and ids the pack actually declares — the flag is optional only for the built-in packs.
 
 ### Addressing a repeated metric name
 

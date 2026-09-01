@@ -266,6 +266,7 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
                         sonda_core::catalog::EntryOrigin::UserDir => "catalog",
                     },
                     "shadows_builtin": e.shadows_builtin,
+                    "pack_error": e.pack_error,
                 })
             })
             .collect();
@@ -277,11 +278,13 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
         for (category, group) in group_by_category(&entries) {
             println!("\n[{category}]");
             for e in group {
-                let name = if e.shadows_builtin {
-                    format!("{} (shadows builtin)", e.name)
-                } else {
-                    e.name.clone()
-                };
+                let mut name = e.name.clone();
+                if e.shadows_builtin {
+                    name.push_str(" (shadows builtin)");
+                }
+                if e.pack_error.is_some() {
+                    name.push_str(" (unusable)");
+                }
                 println!(
                     "{}\t{}\t{}\t{}",
                     e.kind.as_str(),
@@ -293,8 +296,31 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
         }
     }
 
+    report_unusable(&entries);
     report_skipped(catalog, &listing.skipped);
     Ok(())
+}
+
+/// Say why each `(unusable)` entry cannot be referenced.
+///
+/// The marker in the row is not the diagnostic — the reason is, and it is
+/// the same one `pack: <name>` would produce at expansion. Printed for
+/// `--json` too: the field is in the payload, but a human watching the run
+/// should not have to parse it to notice.
+fn report_unusable(entries: &[sonda_core::catalog::CatalogEntry]) {
+    let broken: Vec<&sonda_core::catalog::CatalogEntry> =
+        entries.iter().filter(|e| e.pack_error.is_some()).collect();
+    if broken.is_empty() {
+        return;
+    }
+    eprintln!(
+        "note: {} listed pack(s) cannot be referenced with `pack:`:",
+        broken.len()
+    );
+    for e in broken {
+        let reason = e.pack_error.as_deref().unwrap_or("");
+        eprintln!("  {}: {reason}", e.name);
+    }
 }
 
 /// Group entries by `category:`, categories alphabetical and

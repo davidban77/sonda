@@ -236,6 +236,7 @@ fn default_encoder() -> EncoderConfig {
 /// Moving ambiguity here is the point: a selector can never meet an ambiguous
 /// pack, because such a pack does not load.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum PackValidationError {
     /// A metric name contains the selector separator.
     #[error(
@@ -353,6 +354,7 @@ impl MetricSelector {
 
 /// Why a selector did not address exactly one spec.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum SelectorError {
     /// Nothing in the pack matches.
     #[error(
@@ -434,6 +436,7 @@ pub fn available_selectors(pack: &MetricPackDef) -> String {
 
 /// Why a set of override keys does not map cleanly onto a pack's specs.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OverrideKeyError {
     /// One key addressed no spec, or more than one.
     #[error(transparent)]
@@ -1277,6 +1280,47 @@ sink:
             .expect_err("must conflict")
             .to_string();
         assert_eq!(forward, reverse);
+    }
+
+    /// The v1 path validates the pack before resolving anything, so a spec
+    /// `resolve_selector` could never address is refused rather than
+    /// silently dropped. Without this, `resolve_selector` would run against
+    /// a pack that never passed the rule it assumes holds.
+    #[test]
+    fn expand_pack_refuses_an_unaddressable_pack() {
+        let config = |pack: &str| PackScenarioConfig {
+            pack: pack.to_string(),
+            rate: 1.0,
+            duration: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            overrides: None,
+        };
+
+        // A dotted name: addressable by nothing, since `parse` splits on the
+        // first dot and no spec is named `cpu`.
+        let dotted = pack_of(vec![spec("cpu.user", None)]);
+        let msg = expand_pack(&dotted, &config("test"))
+            .expect_err("a dotted metric name must not load")
+            .to_string();
+        assert!(msg.contains("cpu.user") && msg.contains('.'), "got: {msg}");
+
+        // A repeated name with no ids: two specs, neither addressable.
+        let repeated = pack_of(vec![spec("cpu", None), spec("cpu", None)]);
+        let msg = expand_pack(&repeated, &config("test"))
+            .expect_err("a repeated name without ids must not load")
+            .to_string();
+        assert!(msg.contains("appears 2 times"), "got: {msg}");
+
+        // The corrected twin loads.
+        let fixed = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        assert_eq!(
+            expand_pack(&fixed, &config("test"))
+                .expect("ids make it addressable")
+                .len(),
+            2
+        );
     }
 
     /// The v1 oracle used to fan a bare key across every spec sharing the
