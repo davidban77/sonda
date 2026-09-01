@@ -15,6 +15,10 @@
 //! truth, the Dockerfile's own `COPY` lines are the other. It is exact —
 //! there is no pattern-matching over prose — so it converges rather than
 //! growing a tail of shapes.
+//!
+//! Only the stage that runs the workspace `cargo build` counts. A `COPY` in the
+//! second context-copying stage, which compiles nothing, would otherwise satisfy
+//! an escape in the stage that does.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -136,30 +140,115 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// Every source path the Dockerfile copies into the build context, read from
-/// the Dockerfile itself rather than restated here.
-fn dockerfile_copy_sources() -> BTreeSet<PathBuf> {
-    let text =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("the repo has a Dockerfile");
-    let mut sources = BTreeSet::new();
-    for line in text.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("COPY ") else {
-            continue;
-        };
-        // `COPY --from=builder …` copies between stages, not from the context.
-        if rest.starts_with("--from") {
-            continue;
-        }
-        let parts: Vec<&str> = rest.split_whitespace().collect();
-        if parts.len() < 2 {
+struct Stage {
+    name: Option<String>,
+    compiles_the_workspace: bool,
+    copy_sources: BTreeSet<PathBuf>,
+}
+
+/// Instructions with their line continuations joined, comments dropped.
+fn instructions(text: &str) -> Vec<String> {
+    let mut joined = Vec::new();
+    let mut pending = String::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
             continue;
         }
-        for src in &parts[..parts.len() - 1] {
-            sources.insert(PathBuf::from(src.trim_end_matches('/')));
+        if line.is_empty() && pending.is_empty() {
+            continue;
+        }
+        match line.strip_suffix('\\') {
+            Some(head) => {
+                pending.push_str(head.trim_end());
+                pending.push(' ');
+            }
+            None => {
+                pending.push_str(line);
+                joined.push(std::mem::take(&mut pending));
+            }
         }
     }
-    sources
+    if !pending.is_empty() {
+        joined.push(pending);
+    }
+    joined
+}
+
+fn dockerfile_stages() -> Vec<Stage> {
+    let text =
+        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("the repo has a Dockerfile");
+    parse_stages(&text)
+}
+
+fn parse_stages(text: &str) -> Vec<Stage> {
+    let mut stages: Vec<Stage> = Vec::new();
+
+    for line in instructions(text) {
+        let mut tokens = line.split_whitespace();
+        let Some(instruction) = tokens.next() else {
+            continue;
+        };
+        match instruction.to_ascii_uppercase().as_str() {
+            "FROM" => {
+                let rest: Vec<&str> = tokens.collect();
+                let name = rest
+                    .windows(2)
+                    .find(|pair| pair[0].eq_ignore_ascii_case("as"))
+                    .map(|pair| pair[1].to_string());
+                stages.push(Stage {
+                    name,
+                    compiles_the_workspace: false,
+                    copy_sources: BTreeSet::new(),
+                });
+            }
+            "RUN" if line.contains("cargo build") => {
+                if let Some(stage) = stages.last_mut() {
+                    stage.compiles_the_workspace = true;
+                }
+            }
+            "COPY" => {
+                let Some(stage) = stages.last_mut() else {
+                    continue;
+                };
+                // `--from=<stage>` copies between stages, not from the context.
+                let args: Vec<&str> = tokens
+                    .skip_while(|token| token.starts_with("--"))
+                    .filter(|token| !token.starts_with("<<"))
+                    .collect();
+                if line.contains("--from") || args.len() < 2 {
+                    continue;
+                }
+                for src in &args[..args.len() - 1] {
+                    stage
+                        .copy_sources
+                        .insert(PathBuf::from(src.trim_end_matches('/')));
+                }
+            }
+            _ => {}
+        }
+    }
+    stages
+}
+
+/// The stage that runs the workspace `cargo build`, located by what it does
+/// rather than by its name so a rename cannot silently empty this check.
+fn compiling_stage() -> Stage {
+    let mut compiling: Vec<Stage> = dockerfile_stages()
+        .into_iter()
+        .filter(|stage| stage.compiles_the_workspace)
+        .collect();
+    assert_eq!(
+        compiling.len(),
+        1,
+        "expected exactly one Dockerfile stage to run the workspace `cargo build`, found {}: {:?}",
+        compiling.len(),
+        compiling
+            .iter()
+            .map(|stage| &stage.name)
+            .collect::<Vec<_>>()
+    );
+    compiling.remove(0)
 }
 
 /// Guards both checks below against a scan that silently found nothing.
@@ -183,12 +272,39 @@ fn the_scan_finds_the_escaping_includes_that_are_known_to_exist() {
         "the builtin packs must show up as escaping includes: {escaping:?}"
     );
 
-    let copies = dockerfile_copy_sources();
+    let stage = compiling_stage();
     assert!(
-        copies.len() >= 4,
-        "the Dockerfile should copy at least the crate directories, parsed {}: {copies:?}",
-        copies.len()
+        stage.name.is_some(),
+        "the compiling stage must be named so the runtime stage can copy from it"
     );
+    assert!(
+        stage.copy_sources.len() >= 4,
+        "the compiling stage should copy at least the crate directories, parsed {}: {:?}",
+        stage.copy_sources.len(),
+        stage.copy_sources
+    );
+}
+
+#[test]
+fn a_copy_in_a_stage_that_compiles_nothing_does_not_count_as_coverage() {
+    let stages = parse_stages(
+        "FROM scratch AS prebuilt\n\
+         COPY packs/ packs/\n\
+         FROM rust AS builder\n\
+         COPY sonda-core/ sonda-core/\n\
+         RUN cargo build --release -p sonda\n",
+    );
+
+    let compiling: Vec<&Stage> = stages
+        .iter()
+        .filter(|stage| stage.compiles_the_workspace)
+        .collect();
+    assert_eq!(compiling.len(), 1);
+    assert_eq!(compiling[0].name.as_deref(), Some("builder"));
+    assert!(!compiling[0].copy_sources.contains(&PathBuf::from("packs")));
+    assert!(compiling[0]
+        .copy_sources
+        .contains(&PathBuf::from("sonda-core")));
 }
 
 /// The check itself: every escaping include must be inside something the
@@ -196,7 +312,7 @@ fn the_scan_finds_the_escaping_includes_that_are_known_to_exist() {
 #[test]
 fn every_escaping_include_is_inside_the_docker_build_context() {
     let escaping = escaping_includes();
-    let copies = dockerfile_copy_sources();
+    let copies = compiling_stage().copy_sources;
 
     let mut uncovered = Vec::new();
     for (source_file, target) in &escaping {

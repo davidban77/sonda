@@ -343,8 +343,10 @@ Pick the tab that matches your scenario.
         ```
         The OTLP-logs row needs both `--profile otel-collector` and `--profile loki` so the collector has somewhere to forward log records.
 
-    !!! tip "Feature-gated sinks"
-        The `remote_write`, `kafka`, and `otlp_grpc` sinks are included in the pre-built binaries from the install script and the Docker image. Custom builds need to enable them — see [Sinks](../build/sinks.md) for the details.
+    !!! tip "What the pre-built binaries include"
+        The `remote_write` and `kafka` sinks are included in the pre-built binaries from the install script and the Docker image.
+
+        The `otlp` encoder and the `otlp_grpc` sink are not. To run the two OTLP rows above, you need a custom build. See [Encoders — `otlp`](../build/encoders.md#otlp) and [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc) for the build command.
 
     ### Intentionally out of scope
 
