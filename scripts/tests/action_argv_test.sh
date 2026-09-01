@@ -357,26 +357,31 @@ echo
 echo "== the moving tags move only where they should =="
 # `latest`, `vN`/`N` and `N.M` all follow one rule — a moving tag may point
 # at a release only if that release is the highest among the releases the
-# tag denotes — and one implementation, scripts/moving_tags.sh, shared by
-# the git-tag guard and the image-tag guard. A moving tag that moves when it
-# should not silently reassigns every consumer pinned to it, so it gets a
-# table, run against a REAL git repo: `sort -V` and `git tag -l` globbing
-# are exactly the parts a reimplementation here would get right while
-# production got them wrong.
+# tag denotes — and one implementation, scripts/moving_tags.sh. A moving tag
+# that moves when it should not silently reassigns every consumer pinned to
+# it, so it gets a table, run against a REAL git repo: `sort -V` and
+# `git tag -l` globbing are exactly the parts a reimplementation here would
+# get right while production got them wrong.
 MOVING_TAGS="$(cd "$(dirname "$0")/../.." && pwd)/scripts/moving_tags.sh"
+IMAGE_TAGS="$(cd "$(dirname "$0")/../.." && pwd)/scripts/image_tags.sh"
 RELEASE_YML="$(dirname "$0")/../../.github/workflows/release.yml"
+
+scratch_repo() {
+  local repo="$1"; shift
+  rm -rf "$repo"; mkdir -p "$repo"
+  git -C "$repo" init -q .
+  git -C "$repo" config user.email t@t
+  git -C "$repo" config user.name t
+  git -C "$repo" commit -q --allow-empty -m x
+  local t
+  for t in "$@"; do git -C "$repo" tag "$t"; done
+}
 
 decide() {
   local release_tag="$1"; shift
   local repo="$TMP/tagrepo"
-  rm -rf "$repo"; mkdir -p "$repo"
-  (
-    cd "$repo"
-    git init -q .; git config user.email t@t; git config user.name t
-    git commit -q --allow-empty -m x
-    for t in "$@"; do git tag "$t"; done
-    bash "$MOVING_TAGS" "$release_tag" 2> /dev/null | tr '\n' ' ' | sed 's/ $//'
-  )
+  scratch_repo "$repo" "$@"
+  (cd "$repo" && bash "$MOVING_TAGS" "$release_tag" 2> /dev/null | tr '\n' ' ' | sed 's/ $//')
 }
 
 check_moving() {
@@ -408,29 +413,269 @@ check_moving "a two-part tag moves nothing"  "$all_false" "v1.20"       v1.20
 check_moving "a named tag moves nothing"     "$all_false" "nightly"     v1.20.0 nightly
 check_moving "the major tag cannot recurse"  "$all_false" "v1"          v1 v1.20.0
 
-# An empty tag list reads as "nothing is newer", so the two ways of getting
-# one — no argument, no repository — must not answer `true` to anything.
-if ! bash "$MOVING_TAGS" > "$TMP/noargs.out" 2> /dev/null && ! grep -q 'true' "$TMP/noargs.out"; then
-  pass "no argument is refused rather than answered"
-else
-  fail "no argument is refused rather than answered" "$(cat "$TMP/noargs.out")"
-fi
+# An empty or unanswerable tag list reads as "nothing is newer", which would
+# open every moving tag at once. Each way of producing one must refuse.
+refuses() {
+  local label="$1" out rc; shift
+  out="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q 'true'; then
+    pass "$label"
+  else
+    fail "$label" "rc=${rc}, output: ${out}"
+  fi
+}
+
+refuses "no argument is refused rather than answered" \
+  bash "$MOVING_TAGS"
 mkdir -p "$TMP/notarepo"
-if ! (cd "$TMP/notarepo" && GIT_CEILING_DIRECTORIES="$TMP" bash "$MOVING_TAGS" v1.0.0) \
-  > "$TMP/norepo.out" 2> /dev/null && ! grep -q 'true' "$TMP/norepo.out"; then
-  pass "a missing git repository is refused rather than answered"
+refuses "a missing git repository is refused rather than answered" \
+  env -C "$TMP/notarepo" GIT_CEILING_DIRECTORIES="$TMP" bash "$MOVING_TAGS" v1.0.0
+# A checkout whose tags were never fetched answers every question with
+# "nothing is newer" — the same vacuous `true` a missing repository gives,
+# from a repository that looks perfectly healthy.
+scratch_repo "$TMP/notags"
+refuses "a repository with no tags at all is refused" \
+  env -C "$TMP/notags" bash "$MOVING_TAGS" v1.0.0
+scratch_repo "$TMP/othertags" v1.0.0 v1.1.0
+refuses "a release absent from the fetched tags is refused" \
+  env -C "$TMP/othertags" bash "$MOVING_TAGS" v9.9.9
+
+echo
+echo "== the image tags this repository publishes =="
+# The tag list is computed here rather than read off docker/metadata-action:
+# its `flavor` defaults to `latest=auto`, under which the semver processor
+# appends `:latest` from the first tag entry, so `enable=` on a
+# `type=raw,value=latest` entry suppresses a duplicate and leaves the real
+# one. Owning the list is the fix; this table is what makes owning it worth
+# something.
+image_tags_for() {
+  local release_tag="$1"; shift
+  local repo="$TMP/imagerepo"
+  scratch_repo "$repo" "$@"
+  (cd "$repo" && bash "$IMAGE_TAGS" "$release_tag" ghcr.io/davidban77/sonda 2> /dev/null \
+    | sed 's#^ghcr.io/davidban77/sonda:##' | tr '\n' ' ' | sed 's/ $//')
+}
+
+check_image_tags() {
+  local label="$1" want="$2" got; shift 2
+  got="$(image_tags_for "$@")"
+  if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got '${got}', want '${want}'"; fi
+}
+
+check_image_tags "the newest release claims every moving tag" \
+  "2.0.0 2.0 2 latest" "v2.0.0" v1.22.3 v2.0.0
+check_image_tags "newest of the v1 line claims 1 and 1.22, never latest" \
+  "1.22.3 1.22 1" "v1.22.3" v1.21.0 v1.22.3 v2.0.0
+check_image_tags "an older minor claims only its own minor tag" \
+  "1.21.0 1.21" "v1.21.0" v1.21.0 v1.22.3 v2.0.0
+# The row the whole file exists for: a backport publishes its exact version
+# and nothing else. Under metadata-action's default flavor this one produced
+# `latest` as well, and every `docker pull sonda` got a downgrade.
+check_image_tags "a backport publishes the exact version and nothing else" \
+  "1.21.0" "v1.21.0" v1.21.0 v1.21.4 v1.22.3
+check_image_tags "the first release of all claims every moving tag" \
+  "1.0.0 1.0 1 latest" "v1.0.0" v1.0.0
+check_image_tags "a pre-release publishes only itself" \
+  "2.0.0-rc.1" "v2.0.0-rc.1" v1.22.3 v2.0.0-rc.1
+
+refuses "a release absent from the fetched tags publishes no image tag" \
+  env -C "$TMP/othertags" bash "$IMAGE_TAGS" v9.9.9 ghcr.io/davidban77/sonda
+# A non-zero exit alone is satisfied by the wrong refusal: against a repository
+# whose tags lack the release, the moving tags are undecided and the reference
+# is never inspected. So: a repository carrying the release, and the message.
+refuses_saying() {
+  local label="$1" want="$2" out rc; shift 2
+  out="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF -- "$want" \
+    && ! printf '%s' "$out" | grep -q 'true'; then
+    pass "$label"
+  else
+    fail "$label" "rc=${rc}, output: ${out}"
+  fi
+}
+scratch_repo "$TMP/refrepo" v1.0.0
+refuses_saying "a repository that already carries a tag is refused" "already carries a tag" \
+  env -C "$TMP/refrepo" bash "$IMAGE_TAGS" v1.0.0 ghcr.io/davidban77/sonda:latest
+refuses_saying "a repository that already carries a digest is refused" "already carries a digest" \
+  env -C "$TMP/refrepo" bash "$IMAGE_TAGS" v1.0.0 ghcr.io/davidban77/sonda@sha256:abc
+# A `:` before the last `/` is a registry port. Rejecting it would make the
+# script unusable against any registry that has one, which is every local
+# one — and the red-verification for the tagging sequence runs on exactly
+# that.
+scratch_repo "$TMP/portrepo" v1.0.0
+got_port="$(cd "$TMP/portrepo" && bash "$IMAGE_TAGS" v1.0.0 localhost:5000/sonda 2> /dev/null | tr '\n' ' ' | sed 's/ $//')"
+if [ "$got_port" = "localhost:5000/sonda:1.0.0 localhost:5000/sonda:1.0 localhost:5000/sonda:1 localhost:5000/sonda:latest" ]; then
+  pass "a registry port is not mistaken for a tag"
 else
-  fail "a missing git repository is refused rather than answered" "$(cat "$TMP/norepo.out")"
+  fail "a registry port is not mistaken for a tag" "got '${got_port}'"
 fi
 
-# THE REAL STEP, NOT A COPY. The table above covers the decision; this
-# covers the step that consumes it, in a scratch repo with a bare origin
-# where the answer becomes an actual moved tag. A reader that exits on its
-# first match once left the script dead of SIGPIPE and every "move" reading
-# as "leave" — a defect entirely invisible to a needle.
+# Renaming a key on one side of this pair leaves every moving tag silently
+# unclaimed, and a moving tag that stops moving is invisible until someone
+# pulls `latest` and gets an old release.
+decision_keys="$(grep -oE 'MOVE_[A-Z]+=' "$MOVING_TAGS" | tr -d '=' | sort -u | tr '\n' ' ')"
+consumer_keys="$(grep -oE 'MOVE_[A-Z]+=true' "$IMAGE_TAGS" | sed 's/=true//' | sort -u | tr '\n' ' ')"
+if [ "$decision_keys" = "$consumer_keys" ] && [ -n "$decision_keys" ]; then
+  pass "image_tags.sh gates on exactly the keys moving_tags.sh prints (${decision_keys% })"
+else
+  fail "image_tags.sh gates on exactly the keys moving_tags.sh prints" \
+    "moving_tags.sh prints '${decision_keys}', image_tags.sh reads '${consumer_keys}'"
+fi
+
+echo
+echo "== a tag is created only from a verified digest =="
+# THE REAL STEP, NOT A COPY. The release job pushes by digest and names the
+# manifest last, so a failed verification leaves nothing resolvable. The
+# table above says which tags are correct; this says the step publishes
+# those and only those, driven with a fake `docker` that records its argv.
+cat > "$TMP/docker" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+# `docker run … --version` is read by the smoke step; everything else here
+# is only recorded.
+[ "${1-}" = "run" ] && printf '%s\n' "${DOCKER_FAKE_VERSION-}"
+exit 0
+FAKE
+chmod +x "$TMP/docker"
+
+TAG_STEP="$TMP/tag_step.sh"
+: > "$TAG_STEP"
+for n in $(seq 1 30); do
+  body="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$RELEASE_YML" "block:$n" 2> /dev/null)" || continue
+  case "$body" in
+    *'imagetools create'*) printf '%s\n' "$body" > "$TAG_STEP"; break ;;
+  esac
+done
+if [ ! -s "$TAG_STEP" ]; then
+  echo "could not find the image-tagging step in release.yml — refusing to test the wrong thing" >&2
+  exit 1
+fi
+
+# The exit code is part of the answer: a step that creates no tag AND reports
+# success leaves the release looking published with nothing behind the name.
+tagged() {
+  local release_tag="$1" rc log; shift
+  local repo="$TMP/tagsteprepo"
+  scratch_repo "$repo" "$@"
+  mkdir -p "$repo/scripts"
+  cp "$MOVING_TAGS" "$IMAGE_TAGS" "$repo/scripts/"
+  : > "$TMP/docker.log"
+  (
+    cd "$repo"
+    RELEASE_TAG="$release_tag" IMAGE=ghcr.io/davidban77/sonda DIGEST=sha256:d1 \
+      DOCKER_LOG="$TMP/docker.log" bash "$TAG_STEP" > /dev/null 2>&1
+  )
+  rc=$?
+  log="$(cat "$TMP/docker.log")"
+  printf 'rc=%s%s' "$rc" "${log:+ $log}"
+}
+
+check_tagged() {
+  local label="$1" want="$2" got; shift 2
+  got="$(tagged "$@")"
+  if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got '${got}', want '${want}'"; fi
+}
+
+check_tagged "the step tags the digest with every claimed tag" \
+  "rc=0 buildx imagetools create --tag ghcr.io/davidban77/sonda:2.0.0 --tag ghcr.io/davidban77/sonda:2.0 --tag ghcr.io/davidban77/sonda:2 --tag ghcr.io/davidban77/sonda:latest ghcr.io/davidban77/sonda@sha256:d1" \
+  "v2.0.0" v1.22.3 v2.0.0
+check_tagged "a backport reaches the registry as its exact version only" \
+  "rc=0 buildx imagetools create --tag ghcr.io/davidban77/sonda:1.21.0 ghcr.io/davidban77/sonda@sha256:d1" \
+  "v1.21.0" v1.21.0 v1.21.4 v1.22.3
+# An undecidable tag list must publish nothing rather than everything: the
+# step is the last one in the job, so anything it creates is what the world
+# sees.
+check_tagged "an undecidable release fails the step and creates no tag" "rc=1" "v9.9.9" v1.0.0
+
+# The sequencing D3 exists for. `push-by-digest` is what makes the manifest
+# unreachable by name; the ordering is what keeps it that way until the
+# comparison and the smoke tests have run. Either one alone is decorative.
+#
+# Every check below reads release.yml with comment lines dropped, for the
+# reason round 1 learned the hard way: the prose next to a rule quotes the
+# thing the rule is about, so a needle against the raw file is answered by the
+# comment while the rule itself is deleted.
+release_yaml_code="$(grep -vE '^[[:space:]]*#' "$RELEASE_YML")"
+# Anchored inside the `outputs:` value, not anywhere in the file: an exporter
+# that loses this key publishes `:latest` before anything has verified it.
+build_outputs="$(printf '%s\n' "$release_yaml_code" | grep -E '^[[:space:]]*outputs:' | sed 's/^[^:]*://')"
+case "$build_outputs" in
+  *push-by-digest=true*)
+    pass "the image is pushed by digest, not under a tag" ;;
+  *)
+    fail "the image is pushed by digest, not under a tag" \
+      "the build step's outputs: is '${build_outputs}'" ;;
+esac
+if printf '%s\n' "$release_yaml_code" | awk '
+  /name: Build and push the image by digest/{b=NR}
+  /name: Verify the image ships the released binaries/{v=NR}
+  /name: Smoke test the image/{s=NR}
+  /name: Tag the verified image/{t=NR}
+  END{exit !(b && v && s && t && b < v && v < t && s < t)}
+'; then
+  pass "the tags are created after the comparison and the smoke tests"
+else
+  fail "the tags are created after the comparison and the smoke tests" \
+    "ordering in release.yml is wrong or a step was renamed"
+fi
+# metadata-action stays for labels only. The moment its tag output is read,
+# `latest=auto` decides what ships again and the table above stops meaning
+# anything — so the ban is on reading it, not on configuring it.
+if printf '%s\n' "$release_yaml_code" | grep -q 'meta\.outputs\.tags'; then
+  fail "metadata-action's tag list never decides what is published" \
+    "$(printf '%s\n' "$release_yaml_code" | grep -n 'meta\.outputs\.tags')"
+else
+  pass "metadata-action's tag list never decides what is published"
+fi
+# THE REAL STEP, NOT A COPY, again. `sonda-server` is the image's ENTRYPOINT
+# and was the one binary in it with no execution check at all, so "both
+# binaries on both platforms" is asserted from what the step actually ran.
+SMOKE_STEP="$TMP/smoke_step.sh"
+: > "$SMOKE_STEP"
+for n in $(seq 1 30); do
+  body="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$RELEASE_YML" "block:$n" 2> /dev/null)" || continue
+  case "$body" in
+    *'--entrypoint'*) printf '%s\n' "$body" > "$SMOKE_STEP"; break ;;
+  esac
+done
+if [ ! -s "$SMOKE_STEP" ]; then
+  echo "could not find the smoke-test step in release.yml — refusing to test the wrong thing" >&2
+  exit 1
+fi
+
+smoked() {
+  : > "$TMP/docker.log"
+  RELEASE_TAG=v9.9.9 IMAGE=ghcr.io/davidban77/sonda@sha256:d1 \
+    DOCKER_LOG="$TMP/docker.log" DOCKER_FAKE_VERSION="${1}" \
+    bash "$SMOKE_STEP" > /dev/null 2>&1
+  printf 'rc=%s ' "$?"
+  grep -oE '\-\-platform linux/[a-z0-9]+ --entrypoint /[a-z-]+' "$TMP/docker.log" \
+    | sort -u | tr '\n' ',' | sed 's/,$//'
+}
+
+want_smoke="rc=0 --platform linux/amd64 --entrypoint /sonda,--platform linux/amd64 --entrypoint /sonda-server,--platform linux/arm64 --entrypoint /sonda,--platform linux/arm64 --entrypoint /sonda-server"
+got_smoke="$(smoked "sonda 9.9.9")"
+if [ "$got_smoke" = "$want_smoke" ]; then
+  pass "the smoke test executes both binaries on both platforms"
+else
+  fail "the smoke test executes both binaries on both platforms" "got '${got_smoke}'"
+fi
+# …and the version assertion is not decorative: a binary that starts but is
+# not the one this tag released must fail the step.
+case "$(smoked "sonda 1.0.0")" in
+  rc=0*) fail "a wrong version fails the smoke test" "the step accepted 'sonda 1.0.0' while building v9.9.9" ;;
+  *)     pass "a wrong version fails the smoke test" ;;
+esac
+
+echo
+echo "== the major git tag moves only where it should =="
+# THE REAL STEP, NOT A COPY, in a scratch repo with a bare origin where the
+# answer becomes an actual moved tag. A reader that exits on its first match
+# once left the script dead of SIGPIPE and every "move" reading as "leave" —
+# a defect entirely invisible to a needle.
 MAJOR_STEP="$TMP/major_step.sh"
 : > "$MAJOR_STEP"
-for n in $(seq 1 20); do
+for n in $(seq 1 30); do
   body="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$RELEASE_YML" "block:$n" 2> /dev/null)" || continue
   case "$body" in
     *'git push --force origin'*) printf '%s\n' "$body" > "$MAJOR_STEP"; break ;;
@@ -454,7 +699,6 @@ moved_major() {
     git tag "$major" # the moving tag, already published, on an older commit
     git commit -q --allow-empty -m release
     for t in "$@"; do git tag "$t"; done
-    mkdir -p scripts && cp "$MOVING_TAGS" scripts/
     RELEASE_TAG="$release_tag" bash "$MAJOR_STEP" > /dev/null 2>&1
     if [ "$(git rev-parse "${major}^{commit}")" = "$(git rev-parse HEAD)" ]; then
       printf 'MOVED'
@@ -507,11 +751,12 @@ else
 fi
 release_missing=()
 for needle in \
-  'decisions="$(bash scripts/moving_tags.sh "$RELEASE_TAG")"' \
-  '*MOVE_MAJOR=true*) ;;' \
-  'bash scripts/moving_tags.sh "$RELEASE_TAG" | tee -a "$GITHUB_ENV"' \
+  '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   'major="${RELEASE_TAG%%.*}"' \
-  'git push --force origin "refs/tags/${major}"'
+  'sort -V | tail -1)"' \
+  'git push --force origin "refs/tags/${major}"' \
+  'refs="$(bash scripts/image_tags.sh "$RELEASE_TAG" "$IMAGE")"' \
+  'docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"'
 do
   printf '%s\n' "$RELEASE_CODE" | grep -qF -- "$needle" || release_missing+=("$needle")
 done
@@ -522,27 +767,41 @@ do
   grep -qF -- "$needle" "$MOVING_TAGS" || release_missing+=("moving_tags.sh: ${needle}")
 done
 if [ ${#release_missing[@]} -eq 0 ]; then
-  pass "the derivation under test is the one both jobs call"
+  pass "the derivations under test are the ones release.yml runs"
 else
-  fail "the derivation under test is the one both jobs call" "absent: ${release_missing[*]}"
-fi
-
-# The script's answer reaches the image tags as env: renaming a key in one
-# file leaves every `enable=` false forever, and a moving tag that stops
-# moving is invisible until someone pulls `latest` and gets an old release.
-script_keys="$(grep -oE 'MOVE_[A-Z]+=' "$MOVING_TAGS" | tr -d '=' | sort -u | tr '\n' ' ')"
-yaml_keys="$(grep -oE 'env\.MOVE_[A-Z]+' "$RELEASE_YML" | sed 's/env\.//' | sort -u | tr '\n' ' ')"
-if [ "$script_keys" = "$yaml_keys" ] && [ -n "$script_keys" ]; then
-  pass "release.yml gates on exactly the keys moving_tags.sh prints (${script_keys% })"
-else
-  fail "release.yml gates on exactly the keys moving_tags.sh prints" "script prints '${script_keys}', release.yml reads '${yaml_keys}'"
+  fail "the derivations under test are the ones release.yml runs" "absent: ${release_missing[*]}"
 fi
 # The move must happen after the release exists, or @v1 can point at a tag
 # whose assets have not uploaded yet.
-if awk '/name: Create release/{r=NR} /name: Move the major-version tag/{m=NR} END{exit !(r && m && m > r)}' "$RELEASE_YML"; then
+if printf '%s\n' "$release_yaml_code" \
+  | awk '/name: Create release/{r=NR} /name: Move the major-version tag/{m=NR} END{exit !(r && m && m > r)}'; then
   pass "the major tag moves after the release is created"
 else
   fail "the major tag moves after the release is created" "ordering in release.yml is wrong or a step was renamed"
+fi
+
+echo
+echo "== one feature set, in every place that compiles one =="
+# Three separate literals, nothing binding them: a divergence ships a `docker
+# build .` without a sink the release has. Compared to each other rather than
+# to a fourth copy kept here.
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+dockerfile_features="$(grep -vE '^[[:space:]]*#' "$REPO_ROOT/Dockerfile" \
+  | grep -oE '^ARG FEATURES=[^[:space:]]+' | sed 's/^ARG FEATURES=//' \
+  | sort -u | tr '\n' ' ' | sed 's/ $//')"
+release_features="$(printf '%s\n' "$RELEASE_CODE" \
+  | grep -oE -- '--features [^[:space:]]+' | sed 's/^--features //' \
+  | sort -u | tr '\n' ' ' | sed 's/ $//')"
+e2e_features="$(grep -vE '^[[:space:]]*#' "$REPO_ROOT/tests/e2e/run.sh" \
+  | grep -oE -- '--features [^[:space:]]+' | sed 's/^--features //' \
+  | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ -n "$dockerfile_features" ] \
+  && [ "$dockerfile_features" = "$release_features" ] \
+  && [ "$release_features" = "$e2e_features" ]; then
+  pass "the Dockerfile default, the release build and the e2e build agree (${release_features})"
+else
+  fail "the Dockerfile default, the release build and the e2e build agree" \
+    "Dockerfile '${dockerfile_features}', release.yml '${release_features}', tests/e2e/run.sh '${e2e_features}'"
 fi
 
 echo

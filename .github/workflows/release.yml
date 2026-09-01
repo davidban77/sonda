@@ -13,7 +13,11 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref }}
+  # `github.ref_name`, not `github.ref`: the dispatch input is a bare tag, so
+  # `github.ref` would group the same release as `release-refs/tags/v1.22.3`
+  # on the tag push and `release-v1.22.3` on the dispatch — two runs pushing
+  # the same image tags at once, neither yielding.
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -173,29 +177,35 @@ jobs:
       # tag whose assets exist. Moving it earlier would make `@v1` resolve
       # to a release the installer cannot download yet.
       #
-      # Whether `v1` may move at all is decided by scripts/moving_tags.sh,
-      # which the image-tag guard in the `docker` job also calls: a major tag
-      # that moves when it should not silently downgrades everyone pinned to
-      # it, and two copies of that rule is one copy too many. The tag moved is
-      # derived from THIS release's own major — so cutting v2.0.0 creates or
-      # moves `v2` and leaves `v1` pointing where it was.
+      # Guarded three ways, because a major tag that moves when it should
+      # not is worse than one that never moves: pre-releases are skipped,
+      # non-`vX.Y.Z` tags are skipped, and the tag moved is derived from
+      # THIS release's own major — so cutting v2.0.0 creates/moves `v2` and
+      # leaves `v1` pointing where it was, for everyone still pinned to it.
       - name: Move the major-version tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          if ! printf '%s' "$RELEASE_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "note: ${RELEASE_TAG} is not a plain vX.Y.Z tag; leaving major tags untouched"
+            exit 0
+          fi
           major="${RELEASE_TAG%%.*}"          # v1.20.0 -> v1
-          # Matched without a pipe: a reader that exits on the first match
-          # (`grep -q`) leaves the script killed by SIGPIPE, which pipefail
-          # then reads as "do not move" on exactly the releases that should.
-          decisions="$(bash scripts/moving_tags.sh "$RELEASE_TAG")"
-          case "$decisions" in
-            *MOVE_MAJOR=true*) ;;
-            *)
-              echo "note: leaving ${major} where it is"
-              exit 0
-              ;;
-          esac
+
+          # Never move the major tag BACKWARDS. A patch backported onto an
+          # older line — 1.19.1 cut after 1.20.0 — is a normal thing to do
+          # precisely once a newer line exists, and moving `v1` onto it
+          # would silently downgrade everyone pinned to `@v1`
+          # (#554 review W3). Compare by version, not by what was released
+          # most recently, and not as strings (v1.9.0 > v1.20.0 as text).
+          highest="$(git tag -l "${major}.*" \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1)"
+          if [ -n "$highest" ] && [ "$highest" != "$RELEASE_TAG" ]; then
+            echo "note: ${highest} is newer than ${RELEASE_TAG}; leaving ${major} where it is"
+            exit 0
+          fi
 
           echo "moving ${major} to ${RELEASE_TAG} ($(git rev-parse --short HEAD))"
           git tag -f "$major"
@@ -213,6 +223,10 @@ jobs:
   # so a dispatched rebuild of an older tag could not read them; using the
   # release assets means the dispatch path and the tag-push path are the same
   # code, exercised on every release.
+  #
+  # The push is by digest and the tags are created last, so every check below
+  # runs against a manifest nothing can resolve by name yet. A check that runs
+  # after the tags exist detects a bad image; it does not stop one shipping.
   docker:
     name: Build & Push Multi-arch Docker Image
     needs: [release]
@@ -229,8 +243,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # The moving-tag guard below compares this tag against every existing
-          # vX.Y.Z; a shallow checkout has none of them.
+          # scripts/moving_tags.sh compares this tag against every existing
+          # vX.Y.Z and refuses outright if it cannot see this one; a shallow
+          # checkout has none of them.
           fetch-depth: 0
 
       - name: Set up QEMU
@@ -248,28 +263,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Same hazard, same rule, same script as the "Move the major-version tag"
-      # step above (#554 review W3): rebuilding an older tag must not drag
-      # `latest`, `{{major}}` or `{{major}}.{{minor}}` backwards onto it. The
-      # dispatch input makes that reachable, so the guard is required, not
-      # decorative.
-      - name: Decide which moving tags may apply
-        run: |
-          set -euo pipefail
-          bash scripts/moving_tags.sh "$RELEASE_TAG" | tee -a "$GITHUB_ENV"
-
-      - name: Extract metadata (tags, labels)
+      # `labels` is the only output read. The tag list is this repository's
+      # own — scripts/image_tags.sh, applied after verification — because
+      # metadata-action's `flavor` defaults to `latest=auto`, under which
+      # `:latest` is appended by the semver processor from the first tag entry
+      # rather than by a `type=raw,value=latest` entry. `enable=` on that entry
+      # can only suppress the duplicate, so a backported release would publish
+      # `:latest` anyway. Not reading `steps.meta.outputs.tags` leaves that
+      # behaviour with nothing to act on.
+      - name: Extract OCI labels
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # `value:` is explicit because type=semver otherwise reads the git
-          # ref, which on a workflow_dispatch is a branch, not a tag.
+          # Sets org.opencontainers.image.version. `value:` is explicit
+          # because type=semver otherwise reads the git ref, which on a
+          # workflow_dispatch is a branch, not a tag.
           tags: |
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ env.MOVE_MINOR == 'true' }}
-            type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }},enable=${{ env.MOVE_MAJOR == 'true' }}
-            type=raw,value=latest,enable=${{ env.MOVE_LATEST == 'true' }}
 
       - name: Download the released binaries
         env:
@@ -330,27 +341,35 @@ jobs:
           done
           ls -l dist/amd64 dist/arm64
 
-      - name: Build and push multi-arch image
+      # `push-by-digest=true` uploads the manifest without naming it, so this
+      # step publishes nothing anyone can pull by tag. Everything downstream
+      # addresses the digest; the tags are created in the last step of the job.
+      #
+      # No gha cache. This build compiles nothing — it copies two binaries into
+      # a scratch image — and the prebuilt layer's cache key is the binary
+      # content digest, which is different every release, so a hit is not
+      # possible. `mode=max` would still write tens of megabytes of
+      # never-reusable entries per release into the repository-wide cache that
+      # docker-build.yml depends on, where they evict entries that do get hits.
+      - name: Build and push the image by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
           build-args: |
             BUILD_SOURCE=prebuilt
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       # Chains to the SHA256SUMS check above: those binaries came from the
       # release, and these are the same bytes. Exact equality per file per
       # platform, because "close enough" has no meaning for a binary — a
       # mismatch means a wrong-arch dist/ layout, a stale cache layer, or a
       # COPY reading the wrong path, and any of them ships the wrong image.
-      - name: Verify the pushed image ships the released binaries
+      - name: Verify the image ships the released binaries
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           for arch in amd64 arm64; do
@@ -367,25 +386,54 @@ jobs:
               echo "linux/${arch} /${binary}: ${shipped} matches the released binary"
             done
             docker rm "$container" > /dev/null
+            # The digest names a manifest list, and the image store holds one
+            # platform per digest: without this the arm64 leg fails to pull
+            # with "cannot overwrite digest".
+            docker rmi "$IMAGE" > /dev/null
           done
 
-      # ENTRYPOINT is /sonda-server and the image has no shell, so reaching the
-      # other binary needs --entrypoint. Asserting on the version catches a
-      # binary that starts but is not the one this tag released.
-      - name: Smoke test the pushed image
+      # Both binaries, both platforms. `sonda-server` is the ENTRYPOINT and
+      # `/sonda` needs --entrypoint because the image has no shell; asserting
+      # on the version catches a binary that starts but is not the one this
+      # tag released.
+      - name: Smoke test the image
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           for arch in amd64 arm64; do
-            reported="$(docker run --rm --platform "linux/${arch}" --entrypoint /sonda "$IMAGE" --version)"
-            echo "linux/${arch}: ${reported}"
-            case "$reported" in
-              *"$version"*) ;;
-              *)
-                echo "::error::linux/${arch}: sonda --version reported '${reported}', expected it to contain ${version}"
-                exit 1
-                ;;
-            esac
+            docker pull --quiet --platform "linux/${arch}" "$IMAGE" > /dev/null
+            for binary in sonda sonda-server; do
+              reported="$(docker run --rm --platform "linux/${arch}" --entrypoint "/${binary}" "$IMAGE" --version)"
+              echo "linux/${arch} /${binary}: ${reported}"
+              case "$reported" in
+                *"$version"*) ;;
+                *)
+                  echo "::error::linux/${arch}: /${binary} --version reported '${reported}', expected it to contain ${version}"
+                  exit 1
+                  ;;
+              esac
+            done
+            docker rmi "$IMAGE" > /dev/null
           done
+
+      # Last, and only now: until this step the manifest has no name, so a
+      # failure anywhere above leaves nothing to untag. Which tags a release
+      # may claim is scripts/image_tags.sh's answer — the exact version
+      # always, the moving ones only where they would not go backwards.
+      - name: Tag the verified image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          refs="$(bash scripts/image_tags.sh "$RELEASE_TAG" "$IMAGE")"
+          if [ -z "$refs" ]; then
+            echo "::error::no image tags were computed for ${RELEASE_TAG}"
+            exit 1
+          fi
+          args=()
+          while IFS= read -r ref; do args+=(--tag "$ref"); done <<< "$refs"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          printf '%s\n' "$refs"

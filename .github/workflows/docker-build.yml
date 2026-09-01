@@ -59,3 +59,28 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The prebuilt stage is the only one that ships: release.yml builds the
+      # image `BUILD_SOURCE=prebuilt` from the tarballs it published, so the
+      # from-source build above covers a path no release takes. That stage
+      # compiles nothing — two COPYs into scratch — so covering it costs
+      # seconds, and stub files are enough because nothing in it executes.
+      - name: Stage stub binaries for the prebuilt path
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "dist/${arch}"
+            for binary in sonda sonda-server; do
+              printf 'stub %s/%s\n' "$arch" "$binary" > "dist/${arch}/${binary}"
+            done
+          done
+          ls -l dist/amd64 dist/arm64
+
+      - name: Build Docker image (prebuilt, multi-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            BUILD_SOURCE=prebuilt

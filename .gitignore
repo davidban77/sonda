@@ -32,5 +32,8 @@ __pycache__/
 *.py[cod]
 
 # Created by the release workflow when it builds the image from the published
-# tarballs. ~50 MB of binaries, and untracked, so `git add .` would stage them.
+# tarballs and verifies the result against them. Over 100 MB of binaries and
+# archives, all untracked, so `git add .` would stage them.
+/assets/
 dist/
+/extracted-*

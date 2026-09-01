@@ -13,10 +13,15 @@
 #            workflow uses this to ship the exact binaries it published as
 #            tarball assets, so the image and the tarballs cannot diverge.
 #
+# FEATURES selects the cargo feature set the builder stage compiles with. The
+# default is the set the release publishes, so `docker build .` produces what
+# ships; anything else has to be typed.
+#
 # Usage:
 #   docker build -t sonda .                                              # native arch
 #   docker buildx build --platform linux/amd64,linux/arm64 -t sonda .   # multi-arch
 #   docker buildx build --build-arg BUILD_SOURCE=prebuilt -t sonda .    # released binaries
+#   docker build --build-arg FEATURES=remote-write,kafka,otlp -t sonda . # plus OTLP
 
 ARG BUILD_SOURCE=builder
 
@@ -31,6 +36,7 @@ FROM --platform=$BUILDPLATFORM rust:latest AS builder
 # TARGETARCH and BUILDARCH are set by docker buildx (amd64, arm64, etc.)
 ARG TARGETARCH
 ARG BUILDARCH
+ARG FEATURES=remote-write,kafka
 
 # Install cross-compilation toolchain based on target architecture.
 # For amd64: musl-tools provides the native musl-gcc wrapper.
@@ -93,7 +99,7 @@ RUN mkdir -p sonda-core/src sonda/src sonda-server/src sonda-wasm/src && \
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
-    cargo build --release --target "${RUST_TARGET}" --features remote-write,kafka,otlp -p sonda -p sonda-server 2>/dev/null || true
+    cargo build --release --target "${RUST_TARGET}" --features "${FEATURES}" -p sonda -p sonda-server 2>/dev/null || true
 
 # Copy real source and build.
 #
@@ -111,7 +117,7 @@ RUN touch sonda-core/src/lib.rs sonda/src/main.rs sonda-server/src/main.rs sonda
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
-    cargo build --release --target "${RUST_TARGET}" --features remote-write,kafka,otlp -p sonda -p sonda-server
+    cargo build --release --target "${RUST_TARGET}" --features "${FEATURES}" -p sonda -p sonda-server
 
 # Copy binaries to a known location regardless of target triple
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \

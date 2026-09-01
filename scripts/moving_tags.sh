@@ -33,6 +33,16 @@ if ! printf '%s' "$release_tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
   exit 0
 fi
 
+# The comparisons below read the local tag list. A repository that has one but
+# has not fetched it — a shallow clone, a checkout without tags — answers
+# "nothing is newer" to every question, which is the same vacuous `true` a
+# missing repository would give. The release being decided must itself be in
+# that list for any answer to mean anything.
+if ! git rev-parse -q --verify "refs/tags/${release_tag}" > /dev/null 2>&1; then
+  echo "error: ${release_tag} is not among the fetched tags; refusing to decide moving tags" >&2
+  exit 1
+fi
+
 decide() {
   local name="$1" pattern="$2" highest
   # Compared by version, not by release date, and not as strings — v1.9.0

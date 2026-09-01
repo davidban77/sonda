@@ -465,11 +465,13 @@ fi
 # ---------------------------------------------------------------------------
 
 info "Building sonda (release)..."
-# Feature set matches the production Dockerfile (`-p sonda -F remote-write,kafka,otlp`).
+# The feature set the Dockerfile and the release publish by default, so these
+# scenarios exercise what a reader who installed sonda actually has.
+#
 # Without these the e2e scenarios that target Kafka or remote-write will fail at
 # scenario start with `sink type '...' requires the '...' feature` — the dry-run
 # parses are insensitive to feature gating, only the actual sink push needs it.
-cargo build --release -p sonda --features remote-write,kafka,otlp --manifest-path "${REPO_ROOT}/Cargo.toml"
+cargo build --release -p sonda --features remote-write,kafka --manifest-path "${REPO_ROOT}/Cargo.toml"
 info "Build complete: ${SONDA_BIN}"
 
 # ---------------------------------------------------------------------------

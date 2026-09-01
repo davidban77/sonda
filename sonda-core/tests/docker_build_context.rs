@@ -307,6 +307,35 @@ fn a_copy_in_a_stage_that_compiles_nothing_does_not_count_as_coverage() {
         .contains(&PathBuf::from("sonda-core")));
 }
 
+#[test]
+fn a_heredoc_copy_contributes_no_build_context_source() {
+    let stages = parse_stages(
+        "FROM scratch AS prebuilt\n\
+         COPY --chmod=0755 dist/amd64/sonda /out/sonda\n\
+         COPY <<EOF /tmp/passwd.sonda\n\
+         sonda:x:65532:65532::/:\n\
+         EOF\n",
+    );
+
+    assert_eq!(stages.len(), 1);
+    assert_eq!(
+        stages[0].copy_sources,
+        BTreeSet::from([PathBuf::from("dist/amd64/sonda")]),
+        "the heredoc marker was read as a path into the build context"
+    );
+
+    for stage in dockerfile_stages() {
+        for source in &stage.copy_sources {
+            assert!(
+                !source.to_string_lossy().starts_with("<<"),
+                "stage {:?} takes {} as a build-context path",
+                stage.name,
+                source.display()
+            );
+        }
+    }
+}
+
 /// The check itself: every escaping include must be inside something the
 /// Dockerfile copies.
 #[test]

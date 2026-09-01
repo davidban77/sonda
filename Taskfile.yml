@@ -272,8 +272,8 @@ tasks:
       add config SHAPE: with `kafka` off, the kafka sink variant keeps its
       YAML tag but loses its `tls:` and `sasl:` fields. Generating from a
       narrower build would ship a schema that underlines sink config the
-      released binary accepts (release.yml builds with `remote-write,kafka`;
-      the Docker image adds `otlp`).
+      released binary accepts (release.yml and the Docker image both build
+      with `remote-write,kafka`).
 
       The freshness check is not a separate task on purpose: it lives in
       sonda-core/tests/schema_corpus.rs (`the_committed_schema_is_current`),
