@@ -38,10 +38,16 @@ See [Sinks](../build/sinks.md) for configuration details on each sink type.
 
 | File | Signal | Encoder | Sink | Description |
 |------|--------|---------|------|-------------|
-| `otlp-metrics.yaml` | metrics | otlp | otlp_grpc | Push sine wave metrics to an OTel Collector over gRPC* |
-| `otlp-logs.yaml` | logs | otlp | otlp_grpc | Push template logs to an OTel Collector over gRPC* |
+| `otlp-metrics.yaml` | metrics | otlp | otlp_grpc | Push sine wave metrics to an OTel Collector over gRPC |
+| `otlp-logs.yaml` | logs | otlp | otlp_grpc | Push template logs to an OTel Collector over gRPC |
 
-*Requires building from source with `--features otlp`. Pre-built binaries do not include OTLP support. Run with: `cargo run --features otlp -- run examples/otlp-metrics.yaml`.
+!!! warning "Not included in the pre-built binaries"
+    OTLP is an optional feature. The release binaries and the published Docker image do **not** include it. Two ways to get it:
+
+    - **As a binary** — build from source: `cargo build --features otlp -p sonda`.
+    - **As a container** — build the image yourself with OTLP compiled in. See [Building the image](../deploy/docker.md#building-the-image).
+
+    Both scenarios above run unchanged once you have a build that includes OTLP. See [Encoders — `otlp`](../build/encoders.md#otlp) for the encoder reference.
 
 ## Encoding formats
 
@@ -54,7 +60,7 @@ See [Sinks](../build/sinks.md) for configuration details on each sink type.
 | `remote-write-vm.yaml` | sine | remote_write | remote_write | Protobuf remote write to VictoriaMetrics* |
 | `multi-format-test.yaml` | constant | influx_lp | file | InfluxDB line protocol for pipeline validation |
 
-*Pre-built binaries include remote-write support. When building from source, add `--features remote-write`. OTLP support requires `--features otlp` (not included in pre-built binaries). See [Encoders](../build/encoders.md) for details.
+*The `remote_write` encoder is included in the release binaries and the published Docker image. When you build from source, add `--features remote-write`. See [Encoders — `remote_write`](../build/encoders.md#remote_write) for details.
 
 ## Scheduling
 

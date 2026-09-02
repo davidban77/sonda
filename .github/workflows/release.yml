@@ -3,9 +3,21 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Rebuild the container image for a tag that is already released, without
+  # re-cutting the release. Only the `docker` job runs on this path.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Released tag to rebuild the image for (e.g. v1.22.3)"
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  # `github.ref_name`, not `github.ref`: the dispatch input is a bare tag, so
+  # `github.ref` would group the same release as `release-refs/tags/v1.22.3`
+  # on the tag push and `release-v1.22.3` on the dispatch — two runs pushing
+  # the same image tags at once, neither yielding.
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -19,6 +31,9 @@ permissions:
 jobs:
   binaries:
     name: Build ${{ matrix.target }}
+    # workflow_dispatch exists only to rebuild the image, so the matrix and the
+    # release itself stay on the tag-push path.
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -105,6 +120,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: binaries
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -126,6 +142,19 @@ jobs:
       - name: Generate SHA256SUMS
         run: sha256sum sonda-*.tar.gz > SHA256SUMS
 
+      # The image tags carry no `v`: scripts/image_tags.sh publishes 1.22.3
+      # from v1.22.3. Notes that spell the reference a second time here
+      # advertise a pull that 404s, so they read the answer off the script
+      # that creates the tags.
+      - name: Resolve the image reference the notes advertise
+        id: image_ref
+        run: |
+          set -euo pipefail
+          refs="$(bash scripts/image_tags.sh "$GITHUB_REF_NAME" "${REGISTRY}/${IMAGE_NAME}")"
+          # The exact version, which every release publishes. The rest of the
+          # list moves, and may already point at a newer release than this one.
+          printf 'ref=%s\n' "${refs%%$'\n'*}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
@@ -145,7 +174,7 @@ jobs:
 
             **Docker:**
             ```
-            docker pull ghcr.io/davidban77/sonda:${{ github.ref_name }}
+            docker pull ${{ steps.image_ref.outputs.ref }}
             ```
 
             See the [README](https://github.com/davidban77/sonda#installation) for all installation methods.
@@ -196,14 +225,41 @@ jobs:
           git push --force origin "refs/tags/${major}"
           echo "${major} now points at ${RELEASE_TAG}"
 
+  # The image ships the binaries the release published, byte for byte. It does
+  # not compile them again: the `binaries` matrix already produced static musl
+  # builds for both architectures, and rebuilding them inside buildx meant one
+  # leg compiling the whole workspace under QEMU (45 minutes and still going,
+  # on v1.22.3).
+  #
+  # `needs: [release]` rather than `[binaries]` because the tarballs are pulled
+  # from the published release. The upload artifacts carry `retention-days: 1`,
+  # so a dispatched rebuild of an older tag could not read them; using the
+  # release assets means the dispatch path and the tag-push path are the same
+  # code, exercised on every release.
+  #
+  # The push is by digest and the tags are created last, so every check below
+  # runs against a manifest nothing can resolve by name yet. A check that runs
+  # after the tags exist detects a bad image; it does not stop one shipping.
   docker:
     name: Build & Push Multi-arch Docker Image
+    needs: [release]
+    # `release` is skipped on workflow_dispatch, and a skipped dependency skips
+    # the dependent unless a status function is used here.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
+
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # scripts/moving_tags.sh compares this tag against every existing
+          # vX.Y.Z and refuses outright if it cannot see this one; a shallow
+          # checkout has none of them.
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -220,24 +276,177 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      # `labels` is the only output read. The tag list is this repository's
+      # own — scripts/image_tags.sh, applied after verification — because
+      # metadata-action's `flavor` defaults to `latest=auto`, under which
+      # `:latest` is appended by the semver processor from the first tag entry
+      # rather than by a `type=raw,value=latest` entry. `enable=` on that entry
+      # can only suppress the duplicate, so a backported release would publish
+      # `:latest` anyway. Not reading `steps.meta.outputs.tags` leaves that
+      # behaviour with nothing to act on.
+      - name: Extract OCI labels
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Sets org.opencontainers.image.version. `value:` is explicit
+          # because type=semver otherwise reads the git ref, which on a
+          # workflow_dispatch is a branch, not a tag.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
 
-      - name: Build and push multi-arch image
+      - name: Download the released binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir assets \
+            --pattern "sonda-${RELEASE_TAG}-x86_64-unknown-linux-musl.tar.gz" \
+            --pattern "sonda-${RELEASE_TAG}-aarch64-unknown-linux-musl.tar.gz" \
+            --pattern "SHA256SUMS"
+          ls -l assets
+
+      # The release publishes SHA256SUMS as an asset. Anchoring to it is what
+      # makes the image-vs-tarball comparison later mean something: without it
+      # both sides of that comparison would come from the same download.
+      - name: Verify the tarballs against the release SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd assets
+          for tarball in \
+            "sonda-${RELEASE_TAG}-x86_64-unknown-linux-musl.tar.gz" \
+            "sonda-${RELEASE_TAG}-aarch64-unknown-linux-musl.tar.gz"; do
+            if ! grep -qE "^[0-9a-f]{64}  ${tarball}\$" SHA256SUMS; then
+              echo "::error::${tarball} is not listed in the release SHA256SUMS for ${RELEASE_TAG}"
+              exit 1
+            fi
+          done
+          sha256sum --check --strict --ignore-missing SHA256SUMS
+
+      - name: Unpack the released binaries into the build context
+        run: |
+          set -euo pipefail
+          mkdir -p dist/amd64 dist/arm64
+          tar xzf "assets/sonda-${RELEASE_TAG}-x86_64-unknown-linux-musl.tar.gz" -C dist/amd64
+          tar xzf "assets/sonda-${RELEASE_TAG}-aarch64-unknown-linux-musl.tar.gz" -C dist/arm64
+
+          # A tarball unpacked into the wrong dist/<arch>/ is the one wrong-image
+          # fault nothing downstream can see: the image would still match dist/
+          # exactly, and the binary would still start, because a kernel executes
+          # an ELF by its own header rather than by the platform its container
+          # claims. Read the header. e_machine sits at offset 18; 3e00 is x86-64,
+          # b700 is AArch64.
+          for arch in amd64 arm64; do
+            case "$arch" in
+              amd64) expected=3e00 ;;
+              arm64) expected=b700 ;;
+            esac
+            for binary in sonda sonda-server; do
+              machine="$(od -An -tx1 -j18 -N2 "dist/${arch}/${binary}" | tr -d ' ')"
+              if [ "$machine" != "$expected" ]; then
+                echo "::error::dist/${arch}/${binary} is ELF machine ${machine}, expected ${expected} for linux/${arch}"
+                exit 1
+              fi
+            done
+          done
+          ls -l dist/amd64 dist/arm64
+
+      # `push-by-digest=true` uploads the manifest without naming it, so this
+      # step publishes nothing anyone can pull by tag. Everything downstream
+      # addresses the digest; the tags are created in the last step of the job.
+      #
+      # No gha cache. This build compiles nothing — it copies two binaries into
+      # a scratch image — and the prebuilt layer's cache key is the binary
+      # content digest, which is different every release, so a hit is not
+      # possible. `mode=max` would still write tens of megabytes of
+      # never-reusable entries per release into the repository-wide cache that
+      # docker-build.yml depends on, where they evict entries that do get hits.
+      - name: Build and push the image by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BUILD_SOURCE=prebuilt
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      # Chains to the SHA256SUMS check above: those binaries came from the
+      # release, and these are the same bytes. Exact equality per file per
+      # platform, because "close enough" has no meaning for a binary — a
+      # mismatch means a wrong-arch dist/ layout, a stale cache layer, or a
+      # COPY reading the wrong path, and any of them ships the wrong image.
+      - name: Verify the image ships the released binaries
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            docker pull --quiet --platform "linux/${arch}" "$IMAGE" > /dev/null
+            container="$(docker create --platform "linux/${arch}" "$IMAGE")"
+            for binary in sonda sonda-server; do
+              docker cp "${container}:/${binary}" "extracted-${arch}-${binary}"
+              released="$(sha256sum "dist/${arch}/${binary}" | cut -d' ' -f1)"
+              shipped="$(sha256sum "extracted-${arch}-${binary}" | cut -d' ' -f1)"
+              if [ "$shipped" != "$released" ]; then
+                echo "::error::linux/${arch}: /${binary} in the image is ${shipped}, the released binary is ${released}"
+                exit 1
+              fi
+              echo "linux/${arch} /${binary}: ${shipped} matches the released binary"
+            done
+            docker rm "$container" > /dev/null
+            # The digest names a manifest list, and the image store holds one
+            # platform per digest: without this the arm64 leg fails to pull
+            # with "cannot overwrite digest".
+            docker rmi "$IMAGE" > /dev/null
+          done
+
+      # Both binaries, both platforms. `sonda-server` is the ENTRYPOINT and
+      # `/sonda` needs --entrypoint because the image has no shell; asserting
+      # on the version catches a binary that starts but is not the one this
+      # tag released.
+      - name: Smoke test the image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          for arch in amd64 arm64; do
+            docker pull --quiet --platform "linux/${arch}" "$IMAGE" > /dev/null
+            for binary in sonda sonda-server; do
+              reported="$(docker run --rm --platform "linux/${arch}" --entrypoint "/${binary}" "$IMAGE" --version)"
+              echo "linux/${arch} /${binary}: ${reported}"
+              case "$reported" in
+                *"$version"*) ;;
+                *)
+                  echo "::error::linux/${arch}: /${binary} --version reported '${reported}', expected it to contain ${version}"
+                  exit 1
+                  ;;
+              esac
+            done
+            docker rmi "$IMAGE" > /dev/null
+          done
+
+      # Last, and only now: until this step the manifest has no name, so a
+      # failure anywhere above leaves nothing to untag. Which tags a release
+      # may claim is scripts/image_tags.sh's answer — the exact version
+      # always, the moving ones only where they would not go backwards.
+      - name: Tag the verified image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          refs="$(bash scripts/image_tags.sh "$RELEASE_TAG" "$IMAGE")"
+          if [ -z "$refs" ]; then
+            echo "::error::no image tags were computed for ${RELEASE_TAG}"
+            exit 1
+          fi
+          args=()
+          while IFS= read -r ref; do args+=(--tag "$ref"); done <<< "$refs"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          printf '%s\n' "$refs"

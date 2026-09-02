@@ -420,8 +420,11 @@ The sink POSTs to `{url}/loki/api/v1/push`.
 
 Batches OTLP protobuf data and delivers it by gRPC to an OpenTelemetry Collector. Pair it with the `otlp` encoder, which produces length-prefixed protobuf `Metric` or `LogRecord` bytes. The sink accumulates entries and, on flush or when `batch_size` is reached, wraps them in an `ExportMetricsServiceRequest` or `ExportLogsServiceRequest` and sends them by gRPC unary call.
 
-!!! warning "Feature flag and build requirement"
-    This sink requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker images do **not** include this feature. Build from source: `cargo build --features otlp -p sonda`.
+!!! warning "Not included in the pre-built binaries"
+    OTLP is an optional feature. The release binaries and the published Docker image do **not** include it. Two ways to get it:
+
+    - **As a binary** — build from source: `cargo build --features otlp -p sonda`.
+    - **As a container** — build the image yourself with OTLP compiled in. See [Building the image](../deploy/docker.md#building-the-image).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

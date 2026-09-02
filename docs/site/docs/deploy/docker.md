@@ -393,7 +393,17 @@ For multi-arch builds (linux/amd64 and linux/arm64) using Docker Buildx:
 docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
 ```
 
-The pre-built multi-arch images on GitHub Container Registry come from this same Dockerfile on each release. Docker pulls the correct architecture for your host automatically:
+By default the build compiles two optional features: Prometheus remote write and Kafka. That is the same set as the published image and the release archives. You need no extra flags to match it.
+
+OTLP is not in that set. To add it, use the `FEATURES` build argument. It lists the optional features to compile:
+
+```bash
+docker build --build-arg FEATURES=remote-write,kafka,otlp -t sonda .
+```
+
+The argument works the same way with `docker buildx build`. See [Encoders — otlp](../build/encoders.md#otlp) and [Sinks — otlp_grpc](../build/sinks.md#otlp_grpc) for the encoder and sink that feature enables.
+
+The pre-built multi-arch images on GitHub Container Registry come from this same Dockerfile, but not from the build above: each release builds its `prebuilt` stage, which copies in the exact `sonda` and `sonda-server` binaries that release published as tarballs rather than compiling them again. Docker pulls the correct architecture for your host automatically:
 
 ```bash
 docker pull ghcr.io/davidban77/sonda:latest

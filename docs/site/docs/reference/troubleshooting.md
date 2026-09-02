@@ -199,7 +199,7 @@ Data arrives in groups, or only appears when the scenario ends.
 
 ### Feature flag errors
 
-Some sinks and encoders require Cargo feature flags when building from source. Pre-built release binaries include all features.
+Some sinks and encoders are optional features, selected when the binary is built. The pre-built release binaries and the published Docker image include `http`, `remote-write`, and `kafka`. They do not include `otlp`.
 
 | Feature | Required for | Build command |
 |---------|-------------|---------------|
@@ -210,6 +210,8 @@ Some sinks and encoders require Cargo feature flags when building from source. P
 
 !!! tip
     Build with all features at once: `cargo build --features http,remote-write,otlp,kafka -p sonda`
+
+    To get OTLP in a container, build the image yourself with OTLP compiled in. See [Building the image](../deploy/docker.md#building-the-image).
 
 ---
 
