@@ -352,7 +352,7 @@ Pick the tab that matches your scenario.
 
         The two OTLP rows still work. How much setup they need depends on where Sonda runs:
 
-        - **Sonda inside the Compose stack** — nothing extra to do. The stack builds its own `sonda-server` image from the repository, with OTLP included. POST `examples/otlp-metrics.yaml` or `examples/otlp-logs.yaml` to `http://localhost:8080/scenarios` and the data reaches the collector.
+        - **Sonda inside the Compose stack** — nothing extra to do. The stack builds its own `sonda-server` image from the repository with OTLP included, and rebuilds it on every `up`, so an image cached from a run that predates the OTLP build args cannot leave OTLP out. POST `examples/otlp-metrics.yaml` or `examples/otlp-logs.yaml` to `http://localhost:8080/scenarios` and the data reaches the collector.
         - **Sonda on your host** — the `sonda run` commands in the matrix use the installed CLI, which has no OTLP. Build the binary from source with `cargo build --features otlp -p sonda`.
         - **The published `ghcr.io/davidban77/sonda` image** — it has no OTLP either. Build your own image with OTLP compiled in.
 

@@ -50,6 +50,8 @@ services:
       args:
         # Named, not inherited: this stack's own profiles need the otlp sink, which the image default does not carry.
         FEATURES: remote-write,kafka,otlp
+    # Rebuilt on every `up`: an image cached from before those args changed keeps the feature set it was built with.
+    pull_policy: build
     ports:
       - "8080:8080"
     volumes:

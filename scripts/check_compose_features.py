@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """A compose service that builds the image must build the sinks it wires up.
 
-The rule: anything that builds the image and then runs a scenario requiring a
-cargo feature must build with that feature.
+Two rules, both derived from what a service declares rather than from a list
+kept here:
 
-This file exists because that rule breaks *by inheritance*, silently. A compose
-service names no feature at all — it inherits the Dockerfile's ``ARG FEATURES``
-default — so lowering that default drops a sink out from under a stack whose own
-environment, profiles and docs still promise it. Nothing in the compose file is
-wrong to look at; the value it relied on changed somewhere else. A check that
-compares feature strings between files cannot see it, because the file that broke
-contains no feature string.
+    1. a service builds with every feature its scenarios need
+    2. a service that names a feature beyond the image default has a scenario
+       that needs it
 
-So the requirement is derived from what the service declares rather than from a
-list kept here:
+The first breaks *by inheritance*, silently. A compose service names no feature
+at all — it inherits the Dockerfile's ``ARG FEATURES`` default — so lowering that
+default drops a sink out from under a stack whose own environment, profiles and
+docs still promise it. Nothing in the compose file is wrong to look at; the value
+it relied on changed somewhere else.
+
+The second is what keeps the first answerable. A service and its scenarios are
+linked by an environment key, and an edit that reads as a simplification —
+replacing "${OTLP_GRPC_ENDPOINT:-http://localhost:4317}" with the literal the
+compose already supplies — cuts that link. Cut, the first rule has nothing left
+to compare and passes; the override it was protecting can then be deleted, still
+green, and the stack ships without the sink. Demanding evidence for every named
+feature fails on the first of those two edits instead of neither.
 
     service build:   -> the Dockerfile it builds, hence its inherited FEATURES
+    service entry:   -> the binary it runs, hence whose crate features apply
     service env keys -> the scenario YAMLs interpolating "${KEY...}"
     scenario types   -> the feature each type needs, read from the
                         "type 'x' requires the 'y' feature" arms in sonda-core
@@ -23,8 +31,19 @@ list kept here:
 A service that declares no environment wires no scenario and needs nothing;
 adding a sink type to sonda-core extends the table on its own.
 
-Limitation, stated rather than papered over: the env-var interpolation is the
-link. A scenario wired to a stack by a hard-coded service name is invisible here.
+Limits, stated rather than papered over — all three are silent:
+
+- The interpolated env key is the only link recognised. A scenario tied to a
+  stack by a hard-coded service name is invisible here.
+- Only "environment:" is read, not "env_file:". A service that keeps its keys in
+  a file wires no scenario as far as this check can tell.
+- Only tracked YAML is read. A compose file or scenario not yet `git add`ed does
+  not exist here — CI sees the committed tree, a local run does not.
+
+The two structural assertions in `check` catch a *wholesale* break — no service
+builds the image, no env key reaches any scenario — and nothing finer. A link
+that breaks for one service, or for one feature, leaves both counters healthy;
+that gap is what the second rule covers.
 
 Run:  python3 scripts/check_compose_features.py [--self-test]
 Needs PyYAML and Python 3.11+ for tomllib; locally, `uv run --with pyyaml python`.
@@ -33,14 +52,16 @@ Needs PyYAML and Python 3.11+ for tomllib; locally, `uv run --with pyyaml python
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
-from pathlib import Path
-from typing import Any, Iterable
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, NamedTuple
 
 import yaml
 
@@ -51,6 +72,7 @@ FEATURE_ARM_RE = re.compile(
 )
 ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 ARG_FEATURES_RE = re.compile(r"^ARG FEATURES=(\S+)", re.MULTILINE)
+ENTRYPOINT_RE = re.compile(r"^ENTRYPOINT\s+(.+)$", re.MULTILINE)
 CARGO_PACKAGE_RE = re.compile(r"-p\s+([A-Za-z0-9_-]+)")
 
 
@@ -141,9 +163,15 @@ def default_feature_closure(features: dict[str, list[str]]) -> set[str]:
     return resolved
 
 
-def dockerfile_build(root: Path) -> tuple[set[str], set[str], bool]:
-    """The Dockerfile's inherited FEATURES, the packages it builds, and whether
-    the crates' default features come along."""
+class ImageBuild(NamedTuple):
+    inherited: set[str]
+    inherited_text: str
+    packages: set[str]
+    with_defaults: bool
+    entrypoint: str | None
+
+
+def dockerfile_build(root: Path) -> ImageBuild:
     path = root / "Dockerfile"
     if not path.is_file():
         raise CheckError(f"missing {path}")
@@ -152,30 +180,69 @@ def dockerfile_build(root: Path) -> tuple[set[str], set[str], bool]:
     defaults = ARG_FEATURES_RE.findall(code)
     if not defaults:
         raise CheckError(f"{path}: no `ARG FEATURES=` line — nothing to inherit")
+    if len(defaults) > 1:
+        raise CheckError(
+            f"{path}: {len(defaults)} `ARG FEATURES=` lines ({', '.join(defaults)}) — "
+            "which one a service inherits is ambiguous"
+        )
     build_lines = [line for line in code.splitlines() if "cargo build" in line]
     packages = {name for line in build_lines for name in CARGO_PACKAGE_RE.findall(line)}
     if not packages:
         raise CheckError(f"{path}: no `cargo build … -p <crate>` line found")
-    with_defaults = not any("--no-default-features" in line for line in build_lines)
-    return split_features(defaults[0]), packages, with_defaults
+    entrypoints = ENTRYPOINT_RE.findall(code)
+    return ImageBuild(
+        inherited=split_features(defaults[0]),
+        inherited_text=defaults[0],
+        packages=packages,
+        with_defaults=not any("--no-default-features" in line for line in build_lines),
+        entrypoint=argv_program(entrypoints[-1]) if entrypoints else None,
+    )
+
+
+def argv_program(value: str) -> str | None:
+    """The program name from an exec-form or shell-form ENTRYPOINT."""
+    text = value.strip()
+    try:
+        parts = json.loads(text) if text.startswith("[") else shlex.split(text)
+    except ValueError:
+        return None
+    if not parts or not isinstance(parts[0], str):
+        return None
+    return PurePosixPath(parts[0]).name or None
 
 
 def split_features(value: str) -> set[str]:
     return {part.strip() for part in re.split(r"[,\s]+", value.strip()) if part.strip()}
 
 
-def declared_features(root: Path, packages: Iterable[str]) -> tuple[set[str], set[str]]:
-    """(features the built crates declare, features on by default)."""
+class PackageFeatures(NamedTuple):
+    declared: set[str]
+    on_by_default: set[str]
+
+
+def package_features(root: Path, packages: Iterable[str]) -> dict[str, PackageFeatures]:
     crate_dirs = workspace_crate_dirs(root)
-    known: set[str] = set()
-    on_by_default: set[str] = set()
+    resolved: dict[str, PackageFeatures] = {}
     for package in packages:
         if package not in crate_dirs:
             raise CheckError(f"the Dockerfile builds -p {package}, absent from the workspace")
         features = crate_features(crate_dirs[package])
-        known |= set(features)
-        on_by_default |= default_feature_closure(features)
-    return known, on_by_default
+        resolved[package] = PackageFeatures(set(features), default_feature_closure(features))
+    return resolved
+
+
+def runtime_features(
+    packages: dict[str, PackageFeatures], binary: str | None
+) -> tuple[str, PackageFeatures]:
+    """What the binary a service runs actually carries — one crate's features,
+    not the union of everything the image builds. Unresolvable binaries fall
+    back to what every built crate agrees on."""
+    if binary in packages:
+        return binary, packages[binary]
+    return "the image binaries", PackageFeatures(
+        set.intersection(*(entry.declared for entry in packages.values())),
+        set.intersection(*(entry.on_by_default for entry in packages.values())),
+    )
 
 
 def env_keys(service: dict) -> set[str]:
@@ -185,6 +252,15 @@ def env_keys(service: dict) -> set[str]:
     if isinstance(environment, list):
         return {str(entry).split("=", 1)[0].strip() for entry in environment}
     return set()
+
+
+def service_binary(service: dict, image_entrypoint: str | None) -> str | None:
+    entrypoint = service.get("entrypoint")
+    if entrypoint is None:
+        return image_entrypoint
+    if isinstance(entrypoint, list):
+        return PurePosixPath(str(entrypoint[0])).name if entrypoint else None
+    return argv_program(str(entrypoint))
 
 
 def build_args(build: dict) -> dict[str, str]:
@@ -248,11 +324,13 @@ def scenario_index(
 
 def check(root: Path) -> list[str]:
     dockerfile = root / "Dockerfile"
-    inherited, packages, with_defaults = dockerfile_build(root)
-    known, on_by_default = declared_features(root, packages)
+    image = dockerfile_build(root)
+    packages = package_features(root, image.packages)
     requirements = feature_requirements(root)
+    gated = set(requirements.values())
+    known = set().union(*(entry.declared for entry in packages.values()))
 
-    unknown = set(requirements.values()) - known
+    unknown = gated - known
     if unknown:
         raise CheckError(
             f"sonda-core names feature(s) {sorted(unknown)} that no built crate declares"
@@ -274,18 +352,30 @@ def check(root: Path) -> list[str]:
     problems: list[str] = []
     wired = 0
 
+    inherited_typo = image.inherited - known
+    if inherited_typo:
+        problems.append(
+            f"Dockerfile: `ARG FEATURES={image.inherited_text}` names {sorted(inherited_typo)}, "
+            f"which is not a feature any built crate declares"
+        )
+
     for compose_path, name, service in services:
         declared = build_args(service["build"]).get("FEATURES")
-        selected = split_features(declared) if declared is not None else set(inherited)
-        typo = selected - known
-        if typo:
-            problems.append(
-                f"{compose_path.relative_to(root)}: service '{name}' builds with "
-                f"FEATURES={declared}, but {sorted(typo)} is not a feature any built crate declares"
-            )
-        effective = selected | (on_by_default if with_defaults else set())
+        selected = split_features(declared) if declared is not None else set(image.inherited)
+        if declared is not None:
+            typo = selected - known
+            if typo:
+                problems.append(
+                    f"{compose_path.relative_to(root)}: service '{name}' builds with "
+                    f"FEATURES={declared}, but {sorted(typo)} is not a feature any built "
+                    f"crate declares"
+                )
+        binary, runtime = runtime_features(packages, service_binary(service, image.entrypoint))
+        always_on = runtime.on_by_default if image.with_defaults else set()
+        effective = (selected & runtime.declared) | always_on
         keys = env_keys(service)
         evidence: dict[str, list[str]] = {}
+        demanded: set[str] = set()
         for scenario_path, refs, types in scenarios:
             shared = refs & keys
             if not shared:
@@ -295,18 +385,30 @@ def check(root: Path) -> list[str]:
                 if feature is None:
                     continue
                 wired += 1
+                demanded.add(feature)
                 if feature not in effective:
                     evidence.setdefault(feature, []).append(
                         f"{scenario_path.relative_to(root)} declares '{type_name}' "
                         f"under {sorted(shared)[0]}"
                     )
         source = "its build args" if declared is not None else "the Dockerfile default"
+        listed = ",".join(sorted(selected)) or "none"
         for feature, found in sorted(evidence.items()):
             problems.append(
-                f"{compose_path.relative_to(root)}: service '{name}' builds without the "
-                f"'{feature}' feature ({source}: {','.join(sorted(selected)) or 'none'}), "
+                f"{compose_path.relative_to(root)}: service '{name}' runs {binary}, built "
+                f"without the '{feature}' feature ({source}: {listed}), "
                 f"but {'; '.join(found)}. Add FEATURES to its build args."
             )
+        if declared is not None:
+            stale = ((selected - image.inherited - always_on) & gated) - demanded
+            if stale:
+                problems.append(
+                    f"{compose_path.relative_to(root)}: service '{name}' builds with "
+                    f"FEATURES={declared}, naming {sorted(stale)} beyond the image default "
+                    f"({image.inherited_text}), but no scenario its environment reaches needs "
+                    f"it. Either the override is stale, or the scenario that justified it "
+                    f"stopped interpolating one of this service's environment keys."
+                )
 
     if wired == 0:
         raise CheckError(
@@ -347,19 +449,10 @@ class FakeRepo:
             "Cargo.toml",
             '[workspace]\nmembers = ["sonda", "sonda-server", "sonda-core"]\n',
         )
-        for crate in ("sonda", "sonda-server"):
-            self.write(
-                f"{crate}/Cargo.toml",
-                f'[package]\nname = "{crate}"\n\n[features]\n'
-                'default = ["config", "http"]\nconfig = []\nhttp = []\n'
-                "remote-write = []\nkafka = []\notlp = []\n",
-            )
+        self.crate("sonda")
+        self.crate("sonda-server")
         self.write("sonda-core/Cargo.toml", '[package]\nname = "sonda-core"\n')
-        self.write(
-            "Dockerfile",
-            "ARG FEATURES=remote-write,kafka\n"
-            'RUN cargo build --release --features "${FEATURES}" -p sonda -p sonda-server\n',
-        )
+        self.dockerfile()
         self.write(
             "sonda-core/src/sink/mod.rs",
             '"sink type \'otlp_grpc\' requires the \'otlp\' feature"\n'
@@ -383,6 +476,18 @@ class FakeRepo:
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+
+    def crate(self, name: str, default: str = '["config", "http"]', extra: str = "") -> None:
+        self.write(
+            f"{name}/Cargo.toml",
+            f'[package]\nname = "{name}"\n\n[features]\ndefault = {default}\n'
+            f"config = []\nhttp = []\nremote-write = []\nkafka = []\notlp = []\ntls = []\n{extra}",
+        )
+
+    BUILD = 'RUN cargo build --release --features "${FEATURES}" -p sonda -p sonda-server'
+
+    def dockerfile(self, arg: str = "ARG FEATURES=remote-write,kafka", build: str = BUILD) -> None:
+        self.write("Dockerfile", f'{arg}\n{build}\nENTRYPOINT ["/sonda-server"]\n')
 
     def compose(self, build: str, environment: str = "", rel: str = "compose.yml") -> None:
         self.write(rel, f"services:\n  sonda-server:\n{build}{environment}")
@@ -445,11 +550,9 @@ class ComposeFeatureCheckTest(unittest.TestCase):
         self.assertEqual(self.repo.checked(), [])
 
     def test_a_default_feature_dropped_by_no_default_features_is_reported(self) -> None:
-        self.repo.write(
-            "Dockerfile",
-            "ARG FEATURES=remote-write,kafka\n"
-            "RUN cargo build --no-default-features "
-            '--features "${FEATURES}" -p sonda -p sonda-server\n',
+        self.repo.dockerfile(
+            build='RUN cargo build --no-default-features --features "${FEATURES}" '
+            "-p sonda -p sonda-server"
         )
         self.repo.compose(self.PLAIN_BUILD, self.LOKI_ENV)
         problems = self.repo.checked()
@@ -496,19 +599,21 @@ class ComposeFeatureCheckTest(unittest.TestCase):
             self.repo.checked()
 
     def test_a_dockerfile_without_the_arg_is_an_error(self) -> None:
-        self.repo.write("Dockerfile", "RUN cargo build -p sonda -p sonda-server\n")
+        self.repo.dockerfile(arg="")
         self.repo.compose(self.PLAIN_BUILD, self.OTLP_ENV)
         with self.assertRaises(CheckError):
             self.repo.checked()
 
     def test_a_commented_out_arg_does_not_stand_in_for_the_real_one(self) -> None:
-        self.repo.write(
-            "Dockerfile",
-            "# ARG FEATURES=remote-write,kafka,otlp\n"
-            'RUN cargo build --features "${FEATURES}" -p sonda -p sonda-server\n',
-        )
+        self.repo.dockerfile(arg="# ARG FEATURES=remote-write,kafka,otlp")
         self.repo.compose(self.PLAIN_BUILD, self.OTLP_ENV)
         with self.assertRaises(CheckError):
+            self.repo.checked()
+
+    def test_a_second_arg_features_line_is_ambiguous_not_ignored(self) -> None:
+        self.repo.dockerfile(arg="ARG FEATURES=remote-write,kafka\nARG FEATURES=otlp")
+        self.repo.compose(self.PLAIN_BUILD, self.OTLP_ENV)
+        with self.assertRaisesRegex(CheckError, "ambiguous"):
             self.repo.checked()
 
     def test_a_directory_that_is_not_a_worktree_is_an_error(self) -> None:
@@ -527,6 +632,75 @@ class ComposeFeatureCheckTest(unittest.TestCase):
         problems = self.repo.checked()
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("'otlp'", problems[0])
+
+    OVERRIDE_BUILD = PLAIN_BUILD + "      args:\n        FEATURES: remote-write,kafka,otlp\n"
+    BOTH_ENV = (
+        "    environment:\n"
+        '      OTLP_GRPC_ENDPOINT: "http://otel:4317"\n'
+        '      LOKI_URL: "http://loki:3100"\n'
+    )
+
+    def test_an_override_the_env_link_no_longer_justifies_is_reported(self) -> None:
+        self.repo.write(
+            "examples/otlp.yaml",
+            "defaults:\n  sink:\n    type: otlp_grpc\n    endpoint: http://otel:4317\n",
+        )
+        self.repo.compose(self.OVERRIDE_BUILD, self.BOTH_ENV)
+        problems = self.repo.checked()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("otlp", problems[0])
+        self.assertIn("stale", problems[0])
+
+    def test_an_override_wiring_no_scenario_at_all_is_reported(self) -> None:
+        self.repo.compose(self.OVERRIDE_BUILD, '    ports:\n      - "8080:8080"\n')
+        self.repo.compose(self.NESTED_BUILD, self.LOKI_ENV, rel="stack/compose.yml")
+        problems = self.repo.checked()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("otlp", problems[0])
+
+    def test_a_named_feature_no_sink_gates_needs_no_scenario(self) -> None:
+        build = self.PLAIN_BUILD + "      args:\n        FEATURES: remote-write,kafka,tls\n"
+        self.repo.compose(build, self.LOKI_ENV)
+        self.assertEqual(self.repo.checked(), [])
+
+    def test_a_newly_gated_sink_wired_and_built_passes(self) -> None:
+        self.repo.crate("sonda", extra="syslog = []\n")
+        self.repo.crate("sonda-server", extra="syslog = []\n")
+        self.repo.write(
+            "sonda-core/src/sink/mod.rs",
+            "\"sink type 'otlp_grpc' requires the 'otlp' feature\"\n"
+            "\"sink type 'syslog' requires the 'syslog' feature\"\n",
+        )
+        self.repo.write(
+            "examples/syslog.yaml",
+            'defaults:\n  sink:\n    type: syslog\n    endpoint: "${SYSLOG_ENDPOINT:-x}"\n',
+        )
+        build = self.PLAIN_BUILD + "      args:\n        FEATURES: remote-write,kafka,syslog\n"
+        self.repo.compose(build, '    environment:\n      SYSLOG_ENDPOINT: "udp://syslog:514"\n')
+        self.assertEqual(self.repo.checked(), [])
+
+    def test_a_typo_in_the_inherited_default_names_the_dockerfile_once(self) -> None:
+        self.repo.dockerfile(arg="ARG FEATURES=remote-write,kafkaa")
+        self.repo.compose(self.PLAIN_BUILD, self.LOKI_ENV)
+        self.repo.compose(self.NESTED_BUILD, self.LOKI_ENV, rel="stack/compose.yml")
+        problems = self.repo.checked()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("Dockerfile:"), problems[0])
+        self.assertIn("kafkaa", problems[0])
+        self.assertNotIn("None", problems[0])
+
+    def test_the_entrypoint_binarys_own_default_decides_not_the_union(self) -> None:
+        self.repo.crate("sonda-server", default='["config"]')
+        self.repo.compose(self.PLAIN_BUILD, self.LOKI_ENV)
+        problems = self.repo.checked()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("'http'", problems[0])
+        self.assertIn("runs sonda-server", problems[0])
+
+    def test_an_entrypoint_override_keys_on_the_binary_it_names(self) -> None:
+        self.repo.crate("sonda-server", default='["config"]')
+        self.repo.compose(self.PLAIN_BUILD + '    entrypoint: ["/sonda", "run"]\n', self.LOKI_ENV)
+        self.assertEqual(self.repo.checked(), [])
 
 
 if __name__ == "__main__":
