@@ -142,6 +142,19 @@ jobs:
       - name: Generate SHA256SUMS
         run: sha256sum sonda-*.tar.gz > SHA256SUMS
 
+      # The image tags carry no `v`: scripts/image_tags.sh publishes 1.22.3
+      # from v1.22.3. Notes that spell the reference a second time here
+      # advertise a pull that 404s, so they read the answer off the script
+      # that creates the tags.
+      - name: Resolve the image reference the notes advertise
+        id: image_ref
+        run: |
+          set -euo pipefail
+          refs="$(bash scripts/image_tags.sh "$GITHUB_REF_NAME" "${REGISTRY}/${IMAGE_NAME}")"
+          # The exact version, which every release publishes. The rest of the
+          # list moves, and may already point at a newer release than this one.
+          printf 'ref=%s\n' "${refs%%$'\n'*}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
@@ -161,7 +174,7 @@ jobs:
 
             **Docker:**
             ```
-            docker pull ghcr.io/davidban77/sonda:${{ github.ref_name }}
+            docker pull ${{ steps.image_ref.outputs.ref }}
             ```
 
             See the [README](https://github.com/davidban77/sonda#installation) for all installation methods.

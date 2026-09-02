@@ -781,6 +781,109 @@ else
 fi
 
 echo
+echo "== the release notes advertise a tag that is published =="
+# The notes tell readers what to `docker pull`, one job before anything is
+# pushed. `github.ref_name` is v1.22.3 and no published tag carries the `v`,
+# so the notes take their reference from image_tags.sh — and this drives that
+# step for real and requires its answer to be among the tags the tagging step
+# actually creates.
+NOTES_STEP="$TMP/notes_step.sh"
+: > "$NOTES_STEP"
+for n in $(seq 1 30); do
+  body="$(python3 "$(dirname "$0")/extract_run_bodies.py" "$RELEASE_YML" "block:$n" 2> /dev/null)" || continue
+  case "$body" in
+    *image_tags.sh*GITHUB_OUTPUT*) printf '%s\n' "$body" > "$NOTES_STEP"; break ;;
+  esac
+done
+if [ ! -s "$NOTES_STEP" ]; then
+  echo "could not find the step that resolves the advertised image reference in release.yml — refusing to test the wrong thing" >&2
+  exit 1
+fi
+
+# The whole GITHUB_OUTPUT line, key included: the notes interpolate that key
+# by name, so a check that read only the value could not see it renamed.
+advertised() {
+  local release_tag="$1"; shift
+  local repo="$TMP/notesrepo"
+  scratch_repo "$repo" "$@"
+  mkdir -p "$repo/scripts"
+  cp "$MOVING_TAGS" "$IMAGE_TAGS" "$repo/scripts/"
+  : > "$TMP/notes.output"
+  (
+    cd "$repo"
+    GITHUB_REF_NAME="$release_tag" REGISTRY=ghcr.io IMAGE_NAME=davidban77/sonda \
+      GITHUB_OUTPUT="$TMP/notes.output" bash "$NOTES_STEP" > /dev/null 2>&1
+  )
+  cat "$TMP/notes.output"
+}
+
+check_advertised() {
+  local label="$1" release_tag="$2" out ref created; shift 2
+  out="$(advertised "$release_tag" "$@")"
+  ref="${out#*=}"
+  if [ -z "$out" ] || [ "$ref" = "$out" ]; then
+    fail "$label" "the step wrote '${out}' to GITHUB_OUTPUT"
+    return
+  fi
+  created="$(tagged "$release_tag" "$@")"
+  case " $created " in
+    *" --tag ${ref} "*) pass "$label" ;;
+    *) fail "$label" "the notes advertise '${ref}', the tag step creates '${created}'" ;;
+  esac
+}
+
+check_advertised "the notes advertise a tag the image job creates" \
+  "v2.0.0" v1.22.3 v2.0.0
+# A backport publishes one tag and nothing else, so this row has a single
+# right answer where the row above has four.
+check_advertised "a backport advertises the one tag it publishes" \
+  "v1.21.0" v1.21.0 v1.21.4 v1.22.3
+
+# Membership is not enough on its own: `latest` and `1` are published too,
+# and both are in the list at the moment the notes are written. Release notes
+# are read long after that, by which point a moving tag names a different
+# image. So the reference must be one no later release can claim — asked by
+# computing what a later release publishes and requiring the advertised tag
+# to be absent from it.
+later_tags="$(image_tags_for v1.30.0 v1.22.3 v1.30.0)"
+adv_out="$(advertised v1.22.3 v1.21.0 v1.22.3)"
+adv_tag="${adv_out##*:}"
+if [ -z "$later_tags" ] || [ -z "$adv_out" ]; then
+  fail "the advertised tag is one no later release can claim" \
+    "advertised '${adv_out}', a later release publishes '${later_tags}'"
+else
+  case " $later_tags " in
+    *" $adv_tag "*)
+      fail "the advertised tag is one no later release can claim" \
+        "the notes advertise '${adv_tag}', which v1.30.0 publishes too" ;;
+    *) pass "the advertised tag is one no later release can claim" ;;
+  esac
+fi
+
+# …and the notes must read that step. A resolver whose output nothing
+# interpolates leaves the old spelling advertised, with every check above it
+# green. Both halves of the expression are derived: the step's own id, and
+# the key it wrote.
+notes_id="$(grep -vE '^[[:space:]]*#' "$RELEASE_YML" | awk '
+  /^[[:space:]]*- name:/ { id=""; seen=0 }
+  /^[[:space:]]*id:/ { id=$2 }
+  /image_tags\.sh/ { seen=1 }
+  /GITHUB_OUTPUT/ { if (seen && id != "") print id }
+')"
+notes_out="$(advertised v2.0.0 v1.22.3 v2.0.0)"
+# The notes line is the file's only `docker pull` outside a run: body — the
+# others are the verification steps, which pull by digest.
+notes_pull="$(grep -F 'docker pull' "$RELEASE_YML" | sed 's/^[[:space:]]*//' \
+  | grep -vxF -f <(printf '%s\n' "$RELEASE_RAW" | sed 's/^[[:space:]]*//'))"
+want_pull="docker pull \${{ steps.${notes_id}.outputs.${notes_out%%=*} }}"
+if [ -n "$notes_id" ] && [ "$notes_pull" = "$want_pull" ]; then
+  pass "the release notes advertise the resolved reference"
+else
+  fail "the release notes advertise the resolved reference" \
+    "notes say '${notes_pull}', want '${want_pull}'"
+fi
+
+echo
 echo "== one feature set, in every place that compiles one =="
 # Three separate literals, nothing binding them: a divergence ships a `docker
 # build .` without a sink the release has. Compared to each other rather than

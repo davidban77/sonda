@@ -586,6 +586,9 @@ jobs:
       # set. A compose service names none — it inherits the Dockerfile default,
       # so lowering that default drops a sink out from under a stack whose own
       # environment still wires scenarios to it. Derived, not enumerated.
+      # The same link read backwards is the third rule: an environment key no
+      # scenario interpolates is wiring nothing, which is what deleting the
+      # build args leaves behind after the link itself was cut.
       - name: Compose builds carry the features their scenarios wire up
         run: |
           python3 scripts/check_compose_features.py --self-test

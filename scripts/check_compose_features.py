@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """A compose service that builds the image must build the sinks it wires up.
 
-Two rules, both derived from what a service declares rather than from a list
+Three rules, all derived from what a service declares rather than from a list
 kept here:
 
     1. a service builds with every feature its scenarios need
     2. a service that names a feature beyond the image default has a scenario
        that needs it
+    3. every environment key a service declares is interpolated by some
+       scenario
 
 The first breaks *by inheritance*, silently. A compose service names no feature
 at all — it inherits the Dockerfile's ``ARG FEATURES`` default — so lowering that
@@ -22,16 +24,29 @@ to compare and passes; the override it was protecting can then be deleted, still
 green, and the stack ships without the sink. Demanding evidence for every named
 feature fails on the first of those two edits instead of neither.
 
+The third reads that same link from the other end, because the first two only
+read it forwards. Cut the link and then delete the override, and both are
+answered: one has nothing left to compare, the other has no override left to
+justify. What remains is an environment key naming a collector, a profile that
+still starts one, and an image built without the sink — and the key nothing
+reads is the part still visible. A rule that fires on the *absence* of a reader
+reports that end state, and reports the first of the two edits on its own.
+
     service build:   -> the Dockerfile it builds, hence its inherited FEATURES
     service entry:   -> the binary it runs, hence whose crate features apply
     service env keys -> the scenario YAMLs interpolating "${KEY...}"
     scenario types   -> the feature each type needs, read from the
                         "type 'x' requires the 'y' feature" arms in sonda-core
 
-A service that declares no environment wires no scenario and needs nothing;
-adding a sink type to sonda-core extends the table on its own.
+Adding a sink type to sonda-core extends that table on its own.
 
-Limits, stated rather than papered over — all three are silent:
+Not every declared key is a scenario's to read. RUST_LOG, a SONDA_* override,
+anything the binary consults for itself is legitimately declared and never
+interpolated. EXEMPT_ENV_KEYS carries those, one reason per key, so an exemption
+arrives in a diff and has to be argued for — rather than being granted by a
+prefix or a naming convention this script decided on for itself.
+
+Limits, stated rather than papered over. The first three are silent:
 
 - The interpolated env key is the only link recognised. A scenario tied to a
   stack by a hard-coded service name is invisible here.
@@ -39,11 +54,20 @@ Limits, stated rather than papered over — all three are silent:
   a file wires no scenario as far as this check can tell.
 - Only tracked YAML is read. A compose file or scenario not yet `git add`ed does
   not exist here — CI sees the committed tree, a local run does not.
+- Rule 3 catches dead wiring: a key declared, nothing reading it. It does not
+  catch *consistent* removal — drop the environment key, the profile that needs
+  it and the FEATURES override in one edit and no rule here has anything left to
+  find. Whether the stack still promises that sink in its docs is a
+  docs-vs-compose question, and a different guard's.
+
+A service that declares no environment at all wires no scenario, needs nothing,
+and checks nothing under rule 3. That is the answer rather than an oversight: no
+wiring means there is none of it to be dead.
 
 The two structural assertions in `check` catch a *wholesale* break — no service
 builds the image, no env key reaches any scenario — and nothing finer. A link
 that breaks for one service, or for one feature, leaves both counters healthy;
-that gap is what the second rule covers.
+that gap is what the second and third rules cover.
 
 Run:  python3 scripts/check_compose_features.py [--self-test]
 Needs PyYAML and Python 3.11+ for tomllib; locally, `uv run --with pyyaml python`.
@@ -61,7 +85,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, NamedTuple
+from typing import Any, Iterable, Mapping, NamedTuple
 
 import yaml
 
@@ -74,6 +98,14 @@ ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 ARG_FEATURES_RE = re.compile(r"^ARG FEATURES=(\S+)", re.MULTILINE)
 ENTRYPOINT_RE = re.compile(r"^ENTRYPOINT\s+(.+)$", re.MULTILINE)
 CARGO_PACKAGE_RE = re.compile(r"-p\s+([A-Za-z0-9_-]+)")
+
+# Environment keys a service may declare that no scenario will ever interpolate,
+# because something other than a scenario reads them. One entry per key, and the
+# reason is the entry: an exemption granted here is an exemption someone has to
+# write down and defend in review.
+#
+#   "RUST_LOG": "read by the binary's own tracing subscriber, not by a scenario",
+EXEMPT_ENV_KEYS: dict[str, str] = {}
 
 
 class CheckError(Exception):
@@ -322,7 +354,7 @@ def scenario_index(
     return index
 
 
-def check(root: Path) -> list[str]:
+def check(root: Path, exempt: Mapping[str, str] = EXEMPT_ENV_KEYS) -> list[str]:
     dockerfile = root / "Dockerfile"
     image = dockerfile_build(root)
     packages = package_features(root, image.packages)
@@ -376,10 +408,12 @@ def check(root: Path) -> list[str]:
         keys = env_keys(service)
         evidence: dict[str, list[str]] = {}
         demanded: set[str] = set()
+        reached: set[str] = set()
         for scenario_path, refs, types in scenarios:
             shared = refs & keys
             if not shared:
                 continue
+            reached |= shared
             for type_name in sorted(types):
                 feature = requirements.get(type_name)
                 if feature is None:
@@ -409,6 +443,16 @@ def check(root: Path) -> list[str]:
                     f"it. Either the override is stale, or the scenario that justified it "
                     f"stopped interpolating one of this service's environment keys."
                 )
+        dead = sorted(keys - reached - set(exempt))
+        if dead:
+            problems.append(
+                f"{compose_path.relative_to(root)}: service '{name}' declares "
+                f"{dead}, which no scenario interpolates. Either the key is stale, or "
+                f"the scenario that read it stopped interpolating it — the same cut "
+                f"link, seen from the end that survives deleting the build args too. "
+                f"A key something other than a scenario reads belongs in "
+                f"EXEMPT_ENV_KEYS, with its reason."
+            )
 
     if wired == 0:
         raise CheckError(
@@ -437,7 +481,10 @@ def main(argv: list[str]) -> int:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 1
-    print("every compose service that builds the image carries the features its scenarios need")
+    print(
+        "every compose service that builds the image carries the features its scenarios "
+        "need, and declares no environment key none of them reads"
+    )
     return 0
 
 
@@ -492,9 +539,9 @@ class FakeRepo:
     def compose(self, build: str, environment: str = "", rel: str = "compose.yml") -> None:
         self.write(rel, f"services:\n  sonda-server:\n{build}{environment}")
 
-    def checked(self) -> list[str]:
+    def checked(self, exempt: dict[str, str] | None = None) -> list[str]:
         subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
-        return check(self.root)
+        return check(self.root, exempt if exempt is not None else {})
 
 
 class ComposeFeatureCheckTest(unittest.TestCase):
@@ -640,16 +687,38 @@ class ComposeFeatureCheckTest(unittest.TestCase):
         '      LOKI_URL: "http://loki:3100"\n'
     )
 
+    LITERAL_OTLP = "defaults:\n  sink:\n    type: otlp_grpc\n    endpoint: http://otel:4317\n"
+
     def test_an_override_the_env_link_no_longer_justifies_is_reported(self) -> None:
-        self.repo.write(
-            "examples/otlp.yaml",
-            "defaults:\n  sink:\n    type: otlp_grpc\n    endpoint: http://otel:4317\n",
-        )
+        self.repo.write("examples/otlp.yaml", self.LITERAL_OTLP)
         self.repo.compose(self.OVERRIDE_BUILD, self.BOTH_ENV)
         problems = self.repo.checked()
-        self.assertEqual(len(problems), 1, problems)
-        self.assertIn("otlp", problems[0])
+        self.assertEqual(len(problems), 2, problems)
         self.assertIn("stale", problems[0])
+        self.assertIn("OTLP_GRPC_ENDPOINT", problems[1])
+
+    def test_the_key_left_behind_when_the_override_goes_too_is_reported(self) -> None:
+        self.repo.write("examples/otlp.yaml", self.LITERAL_OTLP)
+        self.repo.compose(self.PLAIN_BUILD, self.BOTH_ENV)
+        problems = self.repo.checked()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("OTLP_GRPC_ENDPOINT", problems[0])
+        self.assertNotIn("LOKI_URL", problems[0])
+
+    def test_an_exempt_key_is_declared_wiring_nothing_and_passes(self) -> None:
+        self.repo.compose(self.PLAIN_BUILD, self.LOKI_ENV + '      RUST_LOG: "debug"\n')
+        self.assertEqual(self.repo.checked({"RUST_LOG": "read by the binary"}), [])
+
+    def test_the_same_key_without_its_exemption_is_reported(self) -> None:
+        self.repo.compose(self.PLAIN_BUILD, self.LOKI_ENV + '      RUST_LOG: "debug"\n')
+        problems = self.repo.checked()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("RUST_LOG", problems[0])
+
+    def test_a_service_declaring_no_environment_has_no_wiring_to_be_dead(self) -> None:
+        self.repo.compose(self.PLAIN_BUILD, '    ports:\n      - "8080:8080"\n')
+        self.repo.compose(self.NESTED_BUILD, self.LOKI_ENV, rel="stack/compose.yml")
+        self.assertEqual(self.repo.checked(), [])
 
     def test_an_override_wiring_no_scenario_at_all_is_reported(self) -> None:
         self.repo.compose(self.OVERRIDE_BUILD, '    ports:\n      - "8080:8080"\n')
