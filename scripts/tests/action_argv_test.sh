@@ -587,6 +587,32 @@ check_tagged "a backport reaches the registry as its exact version only" \
 # sees.
 check_tagged "an undecidable release fails the step and creates no tag" "rc=1" "v9.9.9" v1.0.0
 
+# `latest` is the tag everyone gets by default, so publishing it for a release
+# that is not the highest downgrades every `docker pull sonda` in the world.
+# Asked of the argv the step hands `imagetools` rather than of what a script
+# prints: the original defect computed the right answer and published `:latest`
+# anyway, from a tag list the step read somewhere else.
+claims_latest() {
+  case " $(tagged "$@") " in
+    *" --tag ghcr.io/davidban77/sonda:latest "*) printf 'LATEST' ;;
+    *) printf 'NO-LATEST' ;;
+  esac
+}
+
+check_latest() {
+  local label="$1" want="$2" got; shift 2
+  got="$(claims_latest "$@")"
+  if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got ${got}, want ${want}"; fi
+}
+
+check_latest "the highest release publishes latest"          LATEST    "v2.0.0"      v1.22.3 v2.0.0
+check_latest "the first release of all publishes latest"     LATEST    "v1.0.0"      v1.0.0
+check_latest "the newest of an older major line does not"    NO-LATEST "v1.22.3"     v1.21.0 v1.22.3 v2.0.0
+check_latest "an older minor does not"                       NO-LATEST "v1.21.0"     v1.21.0 v1.22.3 v2.0.0
+check_latest "a backport cut after a newer release does not" NO-LATEST "v1.19.1"     v1.19.0 v1.19.1 v1.20.0
+check_latest "a pre-release does not"                        NO-LATEST "v2.0.0-rc.1" v1.22.3 v2.0.0-rc.1
+check_latest "an undecidable release does not"               NO-LATEST "v9.9.9"      v1.0.0
+
 # The sequencing D3 exists for. `push-by-digest` is what makes the manifest
 # unreachable by name; the ordering is what keeps it that way until the
 # comparison and the smoke tests have run. Either one alone is decorative.
@@ -688,22 +714,26 @@ fi
 
 moved_major() {
   local release_tag="$1"; shift
-  local repo="$TMP/steprepo" major="${release_tag%%.*}"
+  local repo="$TMP/steprepo" major="${release_tag%%.*}" rc
   rm -rf "$repo" "$repo.git"; mkdir -p "$repo"
   (
     git init -q --bare "${repo}.git"
     cd "$repo"
     git init -q .; git config user.email t@t; git config user.name t
     git remote add origin "${repo}.git"
+    mkdir -p scripts; cp "$MOVING_TAGS" scripts/
     git commit -q --allow-empty -m older
     git tag "$major" # the moving tag, already published, on an older commit
     git commit -q --allow-empty -m release
     for t in "$@"; do git tag "$t"; done
     RELEASE_TAG="$release_tag" bash "$MAJOR_STEP" > /dev/null 2>&1
+    rc=$?
+    # The exit code is part of the answer: a release the rule cannot decide
+    # must leave the tag alone AND say so, not leave it alone quietly.
     if [ "$(git rev-parse "${major}^{commit}")" = "$(git rev-parse HEAD)" ]; then
-      printf 'MOVED'
+      printf 'rc=%s MOVED' "$rc"
     else
-      printf 'LEFT'
+      printf 'rc=%s LEFT' "$rc"
     fi
   )
 }
@@ -714,9 +744,22 @@ check_step() {
   if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got ${got}, want ${want}"; fi
 }
 
-check_step "the step really moves v1 onto the newest 1.x" MOVED "v1.22.3" v1.21.0 v1.22.3 v2.0.0
-check_step "the step leaves v1 alone on an older 1.x"     LEFT  "v1.21.0" v1.21.0 v1.22.3 v2.0.0
-check_step "the step moves v2 and never touches v1"       MOVED "v2.0.0"  v1.22.3 v2.0.0
+check_step "the step really moves v1 onto the newest 1.x" "rc=0 MOVED" "v1.22.3" v1.21.0 v1.22.3 v2.0.0
+check_step "the step leaves v1 alone on an older 1.x"     "rc=0 LEFT"  "v1.21.0" v1.21.0 v1.22.3 v2.0.0
+check_step "the step moves v2 and never touches v1"       "rc=0 MOVED" "v2.0.0"  v1.22.3 v2.0.0
+# The major line is its own question, which is why the step reads MOVE_MAJOR
+# and not the overall-highest answer: someone pinned to `@v1` wants the newest
+# 1.x whether or not a 2.x exists.
+check_step "a newer major line does not stop v1 tracking its own" \
+  "rc=0 MOVED" "v1.21.0" v1.21.0 v2.0.0
+check_step "a backport does not drag v1 backwards" \
+  "rc=0 LEFT" "v1.19.1" v1.19.0 v1.19.1 v1.20.0
+check_step "a pre-release moves nothing" \
+  "rc=0 LEFT" "v2.0.0-rc.1" v1.22.3 v2.0.0-rc.1
+# A tag list that cannot see this release answers "nothing is newer" to every
+# question, so the step must refuse rather than take the vacuous `true`.
+check_step "a release absent from the fetched tags is refused, not answered" \
+  "rc=1 LEFT" "v9.9.9" v1.0.0
 
 # Read release.yml the way action.yml is read. Round 1's fix — needles
 # against run: bodies with comments dropped — went to action.yml only, so
@@ -751,9 +794,9 @@ else
 fi
 release_missing=()
 for needle in \
-  '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  'decisions="$(bash scripts/moving_tags.sh "$RELEASE_TAG")"' \
+  '*MOVE_MAJOR=true*)' \
   'major="${RELEASE_TAG%%.*}"' \
-  'sort -V | tail -1)"' \
   'git push --force origin "refs/tags/${major}"' \
   'refs="$(bash scripts/image_tags.sh "$RELEASE_TAG" "$IMAGE")"' \
   'docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"'
