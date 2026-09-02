@@ -3297,7 +3297,7 @@ Keep this running in a separate terminal to watch alerts arrive as the sine wave
 </span></code></pre></div>
 <p>That same shape — start, push, query — works for every signal × <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> × <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> combo below. Swap the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file and the verification command.</p>
 <h3 id="coverage-matrix">Coverage matrix<a class="headerlink" href="#coverage-matrix" title="Permanent link">&para;</a></h3>
-<p>Every row below is a real <code>examples/*.yaml</code> you can run today. Start the matching backend profile from <code>examples/docker-compose-victoriametrics.yml</code> first.</p>
+<p>Every row below is a real <code>examples/*.yaml</code>. All of them run with the pre-built binaries, except the two marked †. Start the matching backend profile from <code>examples/docker-compose-victoriametrics.yml</code> first.</p>
 <table>
 <thead>
 <tr>
@@ -3346,14 +3346,14 @@ Keep this running in a separate terminal to watch alerts arrive as the sine wave
 </tr>
 <tr>
 <td>Metrics</td>
-<td><code>otlp</code></td>
+<td><code>otlp</code> <a href="#prebuilt-binaries">†</a></td>
 <td><code>otlp_grpc</code> (<abbr title="Short for OpenTelemetry, the CNCF observability framework for traces, metrics, and logs.">OTel</abbr> Collector → VM)</td>
 <td><code>examples/otlp-metrics.yaml</code></td>
 <td><code>curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage' \| jq '.data.result \| length'</code></td>
 </tr>
 <tr>
 <td>Logs</td>
-<td><code>otlp</code></td>
+<td><code>otlp</code> <a href="#prebuilt-binaries">†</a></td>
 <td><code>otlp_grpc</code> (<abbr title="Short for OpenTelemetry, the CNCF observability framework for traces, metrics, and logs.">OTel</abbr> Collector → <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>)</td>
 <td><code>examples/otlp-logs.yaml</code></td>
 <td><code>curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={service_name="sonda"}' \| jq '.data.result \| length'</code></td>
@@ -3416,6 +3416,7 @@ Keep this running in a separate terminal to watch alerts arrive as the sine wave
 </tr>
 </tbody>
 </table>
+<p>† These two rows need <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see <a href="#prebuilt-binaries">What the pre-built binaries include</a> below.</p>
 <div class="admonition info">
 <p class="admonition-title">Compose profiles</p>
 <p><abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>, Kafka, <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>, the <abbr title="Short for OpenTelemetry, the CNCF observability framework for traces, metrics, and logs.">OTel</abbr> Collector, and the alerting stack (<abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> + <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr>, needed by the four <code>sonda test</code> rows) are behind profiles to keep the base stack lean. Bring up only what each row needs. The <abbr title="VictoriaMetrics's lightweight metrics relay and forwarder.">vmagent</abbr> row uses the default stack — no extra profile.
@@ -3424,9 +3425,17 @@ Keep this running in a separate terminal to watch alerts arrive as the sine wave
 </span></code></pre></div>
 The <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>-logs row needs both <code>--profile otel-collector</code> and <code>--profile loki</code> so the collector has somewhere to forward log records.</p>
 </div>
+<p><a id="prebuilt-binaries"></a></p>
 <div class="admonition tip">
-<p class="admonition-title">Feature-gated sinks</p>
-<p>The <code>remote_write</code>, <code>kafka</code>, and <code>otlp_grpc</code> sinks are included in the pre-built binaries from the install script and the Docker image. Custom builds need to enable them — see <a href="../../build/sinks/">Sinks</a> for the details.</p>
+<p class="admonition-title">What the pre-built binaries include</p>
+<p>The <code>remote_write</code> and <code>kafka</code> sinks are included in the pre-built binaries from the install script and the published Docker image. The <code>otlp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and the <code>otlp_grpc</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> are not.</p>
+<p>The two <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> rows still work. How much setup they need depends on where Sonda runs:</p>
+<ul>
+<li><strong>Sonda inside the Compose stack</strong> — nothing extra to do. The stack builds its own <code>sonda-server</code> image from the repository with <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> included, and rebuilds it on every <code>up</code>, so an image cached from a run that predates the <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> build args cannot leave <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> out. POST <code>examples/otlp-metrics.yaml</code> or <code>examples/otlp-logs.yaml</code> to <code>http://localhost:8080/scenarios</code> and the data reaches the collector.</li>
+<li><strong>Sonda on your host</strong> — the <code>sonda run</code> commands in the matrix use the installed CLI, which has no <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>. Build the binary from source with <code>cargo build --features otlp -p sonda</code>.</li>
+<li><strong>The published <code>ghcr.io/davidban77/sonda</code> image</strong> — it has no <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> either. Build your own image with <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> compiled in.</li>
+</ul>
+<p>See <a href="../../build/encoders/#otlp">Encoders — <code>otlp</code></a>, <a href="../../build/sinks/#otlp_grpc">Sinks — <code>otlp_grpc</code></a>, and <a href="../../deploy/docker/#building-the-image">Building the image</a>.</p>
 </div>
 <h3 id="intentionally-out-of-scope">Intentionally out of scope<a class="headerlink" href="#intentionally-out-of-scope" title="Permanent link">&para;</a></h3>
 <p>The matrix covers sinks that talk to a queryable backend over HTTP, gRPC, or a broker. A few sinks intentionally fall outside that pattern:</p>
@@ -4084,7 +4093,7 @@ The <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 16, 2026 08:54:21 UTC">August 16, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 2, 2026 19:01:30 UTC">September 2, 2026</span>
   </span>
 
     

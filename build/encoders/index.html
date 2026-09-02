@@ -2535,8 +2535,12 @@
 <h2 id="otlp">otlp<a class="headerlink" href="#otlp" title="Permanent link">&para;</a></h2>
 <p><abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> protobuf format. Encodes metrics as <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> <code>Gauge</code> data points and logs as <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> <code>LogRecord</code> messages, using length-prefixed protobuf serialization.</p>
 <div class="admonition warning">
-<p class="admonition-title">Feature flag and build requirement</p>
-<p>This <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> requires the <code>otlp</code> Cargo feature flag. Pre-built release binaries and Docker images do <strong>not</strong> include this feature. Build from source: <code>cargo build --features otlp -p sonda</code>.</p>
+<p class="admonition-title">Not included in the pre-built binaries</p>
+<p><abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> is an optional feature. The release binaries and the published Docker image do <strong>not</strong> include it. Two ways to get it:</p>
+<ul>
+<li><strong>As a binary</strong> — build from source: <code>cargo build --features otlp -p sonda</code>.</li>
+<li><strong>As a container</strong> — build the image yourself with <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> compiled in. See <a href="../../deploy/docker/#building-the-image">Building the image</a>.</li>
+</ul>
 </div>
 <p>No additional parameters.</p>
 <div class="language-yaml highlight"><span class="filename">OTLP encoder</span><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nt">encoder</span><span class="p">:</span>
@@ -2634,7 +2638,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 13, 2026 06:49:33 UTC">August 13, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 2, 2026 19:01:30 UTC">September 2, 2026</span>
   </span>
 
     
