@@ -246,9 +246,13 @@ jobs:
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
     # The job compiles nothing, so its floor is stable: the v1.22.3 rebuild
-    # ran end to end in 50s. What varies is the ghcr round-trips, and this
-    # leaves room for all of them to take three times as long.
-    timeout-minutes: 3
+    # ran end to end in 50s. That is one sample, and the variable part is three
+    # external services, not one — Docker Hub for the QEMU and buildkit images,
+    # GitHub for the release assets, ghcr for the push and the pull-backs. Sized
+    # loose against that rather than tight against the sample, because tagging is
+    # the last step: a job killed before it publishes a release whose own notes
+    # advertise an image tag that was never created.
+    timeout-minutes: 10
 
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
