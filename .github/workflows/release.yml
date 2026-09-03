@@ -129,8 +129,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # The major-tag step compares this release against every existing
-          # vN.* tag, so it needs them all — a shallow checkout has none.
+          # scripts/moving_tags.sh compares this release against every
+          # existing vX.Y.Z and refuses outright if it cannot see this one;
+          # a shallow checkout has none of them.
           fetch-depth: 0
 
       - name: Download all tarball artifacts
@@ -190,35 +191,32 @@ jobs:
       # tag whose assets exist. Moving it earlier would make `@v1` resolve
       # to a release the installer cannot download yet.
       #
-      # Guarded three ways, because a major tag that moves when it should
-      # not is worse than one that never moves: pre-releases are skipped,
-      # non-`vX.Y.Z` tags are skipped, and the tag moved is derived from
-      # THIS release's own major — so cutting v2.0.0 creates/moves `v2` and
-      # leaves `v1` pointing where it was, for everyone still pinned to it.
+      # Whether it may move is scripts/moving_tags.sh's answer — the same
+      # one the image tags are built from, so the rule has one definition
+      # rather than one per job. `MOVE_MAJOR` asks the major line's own
+      # question: v1.21.0 cut while v2.0.0 exists still moves `v1`, because
+      # that is what everyone pinned to `@v1` wants, while a patch
+      # backported onto an older 1.x moves nothing (#554 review W3).
       - name: Move the major-version tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$RELEASE_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "note: ${RELEASE_TAG} is not a plain vX.Y.Z tag; leaving major tags untouched"
-            exit 0
+          # Captured, never piped into `grep -q`: grep exits at its first
+          # match, the script dies of SIGPIPE, and pipefail reads that as
+          # "do not move" on exactly the releases that should move.
+          if ! decisions="$(bash scripts/moving_tags.sh "$RELEASE_TAG")"; then
+            echo "::error::the moving tags for ${RELEASE_TAG} are undecided; leaving major tags untouched"
+            exit 1
           fi
+          case "$decisions" in
+            *MOVE_MAJOR=true*) ;;
+            *)
+              echo "note: ${RELEASE_TAG} does not claim its major tag; leaving it where it is"
+              exit 0
+              ;;
+          esac
           major="${RELEASE_TAG%%.*}"          # v1.20.0 -> v1
-
-          # Never move the major tag BACKWARDS. A patch backported onto an
-          # older line — 1.19.1 cut after 1.20.0 — is a normal thing to do
-          # precisely once a newer line exists, and moving `v1` onto it
-          # would silently downgrade everyone pinned to `@v1`
-          # (#554 review W3). Compare by version, not by what was released
-          # most recently, and not as strings (v1.9.0 > v1.20.0 as text).
-          highest="$(git tag -l "${major}.*" \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V | tail -1)"
-          if [ -n "$highest" ] && [ "$highest" != "$RELEASE_TAG" ]; then
-            echo "note: ${highest} is newer than ${RELEASE_TAG}; leaving ${major} where it is"
-            exit 0
-          fi
 
           echo "moving ${major} to ${RELEASE_TAG} ($(git rev-parse --short HEAD))"
           git tag -f "$major"
@@ -247,7 +245,14 @@ jobs:
     # the dependent unless a status function is used here.
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The job compiles nothing, so its floor is stable: the v1.22.3 rebuild
+    # ran end to end in 50s. That is one sample, and the variable part is three
+    # external services, not one — Docker Hub for the QEMU and buildkit images,
+    # GitHub for the release assets, ghcr for the push and the pull-backs. Sized
+    # loose against that rather than tight against the sample, because tagging is
+    # the last step: a job killed before it gets there leaves an already-published
+    # release whose notes advertise an image tag that was never created.
+    timeout-minutes: 10
 
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
