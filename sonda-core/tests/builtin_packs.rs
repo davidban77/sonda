@@ -168,3 +168,89 @@ fn every_builtin_pack_compiles_through_the_chained_catalog_resolver() {
         assert!(!entries.is_empty(), "{}", pack.file);
     }
 }
+
+/// The listing's verdict and a run's must agree.
+///
+/// `sonda list` marks an entry `(unusable)` from `CatalogEntry::pack_error`,
+/// while `pack: <name>` fails at expansion. Two code paths, one question —
+/// so assert they answer it the same way on the corpus that ships. Every
+/// builtin compiles above, so every builtin must also list clean.
+#[test]
+fn no_builtin_lists_as_unusable() {
+    let entries = builtin::entries();
+    assert_eq!(entries.len(), PACK_COUNT, "vacuous-pass guard");
+
+    let broken: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            e.pack_error
+                .as_ref()
+                .map(|why| format!("{}: {why}", e.name))
+        })
+        .collect();
+    assert!(
+        broken.is_empty(),
+        "these builtins compile but `sonda list` calls them unusable:\n  {}",
+        broken.join("\n  ")
+    );
+}
+
+/// The other direction, which is the one that actually goes wrong: a pack
+/// the resolver refuses must be *listed and marked*, not dropped — the
+/// listing is how a user finds the file, and `sonda show` is how they read
+/// it. Driven through the real on-disk walk, not a copy of its logic.
+#[test]
+fn an_unaddressable_pack_is_listed_and_marked() {
+    const BROKEN: &str = "\
+kind: composable
+name: broken_pack
+description: a pack whose repeated name declares no ids
+category: test
+metrics:
+  - name: cpu
+    generator: { type: constant, value: 1.0 }
+  - name: cpu
+    generator: { type: constant, value: 2.0 }
+";
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("broken.yaml"), BROKEN).expect("write");
+
+    let listing = sonda_core::catalog::enumerate_with_skips(dir.path()).expect("enumerate");
+    assert!(
+        listing.skipped.is_empty(),
+        "an unaddressable pack must be listed, not skipped: {:?}",
+        listing.skipped
+    );
+    let entry = listing
+        .entries
+        .iter()
+        .find(|e| e.name == "broken_pack")
+        .expect("a composable header must still produce an entry");
+    let why = entry
+        .pack_error
+        .as_deref()
+        .expect("an unaddressable pack must be marked, not listed as ordinary");
+    assert!(
+        why.contains("appears 2 times"),
+        "the marker must carry the resolver's own reason, got: {why}"
+    );
+
+    // And the same pack really is unusable, so the marker is not decorative.
+    let resolver = sonda_core::catalog::CatalogPackResolver::new(Some(dir.path()));
+    let scenario = "version: 2\nkind: runnable\ndefaults: { rate: 1 }\n\
+                    scenarios:\n  - signal_type: metrics\n    pack: broken_pack\n";
+    let err = compile_scenario_file(scenario, &resolver)
+        .expect_err("the pack the listing marks must actually fail to expand");
+    // The top-level Display is a category; the reason is down the source
+    // chain, which is where the two paths have to agree.
+    let mut chain = err.to_string();
+    let mut source = std::error::Error::source(&err);
+    while let Some(e) = source {
+        chain.push_str(&format!(": {e}"));
+        source = e.source();
+    }
+    assert!(
+        chain.contains("appears 2 times"),
+        "listing and run must give the same reason, run said: {chain}"
+    );
+}

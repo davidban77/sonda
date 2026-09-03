@@ -103,6 +103,15 @@ pub struct CatalogEntry {
     /// Set only by [`merged`]: this user entry hides a builtin of the same
     /// name. Always `false` from [`enumerate`].
     pub shadows_builtin: bool,
+    /// Why this `composable` entry cannot be referenced by `pack: <name>`,
+    /// rendered — either it does not deserialize as a
+    /// [`MetricPackDef`](crate::packs::MetricPackDef), or it does and fails
+    /// [`validate_pack`](crate::packs::validate_pack).
+    ///
+    /// Such an entry is still listed and still readable with `sonda show`,
+    /// which is how a user finds what is wrong with it. Always `None` for a
+    /// `runnable` entry — the compiler is the judge of those.
+    pub pack_error: Option<String>,
 }
 
 /// Why a YAML file did not become a [`CatalogEntry`].
@@ -198,6 +207,13 @@ pub(crate) fn header_entry(
         .scenario_name
         .or(header.name)
         .unwrap_or_else(|| fallback_name.replace('_', "-"));
+    // A composable entry that cannot be referenced is still an entry: it is
+    // listed, marked, and readable with `sonda show`. Skipping it would hide
+    // the file from the one command that shows what is wrong with it.
+    let pack_error = match kind {
+        EntryKind::Composable => pack_error(content),
+        EntryKind::Runnable => None,
+    };
     Ok(CatalogEntry {
         name,
         kind,
@@ -207,7 +223,21 @@ pub(crate) fn header_entry(
         source_path,
         origin,
         shadows_builtin: false,
+        pack_error,
     })
+}
+
+/// Why `content` cannot serve as a pack, or `None` if it can.
+///
+/// Runs the same two steps the resolver does before expansion, so a
+/// listing's verdict and a run's cannot disagree.
+fn pack_error(content: &str) -> Option<String> {
+    match serde_yaml_ng::from_str::<crate::packs::MetricPackDef>(content) {
+        Ok(pack) => crate::packs::validate_pack(&pack)
+            .err()
+            .map(|e| e.to_string()),
+        Err(e) => Some(e.to_string()),
+    }
 }
 
 /// Walk `dir` and return one [`CatalogEntry`] per YAML file with a

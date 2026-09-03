@@ -25,12 +25,13 @@
 //! [`ExpandedEntry::id`]. Inline entries with `id: None` are still valid
 //! signals — they just cannot be referenced by any `after.ref`. Pack
 //! sub-signals are addressable as `{entry}.{metric}` (for unique-by-name
-//! packs) or `{entry}.{metric}#{spec_index}` for packs that ship multiple
-//! [`MetricSpec`][crate::packs::MetricSpec]s under the same metric name.
-//! When a user writes the bare `{entry}.{metric}` form against a
-//! duplicate-name pack the compiler emits
+//! packs) or `{entry}.{metric}.{id}` for packs that ship multiple
+//! [`MetricSpec`][crate::packs::MetricSpec]s under the same metric name,
+//! which such a pack must give a unique `id:` each.
+//! When a ref names a *level* rather than a signal — the pack entry, or a
+//! metric name the pack repeats — the compiler emits
 //! [`CompileAfterError::AmbiguousSubSignalRef`] with the concrete
-//! candidates so they know which `#N` to pick.
+//! candidates so the user knows which to pick.
 //!
 //! # Timing computation (§3.3)
 //!
@@ -101,13 +102,17 @@
 //! Pack entries are not themselves referenceable — the expand pass does
 //! not emit an [`ExpandedEntry`] whose `id` matches the bare pack entry
 //! id (e.g. `B`). Only the individual sub-signals materialize as
-//! addressable entries, using the dotted form `{entry}.{metric}` (and
-//! `{entry}.{metric}#{spec_index}` for duplicate-name packs). Writing
-//! `after.ref: B` against a pack entry therefore fails with
-//! [`CompileAfterError::UnknownRef`]; the `available` list in the
-//! diagnostic shows the valid dotted ids. To attach `after:` to the whole
-//! pack, set it on the pack entry itself — the expand pass propagates it
-//! to every sub-signal — or use a specific dotted metric path.
+//! addressable entries, using the dotted form `{entry}.{metric}`, or
+//! `{entry}.{metric}.{id}` for a spec that declares an `id:`.
+//!
+//! Writing `after.ref: B` against a pack entry that produced two or more
+//! sub-signals fails with
+//! [`CompileAfterError::AmbiguousSubSignalRef`], which lists them; a pack
+//! entry with a single sub-signal falls through to
+//! [`CompileAfterError::UnknownRef`], whose `available` list shows the
+//! valid dotted ids. To attach `after:` to the whole pack, set it on the
+//! pack entry itself — the expand pass propagates it to every sub-signal
+//! — or use a specific dotted metric path.
 //!
 //! # Clock-group string equality
 //!
@@ -167,12 +172,12 @@ pub enum CompileAfterError {
         available: String,
     },
 
-    /// An `after.ref` used the bare `{entry}.{metric}` form against a
-    /// duplicate-name pack metric. The user must pick one of the
-    /// `#{spec_index}` variants.
+    /// An `after.ref` named a level rather than a signal: the pack entry
+    /// itself, or the bare `{entry}.{metric}` form against a metric name the
+    /// pack repeats. The user must pick one of the concrete sub-signals.
     #[error(
-        "after.ref '{ref_id}' is ambiguous: pack '{pack_entry_id}' ships multiple specs with \
-         this metric name. Use one of: [{candidates}]"
+        "after.ref '{ref_id}' is ambiguous: it names {candidate_count} signals under pack entry \
+         '{pack_entry_id}'. Use one of: [{candidates}]"
     )]
     AmbiguousSubSignalRef {
         /// The ambiguous reference as written.
@@ -181,6 +186,9 @@ pub enum CompileAfterError {
         pack_entry_id: String,
         /// Comma-separated list of disambiguated sub-signal ids.
         candidates: String,
+        /// How many signals the ref matched. Stated so the message does not
+        /// depend on the reader counting the list.
+        candidate_count: usize,
     },
 
     /// An entry's clause `ref` pointed to its own id.
@@ -809,20 +817,29 @@ fn resolve_reference(
         return Ok(idx);
     }
 
-    let prefix = format!("{ref_id}#");
+    // A ref that is a proper prefix of two or more signal ids at a `.`
+    // boundary named a level of a pack rather than a signal — `host` (the
+    // pack entry) or `host.cpu_util` (a metric name the pack repeats). Both
+    // are answerable with "pick one of these", which is worth more than
+    // "unknown id" plus every id in the file.
+    //
+    // The separator is `.` because that is what sub-signal ids are built
+    // from; it was `#` while duplicate specs were disambiguated positionally.
+    let prefix = format!("{ref_id}.");
     let candidates: Vec<&str> = id_to_idx
         .keys()
         .filter(|k| k.starts_with(&prefix))
         .copied()
         .collect();
-    if !candidates.is_empty() {
+    if candidates.len() > 1 {
         let pack_entry_id = ref_id
             .rsplit_once('.')
             .map(|(left, _)| left.to_string())
-            .unwrap_or_default();
+            .unwrap_or_else(|| ref_id.to_string());
         return Err(CompileAfterError::AmbiguousSubSignalRef {
             ref_id: ref_id.to_string(),
             pack_entry_id,
+            candidate_count: candidates.len(),
             candidates: candidates.join(", "),
         });
     }
@@ -2200,9 +2217,11 @@ category: test
 description: test
 metrics:
   - name: cpu_util
+    id: user
     labels: { mode: user }
     generator: { type: sawtooth, min: 0, max: 100, period_secs: 60 }
   - name: cpu_util
+    id: system
     labels: { mode: system }
     generator: { type: sawtooth, min: 0, max: 100, period_secs: 60 }
 "#;
@@ -2230,7 +2249,7 @@ scenarios:
         let err = compile_with_resolver(yaml, &r).expect_err("bare ref is ambiguous");
         assert!(err.contains("ambiguous"), "got: {err}");
         assert!(
-            err.contains("host.cpu_util#0") && err.contains("host.cpu_util#1"),
+            err.contains("host.cpu_util.user") && err.contains("host.cpu_util.system"),
             "candidates should be listed. got: {err}"
         );
     }

@@ -52,7 +52,9 @@ sonda --catalog ~/sonda-catalog list --kind runnable
 sonda --catalog ~/sonda-catalog list --tag cpu
 ```
 
-For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `tags`, and the resolved `source` path. Use it as the contract when you script catalog discovery.
+For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `category`, `tags`, the resolved `source` path, `origin` (`builtin` or `catalog`), `shadows_builtin`, and `pack_error`. Use it as the contract when you script catalog discovery.
+
+A pack that parses as a catalog entry but cannot be referenced — a repeated metric name with no ids, say — is still listed, marked `(unusable)`, with the reason on stderr and in `pack_error`. It is listed rather than hidden because `sonda show <name>` is how you read the file and find the problem.
 
 ### Run a scenario
 
@@ -314,15 +316,34 @@ scenarios:
 
 In this example, `ifOperStatus` uses the [`flap`](generators.md#operational-aliases) alias to simulate an interface toggling up and down. The other metrics keep their pack defaults.
 
-You can override any metric by name. Each override accepts:
+An override key is a **selector**: a metric name on its own, or `name.id` when the pack ships several metrics under one name (see [Addressing a repeated metric name](#addressing-a-repeated-metric-name)). Each override accepts:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `generator` | object | Replacement generator (any [generator type](generators.md) or [operational alias](generators.md#operational-aliases)). |
 | `labels` | map | Additional labels merged on top of all other label sources for this metric. |
 
-!!! warning "Override key must match a metric name"
-    If an override key does not match any metric in the pack, Sonda returns an error. This catches typos early. Use `sonda show <pack-name> --catalog <dir>` to check metric names.
+!!! warning "Every override key must address exactly one metric"
+    Sonda returns an error if a key matches no metric — which catches typos early — and also if a bare name matches several, listing the ids to choose from. A key never applies to more than one metric. Two keys addressing the same metric (`name` and `name.id` for the same spec) are refused too, since one would silently win. Run `sonda show <pack-name> --catalog <dir>` to see the metric names and ids the pack actually declares — the flag is optional only for the built-in packs.
+
+### Addressing a repeated metric name
+
+A pack may ship several metrics under one name, distinguished by their labels — `node_exporter_cpu` has eight `node_cpu_seconds_total` specs, one per CPU mode. Every such spec must declare a unique `id:`, and the pack does not load otherwise. Metric names may not contain `.`, which is what separates the name from the id.
+
+```yaml
+metrics:
+  - name: node_cpu_seconds_total
+    id: user
+    labels: { mode: user }
+  - name: node_cpu_seconds_total
+    id: idle
+    labels: { mode: idle }
+```
+
+Write `node_cpu_seconds_total.idle` to override, or `after.ref:` one of them; a bare `node_cpu_seconds_total` is an error naming all eight. The `id:` is addressing only — it never reaches the wire as a label or a metric name.
+
+!!! warning "Adding an `id:` renames the signal"
+    A signal's id is `{entry}.{metric}` for a spec with no `id:`, and `{entry}.{metric}.{id}` for one with. So adding an `id:` to a spec that did not need one — the name was already unique — breaks any `after.ref:` pointing at it. Update those refs in the same change.
 
 ### Label merge order
 
@@ -413,7 +434,8 @@ All pack fields are top-level keys in the file:
 | `category` | string | yes | Broad grouping for the pack (e.g. `network`, `infrastructure`, `application`). |
 | `shared_labels` | map | no | Labels applied to every metric in the pack. Empty values are placeholders for the user to fill. |
 | `metrics` | list | yes | One or more metric specifications. |
-| `metrics[].name` | string | yes | The metric name. |
+| `metrics[].name` | string | yes | The metric name. May not contain `.`. |
+| `metrics[].id` | string | no | Disambiguator, required on *every* spec sharing a name and unique among them. Addressing only — see [Addressing a repeated metric name](#addressing-a-repeated-metric-name). |
 | `metrics[].labels` | map | no | Per-metric labels (merged on top of `shared_labels`). |
 | `metrics[].generator` | object | no | Default generator. Falls back to `constant { value: 0.0 }` when absent. |
 

@@ -17,7 +17,7 @@
 //! repo-root `packs/` directory; user packs are read from `--catalog <dir>`.
 //! [`crate::catalog::CatalogPackResolver`] chains the two.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::compiler::{AfterClause, DelayClause, WhileClause};
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
@@ -40,7 +40,19 @@ use crate::{ConfigError, SondaError};
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MetricSpec {
     /// The metric name (e.g. `"ifHCInOctets"`, `"node_cpu_seconds_total"`).
+    ///
+    /// May not contain `.` — that is the selector separator, and
+    /// [`validate_pack`] enforces the exclusion so `name.id` can never be
+    /// ambushed by a dotted name.
     pub name: String,
+    /// Disambiguator among specs sharing a [`name`](Self::name), and the
+    /// second half of this spec's selector.
+    ///
+    /// Required — and unique — on every member of a repeated name; optional
+    /// when the name occurs once. It stands for what the repetition is *by*:
+    /// the CPU mode, the memory field, the SNMP column.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub id: Option<String>,
     /// Labels specific to this metric, merged on top of the pack's shared labels.
     #[cfg_attr(feature = "config", serde(default))]
     pub labels: Option<HashMap<String, String>>,
@@ -48,6 +60,17 @@ pub struct MetricSpec {
     /// generator is used.
     #[cfg_attr(feature = "config", serde(default))]
     pub generator: Option<GeneratorConfig>,
+}
+
+impl MetricSpec {
+    /// The selector that addresses this spec: `name`, or `name.id` when the
+    /// spec declares an id.
+    pub fn selector(&self) -> String {
+        match &self.id {
+            Some(id) => format!("{}.{}", self.name, id),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// A metric pack definition: a reusable bundle of metric names and label schemas.
@@ -137,8 +160,10 @@ pub struct PackScenarioConfig {
     /// Output encoder. Defaults to `prometheus_text`.
     #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
-    /// Per-metric overrides keyed by metric name. Each override can replace
-    /// the generator and/or add extra labels for a specific metric.
+    /// Per-metric overrides keyed by selector — `name`, or `name.id` for a
+    /// spec whose name the pack repeats (see [`resolve_override_keys`]).
+    /// Each override can replace the generator and/or add extra labels for
+    /// the one metric its key addresses.
     #[cfg_attr(feature = "config", serde(default))]
     pub overrides: Option<HashMap<String, MetricOverride>>,
 }
@@ -202,6 +227,276 @@ fn default_encoder() -> EncoderConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Pack validation and metric selectors
+// ---------------------------------------------------------------------------
+
+/// A pack that cannot be addressed unambiguously.
+///
+/// These are authoring-time faults in the pack itself, raised when it loads.
+/// Moving ambiguity here is the point: a selector can never meet an ambiguous
+/// pack, because such a pack does not load.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum PackValidationError {
+    /// A metric name contains the selector separator.
+    #[error(
+        "pack '{pack_name}': metric name '{name}' contains '.', which separates \
+         a selector's name from its id; Prometheus metric names cannot contain \
+         '.' either"
+    )]
+    DottedMetricName { pack_name: String, name: String },
+
+    /// A name occurs more than once and at least one of those specs has no id.
+    #[error(
+        "pack '{pack_name}': metric name '{name}' appears {count} times, so every \
+         one of them needs a unique `id:` to be addressable; {without} declare none"
+    )]
+    RepeatedNameWithoutIds {
+        pack_name: String,
+        name: String,
+        count: usize,
+        without: usize,
+    },
+
+    /// Two specs sharing a name declare the same id.
+    #[error("pack '{pack_name}': metric '{name}' declares id '{id}' more than once")]
+    DuplicateMetricId {
+        pack_name: String,
+        name: String,
+        id: String,
+    },
+}
+
+/// Check that every spec in `pack` is addressable, and that no selector
+/// addresses two of them.
+///
+/// One spec may still answer to two selectors — a unique name that also
+/// declares an id is reachable as both `name` and `name.id`. That is
+/// harmless for lookup and rejected where it would silently discard work
+/// (see [`ExpandError::ConflictingOverrideKeys`](crate::compiler::expand::ExpandError)).
+///
+/// The rule, and the whole of it: a metric **name** is either unique within
+/// the pack, or *every* spec sharing it declares an **id** unique among them.
+/// Names may not contain `.`.
+///
+/// Pure, and deliberately the only definition of the rule — the selector
+/// resolver below relies on it having passed and does not re-derive it.
+pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
+    for spec in &pack.metrics {
+        if spec.name.contains('.') {
+            return Err(PackValidationError::DottedMetricName {
+                pack_name: pack.name.clone(),
+                name: spec.name.clone(),
+            });
+        }
+    }
+
+    let mut by_name: BTreeMap<&str, Vec<&MetricSpec>> = BTreeMap::new();
+    for spec in &pack.metrics {
+        by_name.entry(spec.name.as_str()).or_default().push(spec);
+    }
+
+    for (name, specs) in by_name {
+        if specs.len() < 2 {
+            continue;
+        }
+        let without = specs.iter().filter(|s| s.id.is_none()).count();
+        if without > 0 {
+            return Err(PackValidationError::RepeatedNameWithoutIds {
+                pack_name: pack.name.clone(),
+                name: name.to_string(),
+                count: specs.len(),
+                without,
+            });
+        }
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for spec in &specs {
+            let id = spec.id.as_deref().expect("checked above: none are None");
+            if !seen.insert(id) {
+                return Err(PackValidationError::DuplicateMetricId {
+                    pack_name: pack.name.clone(),
+                    name: name.to_string(),
+                    id: id.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// A reference to one metric spec: a bare `name`, or `name.id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricSelector {
+    pub name: String,
+    pub id: Option<String>,
+}
+
+impl MetricSelector {
+    /// Split a selector string on its **first** `.`.
+    ///
+    /// First rather than last because a name cannot contain `.` (enforced by
+    /// [`validate_pack`]) while an id may: `a.b.c` is unambiguously the name
+    /// `a` with the id `b.c`.
+    pub fn parse(raw: &str) -> Self {
+        match raw.split_once('.') {
+            Some((name, id)) => Self {
+                name: name.to_string(),
+                id: Some(id.to_string()),
+            },
+            None => Self {
+                name: raw.to_string(),
+                id: None,
+            },
+        }
+    }
+}
+
+/// Why a selector did not address exactly one spec.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SelectorError {
+    /// Nothing in the pack matches.
+    #[error(
+        "no metric matches selector '{selector}' in pack '{pack_name}'; available: {available}"
+    )]
+    NoMatch {
+        selector: String,
+        pack_name: String,
+        available: String,
+    },
+
+    /// A bare name was used where the pack repeats that name. This is the
+    /// case that used to fan out silently across every spec sharing it.
+    #[error(
+        "selector '{selector}' is ambiguous in pack '{pack_name}': that name is \
+         shared by {count} metrics; address one by id — {available}"
+    )]
+    Ambiguous {
+        selector: String,
+        pack_name: String,
+        count: usize,
+        available: String,
+    },
+}
+
+/// Resolve a selector to the index of exactly one spec in `pack.metrics`.
+///
+/// `pack` must have passed [`validate_pack`]. Ambiguity is an error rather
+/// than a fan-out: a bare name against a repeated name names no single metric,
+/// and guessing which one is meant is how eight distinct generators became one.
+pub fn resolve_selector(pack: &MetricPackDef, raw: &str) -> Result<usize, SelectorError> {
+    let selector = MetricSelector::parse(raw);
+
+    let matches: Vec<usize> = pack
+        .metrics
+        .iter()
+        .enumerate()
+        .filter(|(_, spec)| {
+            spec.name == selector.name
+                && match &selector.id {
+                    Some(id) => spec.id.as_deref() == Some(id.as_str()),
+                    None => true,
+                }
+        })
+        .map(|(index, _)| index)
+        .collect();
+
+    match matches.len() {
+        1 => Ok(matches[0]),
+        0 => Err(SelectorError::NoMatch {
+            selector: raw.to_string(),
+            pack_name: pack.name.clone(),
+            available: available_selectors(pack),
+        }),
+        count => Err(SelectorError::Ambiguous {
+            selector: raw.to_string(),
+            pack_name: pack.name.clone(),
+            count,
+            available: matches
+                .iter()
+                .map(|&i| pack.metrics[i].selector())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
+    }
+}
+
+/// Every selector the pack answers to, for diagnostics.
+pub fn available_selectors(pack: &MetricPackDef) -> String {
+    if pack.metrics.is_empty() {
+        return "<none>".to_string();
+    }
+    pack.metrics
+        .iter()
+        .map(MetricSpec::selector)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Why a set of override keys does not map cleanly onto a pack's specs.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum OverrideKeyError {
+    /// One key addressed no spec, or more than one.
+    #[error(transparent)]
+    Unresolvable(#[from] SelectorError),
+
+    /// Two keys addressed the same spec, so one would be discarded.
+    #[error(
+        "keys '{first}' and '{second}' both address metric '{selector}' in pack '{pack_name}'"
+    )]
+    Conflict {
+        /// The pack being expanded.
+        pack_name: String,
+        /// The lexicographically earlier key.
+        first: String,
+        /// The key that collided with it.
+        second: String,
+        /// The canonical selector both keys resolve to.
+        selector: String,
+    },
+}
+
+/// Map each override key to the one spec index it addresses.
+///
+/// The only definition of override keying — both the v1 [`expand_pack`] path
+/// and the v2 compiler go through it, so they cannot drift.
+///
+/// Two properties, and neither implies the other: every key addresses exactly
+/// one spec, and no spec is addressed twice. A spec with a unique name that
+/// also declares an `id:` answers to both `name` and `name.id`, so two
+/// distinct keys can land on one index; writing both would silently discard
+/// one of them. Keys are visited in sorted order, so the pair a conflict
+/// names does not depend on the caller's map type.
+///
+/// # Errors
+///
+/// [`OverrideKeyError::Unresolvable`] for a key matching no spec or an
+/// ambiguous one; [`OverrideKeyError::Conflict`] when two keys collide.
+pub fn resolve_override_keys<'a>(
+    pack: &MetricPackDef,
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<usize, &'a str>, OverrideKeyError> {
+    let mut sorted: Vec<&str> = keys.into_iter().collect();
+    sorted.sort_unstable();
+
+    let mut by_spec: BTreeMap<usize, &str> = BTreeMap::new();
+    for key in sorted {
+        let index = resolve_selector(pack, key)?;
+        if let Some(previous) = by_spec.insert(index, key) {
+            return Err(OverrideKeyError::Conflict {
+                pack_name: pack.name.clone(),
+                first: previous.to_string(),
+                second: key.to_string(),
+                selector: pack.metrics[index].selector(),
+            });
+        }
+    }
+    Ok(by_spec)
+}
+
+// ---------------------------------------------------------------------------
 // Pack expansion
 // ---------------------------------------------------------------------------
 
@@ -227,7 +522,9 @@ fn default_encoder() -> EncoderConfig {
 ///
 /// Returns [`SondaError::Config`] if:
 /// - The pack definition has no metrics.
-/// - An override references a metric name not present in the pack.
+/// - The pack is not addressable (see [`validate_pack`]).
+/// - An override key does not address exactly one spec, or two keys address
+///   the same one (see [`resolve_override_keys`]).
 pub fn expand_pack(
     pack: &MetricPackDef,
     config: &PackScenarioConfig,
@@ -238,24 +535,17 @@ pub fn expand_pack(
         )));
     }
 
-    // Validate that all override keys match a metric in the pack.
-    if let Some(ref overrides) = config.overrides {
-        let metric_names: Vec<&str> = pack.metrics.iter().map(|m| m.name.as_str()).collect();
-        for key in overrides.keys() {
-            if !metric_names.contains(&key.as_str()) {
-                return Err(SondaError::Config(ConfigError::invalid(format!(
-                    "override references unknown metric {:?}; pack {:?} contains: {}",
-                    key,
-                    pack.name,
-                    metric_names.join(", ")
-                ))));
-            }
-        }
-    }
+    validate_pack(pack).map_err(|e| SondaError::Config(ConfigError::invalid(e.to_string())))?;
+
+    let override_keys = match config.overrides.as_ref() {
+        Some(overrides) => resolve_override_keys(pack, overrides.keys().map(String::as_str))
+            .map_err(|e| SondaError::Config(ConfigError::invalid(format!("override {e}"))))?,
+        None => BTreeMap::new(),
+    };
 
     let mut entries = Vec::with_capacity(pack.metrics.len());
 
-    for spec in &pack.metrics {
+    for (spec_index, spec) in pack.metrics.iter().enumerate() {
         // 1. Start with shared labels.
         let mut labels: HashMap<String, String> =
             pack.shared_labels.as_ref().cloned().unwrap_or_default();
@@ -274,12 +564,14 @@ pub fn expand_pack(
             }
         }
 
-        // Look up override for this metric (by name).
-        // For packs like node_exporter_cpu where the same metric name appears
-        // multiple times with different `mode` labels, the override applies to
-        // all instances sharing that name. This is intentional — the override
-        // replaces the generator/labels for every series of that metric.
-        let metric_override = config.overrides.as_ref().and_then(|o| o.get(&spec.name));
+        // Look up the override addressed at this spec, if any. Keyed by
+        // resolved index rather than by name: a name the pack repeats
+        // addresses no single spec, and `resolve_override_keys` has already
+        // refused such a key rather than fanning one override across all of
+        // them.
+        let metric_override = override_keys
+            .get(&spec_index)
+            .and_then(|key| config.overrides.as_ref().and_then(|o| o.get(*key)));
 
         // 4. Merge override labels.
         if let Some(ov) = metric_override {
@@ -361,11 +653,13 @@ mod tests {
             metrics: vec![
                 MetricSpec {
                     name: "metric_a".to_string(),
+                    id: None,
                     labels: None,
                     generator: None,
                 },
                 MetricSpec {
                     name: "metric_b".to_string(),
+                    id: None,
                     labels: None,
                     generator: None,
                 },
@@ -418,6 +712,7 @@ mod tests {
             shared_labels: Some(shared),
             metrics: vec![MetricSpec {
                 name: "ifOperStatus".to_string(),
+                id: None,
                 labels: Some(metric_labels),
                 generator: None,
             }],
@@ -465,6 +760,7 @@ mod tests {
             shared_labels: None,
             metrics: vec![MetricSpec {
                 name: "ifOperStatus".to_string(),
+                id: None,
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
             }],
@@ -514,6 +810,7 @@ mod tests {
             shared_labels: None,
             metrics: vec![MetricSpec {
                 name: "metric_a".to_string(),
+                id: None,
                 labels: None,
                 generator: None,
             }],
@@ -551,6 +848,7 @@ mod tests {
             shared_labels: None,
             metrics: vec![MetricSpec {
                 name: "m".to_string(),
+                id: None,
                 labels: None,
                 generator: None,
             }],
@@ -585,6 +883,7 @@ mod tests {
             shared_labels: None,
             metrics: vec![MetricSpec {
                 name: "m".to_string(),
+                id: None,
                 labels: None,
                 generator: None,
             }],
@@ -652,6 +951,7 @@ mod tests {
             shared_labels: None,
             metrics: vec![MetricSpec {
                 name: "metric_a".to_string(),
+                id: None,
                 labels: None,
                 generator: None,
             }],
@@ -699,6 +999,7 @@ mod tests {
             shared_labels: Some(shared),
             metrics: vec![MetricSpec {
                 name: "ifOperStatus".to_string(),
+                id: None,
                 labels: None,
                 generator: None,
             }],
@@ -817,5 +1118,311 @@ sink:
             labels.get("extra_label").map(String::as_str),
             Some("extra_value")
         );
+    }
+
+    // ---- Pack validation and selectors -----------------------------------------
+
+    fn spec(name: &str, id: Option<&str>) -> MetricSpec {
+        MetricSpec {
+            name: name.to_string(),
+            id: id.map(str::to_string),
+            labels: None,
+            generator: None,
+        }
+    }
+
+    fn pack_of(metrics: Vec<MetricSpec>) -> MetricPackDef {
+        MetricPackDef {
+            name: "p".to_string(),
+            description: "d".to_string(),
+            category: "network".to_string(),
+            shared_labels: None,
+            metrics,
+        }
+    }
+
+    #[test]
+    fn a_unique_name_needs_no_id() {
+        let pack = pack_of(vec![spec("a", None), spec("b", None)]);
+        assert_eq!(validate_pack(&pack), Ok(()));
+    }
+
+    /// The rule that moves ambiguity to authoring time. `node_exporter_cpu`
+    /// is exactly this shape.
+    #[test]
+    fn a_repeated_name_without_ids_does_not_load() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", None)]);
+        let err = validate_pack(&pack).expect_err("must refuse");
+        assert_eq!(
+            err,
+            PackValidationError::RepeatedNameWithoutIds {
+                pack_name: "p".to_string(),
+                name: "cpu".to_string(),
+                count: 2,
+                without: 1,
+            }
+        );
+        assert!(format!("{err}").contains("unique `id:`"), "got: {err}");
+    }
+
+    #[test]
+    fn a_repeated_name_with_ids_on_all_of_them_loads() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        assert_eq!(validate_pack(&pack), Ok(()));
+    }
+
+    #[test]
+    fn two_specs_sharing_a_name_may_not_share_an_id() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("user"))]);
+        assert!(matches!(
+            validate_pack(&pack),
+            Err(PackValidationError::DuplicateMetricId { .. })
+        ));
+    }
+
+    /// The separator must not be ambushable. Prometheus metric names cannot
+    /// contain `.` either, so nothing legitimate is being refused.
+    #[test]
+    fn a_dotted_metric_name_does_not_load() {
+        let pack = pack_of(vec![spec("if.OperStatus", None)]);
+        let err = validate_pack(&pack).expect_err("must refuse");
+        assert!(matches!(err, PackValidationError::DottedMetricName { .. }));
+        assert!(format!("{err}").contains("if.OperStatus"), "got: {err}");
+    }
+
+    /// An id may repeat across *different* names — it only disambiguates
+    /// within one name, exactly like an SNMP column index within a table.
+    #[test]
+    fn the_same_id_under_two_different_names_is_fine() {
+        let pack = pack_of(vec![
+            spec("cpu", Some("user")),
+            spec("cpu", Some("idle")),
+            spec("mem", Some("user")),
+            spec("mem", Some("idle")),
+        ]);
+        assert_eq!(validate_pack(&pack), Ok(()));
+    }
+
+    #[test]
+    fn selector_parse_splits_on_the_first_dot_so_an_id_may_contain_dots() {
+        assert_eq!(
+            MetricSelector::parse("ifOperStatus"),
+            MetricSelector {
+                name: "ifOperStatus".to_string(),
+                id: None
+            }
+        );
+        assert_eq!(
+            MetricSelector::parse("cpu.user"),
+            MetricSelector {
+                name: "cpu".to_string(),
+                id: Some("user".to_string())
+            }
+        );
+        assert_eq!(
+            MetricSelector::parse("cpu.a.b"),
+            MetricSelector {
+                name: "cpu".to_string(),
+                id: Some("a.b".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn selector_resolves_a_bare_unique_name() {
+        let pack = pack_of(vec![spec("a", None), spec("b", None)]);
+        assert_eq!(resolve_selector(&pack, "b"), Ok(1));
+    }
+
+    #[test]
+    fn selector_resolves_a_name_dot_id() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        assert_eq!(resolve_selector(&pack, "cpu.idle"), Ok(1));
+    }
+
+    /// The mirror of the fan-out: one spec addressed by two keys, one of
+    /// which would be applied and the other dropped in silence.
+    #[test]
+    fn two_override_keys_reaching_one_spec_are_refused() {
+        let pack = pack_of(vec![spec("ifOperStatus", Some("up"))]);
+        for key in ["ifOperStatus", "ifOperStatus.up"] {
+            resolve_override_keys(&pack, [key])
+                .unwrap_or_else(|e| panic!("'{key}' alone must resolve, got {e}"));
+        }
+
+        let err = resolve_override_keys(&pack, ["ifOperStatus", "ifOperStatus.up"])
+            .expect_err("both together must not silently pick one");
+        match &err {
+            OverrideKeyError::Conflict {
+                first,
+                second,
+                selector,
+                ..
+            } => {
+                assert_eq!(first, "ifOperStatus");
+                assert_eq!(second, "ifOperStatus.up");
+                assert_eq!(selector, "ifOperStatus.up");
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    /// Keys are visited in sorted order, so the pair a conflict names does
+    /// not depend on the caller handing them over in a particular order —
+    /// `PackScenarioConfig` keeps its overrides in a `HashMap`.
+    #[test]
+    fn a_conflict_names_the_same_pair_whichever_order_the_keys_arrive_in() {
+        let pack = pack_of(vec![spec("ifOperStatus", Some("up"))]);
+        let forward = resolve_override_keys(&pack, ["ifOperStatus", "ifOperStatus.up"])
+            .expect_err("must conflict")
+            .to_string();
+        let reverse = resolve_override_keys(&pack, ["ifOperStatus.up", "ifOperStatus"])
+            .expect_err("must conflict")
+            .to_string();
+        assert_eq!(forward, reverse);
+    }
+
+    /// The v1 path validates the pack before resolving anything, so a spec
+    /// `resolve_selector` could never address is refused rather than
+    /// silently dropped. Without this, `resolve_selector` would run against
+    /// a pack that never passed the rule it assumes holds.
+    #[test]
+    fn expand_pack_refuses_an_unaddressable_pack() {
+        let config = |pack: &str| PackScenarioConfig {
+            pack: pack.to_string(),
+            rate: 1.0,
+            duration: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            overrides: None,
+        };
+
+        // A dotted name: addressable by nothing, since `parse` splits on the
+        // first dot and no spec is named `cpu`.
+        let dotted = pack_of(vec![spec("cpu.user", None)]);
+        let msg = expand_pack(&dotted, &config("test"))
+            .expect_err("a dotted metric name must not load")
+            .to_string();
+        assert!(msg.contains("cpu.user") && msg.contains('.'), "got: {msg}");
+
+        // A repeated name with no ids: two specs, neither addressable.
+        let repeated = pack_of(vec![spec("cpu", None), spec("cpu", None)]);
+        let msg = expand_pack(&repeated, &config("test"))
+            .expect_err("a repeated name without ids must not load")
+            .to_string();
+        assert!(msg.contains("appears 2 times"), "got: {msg}");
+
+        // The corrected twin loads.
+        let fixed = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        assert_eq!(
+            expand_pack(&fixed, &config("test"))
+                .expect("ids make it addressable")
+                .len(),
+            2
+        );
+    }
+
+    /// The v1 oracle used to fan a bare key across every spec sharing the
+    /// name, with a comment saying so on purpose. It now goes through the
+    /// same keying rule as the compiler.
+    #[test]
+    fn expand_pack_refuses_a_bare_key_against_a_repeated_name() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "cpu".to_string(),
+            MetricOverride {
+                generator: Some(GeneratorConfig::Constant { value: 12345.0 }),
+                labels: None,
+                after: None,
+                while_clause: None,
+                delay_clause: None,
+            },
+        );
+        let config = PackScenarioConfig {
+            pack: "test".to_string(),
+            rate: 1.0,
+            duration: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            overrides: Some(overrides),
+        };
+
+        let msg = expand_pack(&pack, &config)
+            .expect_err("v1 must not fan one override across both specs")
+            .to_string();
+        assert!(msg.contains("ambiguous"), "got: {msg}");
+        assert!(
+            msg.contains("cpu.user") && msg.contains("cpu.idle"),
+            "must list the ids to pick from: {msg}"
+        );
+    }
+
+    /// The defect this whole change exists to kill: a bare name against a
+    /// repeated one used to silently address all of them.
+    #[test]
+    fn a_bare_name_against_a_repeated_name_is_ambiguous_not_a_fan_out() {
+        let pack = pack_of(vec![
+            spec("cpu", Some("user")),
+            spec("cpu", Some("idle")),
+            spec("cpu", Some("steal")),
+        ]);
+        let err = resolve_selector(&pack, "cpu").expect_err("must refuse to guess");
+        match &err {
+            SelectorError::Ambiguous {
+                count, available, ..
+            } => {
+                assert_eq!(*count, 3);
+                assert!(
+                    available.contains("cpu.user"),
+                    "must list the ids: {available}"
+                );
+                assert!(
+                    available.contains("cpu.steal"),
+                    "must list the ids: {available}"
+                );
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_selector_names_what_the_pack_does_have() {
+        let pack = pack_of(vec![spec("cpu", Some("user"))]);
+        let err = resolve_selector(&pack, "nope").expect_err("must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("nope"), "got: {msg}");
+        assert!(
+            msg.contains("cpu.user"),
+            "must list the real selectors: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_id_under_a_known_name_is_a_no_match() {
+        let pack = pack_of(vec![spec("cpu", Some("user")), spec("cpu", Some("idle"))]);
+        assert!(matches!(
+            resolve_selector(&pack, "cpu.nope"),
+            Err(SelectorError::NoMatch { .. })
+        ));
+    }
+
+    #[test]
+    fn spec_selector_round_trips_through_resolve() {
+        let pack = pack_of(vec![
+            spec("cpu", Some("user")),
+            spec("cpu", Some("idle")),
+            spec("mem", None),
+        ]);
+        assert_eq!(validate_pack(&pack), Ok(()));
+        for (index, s) in pack.metrics.iter().enumerate() {
+            assert_eq!(
+                resolve_selector(&pack, &s.selector()),
+                Ok(index),
+                "every spec must be addressable by its own selector"
+            );
+        }
     }
 }

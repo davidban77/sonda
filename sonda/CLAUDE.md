@@ -108,6 +108,8 @@ entry wins over a builtin of the same name. The verbosity model is captured in t
   builtin packs; `--catalog <dir>` merges that directory over them, marking any entry that
   shadows a builtin. Filters: `--kind`, `--tag`. `--json` emits machine-readable output. YAML
   files skipped for lacking a `kind:` header are named on stderr rather than dropped in silence.
+  A pack that parses but cannot be referenced is marked `(unusable)` and its reason printed —
+  listed rather than hidden, because `sonda show` is how the user reads the offending file.
   No dry-run (the operation is purely observational).
 - **`sonda show <@name>`** — print the raw source YAML for a catalog entry, builtin or on disk,
   round-trippable through `sonda run`.

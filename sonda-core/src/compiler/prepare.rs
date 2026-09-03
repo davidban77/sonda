@@ -983,16 +983,19 @@ scenarios:
             metrics: vec![
                 MetricSpec {
                     name: "m1".to_string(),
+                    id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                 },
                 MetricSpec {
                     name: "m2".to_string(),
+                    id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 2.0 }),
                 },
                 MetricSpec {
                     name: "m3".to_string(),
+                    id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 3.0 }),
                 },

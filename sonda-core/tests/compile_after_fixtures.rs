@@ -258,11 +258,21 @@ fn invalid_compile_ambiguous_pack_ref_rejected() {
             ref_id,
             pack_entry_id,
             candidates,
+            candidate_count,
         } => {
             assert_eq!(ref_id, "node.node_cpu_seconds_total");
             assert_eq!(pack_entry_id, "node");
-            assert!(candidates.contains("#0"));
-            assert!(candidates.contains("#7"));
+            // The candidates are the specs' own ids — the CPU modes — rather
+            // than their positions in the pack.
+            assert!(
+                candidates.contains("node_cpu_seconds_total.user"),
+                "got: {candidates}"
+            );
+            assert!(
+                candidates.contains("node_cpu_seconds_total.steal"),
+                "got: {candidates}"
+            );
+            assert_eq!(candidate_count, 8, "all eight CPU modes are candidates");
         }
         other => panic!("wrong variant: {other:?}"),
     }
