@@ -716,11 +716,13 @@ moved_major() {
   local release_tag="$1"; shift
   local repo="$TMP/steprepo" major="${release_tag%%.*}" rc head older local_ref remote_ref moved published
   local bystander=v1 by_local by_remote intact
-  [ "$major" = v1 ] && bystander=v2
+  if [ "$major" = v1 ]; then bystander=v2; fi
   rm -rf "$repo" "$repo.git"; mkdir -p "$repo"
   (
     git init -q --bare "${repo}.git"
-    cd "$repo"
+    # Guarded: unguarded, a failed mkdir leaves this subshell in the real
+    # checkout, where the lines below push tags to the real origin.
+    cd "$repo" || { printf 'FIXTURE-BROKEN'; exit 1; }
     git init -q .; git config user.email t@t; git config user.name t
     git remote add origin "${repo}.git"
     mkdir -p scripts; cp "$MOVING_TAGS" scripts/
