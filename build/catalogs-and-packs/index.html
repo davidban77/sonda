@@ -1266,6 +1266,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#extend-a-pack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extend a pack
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#pack-definition-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2523,6 +2534,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#extend-a-pack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extend a pack
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#pack-definition-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2583,7 +2605,7 @@
 <h1 id="catalogs-and-packs">Catalogs and packs<a class="headerlink" href="#catalogs-and-packs" title="Permanent link">&para;</a></h1>
 <p>A <strong><abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr></strong> is a directory of <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML files Sonda discovers through <code>--catalog &lt;dir&gt;</code>. A <strong><abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr></strong> is a reusable bundle of metric names and label schemas you reference from any runnable <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> with <code>pack: &lt;name&gt;</code>. The two work together — packs live alongside runnable scenarios in the same <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> — but catalogs can be used without packs if you do not need the reuse.</p>
 <h2 id="catalogs">Catalogs<a class="headerlink" href="#catalogs" title="Permanent link">&para;</a></h2>
-<p>Each file in a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> declares a <code>kind:</code> — <code>runnable</code> for scenarios you can run, <code>composable</code> for <a href="#packs">packs</a> other scenarios reference. Sonda does not include a built-in <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>. Yours lives in your own repository, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become fully supported artifacts of the system they model instead of being pinned to a Sonda release.</p>
+<p>Each file in a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> declares a <code>kind:</code> — <code>runnable</code> for scenarios you can run, <code>composable</code> for <a href="#packs">packs</a> other scenarios reference. Sonda ships a small built-in <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> of curated packs, and <code>--catalog &lt;dir&gt;</code> chains your own directory in front of it. Yours lives in your own repository, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become fully supported artifacts of the system they model instead of being pinned to a Sonda release.</p>
 <h3 id="the-minimum">The minimum<a class="headerlink" href="#the-minimum" title="Permanent link">&para;</a></h3>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>my-catalog/
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── cpu-spike.yaml          # kind: runnable
@@ -2609,8 +2631,8 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sonda<span class="w"> </span>--catalog<span class="w"> </span>~/sonda-catalog<span class="w"> </span>list<span class="w"> </span>--kind<span class="w"> </span>runnable
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>sonda<span class="w"> </span>--catalog<span class="w"> </span>~/sonda-catalog<span class="w"> </span>list<span class="w"> </span>--tag<span class="w"> </span>cpu
 </span></code></pre></div>
-<p>For machine-readable output, add <code>--json</code> to get a stable array on stdout. Each element has <code>name</code>, <code>kind</code>, <code>description</code>, <code>category</code>, <code>tags</code>, the resolved <code>source</code> path, <code>origin</code> (<code>builtin</code> or <code>catalog</code>), <code>shadows_builtin</code>, and <code>pack_error</code>. Use it as the contract when you script <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> discovery.</p>
-<p>A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> that parses as a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> entry but cannot be referenced — a repeated metric name with no ids, say — is still listed, marked <code>(unusable)</code>, with the reason on stderr and in <code>pack_error</code>. It is listed rather than hidden because <code>sonda show &lt;name&gt;</code> is how you read the file and find the problem.</p>
+<p>For machine-readable output, add <code>--json</code> to get a stable array on stdout. Each element has <code>name</code>, <code>kind</code>, <code>description</code>, <code>category</code>, <code>tags</code>, the resolved <code>source</code> path, <code>origin</code> (<code>builtin</code> or <code>catalog</code>), <code>shadows_builtin</code>, <code>extends</code>, and <code>pack_error</code>. Use it as the contract when you script <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> discovery.</p>
+<p>A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> that parses as a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> entry but cannot be referenced — a repeated metric name with no ids, an <code>extends:</code> naming a base the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> does not hold, a chain that loops — is still listed, marked <code>(unusable)</code>, with the reason on stderr and in <code>pack_error</code>. It is listed rather than hidden because <code>sonda show &lt;name&gt;</code> is how you read the file and find the problem.</p>
 <h3 id="run-a-scenario">Run a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr><a class="headerlink" href="#run-a-scenario" title="Permanent link">&para;</a></h3>
 <p><code>sonda run @name --catalog &lt;dir&gt;</code> resolves the name in the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> and runs the entry:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>sonda<span class="w"> </span>--catalog<span class="w"> </span>~/sonda-catalog<span class="w"> </span>run<span class="w"> </span>@cpu-spike<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>10s
@@ -2735,7 +2757,7 @@
 </span></code></pre></div>
 <h2 id="packs">Packs<a class="headerlink" href="#packs" title="Permanent link">&para;</a></h2>
 <p>A <abbr title="Reusable bundle of metric names, label schemas, and default generators per metric.">metric pack</abbr> is a reusable bundle of metric names and label schemas, expressed as a <code>kind: composable</code> YAML file in your <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>. Reference a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> from any runnable <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> with <code>pack: &lt;name&gt;</code> and Sonda expands it into one entry per metric: exact names, correct shared labels, and reasonable default generators per metric.</p>
-<p>Sonda no longer includes any built-in packs. You write your own and check them into a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory alongside your scenarios.</p>
+<p>Sonda ships a few curated packs built into the binary — <code>sonda list</code> shows them with no arguments. Write your own alongside them in a <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory, or <a href="#extend-a-pack">extend one</a>.</p>
 <h3 id="why-metric-packs">Why metric packs<a class="headerlink" href="#why-metric-packs" title="Permanent link">&para;</a></h3>
 <p>When you test dashboards or alert rules, the metric names and label keys matter as much as the values. A Grafana dashboard that queries <code>ifHCInOctets{device="...",ifName="..."}</code> breaks if the metric is called <code>interface_in_octets</code> or the label key is <code>interface</code> instead of <code>ifName</code>.</p>
 <p>Packs solve this by encoding the exact schema your tooling expects. You provide the instance-specific labels (which device, which interface), and the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> fills in the metric names, shared labels, and default generators.</p>
@@ -2943,6 +2965,46 @@
 </span></code></pre></div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>sonda<span class="w"> </span>--catalog<span class="w"> </span>~/sonda-catalog<span class="w"> </span>run<span class="w"> </span>run-my-pack.yaml
 </span></code></pre></div>
+<h3 id="extend-a-pack">Extend a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr><a class="headerlink" href="#extend-a-pack" title="Permanent link">&para;</a></h3>
+<p>A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> can build on another instead of restating it. Set <code>extends:</code> to the base's name and the resolved <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> is the base plus your changes — the base file is never edited.</p>
+<div class="language-yaml highlight"><span class="filename">~/sonda-catalog/cisco-iosxe-interface.yaml</span><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">composable</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cisco_iosxe_interface</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">"IOS-XE</span><span class="nv"> </span><span class="s">interface</span><span class="nv"> </span><span class="s">metrics</span><span class="nv"> </span><span class="s">(extends</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">Telegraf</span><span class="nv"> </span><span class="s">SNMP</span><span class="nv"> </span><span class="s">base)"</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="nt">category</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">network</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="nt">extends</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegraf_snmp_interface</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="nt">shared_labels</span><span class="p">:</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="w">  </span><span class="nt">platform</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">iosxe</span>
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a>
+</span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a><span class="nt">metrics</span><span class="p">:</span><span class="w">                        </span><span class="c1"># additive only</span>
+</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ifInDiscards</span>
+</span><span id="__span-27-14"><a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-27-15"><a id="__codelineno-27-15" name="__codelineno-27-15" href="#__codelineno-27-15"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">step</span>
+</span><span id="__span-27-16"><a id="__codelineno-27-16" name="__codelineno-27-16" href="#__codelineno-27-16"></a><span class="w">      </span><span class="nt">start</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0</span>
+</span><span id="__span-27-17"><a id="__codelineno-27-17" name="__codelineno-27-17" href="#__codelineno-27-17"></a><span class="w">      </span><span class="nt">step_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.05</span>
+</span><span id="__span-27-18"><a id="__codelineno-27-18" name="__codelineno-27-18" href="#__codelineno-27-18"></a>
+</span><span id="__span-27-19"><a id="__codelineno-27-19" name="__codelineno-27-19" href="#__codelineno-27-19"></a><span class="nt">deviations</span><span class="p">:</span><span class="w">                     </span><span class="c1"># changes to the base's metrics</span>
+</span><span id="__span-27-20"><a id="__codelineno-27-20" name="__codelineno-27-20" href="#__codelineno-27-20"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ifOperStatus</span>
+</span><span id="__span-27-21"><a id="__codelineno-27-21" name="__codelineno-27-21" href="#__codelineno-27-21"></a><span class="w">    </span><span class="nt">replace</span><span class="p">:</span>
+</span><span id="__span-27-22"><a id="__codelineno-27-22" name="__codelineno-27-22" href="#__codelineno-27-22"></a><span class="w">      </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-27-23"><a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a><span class="w">        </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flap</span>
+</span><span id="__span-27-24"><a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ifHCOutOctets</span>
+</span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="w">    </span><span class="nt">not_supported</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">         </span><span class="c1"># this platform does not implement it</span>
+</span></code></pre></div>
+<p>Run it like any other <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> — <code>pack: cisco_iosxe_interface</code> — and the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> sees one flat set of metrics.</p>
+<p><strong><code>metrics:</code> only adds.</strong> A metric whose selector the base already declares is an error, because adding and changing are different operations. Use a deviation to change one.</p>
+<p><strong>Each deviation gives exactly one action.</strong> <code>replace:</code> swaps the fields it names — a <code>generator:</code> replaces the base's <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> entirely, a <code>labels:</code> replaces the base's per-metric labels entirely, and a field you leave out is inherited. <code>not_supported: true</code> removes the metric. Giving both, or neither, is an error rather than a guess. Two deviations addressing the same metric is also an error — never last-wins.</p>
+<p>A <code>replace:</code> that names no field counts as <em>neither</em>, not as an action. That matters because <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> files cannot reject unknown keys — they carry <code>kind:</code> and <code>version:</code>, which are not <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> fields — so a misspelled <code>generatr:</code> is dropped and would otherwise leave a change that changes nothing.</p>
+<p><strong><code>deviations:</code> needs an <code>extends:</code>.</strong> A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> with no base has nothing to deviate from, and the block would never be applied, so declaring one is an error rather than a silent no-op.</p>
+<p><strong>A deviation must hit something.</strong> A <code>metric:</code> selector matching nothing in the base fails the compile, listing the base's real selectors. A no-op deviation is nearly always a typo or a base that moved on.</p>
+<p><code>extends:</code> takes one <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>, not a list: an extension of two bases is two packs. Chains are fine (<code>c</code> extends <code>b</code> extends <code>a</code>, unbounded), and a loop is an error naming it.</p>
+<div class="admonition info">
+<p class="admonition-title">The base is resolved, not pinned</p>
+<p><code>extends:</code> goes through the same lookup as <code>pack:</code>, so shadowing a base in your <code>--catalog &lt;dir&gt;</code> means every extension built on it inherits your version. That is the point — a local patch propagates — but it also means a base you have changed can break an extension you did not write. When it does, you get a named selector error at compile time, not a silent difference.</p>
+</div>
+<p>Label precedence gains one slot for the extension: <code>defaults.labels</code> → base <code>shared_labels</code> → <strong>extension <code>shared_labels</code></strong> → per-metric labels (after deviations) → your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> <code>labels</code> → <code>overrides</code>. Deeper packs in a chain win over shallower ones.</p>
 <h3 id="pack-definition-fields">Pack definition fields<a class="headerlink" href="#pack-definition-fields" title="Permanent link">&para;</a></h3>
 <p>All <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> fields are top-level keys in the file:</p>
 <table>
@@ -2974,16 +3036,46 @@
 <td>Broad grouping for the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> (e.g. <code>network</code>, <code>infrastructure</code>, <code>application</code>).</td>
 </tr>
 <tr>
+<td><code>extends</code></td>
+<td>string</td>
+<td>no</td>
+<td>The base <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> this one extends, by name or path. One value, not a list. See <a href="#extend-a-pack">Extend a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr></a>.</td>
+</tr>
+<tr>
 <td><code>shared_labels</code></td>
 <td>map</td>
 <td>no</td>
-<td>Labels applied to every metric in the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>. Empty values are placeholders for the user to fill.</td>
+<td>Labels applied to every metric in the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>. Empty values are placeholders for the user to fill. An extension's map wins over its base's.</td>
 </tr>
 <tr>
 <td><code>metrics</code></td>
 <td>list</td>
+<td>yes*</td>
+<td>Metric specifications. *Optional with <code>extends:</code> — purely additive there. A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> that resolves to no metrics at all is an error.</td>
+</tr>
+<tr>
+<td><code>deviations</code></td>
+<td>list</td>
+<td>no</td>
+<td>Changes to the base's metrics. Requires <code>extends:</code> — declaring one without a base is an error.</td>
+</tr>
+<tr>
+<td><code>deviations[].metric</code></td>
+<td>string</td>
 <td>yes</td>
-<td>One or more metric specifications.</td>
+<td>Selector into the resolved base. Matching nothing is an error.</td>
+</tr>
+<tr>
+<td><code>deviations[].replace</code></td>
+<td>object</td>
+<td>no</td>
+<td><code>generator</code> and/or <code>labels</code> to replace wholesale — at least one of them, since a <code>replace</code> naming no field is not an action. Exactly one of <code>replace</code> / <code>not_supported</code> per deviation.</td>
+</tr>
+<tr>
+<td><code>deviations[].not_supported</code></td>
+<td>bool</td>
+<td>no</td>
+<td><code>true</code> removes the addressed metric.</td>
 </tr>
 <tr>
 <td><code>metrics[].name</code></td>
@@ -3013,24 +3105,24 @@
 </table>
 <h2 id="pattern-catalog-and-packs-together">Pattern: <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> and packs together<a class="headerlink" href="#pattern-catalog-and-packs-together" title="Permanent link">&para;</a></h2>
 <p>The typical project structure uses both: runnable scenarios at the <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> root and packs in a <code>packs/</code> subdirectory.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>my-catalog/
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>├── packs/
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>│   ├── snmp-interfaces.yaml      # kind: composable
-</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>│   └── node-exporter-cpu.yaml    # kind: composable
-</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>├── cpu-spike.yaml                # kind: runnable
-</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>├── memory-leak.yaml              # kind: runnable
-</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>└── edge-router-snmp.yaml         # kind: runnable, references pack
+<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>my-catalog/
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>├── packs/
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>│   ├── snmp-interfaces.yaml      # kind: composable
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>│   └── node-exporter-cpu.yaml    # kind: composable
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>├── cpu-spike.yaml                # kind: runnable
+</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>├── memory-leak.yaml              # kind: runnable
+</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a>└── edge-router-snmp.yaml         # kind: runnable, references pack
 </span></code></pre></div>
-<div class="language-yaml highlight"><span class="filename">edge-router-snmp.yaml</span><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
-</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">edge-router-snmp</span>
-</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>
-</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="nt">scenarios</span><span class="p">:</span>
-</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
-</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp-interfaces</span>
-</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span>
-</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="w">      </span><span class="nt">device</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rtr-edge-01</span>
-</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a><span class="w">      </span><span class="nt">ifName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GigabitEthernet0/0/0</span>
+<div class="language-yaml highlight"><span class="filename">edge-router-snmp.yaml</span><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">edge-router-snmp</span>
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp-interfaces</span>
+</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span>
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a><span class="w">      </span><span class="nt">device</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rtr-edge-01</span>
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a><span class="w">      </span><span class="nt">ifName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GigabitEthernet0/0/0</span>
 </span></code></pre></div>
 <p><code>sonda --catalog ./my-catalog list</code> discovers every file; <code>sonda run @edge-router-snmp</code> runs the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>-backed <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>. The <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> directory layout has no special meaning — Sonda walks it recursively for <code>kind:</code> headers — but a <code>packs/</code> subdirectory keeps the listing readable.</p>
 <h2 id="where-to-next">Where to next<a class="headerlink" href="#where-to-next" title="Permanent link">&para;</a></h2>
@@ -3060,7 +3152,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 3, 2026 13:21:45 UTC">September 3, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 3, 2026 20:32:40 UTC">September 3, 2026</span>
   </span>
 
     
