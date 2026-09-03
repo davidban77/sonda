@@ -714,7 +714,9 @@ fi
 
 moved_major() {
   local release_tag="$1"; shift
-  local repo="$TMP/steprepo" major="${release_tag%%.*}" rc head local_ref remote_ref moved published
+  local repo="$TMP/steprepo" major="${release_tag%%.*}" rc head older local_ref remote_ref moved published
+  local bystander=v1 by_local by_remote intact
+  [ "$major" = v1 ] && bystander=v2
   rm -rf "$repo" "$repo.git"; mkdir -p "$repo"
   (
     git init -q --bare "${repo}.git"
@@ -723,24 +725,36 @@ moved_major() {
     git remote add origin "${repo}.git"
     mkdir -p scripts; cp "$MOVING_TAGS" scripts/
     git commit -q --allow-empty -m older
+    older="$(git rev-parse HEAD)"
     git tag "$major" # the moving tag, already published, on an older commit
+    git tag "$bystander" # another major line's moving tag, which this release never claims
     # Published for real, so the step must overwrite the remote ref rather than create one.
-    git push -q origin "refs/tags/${major}"
-    git -C "${repo}.git" rev-parse -q --verify "refs/tags/${major}" > /dev/null \
-      || { printf 'FIXTURE-BROKEN'; exit 1; }
+    git push -q origin "refs/tags/${major}" "refs/tags/${bystander}"
+    for t in "$major" "$bystander"; do
+      git -C "${repo}.git" rev-parse -q --verify "refs/tags/${t}" > /dev/null \
+        || { printf 'FIXTURE-BROKEN'; exit 1; }
+    done
     git commit -q --allow-empty -m release
     for t in "$@"; do git tag "$t"; done
+    head="$(git rev-parse HEAD)" # fixed before the step runs, so a step that commits cannot redefine it
     RELEASE_TAG="$release_tag" bash "$MAJOR_STEP" > /dev/null 2>&1
     rc=$?
-    head="$(git rev-parse HEAD)"
     local_ref="$(git rev-parse -q --verify "refs/tags/${major}^{commit}" 2> /dev/null || printf 'none')"
     # The local ref alone is not the property: `git tag -f` satisfies it while origin keeps @v1 on the previous release.
     remote_ref="$(git -C "${repo}.git" rev-parse -q --verify "refs/tags/${major}^{commit}" 2> /dev/null || printf 'none')"
-    if [ "$local_ref" = "$head" ]; then moved=MOVED; else moved=LEFT; fi
-    if [ "$remote_ref" = "$head" ]; then published=PUBLISHED; else published=UNPUBLISHED; fi
+    # STRAY is the tag deleted, never created, or moved somewhere else entirely — outcomes a plain `else LEFT` calls correct.
+    if   [ "$local_ref" = "$head" ];  then moved=MOVED
+    elif [ "$local_ref" = "$older" ]; then moved=LEFT
+    else                                   moved=STRAY; fi
+    if   [ "$remote_ref" = "$head" ];  then published=PUBLISHED
+    elif [ "$remote_ref" = "$older" ]; then published=UNPUBLISHED
+    else                                    published=STRAY; fi
+    by_local="$(git rev-parse -q --verify "refs/tags/${bystander}^{commit}" 2> /dev/null || printf 'none')"
+    by_remote="$(git -C "${repo}.git" rev-parse -q --verify "refs/tags/${bystander}^{commit}" 2> /dev/null || printf 'none')"
+    if [ "$by_local" = "$older" ] && [ "$by_remote" = "$older" ]; then intact=INTACT; else intact=DISTURBED; fi
     # The exit code is part of the answer: a release the rule cannot decide
     # must leave the tag alone AND say so, not leave it alone quietly.
-    printf 'rc=%s %s/%s' "$rc" "$moved" "$published"
+    printf 'rc=%s %s/%s %s:%s' "$rc" "$moved" "$published" "$bystander" "$intact"
   )
 }
 
@@ -750,22 +764,22 @@ check_step() {
   if [ "$got" = "$want" ]; then pass "$label"; else fail "$label" "got ${got}, want ${want}"; fi
 }
 
-check_step "the step really moves v1 onto the newest 1.x" "rc=0 MOVED/PUBLISHED"  "v1.22.3" v1.21.0 v1.22.3 v2.0.0
-check_step "the step leaves v1 alone on an older 1.x"     "rc=0 LEFT/UNPUBLISHED" "v1.21.0" v1.21.0 v1.22.3 v2.0.0
-check_step "the step moves v2 and never touches v1"       "rc=0 MOVED/PUBLISHED"  "v2.0.0"  v1.22.3 v2.0.0
+check_step "the step really moves v1 onto the newest 1.x" "rc=0 MOVED/PUBLISHED v2:INTACT"  "v1.22.3" v1.21.0 v1.22.3 v2.0.0
+check_step "the step leaves v1 alone on an older 1.x"     "rc=0 LEFT/UNPUBLISHED v2:INTACT" "v1.21.0" v1.21.0 v1.22.3 v2.0.0
+check_step "the step moves v2 and never touches v1"       "rc=0 MOVED/PUBLISHED v1:INTACT"  "v2.0.0"  v1.22.3 v2.0.0
 # The major line is its own question, which is why the step reads MOVE_MAJOR
 # and not the overall-highest answer: someone pinned to `@v1` wants the newest
 # 1.x whether or not a 2.x exists.
 check_step "a newer major line does not stop v1 tracking its own" \
-  "rc=0 MOVED/PUBLISHED" "v1.21.0" v1.21.0 v2.0.0
+  "rc=0 MOVED/PUBLISHED v2:INTACT" "v1.21.0" v1.21.0 v2.0.0
 check_step "a backport does not drag v1 backwards" \
-  "rc=0 LEFT/UNPUBLISHED" "v1.19.1" v1.19.0 v1.19.1 v1.20.0
+  "rc=0 LEFT/UNPUBLISHED v2:INTACT" "v1.19.1" v1.19.0 v1.19.1 v1.20.0
 check_step "a pre-release moves nothing" \
-  "rc=0 LEFT/UNPUBLISHED" "v2.0.0-rc.1" v1.22.3 v2.0.0-rc.1
+  "rc=0 LEFT/UNPUBLISHED v1:INTACT" "v2.0.0-rc.1" v1.22.3 v2.0.0-rc.1
 # A tag list that cannot see this release answers "nothing is newer" to every
 # question, so the step must refuse rather than take the vacuous `true`.
 check_step "a release absent from the fetched tags is refused, not answered" \
-  "rc=1 LEFT/UNPUBLISHED" "v9.9.9" v1.0.0
+  "rc=1 LEFT/UNPUBLISHED v1:INTACT" "v9.9.9" v1.0.0
 
 # Read release.yml the way action.yml is read. Round 1's fix — needles
 # against run: bodies with comments dropped — went to action.yml only, so

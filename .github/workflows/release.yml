@@ -250,8 +250,8 @@ jobs:
     # external services, not one — Docker Hub for the QEMU and buildkit images,
     # GitHub for the release assets, ghcr for the push and the pull-backs. Sized
     # loose against that rather than tight against the sample, because tagging is
-    # the last step: a job killed before it publishes a release whose own notes
-    # advertise an image tag that was never created.
+    # the last step: a job killed before it gets there leaves an already-published
+    # release whose notes advertise an image tag that was never created.
     timeout-minutes: 10
 
     env:
