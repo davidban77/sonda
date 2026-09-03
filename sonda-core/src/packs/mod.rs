@@ -17,6 +17,8 @@
 //! repo-root `packs/` directory; user packs are read from `--catalog <dir>`.
 //! [`crate::catalog::CatalogPackResolver`] chains the two.
 
+pub mod extend;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::compiler::{AfterClause, DelayClause, WhileClause};
@@ -97,6 +99,9 @@ impl MetricSpec {
 ///       type: step
 ///       step_size: 125000.0
 /// ```
+///
+/// A pack may instead extend another, adding metrics and deviating from the
+/// base's — see [`extends`](Self::extends) and [`extend`](crate::packs::extend).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -107,12 +112,85 @@ pub struct MetricPackDef {
     pub description: String,
     /// Broad grouping (e.g. `"network"`, `"infrastructure"`).
     pub category: String,
+    /// The pack this one extends, by the same reference form `pack:` accepts.
+    ///
+    /// One value, not a list: multiple inheritance would need a diamond merge
+    /// order, and an extension of two bases is two packs. Chains are allowed
+    /// and unbounded. Resolved through the same resolver chain as `pack:`, so
+    /// an extension extends the *resolved* base — shadow the base in
+    /// `--catalog <dir>` and every extension built on it inherits the shadow.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub extends: Option<String>,
     /// Labels shared across all metrics in the pack. Per-metric labels and
     /// user labels are merged on top (user wins on conflict).
+    ///
+    /// An extension's map is merged over its base's, so the extension wins
+    /// and deeper packs win in chain order.
     #[cfg_attr(feature = "config", serde(default))]
     pub shared_labels: Option<HashMap<String, String>>,
-    /// The list of metric specifications in this pack.
+    /// The metric specifications this pack contributes.
+    ///
+    /// In an extension these are **purely additive**: a spec whose selector
+    /// the base already declares is a hard error, because adding and
+    /// changing are different operations. Use a [`Deviation`] to change one.
+    ///
+    /// Empty is legal only for an extension — a pack that resolves to no
+    /// metrics at all is [`ExpandError::EmptyPack`](crate::compiler::expand::ExpandError).
+    #[cfg_attr(feature = "config", serde(default))]
     pub metrics: Vec<MetricSpec>,
+    /// Changes to the base's metrics. Meaningful only with `extends:`.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub deviations: Vec<Deviation>,
+}
+
+/// One change an extension makes to a metric its base declares.
+///
+/// Modelled on YANG's `deviation`, and named for it: the base is never
+/// edited, and stating a change is a different act from adding a metric.
+/// Exactly one of `replace:` and `not_supported:` must be given.
+///
+/// # YAML Schema
+///
+/// ```yaml
+/// deviations:
+///   - metric: ifOperStatus
+///     replace:
+///       generator: { type: flap, up_value: 1.0, down_value: 2.0, period: 300s }
+///   - metric: ifHCOutOctets
+///     not_supported: true
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Deviation {
+    /// Selector into the resolved base: `name`, or `name.id` where the base
+    /// repeats that name. Matching no spec is a hard error.
+    pub metric: String,
+    /// Fields to replace on the addressed spec.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub replace: Option<DeviationReplace>,
+    /// Remove the addressed spec: this platform does not implement it.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub not_supported: bool,
+}
+
+/// The fields a [`Deviation`] replaces, each wholesale.
+///
+/// A given `generator:` replaces the base's generator entirely and a given
+/// `labels:` replaces the base's per-metric labels entirely. There is no
+/// deep parameter merge: merging into a tagged generator enum has no
+/// well-defined meaning, and a replacement that states its whole generator
+/// is diffable. A field left out is inherited unchanged.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DeviationReplace {
+    /// Replacement generator for the addressed spec.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub generator: Option<GeneratorConfig>,
+    /// Replacement per-metric labels for the addressed spec.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub labels: Option<HashMap<String, String>>,
 }
 
 /// User-facing configuration for running a metric pack.
@@ -646,6 +724,8 @@ mod tests {
     #[test]
     fn expand_pack_produces_one_entry_per_metric() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test pack".to_string(),
             category: "infrastructure".to_string(),
@@ -706,6 +786,8 @@ mod tests {
         metric_labels.insert("device".to_string(), "metric-override".to_string());
 
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "network".to_string(),
@@ -754,6 +836,8 @@ mod tests {
     #[test]
     fn expand_pack_applies_generator_override() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "network".to_string(),
@@ -804,6 +888,8 @@ mod tests {
     #[test]
     fn expand_pack_uses_default_generator_when_none() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "infrastructure".to_string(),
@@ -842,6 +928,8 @@ mod tests {
     #[test]
     fn expand_pack_propagates_rate_and_duration() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "infrastructure".to_string(),
@@ -877,6 +965,8 @@ mod tests {
     #[test]
     fn expand_pack_propagates_sink_and_encoder() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "infrastructure".to_string(),
@@ -917,6 +1007,8 @@ mod tests {
     #[test]
     fn expand_pack_errors_on_empty_metrics() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "empty".to_string(),
             description: "empty".to_string(),
             category: "infrastructure".to_string(),
@@ -945,6 +1037,8 @@ mod tests {
     #[test]
     fn expand_pack_errors_on_unknown_override_key() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "infrastructure".to_string(),
@@ -993,6 +1087,8 @@ mod tests {
         shared.insert("job".to_string(), "snmp".to_string());
 
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test".to_string(),
             description: "test".to_string(),
             category: "network".to_string(),
@@ -1133,6 +1229,8 @@ sink:
 
     fn pack_of(metrics: Vec<MetricSpec>) -> MetricPackDef {
         MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "p".to_string(),
             description: "d".to_string(),
             category: "network".to_string(),

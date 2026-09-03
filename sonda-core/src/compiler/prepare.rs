@@ -976,6 +976,8 @@ scenarios:
         use crate::packs::{MetricPackDef, MetricSpec};
 
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "test_pack".to_string(),
             description: "test".to_string(),
             category: "test".to_string(),

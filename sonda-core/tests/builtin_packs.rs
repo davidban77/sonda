@@ -38,6 +38,34 @@ scenarios:
     )
 }
 
+/// The metric name a compiled entry carries. Packs only ever expand to
+/// metric signals, so any other variant is a bug rather than a case.
+fn entry_name(entry: &ScenarioEntry) -> &str {
+    match entry {
+        ScenarioEntry::Metrics(config) => config.name.as_str(),
+        other => panic!("a pack expanded to a non-metric entry: {other:?}"),
+    }
+}
+
+fn entry_labels(entry: &ScenarioEntry) -> Option<&std::collections::HashMap<String, String>> {
+    match entry {
+        ScenarioEntry::Metrics(config) => config.labels.as_ref(),
+        other => panic!("a pack expanded to a non-metric entry: {other:?}"),
+    }
+}
+
+/// A `CompileError`'s Display names the phase that failed; the reason is
+/// down the source chain. Flatten it so an assertion can look for the reason.
+fn error_chain(err: &sonda_core::CompileError) -> String {
+    let mut out = err.to_string();
+    let mut source = std::error::Error::source(err);
+    while let Some(e) = source {
+        out.push_str(&format!(": {e}"));
+        source = e.source();
+    }
+    out
+}
+
 /// Guards every per-pack assertion below against iterating over nothing.
 ///
 /// An `include_str!` list that lost its entries, or a `PACKS` slice renamed
@@ -253,4 +281,184 @@ metrics:
         chain.contains("appears 2 times"),
         "listing and run must give the same reason, run said: {chain}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Extension chains (W4 phase 1c)
+// ---------------------------------------------------------------------------
+
+/// An extension over a real builtin, resolved through the real resolver
+/// chain and compiled by the real pipeline.
+///
+/// The corpus cannot cover this on its own: no builtin declares `extends:`
+/// yet, so the graph path would be exercised by unit tests only — and a code
+/// path no corpus entry drives is fake coverage. This fixture stands in
+/// until the first builtin extension ships, at which point
+/// `the_corpus_records_how_many_builtins_extend` starts reporting it.
+const IOSXE_FIXTURE: &str = "\
+version: 2
+kind: composable
+name: fixture_iosxe_interface
+description: an extension over the SNMP interface base, for the graph gate
+category: network
+extends: telegraf_snmp_interface
+
+shared_labels:
+  platform: iosxe
+
+metrics:
+  - name: ifInDiscards
+    generator: { type: step, start: 0.0, step_size: 0.05 }
+
+deviations:
+  - metric: ifOperStatus
+    replace:
+      generator: { type: constant, value: 2.0 }
+  - metric: ifHCOutOctets
+    not_supported: true
+";
+
+fn scenario_referencing_name(name: &str) -> String {
+    format!(
+        "version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: dev
+    signal_type: metrics
+    pack: {name}
+"
+    )
+}
+
+/// The graph path, end to end: resolve an extension by name through the
+/// chained resolver, materialize it over the embedded base, and compile.
+#[test]
+fn an_extension_over_a_builtin_compiles_through_the_real_pipeline() {
+    let base = builtin::find("telegraf_snmp_interface")
+        .expect("the base this fixture extends must be embedded");
+    let base_pack = builtin::parse_pack(base).expect("the base must parse");
+    let base_selectors: Vec<String> = base_pack.metrics.iter().map(|m| m.selector()).collect();
+    // Guard: the fixture's deviations name real selectors. If the base is
+    // edited so they do not, this says so instead of the gate quietly
+    // covering a shape the base no longer has.
+    for needed in ["ifOperStatus", "ifHCOutOctets"] {
+        assert!(
+            base_selectors.iter().any(|s| s == needed),
+            "fixture deviates on '{needed}', which base '{}' no longer declares: {base_selectors:?}",
+            base_pack.name
+        );
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("fixture-iosxe.yaml"), IOSXE_FIXTURE).expect("write");
+    let resolver = sonda_core::catalog::CatalogPackResolver::new(Some(dir.path()));
+
+    let entries = compile_scenario_file(
+        &scenario_referencing_name("fixture_iosxe_interface"),
+        &resolver,
+    )
+    .expect("the extension must compile through the resolved chain");
+
+    let names: Vec<&str> = entries.iter().map(entry_name).collect();
+
+    // Additive metric present, deviated one still present, removed one gone.
+    assert!(
+        names.contains(&"ifInDiscards"),
+        "addition missing: {names:?}"
+    );
+    assert!(
+        names.contains(&"ifOperStatus"),
+        "deviated metric missing: {names:?}"
+    );
+    assert!(
+        !names.contains(&"ifHCOutOctets"),
+        "`not_supported` did not remove it: {names:?}"
+    );
+    assert_eq!(
+        entries.len(),
+        base_pack.metrics.len(),
+        "one removed, one added: {names:?}"
+    );
+
+    // The extension's shared label reaches every signal, base-derived ones
+    // included — the materialized pack's shared_labels, not the extension's
+    // own metrics' alone.
+    for entry in &entries {
+        let labels = entry_labels(entry);
+        assert_eq!(
+            labels.and_then(|l| l.get("platform")).map(String::as_str),
+            Some("iosxe"),
+            "{} lost the extension's shared label",
+            entry_name(entry)
+        );
+    }
+}
+
+/// A deviation naming nothing must fail the compile, which is what stops
+/// selector coverage above from passing vacuously: if a no-op deviation were
+/// tolerated, the fixture could deviate on nothing and still look green.
+#[test]
+fn a_deviation_naming_no_metric_in_the_base_fails_the_compile() {
+    let sabotaged = IOSXE_FIXTURE.replace("metric: ifOperStatus", "metric: ifNotAThing");
+    assert!(
+        sabotaged.contains("ifNotAThing"),
+        "the mutation must actually be present in the fixture text"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("fixture-iosxe.yaml"), &sabotaged).expect("write");
+    let resolver = sonda_core::catalog::CatalogPackResolver::new(Some(dir.path()));
+
+    let err = compile_scenario_file(
+        &scenario_referencing_name("fixture_iosxe_interface"),
+        &resolver,
+    )
+    .expect_err("a deviation matching nothing must not compile");
+    let chain = error_chain(&err);
+    assert!(
+        chain.contains("ifNotAThing") && chain.contains("matches no metric"),
+        "must name the selector that matched nothing: {chain}"
+    );
+}
+
+/// How many builtins declare `extends:`. Zero today, and the message says
+/// so rather than the gate implying the corpus covers the graph path — the
+/// fixture above is what covers it. When the first builtin extension ships
+/// this starts asserting the corpus itself walks one.
+#[test]
+fn the_corpus_records_how_many_builtins_extend() {
+    assert_eq!(builtin::PACKS.len(), PACK_COUNT, "vacuous-pass guard");
+
+    let extending: Vec<&str> = builtin::PACKS
+        .iter()
+        .filter(|p| {
+            builtin::parse_pack(p)
+                .map(|d| d.extends.is_some())
+                .unwrap_or(false)
+        })
+        .map(|p| p.name)
+        .collect();
+
+    if extending.is_empty() {
+        // Not a failure: no builtin extension has shipped. The assertion
+        // that matters is that the fixture test above exists and drives the
+        // graph path through the real pipeline.
+        return;
+    }
+    for name in extending {
+        let pack = builtin::find(name).expect("just enumerated");
+        let resolver = sonda_core::catalog::CatalogPackResolver::new(None);
+        let entries = compile_scenario_file(&scenario_referencing_name(name), &resolver)
+            .unwrap_or_else(|e| panic!("builtin extension {} must compile: {e}", pack.file));
+        assert!(!entries.is_empty(), "{}", pack.file);
+    }
 }

@@ -14,6 +14,14 @@ src/
 │                          flush, drop. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
+│   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
+│   │                      folds one `extends:` link. `metrics:` is additive and refuses a
+│   │                      selector the base declares; `deviations:` is the only way to change
+│   │                      one, each giving exactly one of `replace:` (field-wholesale) or
+│   │                      `not_supported:` (removes). The extension's shared_labels are merged
+│   │                      over the base's HERE, which is why the label precedence chain has no
+│   │                      extension case in it. Chain walking lives in compiler/expand.rs
+│   │                      (resolve_pack_chain) because that is where the resolver is.
 │   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec (name + optional id),
 │                          PackScenarioConfig, MetricOverride, expand_pack().
 │                          validate_pack() is the ONE definition of addressability: a metric

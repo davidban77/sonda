@@ -413,6 +413,72 @@
       },
       "additionalProperties": false
     },
+    "Deviation": {
+      "description": "One change an extension makes to a metric its base declares.\n\nModelled on YANG's `deviation`, and named for it: the base is never\nedited, and stating a change is a different act from adding a metric.\nExactly one of `replace:` and `not_supported:` must be given.\n\n# YAML Schema\n\n```yaml\ndeviations:\n  - metric: ifOperStatus\n    replace:\n      generator: { type: flap, up_value: 1.0, down_value: 2.0, period: 300s }\n  - metric: ifHCOutOctets\n    not_supported: true\n```",
+      "type": "object",
+      "properties": {
+        "metric": {
+          "description": "Selector into the resolved base: `name`, or `name.id` where the base\nrepeats that name. Matching no spec is a hard error.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "not_supported": {
+          "description": "Remove the addressed spec: this platform does not implement it.",
+          "type": "boolean",
+          "default": false
+        },
+        "replace": {
+          "description": "Fields to replace on the addressed spec.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeviationReplace"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "metric"
+      ]
+    },
+    "DeviationReplace": {
+      "description": "The fields a [`Deviation`] replaces, each wholesale.\n\nA given `generator:` replaces the base's generator entirely and a given\n`labels:` replaces the base's per-metric labels entirely. There is no\ndeep parameter merge: merging into a tagged generator enum has no\nwell-defined meaning, and a replacement that states its whole generator\nis diffable. A field left out is inherited unchanged.",
+      "type": "object",
+      "properties": {
+        "generator": {
+          "description": "Replacement generator for the addressed spec.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeneratorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "labels": {
+          "description": "Replacement per-metric labels for the addressed spec.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "default": null
+        }
+      }
+    },
     "DistributionConfig": {
       "description": "Distribution model configuration for histogram and summary generators.\n\nDetermines how sample values are distributed when the generator produces\nobservations on each tick. Deserialized from YAML via the `type` tag.\n\n# Example YAML\n\n```yaml\ndistribution:\n  type: exponential\n  rate: 10.0\n```",
       "oneOf": [
@@ -2411,7 +2477,7 @@
       }
     },
     "MetricPackDef": {
-      "description": "A metric pack definition: a reusable bundle of metric names and label schemas.\n\nPacks are templates — they contain no rate, duration, sink, or encoder.\nThose come from the user via [`PackScenarioConfig`] at expansion time.\n\n# YAML Schema\n\n```yaml\nname: telegraf_snmp_interface\ndescription: \"Standard SNMP interface metrics (Telegraf-normalized)\"\ncategory: network\nshared_labels:\n  device: \"\"\n  job: snmp\nmetrics:\n  - name: ifOperStatus\n    generator:\n      type: constant\n      value: 1.0\n  - name: ifHCInOctets\n    generator:\n      type: step\n      step_size: 125000.0\n```",
+      "description": "A metric pack definition: a reusable bundle of metric names and label schemas.\n\nPacks are templates — they contain no rate, duration, sink, or encoder.\nThose come from the user via [`PackScenarioConfig`] at expansion time.\n\n# YAML Schema\n\n```yaml\nname: telegraf_snmp_interface\ndescription: \"Standard SNMP interface metrics (Telegraf-normalized)\"\ncategory: network\nshared_labels:\n  device: \"\"\n  job: snmp\nmetrics:\n  - name: ifOperStatus\n    generator:\n      type: constant\n      value: 1.0\n  - name: ifHCInOctets\n    generator:\n      type: step\n      step_size: 125000.0\n```\n\nA pack may instead extend another, adding metrics and deviating from the\nbase's — see [`extends`](Self::extends) and [`extend`](crate::packs::extend).",
       "type": "object",
       "properties": {
         "category": {
@@ -2430,8 +2496,25 @@
             "boolean"
           ]
         },
+        "deviations": {
+          "description": "Changes to the base's metrics. Meaningful only with `extends:`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Deviation"
+          }
+        },
+        "extends": {
+          "description": "The pack this one extends, by the same reference form `pack:` accepts.\n\nOne value, not a list: multiple inheritance would need a diamond merge\norder, and an extension of two bases is two packs. Chains are allowed\nand unbounded. Resolved through the same resolver chain as `pack:`, so\nan extension extends the *resolved* base — shadow the base in\n`--catalog <dir>` and every extension built on it inherits the shadow.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
         "metrics": {
-          "description": "The list of metric specifications in this pack.",
+          "description": "The metric specifications this pack contributes.\n\nIn an extension these are **purely additive**: a spec whose selector\nthe base already declares is a hard error, because adding and\nchanging are different operations. Use a [`Deviation`] to change one.\n\nEmpty is legal only for an extension — a pack that resolves to no\nmetrics at all is [`ExpandError::EmptyPack`](crate::compiler::expand::ExpandError).",
           "type": "array",
           "items": {
             "$ref": "#/$defs/MetricSpec"
@@ -2446,7 +2529,7 @@
           ]
         },
         "shared_labels": {
-          "description": "Labels shared across all metrics in the pack. Per-metric labels and\nuser labels are merged on top (user wins on conflict).",
+          "description": "Labels shared across all metrics in the pack. Per-metric labels and\nuser labels are merged on top (user wins on conflict).\n\nAn extension's map is merged over its base's, so the extension wins\nand deeper packs win in chain order.",
           "type": [
             "object",
             "null"
@@ -2464,8 +2547,7 @@
       "required": [
         "name",
         "description",
-        "category",
-        "metrics"
+        "category"
       ]
     },
     "MetricSpec": {
