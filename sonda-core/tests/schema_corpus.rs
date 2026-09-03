@@ -808,3 +808,51 @@ extends:
 "#,
     );
 }
+
+/// A pack declaring neither `metrics:` nor `extends:` is refused.
+///
+/// This is the half `metrics`-leaving-`required` gave up, restored as the
+/// disjunction the compiler actually enforces. Without it, a plain pack with
+/// `metricss:` typed by hand validates and fails later as an empty pack.
+#[test]
+fn the_schema_rejects_a_pack_with_neither_metrics_nor_extends() {
+    assert_rejected(
+        "`metricss` for `metrics` on a plain pack",
+        r#"
+version: 2
+kind: composable
+name: p
+description: d
+category: network
+metricss:
+  - name: a
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+}
+
+/// The positive control: both branches of that disjunction still validate,
+/// so the rule discriminates rather than refusing packs generally.
+#[test]
+fn the_schema_accepts_a_pack_with_either_metrics_or_extends() {
+    let validator = validator();
+    for (label, body) in [
+        (
+            "metrics, no extends",
+            "metrics:\n  - name: a\n    generator:\n      type: constant\n      value: 1.0\n",
+        ),
+        ("extends, no metrics", "extends: base\n"),
+    ] {
+        let yaml = format!(
+            "version: 2\nkind: composable\nname: p\ndescription: d\ncategory: network\n{body}"
+        );
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&yaml).expect("positive control must load");
+        assert!(
+            validator.is_valid(&yaml_to_json(value)),
+            "the schema rejected a valid pack ({label}):\n{yaml}"
+        );
+    }
+}

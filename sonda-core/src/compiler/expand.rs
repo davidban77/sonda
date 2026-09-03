@@ -232,8 +232,6 @@ pub enum ExpandError {
         message: String,
     },
 
-    /// Two override keys address the same metric spec.
-    ///
     /// A pack's `extends:` named a base the resolver could not produce.
     ///
     /// Separate from [`ExpandError::ResolveFailed`] because the reference
@@ -265,6 +263,25 @@ pub enum ExpandError {
         /// The [`crate::packs::extend::ExtendError`] rendered.
         message: String,
     },
+
+    /// A pack declared `deviations:` with no `extends:` to deviate from.
+    ///
+    /// Only packs above the root are folded, so such a block would never be
+    /// applied and never mentioned — the silent no-op this feature refuses
+    /// everywhere else.
+    #[error(
+        "pack '{pack_name}' declares {count} deviation(s) but no `extends:`; \
+         there is no base to deviate from"
+    )]
+    DeviationsWithoutExtends {
+        /// The pack that declared them.
+        pack_name: String,
+        /// How many, so the message does not send the reader hunting for one.
+        count: usize,
+    },
+
+    /// Two override keys address the same metric spec.
+    ///
 
     /// A spec whose name is unique *and* which declares an `id:` answers to
     /// both `name` and `name.id`. Writing both would apply one and discard
@@ -909,6 +926,16 @@ fn resolve_pack_chain<R: PackResolver>(
     // Fold root-ward-to-leaf: each extension is materialized against the
     // pack accumulated so far.
     let mut resolved = chain.pop().expect("chain is never empty");
+    // The root has nothing to deviate from, and only packs *above* the root
+    // are folded — so a root's own `deviations:` would never be looked at.
+    // A deviation that does nothing is the no-op this feature refuses
+    // everywhere else, so it is refused here too rather than dropped.
+    if !resolved.deviations.is_empty() {
+        return Err(ExpandError::DeviationsWithoutExtends {
+            pack_name: resolved.name.clone(),
+            count: resolved.deviations.len(),
+        });
+    }
     validate_addressable(&resolved)?;
     while let Some(extension) = chain.pop() {
         let extension_name = extension.name.clone();
@@ -2469,6 +2496,45 @@ scenarios:
             msg.contains("appears 2 times") && msg.contains("declare none"),
             "{msg}"
         );
+    }
+
+    /// Only packs above the root are folded, so a root's own `deviations:`
+    /// would never be looked at. Measured before the guard: a lone pack
+    /// deviating on a selector that does not even exist compiled clean.
+    #[test]
+    fn deviations_on_a_pack_with_no_extends_are_refused_not_dropped() {
+        let mut lone = extending_pack("a", None);
+        lone.deviations = vec![crate::packs::Deviation {
+            metric: "nope".to_string(),
+            replace: None,
+            not_supported: true,
+        }];
+
+        let err = expand_chain("a", vec![lone]).expect_err("must not be dropped");
+        match &err {
+            ExpandError::DeviationsWithoutExtends { pack_name, count } => {
+                assert_eq!(pack_name, "a");
+                assert_eq!(*count, 1);
+            }
+            other => panic!("expected DeviationsWithoutExtends, got {other:?}"),
+        }
+    }
+
+    /// The same block one link up is applied rather than refused — the
+    /// guard keys on having no base, not on declaring deviations.
+    #[test]
+    fn deviations_on_a_pack_that_does_extend_are_applied() {
+        let base = extending_pack("a", None);
+        let mut ext = extending_pack("c", Some("a"));
+        ext.deviations = vec![crate::packs::Deviation {
+            metric: "a_m".to_string(),
+            replace: None,
+            not_supported: true,
+        }];
+
+        let expanded = expand_chain("c", vec![base, ext]).expect("must resolve");
+        let names: Vec<&str> = expanded.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["c_m"], "the base's metric was removed");
     }
 
     /// An extension whose base is empty and which adds nothing resolves to

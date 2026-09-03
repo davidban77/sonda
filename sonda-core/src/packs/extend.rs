@@ -113,9 +113,21 @@ pub fn materialize(
     let mut targets: Vec<(usize, &Deviation)> = Vec::with_capacity(extension.deviations.len());
     let mut seen: BTreeSet<usize> = BTreeSet::new();
     for deviation in &extension.deviations {
+        // A `replace:` that names no field says nothing, so it counts as no
+        // action rather than as one. Without this the rule stops at the
+        // deviation and lets the same typo class through one level down:
+        // `replace: { generatr: … }` drops the unknown key — no pack type
+        // can deny unknown keys, since pack files carry `kind:` and
+        // `version:` — and would otherwise be accepted as a change that
+        // changes nothing.
+        let replace_says_nothing = deviation
+            .replace
+            .as_ref()
+            .is_some_and(|r| r.generator.is_none() && r.labels.is_none());
         let given = match (&deviation.replace, deviation.not_supported) {
-            (Some(_), false) | (None, true) => None,
             (Some(_), true) => Some("both"),
+            (Some(_), false) if replace_says_nothing => Some("neither"),
+            (Some(_), false) | (None, true) => None,
             (None, false) => Some("neither"),
         };
         if let Some(given) = given {
@@ -426,6 +438,60 @@ mod tests {
             }
             other => panic!("expected RepeatedDeviationSelector, got {other:?}"),
         }
+    }
+
+    /// The same typo class one nesting level down. `replace: { generatr: … }`
+    /// drops the unknown key for the same reason, leaving a `replace:` that
+    /// names no field — a change that changes nothing. It is refused as
+    /// "neither", because a `replace` saying nothing is not an action.
+    #[test]
+    fn a_replace_naming_no_field_is_refused_like_naming_no_action() {
+        let base = pack("base", vec![spec("a", None, 1.0)]);
+        let mut ext = pack("ext", vec![]);
+        // `replace: {}` written out, and what `replace: { generatr: … }`
+        // deserializes to, are the same value — one case covers both.
+        ext.deviations = vec![Deviation {
+            metric: "a".to_string(),
+            replace: Some(DeviationReplace {
+                generator: None,
+                labels: None,
+            }),
+            not_supported: false,
+        }];
+
+        match materialize(&ext, &base).expect_err("a replace saying nothing must refuse") {
+            ExtendError::DeviationNeedsExactlyOneAction { given, .. } => {
+                assert_eq!(given, "neither")
+            }
+            other => panic!("expected DeviationNeedsExactlyOneAction, got {other:?}"),
+        }
+    }
+
+    /// And the guard does not overreach: naming one field is an action, and
+    /// the field left out is still inherited.
+    #[test]
+    fn a_replace_naming_only_labels_is_still_an_action() {
+        let base = pack("base", vec![spec("a", None, 1.0)]);
+        let mut ext = pack("ext", vec![]);
+        ext.deviations = vec![Deviation {
+            metric: "a".to_string(),
+            replace: Some(DeviationReplace {
+                generator: None,
+                labels: Some([("k".to_string(), "v".to_string())].into_iter().collect()),
+            }),
+            not_supported: false,
+        }];
+
+        let out = materialize(&ext, &base).expect("naming one field is an action");
+        assert_eq!(constant_of(&out.metrics[0]), 1.0, "generator inherited");
+        assert_eq!(
+            out.metrics[0]
+                .labels
+                .as_ref()
+                .and_then(|l| l.get("k"))
+                .map(String::as_str),
+            Some("v")
+        );
     }
 
     /// No pack type denies unknown YAML keys — pack files carry `kind:` and

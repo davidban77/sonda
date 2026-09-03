@@ -130,7 +130,42 @@ pub fn scenario_file_schema() -> Schema {
 
     let mut value = root.to_value();
     widen_scalar_strings(&mut value);
+    require_metrics_or_extends(&mut value);
     Schema::try_from(value).expect("widening only edits `type` keywords, never the shape")
+}
+
+/// A pack must declare `metrics:` or `extends:`.
+///
+/// `metrics` stopped being unconditionally required when extensions arrived —
+/// a pure-deviation extension has none — and dropping it there also dropped
+/// editor-time detection of a missing or misspelled `metrics:` on every
+/// *plain* pack, which is the common case. The rule the compiler actually
+/// enforces is the disjunction, and JSON Schema can state it.
+///
+/// Necessary, not sufficient: a chain can satisfy this and still resolve to
+/// no metrics at all, which is
+/// [`ExpandError::EmptyPack`](crate::compiler::expand::ExpandError). Schema is
+/// the editor aid; the compiler is the validator.
+///
+/// Written as a post-process because the constraint spans two fields, which
+/// no schemars attribute expresses.
+fn require_metrics_or_extends(value: &mut serde_json::Value) {
+    let Some(def) = value
+        .get_mut("$defs")
+        .and_then(|d| d.get_mut("MetricPackDef"))
+        .and_then(|d| d.as_object_mut())
+    else {
+        // The name is schemars', so a rename would silently skip this.
+        // `the_schema_requires_metrics_or_extends` is what notices.
+        return;
+    };
+    def.insert(
+        "anyOf".to_string(),
+        serde_json::json!([
+            { "required": ["metrics"] },
+            { "required": ["extends"] },
+        ]),
+    );
 }
 
 /// Let every string-typed position also accept a YAML number or boolean.

@@ -2544,6 +2544,18 @@
           "default": null
         }
       },
+      "anyOf": [
+        {
+          "required": [
+            "metrics"
+          ]
+        },
+        {
+          "required": [
+            "extends"
+          ]
+        }
+      ],
       "required": [
         "name",
         "description",

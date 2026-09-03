@@ -462,3 +462,109 @@ fn the_corpus_records_how_many_builtins_extend() {
         assert!(!entries.is_empty(), "{}", pack.file);
     }
 }
+
+/// The listing must mark the two ways an extension becomes unreferenceable.
+///
+/// `sonda list` gained `(unusable)` marking for a pack that fails
+/// `validate_pack`; `extends:` adds two more causes, and neither is visible
+/// from one file. `merged` is where the whole name space exists, so that is
+/// where the chain is walked — and the verdict must match what a run gives.
+#[test]
+fn a_broken_extends_chain_is_marked_in_the_listing() {
+    fn pack_yaml(name: &str, extends: Option<&str>) -> String {
+        let line = extends
+            .map(|b| format!("extends: {b}\n"))
+            .unwrap_or_default();
+        format!(
+            "kind: composable\nname: {name}\ndescription: d\ncategory: test\n{line}\
+             metrics:\n  - name: {name}_m\n    generator: {{ type: constant, value: 1.0 }}\n"
+        )
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let write = |file: &str, body: String| {
+        std::fs::write(dir.path().join(file), body).expect("write");
+    };
+    write("orphan.yaml", pack_yaml("orphan", Some("no_such_base")));
+    write("x.yaml", pack_yaml("x", Some("y")));
+    write("y.yaml", pack_yaml("y", Some("x")));
+    write("fine.yaml", pack_yaml("fine", None));
+    // An extension over an embedded base: resolvable only because `merged`
+    // sees the builtins too, which is the case a user-dir walk would miss.
+    write(
+        "over-builtin.yaml",
+        pack_yaml("over_builtin", Some("telegraf_snmp_interface")),
+    );
+
+    let listing = sonda_core::catalog::merged(Some(dir.path())).expect("merged");
+    let verdict = |name: &str| -> Option<String> {
+        listing
+            .entries
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("{name} must be listed, not dropped"))
+            .pack_error
+            .clone()
+    };
+
+    let orphan = verdict("orphan").expect("a missing base must be marked");
+    assert!(orphan.contains("no_such_base"), "{orphan}");
+
+    for name in ["x", "y"] {
+        let cycle = verdict(name).unwrap_or_else(|| panic!("{name} is in a cycle, must be marked"));
+        assert!(cycle.contains("cycle"), "{name}: {cycle}");
+    }
+
+    assert_eq!(verdict("fine"), None, "a plain pack must stay clean");
+    assert_eq!(
+        verdict("over_builtin"),
+        None,
+        "an extension over an embedded base resolves and must stay clean"
+    );
+
+    // The listing's verdict and a run's must agree, in both directions.
+    let resolver = sonda_core::catalog::CatalogPackResolver::new(Some(dir.path()));
+    let chain = error_chain(
+        &compile_scenario_file(&scenario_referencing_name("orphan"), &resolver)
+            .expect_err("the pack the listing marks must actually fail"),
+    );
+    assert!(chain.contains("no_such_base"), "{chain}");
+    compile_scenario_file(&scenario_referencing_name("over_builtin"), &resolver)
+        .expect("the pack the listing calls clean must actually compile");
+}
+
+/// A pack whose deviations can never be applied is marked too — the same
+/// rule `resolve_pack_chain` enforces, asked at listing time.
+#[test]
+fn deviations_without_extends_are_marked_in_the_listing() {
+    const LONE: &str = "\
+kind: composable
+name: lone
+description: deviates with nothing to deviate from
+category: test
+metrics:
+  - name: a
+    generator: { type: constant, value: 1.0 }
+deviations:
+  - metric: a
+    not_supported: true
+";
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("lone.yaml"), LONE).expect("write");
+
+    let listing = sonda_core::catalog::merged(Some(dir.path())).expect("merged");
+    let entry = listing
+        .entries
+        .iter()
+        .find(|e| e.name == "lone")
+        .expect("must be listed");
+    let why = entry.pack_error.as_deref().expect("must be marked");
+    assert!(why.contains("no `extends:`"), "{why}");
+
+    let resolver = sonda_core::catalog::CatalogPackResolver::new(Some(dir.path()));
+    let chain = error_chain(
+        &compile_scenario_file(&scenario_referencing_name("lone"), &resolver)
+            .expect_err("must also fail at run"),
+    );
+    assert!(chain.contains("no `extends:`"), "{chain}");
+}
