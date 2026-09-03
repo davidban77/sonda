@@ -16,8 +16,8 @@ default = ["config", "runtime", "strict-config"]
 # `packs` and `catalog` are not feature-gated: the compiler cannot resolve
 # `pack:` without them, so there is no build that wants one and not the other.
 # The cost is on record because it is now the bundle's largest growth term —
-# pack extension added +31,799 bytes after `wasm-opt` (780,467 -> 812,266,
-# 37,734 left of the 850,000 budget), almost all of it the `Deviation` and
+# pack extension added +31,904 bytes after `wasm-opt` (780,467 -> 812,371,
+# 37,629 left of the 850,000 budget), almost all of it the `Deviation` and
 # `DeviationReplace` deserializers, the second of which embeds the whole
 # `GeneratorConfig` enum. sonda-wasm builds an empty `InMemoryPackResolver`,
 # so none of it is reachable in the browser today. If the budget needs
