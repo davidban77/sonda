@@ -218,6 +218,7 @@ nav:
       - Sink batching: build/sink-batching.md
       - Scheduling: build/scheduling.md
       - Catalogs and packs: build/catalogs-and-packs.md
+      - Built-in packs: build/builtin-packs.md
   - Test pipelines:
       - test/index.md
       - Alert testing: test/alert-testing.md

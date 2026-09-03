@@ -568,3 +568,101 @@ deviations:
     );
     assert!(chain.contains("no `extends:`"), "{chain}");
 }
+
+// ---------------------------------------------------------------------------
+// Pack defaults must be plausible values, not just valid config
+// ---------------------------------------------------------------------------
+
+/// Specs whose default may legitimately go below zero, with the reason.
+///
+/// Empty today: every metric the builtin packs model is a count, a duration,
+/// a byte total or a 0/1 enum. A pack that ships a genuinely signed metric —
+/// a temperature, a clock delta — belongs here with a reason, so the
+/// exemption appears in the diff rather than in a silent skip.
+const MAY_BE_NEGATIVE: &[(&str, &str)] = &[];
+
+/// No builtin pack's default generator may emit a negative value.
+///
+/// This exists because it happened. `http_request_duration_seconds.p50` used
+/// `steady` at a centre of 0.032s; the alias defaults jitter to ±1.0
+/// *absolute*, which is sensible for percentages and ruinous for seconds, and
+/// the pack emitted -0.44s. It compiled, expanded, and passed every gate —
+/// the value was only wrong, and nothing was looking at values.
+///
+/// The sampling drives the real pipeline: `desugar_entry` (aliases hide the
+/// jitter), `create_generator`, then `wrap_with_jitter` — the same three
+/// public calls the runner makes, in that order, so jitter is included rather
+/// than assumed away. It is jitter that produced the original defect.
+#[test]
+fn no_builtin_pack_default_emits_a_negative_value() {
+    // Two full periods of the longest cycle any builtin declares (300s at
+    // rate 1), so a generator that only dips late is still sampled there.
+    const TICKS: u64 = 600;
+    assert_eq!(builtin::PACKS.len(), PACK_COUNT, "vacuous-pass guard");
+
+    let resolver = builtin::BuiltinPackResolver::new();
+    let mut sampled = 0usize;
+    let mut offences: Vec<String> = Vec::new();
+
+    for pack in builtin::PACKS {
+        let entries = compile_scenario_file(&scenario_referencing(pack), &resolver)
+            .unwrap_or_else(|e| panic!("builtin pack {} must compile: {e}", pack.file));
+
+        for entry in entries {
+            let name = entry_name(&entry).to_string();
+            if MAY_BE_NEGATIVE
+                .iter()
+                .any(|(pack_name, metric)| *pack_name == pack.name && *metric == name)
+            {
+                continue;
+            }
+
+            let desugared = sonda_core::desugar_entry(entry)
+                .unwrap_or_else(|e| panic!("{}: {name} must desugar: {e}", pack.file));
+            let config = match &desugared {
+                ScenarioEntry::Metrics(c) => c,
+                other => panic!("{}: unexpected entry {other:?}", pack.file),
+            };
+            let generator =
+                sonda_core::generator::create_generator(&config.generator, config.base.rate)
+                    .unwrap_or_else(|e| panic!("{}: {name} must build: {e}", pack.file));
+            let generator = sonda_core::generator::wrap_with_jitter(
+                generator,
+                config.base.jitter,
+                config.base.jitter_seed,
+            );
+
+            for tick in 0..TICKS {
+                let value = generator.value(tick);
+                if value < 0.0 {
+                    offences.push(format!("{}: {name} = {value} at tick {tick}", pack.file));
+                    break;
+                }
+            }
+            sampled += 1;
+        }
+    }
+
+    // Exact, not a floor: `>= PACK_COUNT` would be satisfied by a walk that
+    // reached one spec per pack and skipped the rest, which is most of them.
+    let declared: usize = builtin::PACKS
+        .iter()
+        .map(|pack| {
+            builtin::parse_pack(pack)
+                .unwrap_or_else(|e| panic!("builtin pack {} must parse: {e}", pack.file))
+                .metrics
+                .len()
+        })
+        .sum();
+    assert_eq!(
+        sampled, declared,
+        "sampled {sampled} specs but the packs declare {declared}; the walk did not reach every one"
+    );
+    assert!(
+        offences.is_empty(),
+        "a pack default emitted a negative value. Counts, durations and 0/1 \
+         enums cannot be negative — check the generator's `noise:`, which the \
+         `steady` alias defaults to ±1.0 absolute:\n  {}",
+        offences.join("\n  ")
+    );
+}
