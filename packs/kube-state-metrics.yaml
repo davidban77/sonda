@@ -1,0 +1,132 @@
+# kube-state-metrics workload pack.
+#
+# Models the slice of kube-state-metrics that workload alerts are actually
+# written against: pod phase, the gap between desired and available
+# replicas, and container restarts. Metric names, label keys and the
+# one-series-per-enum-value shape match kube-state-metrics exactly, so an
+# alert rule written for a real cluster fires against this unchanged.
+#
+# The enum metrics follow the upstream convention: one series per value,
+# carrying 1 for the value that holds and 0 for the rest. That is why
+# `kube_pod_status_phase` appears five times — it is five series of one
+# metric, not five metrics — and why each spec declares the phase as its
+# `id:`.
+
+version: 2
+kind: composable
+name: kube_state_metrics
+description: "Pod phase, deployment replicas and restarts (kube-state-metrics)"
+category: kubernetes
+
+shared_labels:
+  namespace: default
+  job: kube-state-metrics
+
+metrics:
+  # Pod phase. Exactly one of these is 1 at a time in a real cluster; the
+  # defaults model a healthy Running pod. Override the pair you care about
+  # to model a transition — `kube_pod_status_phase.running` to 0 and
+  # `kube_pod_status_phase.pending` to 1.
+  - name: kube_pod_status_phase
+    id: running
+    labels:
+      phase: Running
+      pod: web-0
+    generator:
+      type: constant
+      value: 1.0
+
+  - name: kube_pod_status_phase
+    id: pending
+    labels:
+      phase: Pending
+      pod: web-0
+    generator:
+      type: constant
+      value: 0.0
+
+  - name: kube_pod_status_phase
+    id: failed
+    labels:
+      phase: Failed
+      pod: web-0
+    generator:
+      type: constant
+      value: 0.0
+
+  - name: kube_pod_status_phase
+    id: succeeded
+    labels:
+      phase: Succeeded
+      pod: web-0
+    generator:
+      type: constant
+      value: 0.0
+
+  - name: kube_pod_status_phase
+    id: unknown
+    labels:
+      phase: Unknown
+      pod: web-0
+    generator:
+      type: constant
+      value: 0.0
+
+  # The replica gap. `spec_replicas` is what you asked for and holds steady;
+  # `status_replicas_available` drops one replica short on a cycle, so the
+  # standard "deployment has unavailable replicas" rule has something to
+  # fire on without any override.
+  #
+  # The cycle is 60s at 3 then 20s at 2, so a run shorter than 60s shows a
+  # healthy deployment and never the gap. That is the right way round for a
+  # default — healthy first, anomaly on a schedule — but it does mean
+  # `--duration 30s` will not exercise a replica alert. Use 90s or more.
+  - name: kube_deployment_spec_replicas
+    labels:
+      deployment: web
+    generator:
+      type: constant
+      value: 3.0
+
+  - name: kube_deployment_status_replicas_available
+    labels:
+      deployment: web
+    generator:
+      type: flap
+      up_value: 3.0
+      down_value: 2.0
+      up_duration: 60s
+      down_duration: 20s
+
+  # Restarts are monotonic, so the default is a slow step rather than a
+  # constant: `rate()` and `increase()` over it are non-zero, which is what
+  # a CrashLoopBackOff rule measures.
+  - name: kube_pod_container_status_restarts_total
+    labels:
+      pod: web-0
+      container: app
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.02
+
+  # Node readiness, same one-series-per-value shape as pod phase.
+  - name: kube_node_status_condition
+    id: ready_true
+    labels:
+      condition: Ready
+      status: "true"
+      node: node-1
+    generator:
+      type: constant
+      value: 1.0
+
+  - name: kube_node_status_condition
+    id: ready_false
+    labels:
+      condition: Ready
+      status: "false"
+      node: node-1
+    generator:
+      type: constant
+      value: 0.0

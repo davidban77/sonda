@@ -1,0 +1,126 @@
+# HTTP server RED pack.
+#
+# Rate, Errors, Duration — the three signals a request-serving service is
+# usually alerted on. Names follow the Prometheus client-library convention
+# (`http_requests_total`, `http_request_duration_seconds`), so a rule
+# written against a real service works against this unchanged.
+#
+# Two things this pack does NOT model, on record rather than by omission:
+#
+#  - `http_request_duration_seconds` is exposed here as pre-computed
+#    quantile series, the shape a *summary* has. A real histogram exposes
+#    `_bucket`/`_sum`/`_count` and is queried with `histogram_quantile()`.
+#    A pack emits one value per spec, so the summary shape is the one it
+#    can represent honestly; for real buckets use a `signal_type: histogram`
+#    entry rather than a pack.
+#  - The error ratio is a relationship between two series, not a series.
+#    The defaults below put roughly 0.4% of requests in the 5xx bucket so
+#    `rate(http_requests_total{code="500"}) / rate(http_requests_total)`
+#    lands near a typical alert threshold; move it by overriding
+#    `http_requests_total.server_error`.
+
+version: 2
+kind: composable
+name: http_server_red
+description: "Request rate, error rate and latency quantiles (RED)"
+category: application
+
+shared_labels:
+  service: ""
+  job: ""
+  method: GET
+  handler: /api
+
+metrics:
+  # Rate and errors: one counter, one series per status class. The step
+  # sizes are per-tick increments, so their ratio is the error ratio.
+  - name: http_requests_total
+    id: ok
+    labels:
+      code: "200"
+    generator:
+      type: step
+      start: 0.0
+      step_size: 24.0
+
+  - name: http_requests_total
+    id: client_error
+    labels:
+      code: "404"
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.8
+
+  - name: http_requests_total
+    id: server_error
+    labels:
+      code: "500"
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.1
+
+  # Duration: quantile series, healthy-but-not-flat.
+  #
+  # `noise:` is set explicitly on every one of these. The `steady` alias
+  # defaults it to 1.0, which is sensible for percentages and ruinous for
+  # seconds — at a p50 of 32ms it swings the value negative, and a negative
+  # latency is worse than a flat one. Each is set to roughly a tenth of its
+  # own centre. Measured, not assumed: the default produced -0.44s here.
+  - name: http_request_duration_seconds
+    id: p50
+    labels:
+      quantile: "0.5"
+    generator:
+      type: steady
+      center: 0.032
+      amplitude: 0.004
+      period: 300s
+      noise: 0.002
+
+  - name: http_request_duration_seconds
+    id: p90
+    labels:
+      quantile: "0.9"
+    generator:
+      type: steady
+      center: 0.140
+      amplitude: 0.020
+      period: 300s
+      noise: 0.008
+
+  # p99 is steady rather than spiking by default. `spike_event` starts
+  # *inside* its first spike, so a short run would show nothing but the
+  # spike and a reader would take 1.21s for the baseline. To model a
+  # latency incident, override this one spec:
+  #
+  #   overrides:
+  #     http_request_duration_seconds.p99:
+  #       generator:
+  #         type: spike_event
+  #         baseline: 0.310
+  #         spike_height: 0.900
+  #         spike_duration: 20s
+  #         spike_interval: 180s
+  - name: http_request_duration_seconds
+    id: p99
+    labels:
+      quantile: "0.99"
+    generator:
+      type: steady
+      center: 0.310
+      amplitude: 0.040
+      period: 300s
+      noise: 0.015
+
+  # Saturation is not part of RED, but in-flight requests are what a
+  # latency spike is usually explained by, and the pack is more useful with
+  # the explanation next to the symptom.
+  - name: http_requests_in_flight
+    generator:
+      type: steady
+      center: 12.0
+      amplitude: 4.0
+      period: 180s
+      noise: 0.8

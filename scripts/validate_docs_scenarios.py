@@ -400,6 +400,81 @@ def extract_scenarios(md_path: Path, markdown_text: str) -> list[ExtractedScenar
     return out
 
 
+def builtin_pack_names(sonda_bin: Path | None) -> frozenset[str]:
+    """Every pack the binary resolves with no ``--catalog``.
+
+    Read from ``sonda list --json`` rather than restated here, so a pack added
+    to or removed from the embedded set moves this set on its own.
+    """
+    if sonda_bin is None:
+        return frozenset()
+    proc = subprocess.run(
+        [str(sonda_bin), "list", "--json", "--kind", "composable"],
+        capture_output=True,
+        text=True,
+        timeout=DEFAULT_SUBPROCESS_TIMEOUT_S,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"`sonda list --json` failed: {proc.stderr.strip()[:300]}")
+    return frozenset(
+        entry["name"]
+        for entry in json.loads(proc.stdout)
+        if entry.get("origin") == "builtin"
+    )
+
+
+def packs_referenced(body: str) -> list[str]:
+    """Every value a ``pack:`` key names in ``body``, in order."""
+    return [
+        m.group(1).strip().strip("'\"")
+        for m in re.finditer(r"^[ \t]*(?:-[ \t]+)?pack:[ \t]*(\S+)", body, re.MULTILINE)
+    ]
+
+
+def extract_builtin_pack_scenarios(
+    md_path: Path, markdown_text: str, builtins: frozenset[str]
+) -> list[ExtractedScenario]:
+    """Complete scenarios whose ``pack:`` references all resolve with no catalog.
+
+    :func:`is_runnable_scenario` refuses anything carrying ``pack:``, and must
+    keep refusing it: that function is the character-for-character mirror of
+    ``runnableScenario`` in ``sonda-pure.js``, which decides whether a fence
+    gets a "Run in playground" button — and the playground builds an empty
+    resolver, so a pack reference cannot resolve in the browser at all.
+
+    The CLI is a different matter. Since the builtin catalog shipped, ``pack:
+    node_exporter_cpu`` compiles with no ``--catalog`` and no files on disk,
+    so the compile gate CAN speak about these fences even though the button
+    cannot. Without this, every example on the built-in packs page was
+    declined and nothing checked it.
+
+    Only fences whose every ``pack:`` value is a builtin qualify. One naming a
+    user pack still needs a directory this gate cannot supply, and is left
+    declined rather than compiled against a catalog that does not exist.
+    """
+    if not builtins:
+        return []
+    out: list[ExtractedScenario] = []
+    for line, body, info in extract_yaml_fences(markdown_text):
+        normalized = normalize_fence(body)
+        referenced = packs_referenced(normalized)
+        if not referenced or not all(name in builtins for name in referenced):
+            continue
+        if re.search(r"^#[ \t]*sonda:static\b", normalized, re.MULTILINE):
+            continue
+        if not re.search(r"^version:[ \t]*2[ \t]*$", normalized, re.MULTILINE):
+            continue
+        if not re.search(r"^kind:[ \t]*runnable[ \t]*$", normalized, re.MULTILINE):
+            continue
+        if not re.search(r"^scenarios:", normalized, re.MULTILINE):
+            continue
+        out.append(
+            ExtractedScenario(file=md_path, line=line, body=normalized, info=info)
+        )
+    return out
+
+
 def extract_fragments(md_path: Path, markdown_text: str) -> list[ExtractedScenario]:
     """Return every FRAGMENT fence, wrapped so the engine can parse it.
 
@@ -668,6 +743,7 @@ def run_validation(
         raise RuntimeError(f"docs root not found: {docs_root}")
 
     skip_set = {str(s) for s in skip_files}
+    builtins = builtin_pack_names(sonda_bin)
     scenarios: list[ExtractedScenario] = []
     fences = 0  # every yaml fence seen, so declines can be counted rather than inferred
     for md in iter_markdown_files(docs_root):
@@ -677,6 +753,7 @@ def run_validation(
         text = md.read_text(encoding="utf-8")
         fences += len(extract_yaml_fences(text))
         scenarios.extend(extract_scenarios(md, text))
+        scenarios.extend(extract_builtin_pack_scenarios(md, text, builtins))
         scenarios.extend(extract_fragments(md, text))
 
     results = [

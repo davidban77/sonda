@@ -28,10 +28,20 @@ pub struct BuiltinPack {
 /// Declared here beside the list so a half-finished edit — a new
 /// `include_str!` without its entry, or an entry deleted from the middle —
 /// fails the count gate instead of quietly shipping a shorter catalog.
-pub const PACK_COUNT: usize = 3;
+pub const PACK_COUNT: usize = 5;
 
 /// Every pack embedded in this binary, sorted by name.
 pub static PACKS: &[BuiltinPack] = &[
+    BuiltinPack {
+        name: "http_server_red",
+        file: "http-server-red.yaml",
+        yaml: include_str!("../../../packs/http-server-red.yaml"),
+    },
+    BuiltinPack {
+        name: "kube_state_metrics",
+        file: "kube-state-metrics.yaml",
+        yaml: include_str!("../../../packs/kube-state-metrics.yaml"),
+    },
     BuiltinPack {
         name: "node_exporter_cpu",
         file: "node-exporter-cpu.yaml",
