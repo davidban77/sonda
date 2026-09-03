@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.23.0](https://github.com/davidban77/sonda/compare/v1.22.3...v1.23.0) (2026-09-03)
+
+
+### Features
+
+* **catalog:** builtin pack catalog — `sonda list` and `pack:` work with zero setup ([#624](https://github.com/davidban77/sonda/issues/624)) ([e6b196d](https://github.com/davidban77/sonda/commit/e6b196d0d86a37e1266f03ee79e50fdd5e45a050))
+* **packs:** extends and deviations — a pack builds on another ([#629](https://github.com/davidban77/sonda/issues/629)) ([ef250aa](https://github.com/davidban77/sonda/commit/ef250aa1f9c1ab704268e3a043ea3ccc5b67c187))
+* **packs:** kube-state-metrics and http-server-red, and the page for them ([#630](https://github.com/davidban77/sonda/issues/630)) ([f75383a](https://github.com/davidban77/sonda/commit/f75383a806ab042109456eb5f2e331e7105c54c5))
+
+
+### Bug Fixes
+
+* **ci:** decide the git major tag with the same rule as the image tags ([#628](https://github.com/davidban77/sonda/issues/628)) ([ab99883](https://github.com/davidban77/sonda/commit/ab9988376ed8725c9239642c990dbeb260a3dd43))
+* **docker:** the image ships the released binaries and no longer includes OTLP ([#627](https://github.com/davidban77/sonda/issues/627)) ([496fe1d](https://github.com/davidban77/sonda/commit/496fe1d78436cc88288a797074f4dcc9c953c617))
+* **packs:** address metric specs by selector, not by a name that repeats ([#626](https://github.com/davidban77/sonda/issues/626)) ([8f03ebd](https://github.com/davidban77/sonda/commit/8f03ebdf945db9897bedfadaa04bd1cb11c524b6))
+
 ## [1.22.3](https://github.com/davidban77/sonda/compare/v1.22.2...v1.22.3) (2026-08-30)
 
 
