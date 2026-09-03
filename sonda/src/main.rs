@@ -266,6 +266,7 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
                         sonda_core::catalog::EntryOrigin::UserDir => "catalog",
                     },
                     "shadows_builtin": e.shadows_builtin,
+                    "extends": e.extends,
                     "pack_error": e.pack_error,
                 })
             })

@@ -28,6 +28,13 @@
 //! `defaults.labels` so this pass can interleave levels 4 and 5 between
 //! them.
 //!
+//! An extension's own `shared_labels` sit between its base's and level 5:
+//! base, then each extension outward, then per-metric. That ordering is not
+//! a case in the composer — [`crate::packs::extend::materialize`] merges the
+//! maps as it folds the chain, so level 4 is one map by the time this pass
+//! sees it, and level 5 is read post-deviation for the same reason. The
+//! chain is resolved before composition begins.
+//!
 //! Inline entries do **not** re-apply `defaults_labels`: Phase 2 already
 //! merged them eagerly and we must not double-apply. Inline entries are
 //! copied through with their label map intact.
@@ -225,8 +232,57 @@ pub enum ExpandError {
         message: String,
     },
 
+    /// A pack's `extends:` named a base the resolver could not produce.
+    ///
+    /// Separate from [`ExpandError::ResolveFailed`] because the reference
+    /// that failed is not the one the scenario names: the reader has to go
+    /// to the extending pack to fix it.
+    #[error("pack '{by}' extends '{base}', which could not be resolved: {message}")]
+    ExtendsUnresolved {
+        /// The base reference as `extends:` wrote it.
+        base: String,
+        /// The pack whose `extends:` named it.
+        by: String,
+        /// The resolver's own diagnostic.
+        message: String,
+    },
+
+    /// The `extends:` chain returns to a pack it already passed through.
+    #[error("extension cycle: {}", .cycle.join(" -> "))]
+    ExtensionCycle {
+        /// The loop as references, starting and ending at the pack that
+        /// closes it.
+        cycle: Vec<String>,
+    },
+
+    /// An extension could not be materialized against its base.
+    #[error("{message}")]
+    ExtendFailed {
+        /// The extension being materialized.
+        pack_name: String,
+        /// The [`crate::packs::extend::ExtendError`] rendered.
+        message: String,
+    },
+
+    /// A pack declared `deviations:` with no `extends:` to deviate from.
+    ///
+    /// Only packs above the root are folded, so such a block would never be
+    /// applied and never mentioned — the silent no-op this feature refuses
+    /// everywhere else.
+    #[error(
+        "pack '{pack_name}' declares {count} deviation(s) but no `extends:`; \
+         there is no base to deviate from"
+    )]
+    DeviationsWithoutExtends {
+        /// The pack that declared them.
+        pack_name: String,
+        /// How many, so the message does not send the reader hunting for one.
+        count: usize,
+    },
+
     /// Two override keys address the same metric spec.
     ///
+
     /// A spec whose name is unique *and* which declares an `id:` answers to
     /// both `name` and `name.id`. Writing both would apply one and discard
     /// the other without a diagnostic.
@@ -688,26 +744,13 @@ fn expand_pack_entry<R: PackResolver>(
         .as_deref()
         .expect("expand_pack_entry called with non-pack entry; caller must check");
 
-    let pack = resolver
-        .resolve(reference)
-        .map_err(|e| ExpandError::ResolveFailed {
-            reference: reference.to_string(),
-            message: e.message,
-        })?;
+    let pack = resolve_pack_chain(reference, resolver)?;
 
     if pack.metrics.is_empty() {
         return Err(ExpandError::EmptyPack {
             pack_name: pack.name,
         });
     }
-
-    // Every spec must be addressable by exactly one selector before anything
-    // tries to address one. This is what lets `resolve_selector` below treat
-    // ambiguity as impossible rather than re-deriving the rule.
-    crate::packs::validate_pack(&pack).map_err(|e| ExpandError::InvalidPack {
-        pack_name: pack.name.clone(),
-        message: e.to_string(),
-    })?;
 
     let override_indices = resolve_override_selectors(&pack, entry.overrides.as_ref())?;
 
@@ -815,6 +858,108 @@ fn expand_pack_entry<R: PackResolver>(
     }
 
     Ok(())
+}
+
+/// Resolve `reference` and its whole `extends:` chain into one effective pack.
+///
+/// Walks base-ward collecting the chain, then folds it leaf-ward with
+/// [`crate::packs::extend::materialize`], validating each link's
+/// addressability before the next one resolves selectors against it. The
+/// returned pack is indistinguishable from a hand-written one, which is why
+/// nothing downstream of here knows that packs can extend.
+///
+/// # On the cycle check
+///
+/// `extends:` takes one value, so the chain is a path and not a graph: a
+/// cycle is a reference appearing twice on the path being walked, which is
+/// what the visited set below detects. The design called for reusing
+/// `compile_after`'s Kahn + DFS machinery; that machinery exists because
+/// `after:` chains branch, and with out-degree one its gray-node bookkeeping
+/// degenerates to exactly this set. Generalizing it would have added a type
+/// parameter to a working file to express the same thing.
+///
+/// # Errors
+///
+/// - [`ExpandError::ResolveFailed`] for the leaf reference, and
+///   [`ExpandError::ExtendsUnresolved`] for a base named by `extends:` —
+///   distinct because "your `pack:` is wrong" and "a pack you referenced
+///   names a base that is missing" send the reader to different files.
+/// - [`ExpandError::ExtensionCycle`] naming the loop.
+/// - [`ExpandError::InvalidPack`] when any link, or the materialized result,
+///   is not addressable.
+/// - [`ExpandError::ExtendFailed`] for the [`crate::packs::extend`] errors.
+fn resolve_pack_chain<R: PackResolver>(
+    reference: &str,
+    resolver: &R,
+) -> Result<MetricPackDef, ExpandError> {
+    let leaf = resolver
+        .resolve(reference)
+        .map_err(|e| ExpandError::ResolveFailed {
+            reference: reference.to_string(),
+            message: e.message,
+        })?;
+
+    // Leaf first; `chain` ends at the root.
+    let mut chain = vec![leaf];
+    let mut visited: Vec<String> = vec![reference.to_string()];
+
+    while let Some(base_ref) = chain.last().expect("chain is never empty").extends.clone() {
+        if let Some(at) = visited.iter().position(|seen| *seen == base_ref) {
+            // Render the loop from where it closes, in the direction the
+            // user reads `extends:`, and repeat the entry point so the
+            // cycle is visibly closed.
+            let mut cycle: Vec<String> = visited[at..].to_vec();
+            cycle.push(base_ref);
+            return Err(ExpandError::ExtensionCycle { cycle });
+        }
+        let base = resolver
+            .resolve(&base_ref)
+            .map_err(|e| ExpandError::ExtendsUnresolved {
+                base: base_ref.clone(),
+                by: chain.last().expect("chain is never empty").name.clone(),
+                message: e.message,
+            })?;
+        visited.push(base_ref);
+        chain.push(base);
+    }
+
+    // Fold root-ward-to-leaf: each extension is materialized against the
+    // pack accumulated so far.
+    let mut resolved = chain.pop().expect("chain is never empty");
+    // The root has nothing to deviate from, and only packs *above* the root
+    // are folded — so a root's own `deviations:` would never be looked at.
+    // A deviation that does nothing is the no-op this feature refuses
+    // everywhere else, so it is refused here too rather than dropped.
+    if !resolved.deviations.is_empty() {
+        return Err(ExpandError::DeviationsWithoutExtends {
+            pack_name: resolved.name.clone(),
+            count: resolved.deviations.len(),
+        });
+    }
+    validate_addressable(&resolved)?;
+    while let Some(extension) = chain.pop() {
+        let extension_name = extension.name.clone();
+        resolved = crate::packs::extend::materialize(&extension, &resolved).map_err(|e| {
+            ExpandError::ExtendFailed {
+                pack_name: extension_name,
+                message: e.to_string(),
+            }
+        })?;
+        validate_addressable(&resolved)?;
+    }
+    Ok(resolved)
+}
+
+/// Every spec must be addressable by exactly one selector before anything
+/// tries to address one. This is what lets `resolve_selector` treat
+/// ambiguity as impossible rather than re-deriving the rule — and it runs on
+/// each materialized step too, since two added metrics can collide with each
+/// other in a way no single link exhibits.
+fn validate_addressable(pack: &MetricPackDef) -> Result<(), ExpandError> {
+    crate::packs::validate_pack(pack).map_err(|e| ExpandError::InvalidPack {
+        pack_name: pack.name.clone(),
+        message: e.to_string(),
+    })
 }
 
 /// Resolve each override key to the one spec index it addresses, mapping
@@ -961,6 +1106,8 @@ mod tests {
         shared.insert("job".to_string(), "snmp".to_string());
 
         MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "telegraf_snmp_interface".to_string(),
             description: "test".to_string(),
             category: "network".to_string(),
@@ -997,6 +1144,8 @@ mod tests {
         system_labels.insert("mode".to_string(), "system".to_string());
 
         MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "node_exporter_cpu".to_string(),
             description: "test".to_string(),
             category: "infrastructure".to_string(),
@@ -1199,6 +1348,8 @@ scenarios:
         metric_labels.insert("region".to_string(), "metric-region".to_string());
 
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "p".to_string(),
             description: "t".to_string(),
             category: "c".to_string(),
@@ -1273,6 +1424,8 @@ scenarios:
         let mut shared = HashMap::new();
         shared.insert("job".to_string(), "snmp".to_string());
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "p".to_string(),
             description: "t".to_string(),
             category: "c".to_string(),
@@ -1369,6 +1522,8 @@ scenarios:
     #[test]
     fn missing_generator_falls_back_to_constant_zero() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "p".to_string(),
             description: "t".to_string(),
             category: "c".to_string(),
@@ -1682,6 +1837,8 @@ scenarios:
     #[test]
     fn empty_pack_is_an_error() {
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "empty".to_string(),
             description: "t".to_string(),
             category: "c".to_string(),
@@ -2100,6 +2257,8 @@ scenarios:
         generator: { type: constant, value: 222.0 }
 "#;
         let pack = MetricPackDef {
+            extends: None,
+            deviations: Vec::new(),
             name: "single".to_string(),
             description: "test".to_string(),
             category: "network".to_string(),
@@ -2125,6 +2284,364 @@ scenarios:
         assert!(
             matches!(err, ExpandError::ConflictingOverrideKeys { .. }),
             "got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Extension chains (W4 phase 1c)
+    // -----------------------------------------------------------------------
+
+    const EXTENDING_SCENARIO: &str = r#"
+version: 2
+kind: runnable
+defaults: { rate: 1 }
+scenarios:
+  - id: dev
+    signal_type: metrics
+    pack: LEAF
+"#;
+
+    /// A pack with `extends:` set and one added metric, named `<name>_m`.
+    fn extending_pack(name: &str, base: Option<&str>) -> MetricPackDef {
+        MetricPackDef {
+            name: name.to_string(),
+            description: "test".to_string(),
+            category: "network".to_string(),
+            extends: base.map(str::to_string),
+            shared_labels: None,
+            metrics: vec![MetricSpec {
+                name: format!("{name}_m"),
+                id: None,
+                labels: None,
+                generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+            }],
+            deviations: Vec::new(),
+        }
+    }
+
+    fn expand_chain(leaf: &str, packs: Vec<MetricPackDef>) -> Result<ExpandedFile, ExpandError> {
+        let mut resolver = InMemoryPackResolver::new();
+        for pack in packs {
+            let key = pack.name.clone();
+            resolver.insert(key, pack);
+        }
+        let yaml = EXTENDING_SCENARIO.replace("LEAF", leaf);
+        let parsed = parse(&yaml).expect("parse must succeed");
+        let normalized = normalize(parsed).expect("normalize must succeed");
+        expand(normalized, &resolver)
+    }
+
+    /// The whole chain materializes, and the resolved order is root-first —
+    /// a base's metrics precede the metrics of the pack extending it.
+    #[test]
+    fn a_three_deep_chain_resolves_root_first() {
+        let expanded = expand_chain(
+            "c",
+            vec![
+                extending_pack("a", None),
+                extending_pack("b", Some("a")),
+                extending_pack("c", Some("b")),
+            ],
+        )
+        .expect("a chain must resolve");
+
+        let names: Vec<&str> = expanded.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a_m", "b_m", "c_m"]);
+    }
+
+    /// Sub-signal ids are built from the *leaf* pack's name, because the
+    /// leaf is the pack the scenario referenced.
+    #[test]
+    fn the_resolved_pack_keeps_the_leafs_identity() {
+        let expanded = expand_chain(
+            "c",
+            vec![extending_pack("a", None), extending_pack("c", Some("a"))],
+        )
+        .expect("must resolve");
+        let ids: Vec<&str> = expanded
+            .entries
+            .iter()
+            .filter_map(|e| e.id.as_deref())
+            .collect();
+        assert_eq!(ids, vec!["dev.a_m", "dev.c_m"]);
+    }
+
+    #[test]
+    fn an_extends_naming_a_missing_base_says_which_pack_named_it() {
+        // `b` extends `a`, but only `b` is in the resolver.
+        let err = expand_chain("b", vec![extending_pack("b", Some("a"))])
+            .expect_err("a missing base must error");
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, ExpandError::ExtendsUnresolved { .. }),
+            "got: {err:?}"
+        );
+        assert!(
+            msg.contains("'b' extends 'a'"),
+            "must name both the extender and the base: {msg}"
+        );
+    }
+
+    /// A missing `pack:` and a missing `extends:` are different mistakes in
+    /// different files, so they must not collapse into one diagnostic.
+    #[test]
+    fn a_missing_leaf_and_a_missing_base_are_different_errors() {
+        let missing_leaf =
+            expand_chain("nope", vec![extending_pack("a", None)]).expect_err("must error");
+        assert!(
+            matches!(missing_leaf, ExpandError::ResolveFailed { .. }),
+            "got: {missing_leaf:?}"
+        );
+    }
+
+    #[test]
+    fn a_two_pack_cycle_is_refused_naming_the_loop() {
+        let err = expand_chain(
+            "a",
+            vec![
+                extending_pack("a", Some("b")),
+                extending_pack("b", Some("a")),
+            ],
+        )
+        .expect_err("a cycle must error");
+        match &err {
+            ExpandError::ExtensionCycle { cycle } => {
+                assert_eq!(
+                    cycle,
+                    &vec!["a".to_string(), "b".to_string(), "a".to_string()]
+                );
+            }
+            other => panic!("expected ExtensionCycle, got {other:?}"),
+        }
+        assert!(format!("{err}").contains("a -> b -> a"), "{err}");
+    }
+
+    /// A pack extending itself is the degenerate cycle, and the one a user
+    /// writes by copy-pasting a pack and forgetting to edit `extends:`.
+    #[test]
+    fn a_pack_extending_itself_is_refused() {
+        let err = expand_chain("a", vec![extending_pack("a", Some("a"))]).expect_err("must error");
+        match &err {
+            ExpandError::ExtensionCycle { cycle } => {
+                assert_eq!(cycle, &vec!["a".to_string(), "a".to_string()])
+            }
+            other => panic!("expected ExtensionCycle, got {other:?}"),
+        }
+    }
+
+    /// A cycle deeper than the entry point still terminates: the walk is
+    /// keyed on every reference it has passed, not only on where it began.
+    #[test]
+    fn a_cycle_the_entry_point_is_not_part_of_is_still_refused() {
+        let err = expand_chain(
+            "c",
+            vec![
+                extending_pack("c", Some("b")),
+                extending_pack("b", Some("a")),
+                extending_pack("a", Some("b")),
+            ],
+        )
+        .expect_err("must error");
+        match &err {
+            ExpandError::ExtensionCycle { cycle } => {
+                assert_eq!(
+                    cycle,
+                    &vec!["b".to_string(), "a".to_string(), "b".to_string()]
+                );
+            }
+            other => panic!("expected ExtensionCycle, got {other:?}"),
+        }
+    }
+
+    /// Re-declaring a selector the base has is caught by the additive rule,
+    /// which names the base so the reader knows where the other one is.
+    #[test]
+    fn an_addition_repeating_a_base_selector_names_the_base() {
+        let mut base = extending_pack("a", None);
+        base.metrics[0].name = "shared".to_string();
+        let mut ext = extending_pack("c", Some("a"));
+        ext.metrics[0].name = "shared".to_string();
+
+        let err = expand_chain("c", vec![base, ext]).expect_err("must error");
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, ExpandError::ExtendFailed { .. }),
+            "got: {err:?}"
+        );
+        assert!(msg.contains("already declared by base 'a'"), "{msg}");
+    }
+
+    /// The case no single link exhibits, and the reason addressability is
+    /// re-checked after every fold: `cpu` and `cpu.x` are *different*
+    /// selectors, so the additive rule is satisfied — but the materialized
+    /// pack repeats the name `cpu` with only one of them carrying an id,
+    /// which is unaddressable.
+    #[test]
+    fn a_fold_that_makes_a_name_repeat_without_ids_is_refused() {
+        let mut base = extending_pack("a", None);
+        base.metrics[0].name = "cpu".to_string();
+        base.metrics[0].id = None;
+
+        let mut ext = extending_pack("c", Some("a"));
+        ext.metrics[0].name = "cpu".to_string();
+        ext.metrics[0].id = Some("x".to_string());
+
+        let err = expand_chain("c", vec![base, ext]).expect_err("must error");
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, ExpandError::InvalidPack { .. }),
+            "the materialized pack is what fails, got: {err:?}"
+        );
+        assert!(
+            msg.contains("appears 2 times") && msg.contains("declare none"),
+            "{msg}"
+        );
+    }
+
+    /// Only packs above the root are folded, so a root's own `deviations:`
+    /// would never be looked at. Measured before the guard: a lone pack
+    /// deviating on a selector that does not even exist compiled clean.
+    #[test]
+    fn deviations_on_a_pack_with_no_extends_are_refused_not_dropped() {
+        let mut lone = extending_pack("a", None);
+        lone.deviations = vec![crate::packs::Deviation {
+            metric: "nope".to_string(),
+            replace: None,
+            not_supported: true,
+        }];
+
+        let err = expand_chain("a", vec![lone]).expect_err("must not be dropped");
+        match &err {
+            ExpandError::DeviationsWithoutExtends { pack_name, count } => {
+                assert_eq!(pack_name, "a");
+                assert_eq!(*count, 1);
+            }
+            other => panic!("expected DeviationsWithoutExtends, got {other:?}"),
+        }
+    }
+
+    /// The same block one link up is applied rather than refused — the
+    /// guard keys on having no base, not on declaring deviations.
+    #[test]
+    fn deviations_on_a_pack_that_does_extend_are_applied() {
+        let base = extending_pack("a", None);
+        let mut ext = extending_pack("c", Some("a"));
+        ext.deviations = vec![crate::packs::Deviation {
+            metric: "a_m".to_string(),
+            replace: None,
+            not_supported: true,
+        }];
+
+        let expanded = expand_chain("c", vec![base, ext]).expect("must resolve");
+        let names: Vec<&str> = expanded.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["c_m"], "the base's metric was removed");
+    }
+
+    /// An extension whose base is empty and which adds nothing resolves to
+    /// no metrics at all — reported as an empty pack, not as a success.
+    #[test]
+    fn a_chain_resolving_to_no_metrics_is_an_empty_pack() {
+        let mut base = extending_pack("a", None);
+        base.metrics.clear();
+        let mut ext = extending_pack("c", Some("a"));
+        ext.metrics.clear();
+
+        let err = expand_chain("c", vec![base, ext]).expect_err("must error");
+        assert!(matches!(err, ExpandError::EmptyPack { .. }), "got: {err:?}");
+    }
+
+    /// The extension's slot in the precedence chain, measured through the
+    /// real pipeline rather than on the materializer alone: base shared <
+    /// extension shared < per-metric < entry.
+    #[test]
+    fn the_extension_shared_labels_slot_sits_between_base_and_per_metric() {
+        const YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  labels: { from_defaults: defaults, tier: defaults }
+scenarios:
+  - id: dev
+    signal_type: metrics
+    pack: c
+    labels: { tier: entry }
+"#;
+        let mut base = extending_pack("a", None);
+        base.shared_labels = Some(
+            [
+                ("from_base", "base"),
+                ("overridden_by_ext", "base"),
+                ("tier", "base"),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        );
+
+        let mut ext = extending_pack("c", Some("a"));
+        ext.shared_labels = Some(
+            [
+                ("from_ext", "ext"),
+                ("overridden_by_ext", "ext"),
+                ("tier", "ext"),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        );
+        ext.metrics[0].labels = Some(
+            [("from_metric", "metric"), ("tier", "metric")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("a", base);
+        resolver.insert("c", ext);
+        let parsed = parse(YAML).expect("parse");
+        let normalized = normalize(parsed).expect("normalize");
+        let expanded = expand(normalized, &resolver).expect("must expand");
+
+        // `a_m` comes from the base and has no per-metric labels; `c_m` is
+        // the extension's own and carries them.
+        let c_m = expanded
+            .entries
+            .iter()
+            .find(|e| e.name == "c_m")
+            .expect("the extension's metric must be present");
+        let labels = c_m.labels.as_ref().expect("labels present");
+        let at = |k: &str| labels.get(k).map(String::as_str);
+
+        assert_eq!(at("from_defaults"), Some("defaults"));
+        assert_eq!(at("from_base"), Some("base"), "the base still contributes");
+        assert_eq!(at("from_ext"), Some("ext"));
+        assert_eq!(at("from_metric"), Some("metric"));
+        assert_eq!(
+            at("overridden_by_ext"),
+            Some("ext"),
+            "the extension outranks its base"
+        );
+        assert_eq!(
+            at("tier"),
+            Some("entry"),
+            "and the entry outranks all three pack layers"
+        );
+
+        // The base's own metric sees the extension's shared labels too —
+        // they are the resolved pack's, not the extension's metrics' alone.
+        let a_m = expanded
+            .entries
+            .iter()
+            .find(|e| e.name == "a_m")
+            .expect("the base's metric must be present");
+        assert_eq!(
+            a_m.labels
+                .as_ref()
+                .and_then(|l| l.get("from_ext"))
+                .map(String::as_str),
+            Some("ext")
         );
     }
 

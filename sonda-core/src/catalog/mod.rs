@@ -103,10 +103,22 @@ pub struct CatalogEntry {
     /// Set only by [`merged`]: this user entry hides a builtin of the same
     /// name. Always `false` from [`enumerate`].
     pub shadows_builtin: bool,
+    /// This `composable` entry's `extends:` value, verbatim.
+    ///
+    /// Carried so [`merged`] can judge chain reachability without reparsing,
+    /// and so `--json` consumers can see the shape of a catalog.
+    pub extends: Option<String>,
     /// Why this `composable` entry cannot be referenced by `pack: <name>`,
-    /// rendered — either it does not deserialize as a
-    /// [`MetricPackDef`](crate::packs::MetricPackDef), or it does and fails
-    /// [`validate_pack`](crate::packs::validate_pack).
+    /// rendered.
+    ///
+    /// Four causes, in the order they are checked. The first three are
+    /// properties of the file alone and are set by [`enumerate`] too: it does
+    /// not deserialize as a [`MetricPackDef`](crate::packs::MetricPackDef);
+    /// it does but fails [`validate_pack`](crate::packs::validate_pack); or
+    /// it declares `deviations:` with no `extends:` to apply them to. The
+    /// fourth needs the whole name space and so is set **only by
+    /// [`merged`]**: its `extends:` chain does not resolve, either because a
+    /// base is absent or because the chain loops.
     ///
     /// Such an entry is still listed and still readable with `sonda show`,
     /// which is how a user finds what is wrong with it. Always `None` for a
@@ -210,9 +222,9 @@ pub(crate) fn header_entry(
     // A composable entry that cannot be referenced is still an entry: it is
     // listed, marked, and readable with `sonda show`. Skipping it would hide
     // the file from the one command that shows what is wrong with it.
-    let pack_error = match kind {
-        EntryKind::Composable => pack_error(content),
-        EntryKind::Runnable => None,
+    let (extends, pack_error) = match kind {
+        EntryKind::Composable => pack_header(content),
+        EntryKind::Runnable => (None, None),
     };
     Ok(CatalogEntry {
         name,
@@ -223,21 +235,37 @@ pub(crate) fn header_entry(
         source_path,
         origin,
         shadows_builtin: false,
+        extends,
         pack_error,
     })
 }
 
-/// Why `content` cannot serve as a pack, or `None` if it can.
+/// What `content` declares as its base, and why it cannot serve as a pack.
 ///
-/// Runs the same two steps the resolver does before expansion, so a
-/// listing's verdict and a run's cannot disagree.
-fn pack_error(content: &str) -> Option<String> {
-    match serde_yaml_ng::from_str::<crate::packs::MetricPackDef>(content) {
-        Ok(pack) => crate::packs::validate_pack(&pack)
-            .err()
-            .map(|e| e.to_string()),
-        Err(e) => Some(e.to_string()),
-    }
+/// Runs the same checks the compiler runs before expansion, so a listing's
+/// verdict and a run's cannot disagree. The chain half cannot be judged from
+/// one file, so it is not attempted here — see [`merged`].
+fn pack_header(content: &str) -> (Option<String>, Option<String>) {
+    let pack = match serde_yaml_ng::from_str::<crate::packs::MetricPackDef>(content) {
+        Ok(pack) => pack,
+        Err(e) => return (None, Some(e.to_string())),
+    };
+    let error = crate::packs::validate_pack(&pack)
+        .err()
+        .map(|e| e.to_string())
+        .or_else(|| {
+            // Mirrors `ExpandError::DeviationsWithoutExtends`: only packs
+            // above the root are folded, so these would never be applied.
+            (pack.extends.is_none() && !pack.deviations.is_empty()).then(|| {
+                format!(
+                    "pack '{}' declares {} deviation(s) but no `extends:`; \
+                     there is no base to deviate from",
+                    pack.name,
+                    pack.deviations.len()
+                )
+            })
+        });
+    (pack.extends, error)
 }
 
 /// Walk `dir` and return one [`CatalogEntry`] per YAML file with a
@@ -351,11 +379,67 @@ pub fn merged(user_dir: Option<&Path>) -> Result<CatalogListing, CatalogError> {
         }
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
+    mark_unresolvable_chains(&mut entries);
 
     Ok(CatalogListing {
         entries,
         skipped: user.skipped,
     })
+}
+
+/// Mark every entry whose `extends:` chain does not resolve.
+///
+/// Only [`merged`] can do this: the answer depends on the whole name space,
+/// and a user-directory walk on its own cannot see the builtin a pack
+/// extends. The walk mirrors `resolve_pack_chain` — follow `extends:`, refuse
+/// a reference already on the path — so the listing and a run agree.
+///
+/// A base named by *file path* rather than by name is skipped, not marked:
+/// this pass resolves names against the listing and cannot open files. That
+/// is a limitation rather than a verdict, so it stays silent instead of
+/// claiming a pack is broken when it is not.
+fn mark_unresolvable_chains(entries: &mut [CatalogEntry]) {
+    let by_name: std::collections::BTreeMap<&str, Option<&str>> = entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.extends.as_deref()))
+        .collect();
+
+    let mut verdicts: Vec<(usize, String)> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.pack_error.is_some() || entry.extends.is_none() {
+            continue;
+        }
+        let mut visited: Vec<&str> = vec![entry.name.as_str()];
+        let mut next = entry.extends.as_deref();
+
+        while let Some(base) = next {
+            if !matches!(
+                crate::compiler::expand::classify_pack_reference(base),
+                crate::compiler::expand::PackResolveOrigin::Name
+            ) {
+                break; // A path reference; not this pass's to judge.
+            }
+            if visited.contains(&base) {
+                verdicts.push((
+                    index,
+                    format!("extension cycle: {} -> {base}", visited.join(" -> ")),
+                ));
+                break;
+            }
+            let Some(base_extends) = by_name.get(base) else {
+                verdicts.push((
+                    index,
+                    format!("extends '{base}', which is not in this catalog"),
+                ));
+                break;
+            };
+            visited.push(base);
+            next = *base_extends;
+        }
+    }
+    for (index, verdict) in verdicts {
+        entries[index].pack_error = Some(verdict);
+    }
 }
 
 /// Resolve `@name` against `dir` and return the source YAML path.

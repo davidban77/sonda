@@ -31,6 +31,13 @@ it declares a unique `id:` (`node_exporter_cpu` uses the CPU modes). Names may n
 which separates `name` from `id` in a selector. An unaddressable pack does not load — that is
 what lets `overrides:` and `after.ref` refuse a bare ambiguous name instead of guessing.
 
+A pack may `extends:` another. Resolution is a pre-pass — `packs::extend::materialize` folds the
+chain into one `MetricPackDef` indistinguishable from a hand-written one — so expansion, label
+composition and sub-signal registration never learn that packs can extend. `metrics:` is purely
+additive there; `deviations:` is the only way to change a base metric, and each gives exactly
+one of `replace:` or `not_supported:`. Addressability is re-checked after every fold, because
+two links can each be fine and their merge not be.
+
 Each crate has its own `CLAUDE.md` with module layout, patterns, and conventions.
 
 ## Agent Workflow

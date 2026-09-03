@@ -694,3 +694,165 @@ fn the_committed_schema_is_current() {
          and commit the result"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Extension branches (W4 phase 1c)
+// ---------------------------------------------------------------------------
+
+/// The positive control for the two negatives below.
+///
+/// No pack in `packs/` uses `extends:` or `deviations:` yet, so
+/// `every_repo_pack_validates` says nothing about those branches — a schema
+/// that got them wrong would still be green. This drives them directly.
+#[test]
+fn the_schema_accepts_an_extension_with_both_deviation_forms() {
+    let validator = validator();
+    const YAML: &str = r#"
+version: 2
+kind: composable
+name: cisco_iosxe_interface
+description: IOS-XE interface metrics
+category: network
+extends: telegraf_snmp_interface
+shared_labels:
+  platform: iosxe
+metrics:
+  - name: ifInDiscards
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.05
+deviations:
+  - metric: ifOperStatus
+    replace:
+      generator:
+        type: constant
+        value: 2.0
+      labels:
+        note: replaced
+  - metric: ifHCOutOctets
+    not_supported: true
+"#;
+    let value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(YAML).expect("positive control must load");
+    let json = yaml_to_json(value);
+    let errors: Vec<String> = validator
+        .iter_errors(&json)
+        .map(|e| format!("  at {}: {e}", e.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the schema rejected a valid extension:\n{}",
+        errors.join("\n")
+    );
+}
+
+/// A pack with no `metrics:` at all is valid — that is how a pure-deviation
+/// extension is written — so the schema must not require the key. The
+/// compiler is what refuses a *resolved* pack with no metrics.
+#[test]
+fn the_schema_accepts_an_extension_that_only_deviates() {
+    let validator = validator();
+    const YAML: &str = r#"
+version: 2
+kind: composable
+name: stripped_down
+description: removes one metric and adds nothing
+category: network
+extends: telegraf_snmp_interface
+deviations:
+  - metric: ifInErrors
+    not_supported: true
+"#;
+    let value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(YAML).expect("positive control must load");
+    assert!(
+        validator.is_valid(&yaml_to_json(value)),
+        "a pure-deviation extension must validate"
+    );
+}
+
+#[test]
+fn the_schema_rejects_a_deviation_without_a_metric_selector() {
+    assert_rejected(
+        "`deviations` entry with no `metric:`",
+        r#"
+version: 2
+kind: composable
+name: p
+description: d
+category: network
+extends: base
+deviations:
+  - not_supported: true
+"#,
+    );
+}
+
+/// `extends:` takes one pack, not a list. A list is what someone writing
+/// multiple inheritance would try first, so the schema should say no rather
+/// than let it reach a confusing parse error.
+#[test]
+fn the_schema_rejects_a_list_of_bases() {
+    assert_rejected(
+        "`extends:` given a sequence",
+        r#"
+version: 2
+kind: composable
+name: p
+description: d
+category: network
+extends:
+  - base_one
+  - base_two
+"#,
+    );
+}
+
+/// A pack declaring neither `metrics:` nor `extends:` is refused.
+///
+/// This is the half `metrics`-leaving-`required` gave up, restored as the
+/// disjunction the compiler actually enforces. Without it, a plain pack with
+/// `metricss:` typed by hand validates and fails later as an empty pack.
+#[test]
+fn the_schema_rejects_a_pack_with_neither_metrics_nor_extends() {
+    assert_rejected(
+        "`metricss` for `metrics` on a plain pack",
+        r#"
+version: 2
+kind: composable
+name: p
+description: d
+category: network
+metricss:
+  - name: a
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+}
+
+/// The positive control: both branches of that disjunction still validate,
+/// so the rule discriminates rather than refusing packs generally.
+#[test]
+fn the_schema_accepts_a_pack_with_either_metrics_or_extends() {
+    let validator = validator();
+    for (label, body) in [
+        (
+            "metrics, no extends",
+            "metrics:\n  - name: a\n    generator:\n      type: constant\n      value: 1.0\n",
+        ),
+        ("extends, no metrics", "extends: base\n"),
+    ] {
+        let yaml = format!(
+            "version: 2\nkind: composable\nname: p\ndescription: d\ncategory: network\n{body}"
+        );
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&yaml).expect("positive control must load");
+        assert!(
+            validator.is_valid(&yaml_to_json(value)),
+            "the schema rejected a valid pack ({label}):\n{yaml}"
+        );
+    }
+}

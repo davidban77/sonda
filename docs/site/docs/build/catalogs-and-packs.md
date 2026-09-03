@@ -9,7 +9,7 @@ A **catalog** is a directory of scenario YAML files Sonda discovers through `--c
 
 ## Catalogs
 
-Each file in a catalog declares a `kind:` — `runnable` for scenarios you can run, `composable` for [packs](#packs) other scenarios reference. Sonda does not include a built-in catalog. Yours lives in your own repository, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become fully supported artifacts of the system they model instead of being pinned to a Sonda release.
+Each file in a catalog declares a `kind:` — `runnable` for scenarios you can run, `composable` for [packs](#packs) other scenarios reference. Sonda ships a small built-in catalog of curated packs, and `--catalog <dir>` chains your own directory in front of it. Yours lives in your own repository, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become fully supported artifacts of the system they model instead of being pinned to a Sonda release.
 
 ### The minimum
 
@@ -52,9 +52,9 @@ sonda --catalog ~/sonda-catalog list --kind runnable
 sonda --catalog ~/sonda-catalog list --tag cpu
 ```
 
-For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `category`, `tags`, the resolved `source` path, `origin` (`builtin` or `catalog`), `shadows_builtin`, and `pack_error`. Use it as the contract when you script catalog discovery.
+For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `category`, `tags`, the resolved `source` path, `origin` (`builtin` or `catalog`), `shadows_builtin`, `extends`, and `pack_error`. Use it as the contract when you script catalog discovery.
 
-A pack that parses as a catalog entry but cannot be referenced — a repeated metric name with no ids, say — is still listed, marked `(unusable)`, with the reason on stderr and in `pack_error`. It is listed rather than hidden because `sonda show <name>` is how you read the file and find the problem.
+A pack that parses as a catalog entry but cannot be referenced — a repeated metric name with no ids, an `extends:` naming a base the catalog does not hold, a chain that loops — is still listed, marked `(unusable)`, with the reason on stderr and in `pack_error`. It is listed rather than hidden because `sonda show <name>` is how you read the file and find the problem.
 
 ### Run a scenario
 
@@ -182,7 +182,7 @@ sonda --catalog ~/sonda-catalog list --tag application
 
 A metric pack is a reusable bundle of metric names and label schemas, expressed as a `kind: composable` YAML file in your catalog. Reference a pack from any runnable scenario with `pack: <name>` and Sonda expands it into one entry per metric: exact names, correct shared labels, and reasonable default generators per metric.
 
-Sonda no longer includes any built-in packs. You write your own and check them into a catalog directory alongside your scenarios.
+Sonda ships a few curated packs built into the binary — `sonda list` shows them with no arguments. Write your own alongside them in a catalog directory, or [extend one](#extend-a-pack).
 
 ### Why metric packs
 
@@ -423,6 +423,57 @@ scenarios:
 sonda --catalog ~/sonda-catalog run run-my-pack.yaml
 ```
 
+### Extend a pack
+
+A pack can build on another instead of restating it. Set `extends:` to the base's name and the resolved pack is the base plus your changes — the base file is never edited.
+
+```yaml title="~/sonda-catalog/cisco-iosxe-interface.yaml"
+version: 2
+kind: composable
+
+name: cisco_iosxe_interface
+description: "IOS-XE interface metrics (extends the Telegraf SNMP base)"
+category: network
+extends: telegraf_snmp_interface
+
+shared_labels:
+  platform: iosxe
+
+metrics:                        # additive only
+  - name: ifInDiscards
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.05
+
+deviations:                     # changes to the base's metrics
+  - metric: ifOperStatus
+    replace:
+      generator:
+        type: flap
+  - metric: ifHCOutOctets
+    not_supported: true         # this platform does not implement it
+```
+
+Run it like any other pack — `pack: cisco_iosxe_interface` — and the scenario sees one flat set of metrics.
+
+**`metrics:` only adds.** A metric whose selector the base already declares is an error, because adding and changing are different operations. Use a deviation to change one.
+
+**Each deviation gives exactly one action.** `replace:` swaps the fields it names — a `generator:` replaces the base's generator entirely, a `labels:` replaces the base's per-metric labels entirely, and a field you leave out is inherited. `not_supported: true` removes the metric. Giving both, or neither, is an error rather than a guess. Two deviations addressing the same metric is also an error — never last-wins.
+
+A `replace:` that names no field counts as *neither*, not as an action. That matters because pack files cannot reject unknown keys — they carry `kind:` and `version:`, which are not pack fields — so a misspelled `generatr:` is dropped and would otherwise leave a change that changes nothing.
+
+**`deviations:` needs an `extends:`.** A pack with no base has nothing to deviate from, and the block would never be applied, so declaring one is an error rather than a silent no-op.
+
+**A deviation must hit something.** A `metric:` selector matching nothing in the base fails the compile, listing the base's real selectors. A no-op deviation is nearly always a typo or a base that moved on.
+
+`extends:` takes one pack, not a list: an extension of two bases is two packs. Chains are fine (`c` extends `b` extends `a`, unbounded), and a loop is an error naming it.
+
+!!! info "The base is resolved, not pinned"
+    `extends:` goes through the same lookup as `pack:`, so shadowing a base in your `--catalog <dir>` means every extension built on it inherits your version. That is the point — a local patch propagates — but it also means a base you have changed can break an extension you did not write. When it does, you get a named selector error at compile time, not a silent difference.
+
+Label precedence gains one slot for the extension: `defaults.labels` → base `shared_labels` → **extension `shared_labels`** → per-metric labels (after deviations) → your scenario `labels` → `overrides`. Deeper packs in a chain win over shallower ones.
+
 ### Pack definition fields
 
 All pack fields are top-level keys in the file:
@@ -432,8 +483,13 @@ All pack fields are top-level keys in the file:
 | `name` | string | yes | Snake_case identifier for the pack. This is the name a runnable scenario references with `pack: <name>`. |
 | `description` | string | yes | One-line human-readable description, shown in `sonda list`. |
 | `category` | string | yes | Broad grouping for the pack (e.g. `network`, `infrastructure`, `application`). |
-| `shared_labels` | map | no | Labels applied to every metric in the pack. Empty values are placeholders for the user to fill. |
-| `metrics` | list | yes | One or more metric specifications. |
+| `extends` | string | no | The base pack this one extends, by name or path. One value, not a list. See [Extend a pack](#extend-a-pack). |
+| `shared_labels` | map | no | Labels applied to every metric in the pack. Empty values are placeholders for the user to fill. An extension's map wins over its base's. |
+| `metrics` | list | yes* | Metric specifications. \*Optional with `extends:` — purely additive there. A pack that resolves to no metrics at all is an error. |
+| `deviations` | list | no | Changes to the base's metrics. Requires `extends:` — declaring one without a base is an error. |
+| `deviations[].metric` | string | yes | Selector into the resolved base. Matching nothing is an error. |
+| `deviations[].replace` | object | no | `generator` and/or `labels` to replace wholesale — at least one of them, since a `replace` naming no field is not an action. Exactly one of `replace` / `not_supported` per deviation. |
+| `deviations[].not_supported` | bool | no | `true` removes the addressed metric. |
 | `metrics[].name` | string | yes | The metric name. May not contain `.`. |
 | `metrics[].id` | string | no | Disambiguator, required on *every* spec sharing a name and unique among them. Addressing only — see [Addressing a repeated metric name](#addressing-a-repeated-metric-name). |
 | `metrics[].labels` | map | no | Per-metric labels (merged on top of `shared_labels`). |
