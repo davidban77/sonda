@@ -6,35 +6,35 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Edit scenario YAML and watch the exact signal Sonda will emit — the real engine, compiled to WebAssembly, running in your browser.">
+        <meta name="description" content="The metric packs compiled into the sonda binary — what each one emits, and how to reference, override or extend it.">
       
       
       
-        <link rel="canonical" href="https://davidban77.github.io/sonda/playground/">
+        <link rel="canonical" href="https://davidban77.github.io/sonda/build/builtin-packs/">
       
       
-        <link rel="prev" href="../get-started/send-to-a-backend/">
+        <link rel="prev" href="../catalogs-and-packs/">
       
       
-        <link rel="next" href="alert-lab/">
+        <link rel="next" href="../../test/">
       
       
         
       
       
-      <link rel="icon" href="../assets/favicon.svg">
+      <link rel="icon" href="../../assets/favicon.svg">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>Playground - Sonda</title>
+        <title>Built-in packs - Sonda</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -53,9 +53,9 @@
       
     
     
-      <link rel="stylesheet" href="../stylesheets/sonda.css">
+      <link rel="stylesheet" href="../../stylesheets/sonda.css">
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -63,17 +63,17 @@
     
   
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Playground - Sonda" />
-<meta property="og:description" content="Edit scenario YAML and watch the exact signal Sonda will emit — the real engine, compiled to WebAssembly, running in your browser." />
-<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/playground/index.png" />
+<meta property="og:title" content="Built-in packs - Sonda" />
+<meta property="og:description" content="The metric packs compiled into the sonda binary — what each one emits, and how to reference, override or extend it." />
+<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/build/builtin-packs.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:url" content="https://davidban77.github.io/sonda/playground/" />
+<meta property="og:url" content="https://davidban77.github.io/sonda/build/builtin-packs/" />
 <meta property="twitter:card" content="summary_large_image" />
-<meta property="twitter:title" content="Playground - Sonda" />
-<meta property="twitter:description" content="Edit scenario YAML and watch the exact signal Sonda will emit — the real engine, compiled to WebAssembly, running in your browser." />
-<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/playground/index.png" />
+<meta property="twitter:title" content="Built-in packs - Sonda" />
+<meta property="twitter:description" content="The metric packs compiled into the sonda binary — what each one emits, and how to reference, override or extend it." />
+<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/build/builtin-packs.png" />
 </head>
   
   
@@ -93,7 +93,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#see-the-signal-before-you-send-it" class="md-skip">
+        <a href="#built-in-packs" class="md-skip">
           Skip to content
         </a>
       
@@ -109,9 +109,9 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
+    <a href="../.." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
       
-  <img src="../assets/sonda-logo.svg" alt="logo">
+  <img src="../../assets/sonda-logo.svg" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -128,7 +128,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Playground
+              Built-in packs
             
           </span>
         </div>
@@ -240,7 +240,7 @@
   
   
     <li class="md-tabs__item">
-      <a href=".." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -261,7 +261,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../get-started/" class="md-tabs__link">
+        <a href="../../get-started/" class="md-tabs__link">
           
   
   
@@ -279,13 +279,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../playground/" class="md-tabs__link">
           
   
   
@@ -303,11 +301,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../build/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -329,7 +329,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../test/" class="md-tabs__link">
+        <a href="../../test/" class="md-tabs__link">
           
   
   
@@ -351,7 +351,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../import/" class="md-tabs__link">
+        <a href="../../import/" class="md-tabs__link">
           
   
   
@@ -373,7 +373,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../deploy/" class="md-tabs__link">
+        <a href="../../deploy/" class="md-tabs__link">
           
   
   
@@ -395,7 +395,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../reference/" class="md-tabs__link">
+        <a href="../../reference/" class="md-tabs__link">
           
   
   
@@ -426,9 +426,7 @@
           
             
               
-                
-              
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" hidden>
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -439,9 +437,9 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
+    <a href="../.." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
       
-  <img src="../assets/sonda-logo.svg" alt="logo">
+  <img src="../../assets/sonda-logo.svg" alt="logo">
 
     </a>
     Sonda
@@ -468,7 +466,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -524,7 +522,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../get-started/" class="md-nav__link ">
+            <a href="../../get-started/" class="md-nav__link ">
               
   
   
@@ -568,7 +566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../get-started/quickstart/" class="md-nav__link">
+      <a href="../../get-started/quickstart/" class="md-nav__link">
         
   
   
@@ -596,7 +594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../get-started/your-first-scenario/" class="md-nav__link">
+      <a href="../../get-started/your-first-scenario/" class="md-nav__link">
         
   
   
@@ -624,7 +622,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../get-started/send-to-a-backend/" class="md-nav__link">
+      <a href="../../get-started/send-to-a-backend/" class="md-nav__link">
         
   
   
@@ -656,8 +654,6 @@
       
   
   
-    
-  
   
   
     
@@ -673,23 +669,20 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="./" class="md-nav__link md-nav__link--active">
+            <a href="../../playground/" class="md-nav__link ">
               
   
   
@@ -707,13 +700,13 @@
             </a>
             
               
-              <label class="md-nav__link md-nav__link--active" for="__nav_3" id="__nav_3_label" tabindex="">
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -733,7 +726,7 @@
   
   
     <li class="md-nav__item">
-      <a href="alert-lab/" class="md-nav__link">
+      <a href="../../playground/alert-lab/" class="md-nav__link">
         
   
   
@@ -765,6 +758,8 @@
       
   
   
+    
+  
   
   
     
@@ -796,20 +791,23 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../build/" class="md-nav__link ">
+            <a href="../" class="md-nav__link ">
               
   
   
@@ -827,13 +825,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -853,7 +851,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/concepts/" class="md-nav__link">
+      <a href="../concepts/" class="md-nav__link">
         
   
   
@@ -881,7 +879,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/scenario-files/" class="md-nav__link">
+      <a href="../scenario-files/" class="md-nav__link">
         
   
   
@@ -909,7 +907,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/generators/" class="md-nav__link">
+      <a href="../generators/" class="md-nav__link">
         
   
   
@@ -937,7 +935,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/encoders/" class="md-nav__link">
+      <a href="../encoders/" class="md-nav__link">
         
   
   
@@ -965,7 +963,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/sinks/" class="md-nav__link">
+      <a href="../sinks/" class="md-nav__link">
         
   
   
@@ -993,7 +991,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/sink-batching/" class="md-nav__link">
+      <a href="../sink-batching/" class="md-nav__link">
         
   
   
@@ -1021,7 +1019,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/scheduling/" class="md-nav__link">
+      <a href="../scheduling/" class="md-nav__link">
         
   
   
@@ -1049,7 +1047,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/catalogs-and-packs/" class="md-nav__link">
+      <a href="../catalogs-and-packs/" class="md-nav__link">
         
   
   
@@ -1074,10 +1072,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../build/builtin-packs/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Built-in packs
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1093,6 +1118,98 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-each-pack-is-for" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each pack is for
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What each pack is for">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#http_server_red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        http_server_red
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kube_state_metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kube_state_metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#change-one-metric-without-editing-the-pack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change one metric without editing the pack
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-on-one-instead-of-copying-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build on one instead of copying it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adding-to-the-built-in-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding to the built-in set
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1153,7 +1270,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../test/" class="md-nav__link ">
+            <a href="../../test/" class="md-nav__link ">
               
   
   
@@ -1197,7 +1314,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/alert-testing/" class="md-nav__link">
+      <a href="../../test/alert-testing/" class="md-nav__link">
         
   
   
@@ -1225,7 +1342,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/ci-github-action/" class="md-nav__link">
+      <a href="../../test/ci-github-action/" class="md-nav__link">
         
   
   
@@ -1253,7 +1370,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/recording-rules/" class="md-nav__link">
+      <a href="../../test/recording-rules/" class="md-nav__link">
         
   
   
@@ -1281,7 +1398,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/end-to-end-pipelines/" class="md-nav__link">
+      <a href="../../test/end-to-end-pipelines/" class="md-nav__link">
         
   
   
@@ -1309,7 +1426,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/synthetic-monitoring/" class="md-nav__link">
+      <a href="../../test/synthetic-monitoring/" class="md-nav__link">
         
   
   
@@ -1337,7 +1454,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/capacity-planning/" class="md-nav__link">
+      <a href="../../test/capacity-planning/" class="md-nav__link">
         
   
   
@@ -1365,7 +1482,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/network-device-telemetry/" class="md-nav__link">
+      <a href="../../test/network-device-telemetry/" class="md-nav__link">
         
   
   
@@ -1393,7 +1510,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/network-automation-testing/" class="md-nav__link">
+      <a href="../../test/network-automation-testing/" class="md-nav__link">
         
   
   
@@ -1421,7 +1538,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/examples/" class="md-nav__link">
+      <a href="../../test/examples/" class="md-nav__link">
         
   
   
@@ -1487,7 +1604,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../import/" class="md-nav__link ">
+            <a href="../../import/" class="md-nav__link ">
               
   
   
@@ -1531,7 +1648,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/from-csv/" class="md-nav__link">
+      <a href="../../import/from-csv/" class="md-nav__link">
         
   
   
@@ -1559,7 +1676,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/from-prometheus/" class="md-nav__link">
+      <a href="../../import/from-prometheus/" class="md-nav__link">
         
   
   
@@ -1587,7 +1704,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/grafana-exports/" class="md-nav__link">
+      <a href="../../import/grafana-exports/" class="md-nav__link">
         
   
   
@@ -1615,7 +1732,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/log-files/" class="md-nav__link">
+      <a href="../../import/log-files/" class="md-nav__link">
         
   
   
@@ -1685,7 +1802,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../deploy/" class="md-nav__link ">
+            <a href="../../deploy/" class="md-nav__link ">
               
   
   
@@ -1729,7 +1846,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/cli/" class="md-nav__link">
+      <a href="../../deploy/cli/" class="md-nav__link">
         
   
   
@@ -1757,7 +1874,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/server/" class="md-nav__link">
+      <a href="../../deploy/server/" class="md-nav__link">
         
   
   
@@ -1785,7 +1902,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/http-api/" class="md-nav__link">
+      <a href="../../deploy/http-api/" class="md-nav__link">
         
   
   
@@ -1813,7 +1930,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/server-metrics/" class="md-nav__link">
+      <a href="../../deploy/server-metrics/" class="md-nav__link">
         
   
   
@@ -1841,7 +1958,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/docker/" class="md-nav__link">
+      <a href="../../deploy/docker/" class="md-nav__link">
         
   
   
@@ -1869,7 +1986,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/kubernetes/" class="md-nav__link">
+      <a href="../../deploy/kubernetes/" class="md-nav__link">
         
   
   
@@ -1937,7 +2054,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../reference/" class="md-nav__link ">
+            <a href="../../reference/" class="md-nav__link ">
               
   
   
@@ -1981,7 +2098,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/cli-flags/" class="md-nav__link">
+      <a href="../../reference/cli-flags/" class="md-nav__link">
         
   
   
@@ -2009,7 +2126,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/scenario-fields/" class="md-nav__link">
+      <a href="../../reference/scenario-fields/" class="md-nav__link">
         
   
   
@@ -2037,7 +2154,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/editor-schema/" class="md-nav__link">
+      <a href="../../reference/editor-schema/" class="md-nav__link">
         
   
   
@@ -2065,7 +2182,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/glossary/" class="md-nav__link">
+      <a href="../../reference/glossary/" class="md-nav__link">
         
   
   
@@ -2093,7 +2210,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/troubleshooting/" class="md-nav__link">
+      <a href="../../reference/troubleshooting/" class="md-nav__link">
         
   
   
@@ -2129,9 +2246,7 @@
             
             
               
-                
-              
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" hidden>
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -2150,10 +2265,71 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#what-you-can-try-here" class="md-nav__link">
+  <a href="#what-each-pack-is-for" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What you can try here
+        What each pack is for
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What each pack is for">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#http_server_red" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        http_server_red
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kube_state_metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kube_state_metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#change-one-metric-without-editing-the-pack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change one metric without editing the pack
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-on-one-instead-of-copying-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build on one instead of copying it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adding-to-the-built-in-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding to the built-in set
       
     </span>
   </a>
@@ -2174,91 +2350,166 @@
               <article class="md-content__inner md-typeset">
                 
                   
-  
-
 
 
   
   
 
 
-<div class="sonda-section-hero">
-<p><span class="sonda-section-hero__eyebrow">Playground</span></p>
-<h1 id="see-the-signal-before-you-send-it">See the signal before you send it<a class="headerlink" href="#see-the-signal-before-you-send-it" title="Permanent link">&para;</a></h1>
-<p>Edit <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML on the left; the chart shows the exact values Sonda will emit.
-This is not a simulation — it is the real sonda-core engine compiled to WebAssembly,
-so compile errors, <a href="../build/generators/#operational-aliases">operational aliases</a>,
-jitter, and defaults behave exactly like <code>sonda run</code>. Underlined numbers are
-<strong>draggable</strong> — grab one and slide left or right to scrub the value and watch
-the signal reshape live.</p>
+<h1 id="built-in-packs">Built-in packs<a class="headerlink" href="#built-in-packs" title="Permanent link">&para;</a></h1>
+<p>Sonda ships a small curated <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> of <a href="../catalogs-and-packs/#packs">metric packs</a> compiled into the binary. They need no <code>--catalog</code> and no files on disk:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sonda<span class="w"> </span>list
+</span></code></pre></div>
+<div class="language-text highlight"><span class="filename">Output</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>KIND        NAME                     TAGS  DESCRIPTION
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>[application]
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>composable  http_server_red                Request rate, error rate and latency quantiles (RED)
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>[infrastructure]
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>composable  node_exporter_cpu              Per-CPU mode counters (node_exporter-compatible)
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>composable  node_exporter_memory           Memory gauge metrics (node_exporter-compatible)
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>[kubernetes]
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>composable  kube_state_metrics             Pod phase, deployment replicas and restarts (kube-state-metrics)
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>[network]
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>composable  telegraf_snmp_interface        Standard SNMP interface metrics (Telegraf-normalized)
+</span></code></pre></div>
+<p>Reference one from any runnable <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">stdout</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_server_red</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">      </span><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">checkout</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">      </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">checkout</span>
+</span></code></pre></div>
+<p><code>sonda show &lt;name&gt;</code> prints any of them verbatim, which is the fastest way to see the metric names, ids and default generators a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> declares.</p>
+<div class="admonition note">
+<p class="admonition-title">These examples have no \"Run in playground\" button</p>
+<p>The playground runs the engine in your browser with no <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr>, so it cannot resolve a <code>pack:</code> reference at all — every example on this page needs the CLI. They are compiled in CI like every other <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> on the site; it is only the in-page run button they cannot offer.</p>
 </div>
-<div id="sonda-playground" class="sonda-playground">
-  <div class="sonda-playground__controls">
-    <label class="sonda-playground__label" for="sp-preset">Preset</label>
-    <select id="sp-preset" class="sonda-playground__select" aria-label="Load a preset scenario"></select>
-    <button id="sp-run" type="button" class="md-button md-button--primary sonda-playground__run">Run</button>
-    <button id="sp-share" type="button" class="md-button sonda-playground__share">Copy link</button>
-    <button id="sp-download" type="button" class="md-button sonda-playground__share">Download YAML</button>
-    <button id="sp-png" type="button" class="md-button sonda-playground__share">Chart PNG</button>
-    <a id="sp-test-alert" class="md-button sonda-playground__share" href="alert-lab/">Test an alert →</a>
-    <span id="sp-status" class="sonda-playground__status" role="status" aria-live="polite"></span>
-  </div>
-  <div class="sonda-playground__grid">
-    <div class="sonda-playground__editor-pane">
-      <label class="sonda-playground__label" for="sp-editor">Scenario YAML</label>
-      <div id="sp-error" class="sonda-playground__error" hidden></div>
-      <textarea id="sp-editor" class="sonda-playground__editor" spellcheck="false"
-        aria-label="Scenario YAML editor"></textarea>
-    </div>
-    <div class="sonda-playground__result-pane">
-      <canvas id="sp-chart" class="sonda-playground__chart" height="320"
-        aria-label="Chart of the sampled signal values"></canvas>
-      <div id="sp-legend" class="sonda-playground__legend"></div>
-      <div id="sp-skipped" class="sonda-playground__skipped"></div>
-      <label class="sonda-playground__label" for="sp-output">Encoded output (first events per series)</label>
-      <pre class="sonda-playground__output"><code id="sp-output"></code></pre>
-    </div>
-  </div>
-  <noscript><p><strong>The playground needs JavaScript</strong> — it runs the Sonda engine
-  in your browser via WebAssembly. All other documentation works without it.</p></noscript>
+<h2 id="what-each-pack-is-for">What each <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> is for<a class="headerlink" href="#what-each-pack-is-for" title="Permanent link">&para;</a></h2>
+<p>Every <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> uses the real upstream metric names and label keys, so a dashboard query or alert rule written against the real exporter works against sonda unchanged. That is the point of them — they are not illustrative names.</p>
+<table>
+<thead>
+<tr>
+<th>Pack</th>
+<th>Category</th>
+<th>Models</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>http_server_red</code></td>
+<td>application</td>
+<td>Rate, Errors, Duration for a request-serving service</td>
+</tr>
+<tr>
+<td><code>kube_state_metrics</code></td>
+<td>kubernetes</td>
+<td>Pod phase, the deployment replica <abbr title="Recurring time window during which a scenario suppresses emission.">gap</abbr>, container restarts, node readiness</td>
+</tr>
+<tr>
+<td><code>node_exporter_cpu</code></td>
+<td>infrastructure</td>
+<td><code>node_cpu_seconds_total</code> per CPU mode</td>
+</tr>
+<tr>
+<td><code>node_exporter_memory</code></td>
+<td>infrastructure</td>
+<td>node_exporter memory gauges</td>
+</tr>
+<tr>
+<td><code>telegraf_snmp_interface</code></td>
+<td>network</td>
+<td>SNMP interface counters and status, <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>-normalized</td>
+</tr>
+</tbody>
+</table>
+<h3 id="http_server_red"><code>http_server_red</code><a class="headerlink" href="#http_server_red" title="Permanent link">&para;</a></h3>
+<p><code>http_requests_total</code> carries one series per status class (<code>200</code>, <code>404</code>, <code>500</code>), so <code>rate()</code> over the whole metric is your request rate and the <code>code="500"</code> series is your error rate. The defaults put roughly 0.4% of requests in the 5xx bucket, which is near a typical alert threshold without being over it.</p>
+<p><code>http_request_duration_seconds</code> is exposed as pre-computed quantile series — the shape a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> <strong><abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr></strong> has, not a <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr>. A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> emits one value per spec, so it cannot produce <code>_bucket</code>/<code>_sum</code>/<code>_count</code>; for real buckets and <code>histogram_quantile()</code>, use a <code>signal_type: histogram</code> entry rather than a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>.</p>
+<h3 id="kube_state_metrics"><code>kube_state_metrics</code><a class="headerlink" href="#kube_state_metrics" title="Permanent link">&para;</a></h3>
+<p>Enum metrics follow the upstream one-series-per-value convention: <code>kube_pod_status_phase</code> appears five times, one per phase, carrying 1 for the phase that holds and 0 for the rest. Those are five series of one metric, which is why each spec declares its phase as an <code>id:</code> — see <a href="../catalogs-and-packs/#addressing-a-repeated-metric-name">addressing a repeated metric name</a>.</p>
+<p><code>kube_deployment_status_replicas_available</code> cycles 60s at 3 replicas then 20s at 2, so an "unavailable replicas" rule has something to fire on. A run shorter than 60s only ever sees the healthy state.</p>
+<h2 id="change-one-metric-without-editing-the-pack">Change one metric without editing the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr><a class="headerlink" href="#change-one-metric-without-editing-the-pack" title="Permanent link">&para;</a></h2>
+<p>Use <code>overrides:</code>, keyed by selector — a metric name, or <code>name.id</code> where the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> repeats that name:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">stdout</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_server_red</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">      </span><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">checkout</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">      </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">checkout</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">    </span><span class="nt">overrides</span><span class="p">:</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">      </span><span class="nt">http_request_duration_seconds.p99</span><span class="p">:</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">        </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">          </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spike_event</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">          </span><span class="nt">baseline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.310</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">          </span><span class="nt">spike_height</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.900</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">          </span><span class="nt">spike_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20s</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">          </span><span class="nt">spike_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">180s</span>
+</span></code></pre></div>
+<p>That turns the p99 series into a latency incident and leaves the other six untouched — the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> emits seven series in total. A bare <code>http_request_duration_seconds</code> would be an error, listing the three ids to choose from — the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> repeats that name, so a bare key addresses no single metric.</p>
+<h2 id="build-on-one-instead-of-copying-it">Build on one instead of copying it<a class="headerlink" href="#build-on-one-instead-of-copying-it" title="Permanent link">&para;</a></h2>
+<p>To model a specific platform, <a href="../catalogs-and-packs/#extend-a-pack">extend</a> a built-in rather than forking it. The base stays where it is and you state only the difference:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">composable</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">checkout_api</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">"The</span><span class="nv"> </span><span class="s">checkout</span><span class="nv"> </span><span class="s">service's</span><span class="nv"> </span><span class="s">RED</span><span class="nv"> </span><span class="s">metrics"</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="nt">category</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">application</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="nt">extends</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_server_red</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="nt">shared_labels</span><span class="p">:</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">checkout</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="nt">metrics</span><span class="p">:</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_request_queue_depth</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">steady</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">      </span><span class="nt">center</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4.0</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">      </span><span class="nt">amplitude</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.0</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">      </span><span class="nt">period</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120s</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">      </span><span class="nt">noise</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.4</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="nt">deviations</span><span class="p">:</span>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_requests_total.server_error</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="w">    </span><span class="nt">replace</span><span class="p">:</span>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="w">      </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="w">        </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">step</span>
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a><span class="w">        </span><span class="nt">start</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0</span>
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a><span class="w">        </span><span class="nt">step_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.4</span>
+</span></code></pre></div>
+<p>Drop that in your <code>--catalog &lt;dir&gt;</code> and reference <code>pack: checkout_api</code>. Because <code>extends:</code> resolves through the same lookup as <code>pack:</code>, shadowing <code>http_server_red</code> with your own file in that directory would change every extension built on it.</p>
+<div class="admonition warning">
+<p class="admonition-title">Pack defaults are a starting point, not a fixture</p>
+<p>The generators here are chosen to look plausible and to give alert rules something to evaluate. They are not a recording of any real system. When you need exact values — a specific incident, a captured production window — use <a href="../../import/"><code>sonda capture</code></a> or a <code>csv_replay</code> <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> instead of tuning <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> defaults.</p>
 </div>
-
-<h2 id="what-you-can-try-here">What you can try here<a class="headerlink" href="#what-you-can-try-here" title="Permanent link">&para;</a></h2>
-<div class="admonition tip">
-<p class="admonition-title">The editor completes from the schema</p>
-<p>Press <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-space">Space</kbd></span> anywhere in the YAML — or just start typing a field name — and the
-editor offers what the format allows <em>at that point</em>: entry fields inside a <code>scenarios:</code>
-item, all fourteen <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> <code>type:</code> values inside a <code>generator:</code> block, <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>
-types, and the two operators <code>while.op</code> accepts. Each suggestion carries its type and the
-same one-line description the API docs use, because both are generated from the same Rust
-types. The <a href="../reference/editor-schema/">published schema</a> is the same file, so your own
-editor can do this on your own files.</p>
-</div>
-<p>Everything the metrics engine supports works in the playground: the
-<a href="../build/generators/#metric-generators">core generators</a>, the
-<a href="../build/generators/#operational-aliases">operational aliases</a> (<code>flap</code>,
-<code>saturation</code>, <code>leak</code>, <code>degradation</code>, <code>steady</code>, <code>spike_event</code>),
-<a href="../build/generators/#jitter">jitter</a>, multi-<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> files with shared
-<code>defaults:</code>, labels, and every <a href="../build/encoders/"><abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr></a> for the output
-preview. <a href="../build/scheduling/">Gaps and bursts</a> appear as shaded bands on
-the chart.</p>
-<p><a href="../build/generators/#histogram">Histogram</a> entries render as a bucket
-heatmap — one row per bucket, cell intensity showing where each tick's
-observations landed, so a <code>mean_shift_per_sec</code> degradation is visible as
-mass drifting into higher buckets. <a href="../build/generators/#summary">Summary</a>
-entries render as quantile bands (p50 brightest, tail quantiles above). Try
-the <em>Latency <abbr title="Distribution of observations across cumulative buckets, with _sum and _count series.">histogram</abbr> + quantiles</em> preset.</p>
-<p><a href="../build/generators/#log-generators">Log entries</a> render as a synthetic
-log <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr> — template messages resolved from their field pools, severity
-colored, timed on the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> timeline — with the <code>json_lines</code> output in the
-encoded preview. Try the <em>Synthetic log <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr></em> preset. One thing does not
-run in a browser sandbox: <code>csv_replay</code> (metric or log) needs the filesystem —
-use <a href="../import/from-csv/"><code>sonda new --from</code></a> locally.</p>
-<p>When the shape looks right, <strong>Test an alert →</strong> carries the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> into the
-<a href="alert-lab/">alert lab</a> so you can tune a threshold + <code>for:</code> rule against
-this exact signal — and the same YAML runs unchanged with
-<a href="../deploy/cli/"><code>sonda run</code></a> or straight against a
-<a href="../get-started/send-to-a-backend/">real backend</a>.</p>
+<h2 id="adding-to-the-built-in-set">Adding to the built-in set<a class="headerlink" href="#adding-to-the-built-in-set" title="Permanent link">&para;</a></h2>
+<p>The built-in packs live in <code>packs/</code> at the repo root and are embedded with <code>include_str!</code>. Adding one means adding its entry to <code>sonda-core/src/catalog/builtin.rs</code> <strong>and</strong> moving <code>PACK_COUNT</code> — the count gate fails if you do only one, so a half-wired <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> cannot ship quietly.</p>
+<p>Two checks run over the whole set on every commit. Each <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> must compile through the real pipeline with the real resolver, and no <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s default <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> may emit a negative value: every metric these packs model is a count, a duration, a byte total or a 0/1 enum. That second gate exists because a latency series once shipped at -0.44 seconds — the <code>steady</code> alias defaults its noise to ±1.0 <em>absolute</em>, which is fine for a percentage and ruinous for a 32ms quantile. Set <code>noise:</code> explicitly on any small-magnitude <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr>.</p>
 
 
 
@@ -2279,7 +2530,7 @@ this exact signal — and the same YAML runs unchanged with
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 14, 2026 09:37:12 UTC">August 14, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 3, 2026 23:25:33 UTC">September 3, 2026</span>
   </span>
 
     
@@ -2289,8 +2540,6 @@ this exact signal — and the same YAML runs unchanged with
   </aside>
 
 
-
-  
 
 
 
@@ -2316,12 +2565,10 @@ this exact signal — and the same YAML runs unchanged with
   
     
       
-        
-      
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../get-started/send-to-a-backend/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Send to a real backend">
+          <a href="../catalogs-and-packs/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Catalogs and packs">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -2331,20 +2578,20 @@ this exact signal — and the same YAML runs unchanged with
                 Previous
               </span>
               <div class="md-ellipsis">
-                Send to a real backend
+                Catalogs and packs
               </div>
             </div>
           </a>
         
         
           
-          <a href="alert-lab/" class="md-footer__link md-footer__link--next" aria-label="Next: Alert lab">
+          <a href="../../test/" class="md-footer__link md-footer__link--next" aria-label="Next: Test pipelines">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Alert lab
+                Test pipelines
               </div>
             </div>
             <div class="md-footer__button md-icon">
@@ -2409,22 +2656,22 @@ this exact signal — and the same YAML runs unchanged with
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
-        <script src="../javascripts/sonda-term.js"></script>
+        <script src="../../javascripts/sonda-term.js"></script>
       
-        <script src="../javascripts/sonda-hero.js"></script>
+        <script src="../../javascripts/sonda-hero.js"></script>
       
-        <script src="../javascripts/playground.js" type="module"></script>
+        <script src="../../javascripts/playground.js" type="module"></script>
       
-        <script src="../javascripts/alert-lab.js" type="module"></script>
+        <script src="../../javascripts/alert-lab.js" type="module"></script>
       
-        <script src="../javascripts/livegen.js" type="module"></script>
+        <script src="../../javascripts/livegen.js" type="module"></script>
       
-        <script src="../javascripts/runnable-fences.js" type="module"></script>
+        <script src="../../javascripts/runnable-fences.js" type="module"></script>
       
     
   </body>
