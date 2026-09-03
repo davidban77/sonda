@@ -643,9 +643,20 @@ fn no_builtin_pack_default_emits_a_negative_value() {
         }
     }
 
-    assert!(
-        sampled >= PACK_COUNT,
-        "sampled only {sampled} specs across {PACK_COUNT} packs — the walk found nothing"
+    // Exact, not a floor: `>= PACK_COUNT` would be satisfied by a walk that
+    // reached one spec per pack and skipped the rest, which is most of them.
+    let declared: usize = builtin::PACKS
+        .iter()
+        .map(|pack| {
+            builtin::parse_pack(pack)
+                .unwrap_or_else(|e| panic!("builtin pack {} must parse: {e}", pack.file))
+                .metrics
+                .len()
+        })
+        .sum();
+    assert_eq!(
+        sampled, declared,
+        "sampled {sampled} specs but the packs declare {declared}; the walk did not reach every one"
     );
     assert!(
         offences.is_empty(),

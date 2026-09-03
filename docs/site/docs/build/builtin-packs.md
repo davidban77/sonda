@@ -52,6 +52,9 @@ scenarios:
 
 `sonda show <name>` prints any of them verbatim, which is the fastest way to see the metric names, ids and default generators a pack declares.
 
+!!! note "These examples have no \"Run in playground\" button"
+    The playground runs the engine in your browser with no catalog, so it cannot resolve a `pack:` reference at all — every example on this page needs the CLI. They are compiled in CI like every other scenario on the site; it is only the in-page run button they cannot offer.
+
 ## What each pack is for
 
 Every pack uses the real upstream metric names and label keys, so a dashboard query or alert rule written against the real exporter works against sonda unchanged. That is the point of them — they are not illustrative names.
@@ -108,7 +111,7 @@ scenarios:
           spike_interval: 180s
 ```
 
-That turns the p99 series into a latency incident and leaves the other eight untouched. A bare `http_request_duration_seconds` would be an error, listing the three ids to choose from — the pack repeats that name, so a bare key addresses no single metric.
+That turns the p99 series into a latency incident and leaves the other six untouched — the pack emits seven series in total. A bare `http_request_duration_seconds` would be an error, listing the three ids to choose from — the pack repeats that name, so a bare key addresses no single metric.
 
 ## Build on one instead of copying it
 

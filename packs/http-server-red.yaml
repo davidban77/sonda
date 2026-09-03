@@ -14,9 +14,15 @@
 #    can represent honestly; for real buckets use a `signal_type: histogram`
 #    entry rather than a pack.
 #  - The error ratio is a relationship between two series, not a series.
-#    The defaults below put roughly 0.4% of requests in the 5xx bucket so
-#    `rate(http_requests_total{code="500"}) / rate(http_requests_total)`
-#    lands near a typical alert threshold; move it by overriding
+#    The defaults below put roughly 0.4% of requests in the 5xx bucket, so
+#    the usual error-ratio expression lands near a typical alert threshold:
+#
+#      sum(rate(http_requests_total{code="500"}[5m]))
+#        / sum(rate(http_requests_total[5m]))
+#
+#    Both `sum()`s are load-bearing. Without them the division matches on the
+#    full label set, so the left side pairs only with the `code="500"` series
+#    on the right and the answer is 1. Move the ratio by overriding
 #    `http_requests_total.server_error`.
 
 version: 2
@@ -63,11 +69,9 @@ metrics:
 
   # Duration: quantile series, healthy-but-not-flat.
   #
-  # `noise:` is set explicitly on every one of these. The `steady` alias
-  # defaults it to 1.0, which is sensible for percentages and ruinous for
-  # seconds — at a p50 of 32ms it swings the value negative, and a negative
-  # latency is worse than a flat one. Each is set to roughly a tenth of its
-  # own centre. Measured, not assumed: the default produced -0.44s here.
+  # `noise:` is set explicitly on every one of these, to roughly a tenth of
+  # its own centre. The `steady` alias defaults it to 1.0 *absolute*, which
+  # at a p50 of 32ms swings the value negative.
   - name: http_request_duration_seconds
     id: p50
     labels:

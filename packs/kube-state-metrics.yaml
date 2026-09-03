@@ -98,17 +98,28 @@ metrics:
       up_duration: 60s
       down_duration: 20s
 
-  # Restarts are monotonic, so the default is a slow step rather than a
-  # constant: `rate()` and `increase()` over it are non-zero, which is what
-  # a CrashLoopBackOff rule measures.
+  # Restarts on a widening backoff, the shape CrashLoopBackOff produces:
+  # five restarts, then it settles. For one that never recovers, override
+  # this spec with a `step` of 1.0.
+  #
+  # A `sequence` rather than a `step` because the counter must hold whole
+  # numbers — `step_size` is per tick and takes no interval, so any plausible
+  # rate is fractional, and rules of the form `... > 3` read the raw value.
+  # `repeat: false` holds the last value; a counter that cycled would go
+  # backwards.
   - name: kube_pod_container_status_restarts_total
     labels:
       pod: web-0
       container: app
     generator:
-      type: step
-      start: 0.0
-      step_size: 0.02
+      type: sequence
+      repeat: false
+      values: [0, 0, 0, 0,
+               1, 1, 1, 1, 1, 1,
+               2, 2, 2, 2, 2, 2, 2, 2,
+               3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+               4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+               5]
 
   # Node readiness, same one-series-per-value shape as pod phase.
   - name: kube_node_status_condition

@@ -100,6 +100,9 @@ class ExtractedScenario:
     # synthesized preamble. Reporting has to say so, or a reader chasing a
     # failure looks for lines that are not in their file.
     synthesized: bool = False
+    # Set by `extract_builtin_pack_scenarios`. Carried rather than recomputed
+    # so the floor in `run_validation` counts what was actually extracted.
+    builtin_pack: bool = False
 
 
 @dataclasses.dataclass
@@ -400,11 +403,21 @@ def extract_scenarios(md_path: Path, markdown_text: str) -> list[ExtractedScenar
     return out
 
 
+#: Floor on the builtin-pack fences in ``docs/``. This extractor's failure
+#: mode is silence — a stale ``target/release/sonda`` knows fewer packs, so
+#: every fence naming a newer one is declined and ``0 compiled`` reads as
+#: ``all fine``. Raise it when you add fences.
+MIN_BUILTIN_PACK_FENCES = 7
+
+
 def builtin_pack_names(sonda_bin: Path | None) -> frozenset[str]:
     """Every pack the binary resolves with no ``--catalog``.
 
     Read from ``sonda list --json`` rather than restated here, so a pack added
     to or removed from the embedded set moves this set on its own.
+
+    Raises rather than returning empty: an empty set declines every pack
+    fence, which reads as a clean run.
     """
     if sonda_bin is None:
         return frozenset()
@@ -417,11 +430,19 @@ def builtin_pack_names(sonda_bin: Path | None) -> frozenset[str]:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"`sonda list --json` failed: {proc.stderr.strip()[:300]}")
-    return frozenset(
+    names = frozenset(
         entry["name"]
         for entry in json.loads(proc.stdout)
         if entry.get("origin") == "builtin"
     )
+    if not names:
+        raise RuntimeError(
+            f"`{sonda_bin} list --json --kind composable` returned no builtin "
+            "packs. The binary embeds several, so this means the binary or its "
+            "output shape is not what this gate expects — every pack fence "
+            "would be declined and the run would report green."
+        )
+    return names
 
 
 def packs_referenced(body: str) -> list[str]:
@@ -470,7 +491,13 @@ def extract_builtin_pack_scenarios(
         if not re.search(r"^scenarios:", normalized, re.MULTILINE):
             continue
         out.append(
-            ExtractedScenario(file=md_path, line=line, body=normalized, info=info)
+            ExtractedScenario(
+                file=md_path,
+                line=line,
+                body=normalized,
+                info=info,
+                builtin_pack=True,
+            )
         )
     return out
 
@@ -765,6 +792,17 @@ def run_validation(
         )
         for scenario in scenarios
     ]
+    if sonda_bin is not None:
+        found = sum(1 for s in scenarios if s.builtin_pack)
+        if found < MIN_BUILTIN_PACK_FENCES:
+            raise RuntimeError(
+                f"only {found} builtin-pack fences extracted, expected at least "
+                f"{MIN_BUILTIN_PACK_FENCES}. Either fences were removed (lower the "
+                "floor deliberately) or the builtin set this gate read is wrong — "
+                f"it saw {sorted(builtins)}. A stale `target/release/sonda` does "
+                "exactly this."
+            )
+
     return results, [r for r in results if not r.ok], fences - len(scenarios)
 
 
