@@ -97,31 +97,39 @@ fn escaping_includes() -> Vec<(PathBuf, PathBuf)> {
             let Ok(text) = std::fs::read_to_string(&file) else {
                 continue;
             };
-            for macro_name in ["include_str!(", "include_bytes!("] {
-                let mut from = 0;
-                while let Some(at) = text[from..].find(macro_name) {
-                    let open = from + at + macro_name.len();
-                    let rest = &text[open..];
-                    // Only plain string literals; a macro-built path is not
-                    // something this check can resolve, and none exist.
-                    let Some(start) = rest.find('"') else { break };
-                    let Some(len) = rest[start + 1..].find('"') else {
-                        break;
-                    };
-                    let literal = &rest[start + 1..start + 1 + len];
-                    from = open + start + 1 + len;
-
-                    let containing_dir = file.parent().expect("a file has a parent");
-                    let target = resolve(&root, &containing_dir.join(literal));
-                    if !target.starts_with(&crate_dir) {
-                        let rel = target.strip_prefix(&root).unwrap_or(&target).to_path_buf();
-                        found.push((file.strip_prefix(&root).unwrap_or(&file).to_path_buf(), rel));
-                    }
+            for literal in include_literals(&text) {
+                let containing_dir = file.parent().expect("a file has a parent");
+                let target = resolve(&root, &containing_dir.join(&literal));
+                if !target.starts_with(&crate_dir) {
+                    let rel = target.strip_prefix(&root).unwrap_or(&target).to_path_buf();
+                    found.push((file.strip_prefix(&root).unwrap_or(&file).to_path_buf(), rel));
                 }
             }
         }
     }
     found
+}
+
+/// Every `include_str!` / `include_bytes!` string literal in one file.
+///
+/// Only plain string literals; a macro-built path is not something either
+/// check can resolve, and none exist.
+fn include_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for macro_name in ["include_str!(", "include_bytes!("] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(macro_name) {
+            let open = from + at + macro_name.len();
+            let rest = &text[open..];
+            let Some(start) = rest.find('"') else { break };
+            let Some(len) = rest[start + 1..].find('"') else {
+                break;
+            };
+            out.push(rest[start + 1..start + 1 + len].to_string());
+            from = open + start + 1 + len;
+        }
+    }
+    out
 }
 
 /// Where an include really lands, repo-relative.
@@ -270,6 +278,101 @@ fn compiling_stage() -> Stage {
             .collect::<Vec<_>>()
     );
     compiling.remove(0)
+}
+
+/// The crates `publish.yml` releases, read from the workflow rather than
+/// restated here so the two cannot drift.
+fn published_crates() -> BTreeSet<String> {
+    let text = std::fs::read_to_string(repo_root().join(".github/workflows/publish.yml"))
+        .expect("the repo has a publish workflow");
+    let mut out = BTreeSet::new();
+    for line in text.lines() {
+        let Some(rest) = line.split_once("cargo publish").map(|(_, r)| r) else {
+            continue;
+        };
+        if let Some(name) = rest.split_whitespace().skip_while(|w| *w != "-p").nth(1) {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+/// Everything `cargo` compiles when it verifies a package tarball: the crate's
+/// `src/` and its build script. Not `tests/` or `examples/` — the verify step
+/// runs `cargo build`, which does not compile them.
+fn compiled_files(crate_dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    rust_files(&crate_dir.join("src"), &mut files);
+    let build_rs = crate_dir.join("build.rs");
+    if build_rs.is_file() {
+        files.push(build_rs);
+    }
+    files.sort();
+    files
+}
+
+/// No published crate may embed a file from outside its own directory.
+///
+/// `cargo publish` packages only what is under the crate root, so such an
+/// include builds from a checkout and fails the release — which is what made
+/// 1.23.0 unpublishable.
+///
+/// The test is lexical where [`escaping_includes`] resolves symlinks, and the
+/// difference is the point: cargo packages by walking the crate directory and
+/// following symlinks out of it, so `sonda-core/packs -> ../packs` is fine
+/// while `../../../packs/` is not. Two questions, two functions.
+///
+/// This guards the *class*. `ci.yml` runs `cargo publish --dry-run` on
+/// sonda-core, which proves the whole path end to end but only for that crate:
+/// sonda and sonda-server depend on sonda-core at the exact version, so their
+/// dry-run cannot pass until it is on crates.io. This check needs no registry
+/// and covers all three.
+#[test]
+fn no_published_crate_embeds_a_file_outside_its_own_root() {
+    let root = repo_root();
+    let published = published_crates();
+    assert!(
+        published.len() >= 3,
+        "expected publish.yml to name at least three crates, parsed {published:?}"
+    );
+
+    let mut scanned = 0usize;
+    let mut offences = Vec::new();
+    for name in &published {
+        let crate_dir = root.join(name);
+        assert!(
+            crate_dir.is_dir(),
+            "publish.yml publishes `{name}`, which is not a crate directory here"
+        );
+        for file in compiled_files(&crate_dir) {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let containing_dir = file.parent().expect("a file has a parent");
+            for literal in include_literals(&text) {
+                scanned += 1;
+                if !normalize(&containing_dir.join(&literal)).starts_with(&crate_dir) {
+                    offences.push(format!(
+                        "{}: {literal}",
+                        file.strip_prefix(&root).unwrap_or(&file).display()
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned > 0,
+        "scanned {} published crates and found no include_str!/include_bytes! at all — \
+         the scan, not the crates, is what changed",
+        published.len()
+    );
+    assert!(
+        offences.is_empty(),
+        "these includes leave their crate root, so `cargo publish` cannot package them. \
+         Reach the file through a symlink inside the crate, as sonda-core/packs does:\n  {}",
+        offences.join("\n  ")
+    );
 }
 
 /// Guards both checks below against a scan that silently found nothing.
