@@ -12,6 +12,8 @@
 
 #![cfg(feature = "config")]
 
+use std::path::PathBuf;
+
 use sonda_core::catalog::builtin::{self, BuiltinPack, PACK_COUNT};
 use sonda_core::compile_scenario_file;
 use sonda_core::ScenarioEntry;
@@ -664,5 +666,42 @@ fn no_builtin_pack_default_emits_a_negative_value() {
          enums cannot be negative — check the generator's `noise:`, which the \
          `steady` alias defaults to ±1.0 absolute:\n  {}",
         offences.join("\n  ")
+    );
+}
+
+/// `sonda-core/packs` is a symlink, and the packs are the root copy.
+///
+/// `cargo publish` packages only what is under the crate root, so the embedding
+/// `include_str!` has to reach its files without leaving `sonda-core/` —
+/// the symlink is what lets the single copy stay at the repo root. Replaced by
+/// a real directory it would still compile, and the two copies would drift.
+#[test]
+fn the_crate_reaches_the_root_packs_through_a_symlink() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let link = crate_dir.join("packs");
+
+    let meta = std::fs::symlink_metadata(&link)
+        .unwrap_or_else(|e| panic!("{} must exist: {e}", link.display()));
+    assert!(
+        meta.file_type().is_symlink(),
+        "{} must be a symlink, not a copy of the packs",
+        link.display()
+    );
+    assert_eq!(
+        std::fs::read_link(&link).expect("the symlink resolves"),
+        PathBuf::from("../packs"),
+        "the symlink must point at the repo-root packs/"
+    );
+
+    let root_pack = crate_dir
+        .parent()
+        .expect("the crate has a parent")
+        .join("packs")
+        .join(builtin::PACKS[0].file);
+    assert_eq!(
+        std::fs::read_to_string(link.join(builtin::PACKS[0].file))
+            .expect("readable through the symlink"),
+        std::fs::read_to_string(&root_pack).expect("readable at the root"),
+        "the symlink must resolve to the same bytes as the root copy"
     );
 }

@@ -104,8 +104,9 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
 # Copy real source and build.
 #
 # `packs/` is source as far as the build is concerned: sonda-core embeds those
-# files with `include_str!("../../../packs/…")`, so the crate does not compile
-# without them in the context. It is not only the compose mount.
+# files with `include_str!`, reaching them through its own `packs` symlink to
+# this directory, so the crate does not compile without them in the context.
+# It is not only the compose mount.
 COPY packs/ packs/
 COPY sonda-core/ sonda-core/
 COPY sonda/ sonda/

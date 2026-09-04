@@ -26,6 +26,20 @@ schema corpus validates it. The directory is flat — packs group by their `cate
 by subdirectory. Adding one means adding its `include_str!` entry *and* moving `PACK_COUNT`;
 the count gate fails if you do only one.
 
+`sonda-core` reaches them through the `sonda-core/packs` symlink, not by climbing out of the
+crate. `cargo publish` packages only what is under the crate root, so an `include_str!` that
+leaves it builds from a checkout and fails the release — which is what made 1.23.0
+unpublishable. A checkout without symlink support (Windows without `core.symlinks`, or a source
+zip) materializes the link as a text file and the build fails at `include_str!`; clone with
+symlinks rather than working around it.
+
+Three checks hold the arrangement up. `no_published_crate_embeds_a_file_outside_its_own_root`
+is the rule itself, lexical and over every crate `publish.yml` releases.
+`every_escaping_include_is_inside_the_docker_build_context` resolves the symlink, so the Docker
+build still has to copy the root `packs/`. And `ci.yml` runs `cargo publish --dry-run` on
+`sonda-core`, which proves the whole path end to end for the one crate that can be dry-run
+before `sonda-core` is on crates.io.
+
 A pack must be addressable: within it a metric `name` is either unique, or *every* spec sharing
 it declares a unique `id:` (`node_exporter_cpu` uses the CPU modes). Names may not contain `.`,
 which separates `name` from `id` in a selector. An unaddressable pack does not load — that is

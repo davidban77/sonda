@@ -44,10 +44,12 @@ src/
 │   │                      CatalogEntry::pack_error, computed by the same parse+validate_pack
 │   │                      the resolver runs, so a listing and a run cannot disagree. Marked,
 │   │                      not skipped: `sonda show` is how the user reads the broken file.
-│   └── builtin.rs      ← the packs compiled into the binary via include_str! from the
-│                          repo-root `packs/` directory. PACK_COUNT is declared beside the
-│                          list and gated: a half-wired embedded set fails rather than
-│                          listing fewer packs successfully. BuiltinPackResolver.
+│   └── builtin.rs      ← the packs compiled into the binary via include_str!, reached
+│                          through the `sonda-core/packs` symlink to the repo-root copy —
+│                          cargo publish packages only what is under the crate root.
+│                          PACK_COUNT is declared beside the list and gated: a half-wired
+│                          embedded set fails rather than listing fewer packs
+│                          successfully. BuiltinPackResolver.
 ├── analysis/
 │   └── pattern.rs      ← time-series pattern detection: detect_pattern() → Pattern enum
 │                          (Steady / Spike / Climb / Sawtooth / Flap / Step). Pure statistics,

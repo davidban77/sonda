@@ -105,6 +105,40 @@ jobs:
 # path-filtered on pull requests. Every job in this file runs on every push;
 # a workflow-level filter here would have skipped all of them.
 
+  # `cargo publish` packages only what is under the crate root, so an
+  # `include_str!` that leaves it builds from a checkout and fails at release.
+  # That shipped once: `catalog/builtin.rs` reaching the repo-root `packs/`
+  # made 1.23.0 unpublishable, and publish.yml is workflow_dispatch-only, so
+  # nothing said so until the release ran. --dry-run packages and compiles the
+  # tarball, which is the whole check.
+  publish-dry-run:
+    name: sonda-core packages for crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-dry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-publish-dry-
+
+      # --allow-dirty: the working tree is clean, but the crates.io index
+      # refresh can touch Cargo.lock and that is not a packaging failure.
+      - name: Package and verify sonda-core
+        run: cargo publish --dry-run -p sonda-core --allow-dirty
+
   no-default-features:
     name: Test sonda-core without default features
     runs-on: ubuntu-latest
