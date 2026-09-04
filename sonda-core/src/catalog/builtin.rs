@@ -4,6 +4,12 @@
 //! with [`include_str!`] rather than discovered on disk at run time. The
 //! source files live in the repo-root `packs/` directory and are the same
 //! ones `docker-compose.yml` mounts at `/packs`.
+//!
+//! They are reached through the `sonda-core/packs` symlink, because
+//! `cargo publish` packages only what is under the crate root: an
+//! `include_str!` leaving the crate builds from a checkout and fails the
+//! release. `docker_build_context.rs` resolves the symlink, so the escape
+//! stays visible to the check that guards the Docker build context.
 
 use std::path::PathBuf;
 
@@ -35,27 +41,27 @@ pub static PACKS: &[BuiltinPack] = &[
     BuiltinPack {
         name: "http_server_red",
         file: "http-server-red.yaml",
-        yaml: include_str!("../../../packs/http-server-red.yaml"),
+        yaml: include_str!("../../packs/http-server-red.yaml"),
     },
     BuiltinPack {
         name: "kube_state_metrics",
         file: "kube-state-metrics.yaml",
-        yaml: include_str!("../../../packs/kube-state-metrics.yaml"),
+        yaml: include_str!("../../packs/kube-state-metrics.yaml"),
     },
     BuiltinPack {
         name: "node_exporter_cpu",
         file: "node-exporter-cpu.yaml",
-        yaml: include_str!("../../../packs/node-exporter-cpu.yaml"),
+        yaml: include_str!("../../packs/node-exporter-cpu.yaml"),
     },
     BuiltinPack {
         name: "node_exporter_memory",
         file: "node-exporter-memory.yaml",
-        yaml: include_str!("../../../packs/node-exporter-memory.yaml"),
+        yaml: include_str!("../../packs/node-exporter-memory.yaml"),
     },
     BuiltinPack {
         name: "telegraf_snmp_interface",
         file: "telegraf-snmp-interface.yaml",
-        yaml: include_str!("../../../packs/telegraf-snmp-interface.yaml"),
+        yaml: include_str!("../../packs/telegraf-snmp-interface.yaml"),
     },
 ];
 

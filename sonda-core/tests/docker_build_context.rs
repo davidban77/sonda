@@ -1,9 +1,10 @@
 //! Everything the crates embed must be inside the Docker build context.
 //!
 //! `include_str!` resolves at compile time against the source tree. A path
-//! that leaves the crate directory — `catalog/builtin.rs` reaching
-//! `../../../packs/` — compiles fine from a git checkout and fails inside
-//! the image unless the Dockerfile also copies that directory.
+//! that leaves the crate directory — `catalog/builtin.rs` reaching the
+//! root `packs/` through the `sonda-core/packs` symlink — compiles fine from
+//! a git checkout and fails inside the image unless the Dockerfile also
+//! copies that directory.
 //!
 //! That went wrong exactly once, and it cost two CI checks: moving the packs
 //! from `sonda-core/tests/fixtures/packs/` (inside a directory the Dockerfile
@@ -111,7 +112,7 @@ fn escaping_includes() -> Vec<(PathBuf, PathBuf)> {
                     from = open + start + 1 + len;
 
                     let containing_dir = file.parent().expect("a file has a parent");
-                    let target = normalize(&containing_dir.join(literal));
+                    let target = resolve(&root, &containing_dir.join(literal));
                     if !target.starts_with(&crate_dir) {
                         let rel = target.strip_prefix(&root).unwrap_or(&target).to_path_buf();
                         found.push((file.strip_prefix(&root).unwrap_or(&file).to_path_buf(), rel));
@@ -121,6 +122,26 @@ fn escaping_includes() -> Vec<(PathBuf, PathBuf)> {
         }
     }
     found
+}
+
+/// Where an include really lands, repo-relative.
+///
+/// Lexical normalization alone would read `sonda-core/src/catalog/../../packs`
+/// as staying inside the crate. It does not: `sonda-core/packs` is a symlink to
+/// the root `packs/`, so the Docker build context still needs that directory.
+/// Resolving it keeps the escape visible to [`escaping_includes`].
+///
+/// A path that does not exist keeps its lexical form — a missing include is the
+/// compiler's error to report, not this check's.
+fn resolve(root: &Path, path: &Path) -> PathBuf {
+    let lexical = normalize(path);
+    let (Ok(real), Ok(real_root)) = (lexical.canonicalize(), root.canonicalize()) else {
+        return lexical;
+    };
+    match real.strip_prefix(&real_root) {
+        Ok(rel) => root.join(rel),
+        Err(_) => lexical,
+    }
 }
 
 /// Resolve `..` segments lexically. `Path::canonicalize` would need the file

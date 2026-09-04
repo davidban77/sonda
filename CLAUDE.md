@@ -26,6 +26,13 @@ schema corpus validates it. The directory is flat — packs group by their `cate
 by subdirectory. Adding one means adding its `include_str!` entry *and* moving `PACK_COUNT`;
 the count gate fails if you do only one.
 
+`sonda-core` reaches them through the `sonda-core/packs` symlink, not by climbing out of the
+crate. `cargo publish` packages only what is under the crate root, so an `include_str!` that
+leaves it builds from a checkout and fails the release — which is what made 1.23.0
+unpublishable. Two checks hold the arrangement up: `ci.yml` runs `cargo publish --dry-run`, and
+`docker_build_context.rs` resolves the symlink so the Docker build context still has to copy
+the root `packs/`.
+
 A pack must be addressable: within it a metric `name` is either unique, or *every* spec sharing
 it declares a unique `id:` (`node_exporter_cpu` uses the CPU modes). Names may not contain `.`,
 which separates `name` from `id` in a selector. An unaddressable pack does not load — that is
