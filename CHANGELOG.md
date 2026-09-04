@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.23.1](https://github.com/davidban77/sonda/compare/v1.23.0...v1.23.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **packs:** reach the builtin packs through a symlink so sonda-core packages ([#631](https://github.com/davidban77/sonda/issues/631)) ([b92b14f](https://github.com/davidban77/sonda/commit/b92b14f63d2f830e53626f1ea87d100985f96517))
+
 ## [1.23.0](https://github.com/davidban77/sonda/compare/v1.22.3...v1.23.0) (2026-09-03)
 
 
