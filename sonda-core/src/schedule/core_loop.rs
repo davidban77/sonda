@@ -113,7 +113,17 @@ pub(crate) struct TickContext<'a> {
 /// A pending sink write produced by a tick callback.
 pub enum WriteCommand {
     Bytes(Vec<u8>),
-    LogEvent { event: LogEvent, bytes: Vec<u8> },
+    LogEvent {
+        event: LogEvent,
+        bytes: Vec<u8>,
+    },
+    /// An encoded metric event paired with the event it was encoded from, so
+    /// the sink can reach the series identity. Drained to
+    /// [`Sink::write_metric_event`].
+    Metric {
+        event: MetricEvent,
+        bytes: Vec<u8>,
+    },
 }
 
 /// Buffer of pending sink writes emitted by a tick callback.
@@ -640,6 +650,9 @@ async fn drain_writes(
         match cmd {
             WriteCommand::Bytes(buf) => sink.write(&buf).await?,
             WriteCommand::LogEvent { event, bytes } => sink.write_log_event(&event, &bytes).await?,
+            WriteCommand::Metric { event, bytes } => {
+                sink.write_metric_event(&event, &bytes).await?
+            }
         }
         delivered = Some(sink.last_write_delivered());
     }
@@ -1628,6 +1641,123 @@ mod tests {
         );
         assert!(output.writes.is_empty(), "queue must be empty after drain");
         assert_eq!(delivered, Some(true));
+    }
+
+    /// One entry per `Sink` method call the sink saw, in order.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum SinkCall {
+        Write(Vec<u8>),
+        MetricEvent { name: String, bytes: Vec<u8> },
+    }
+
+    type CallLog = Arc<Mutex<Vec<SinkCall>>>;
+
+    /// Test sink that overrides `write_metric_event` and records which method
+    /// each command reached it through.
+    struct MethodRecordingSink {
+        calls: CallLog,
+    }
+
+    fn method_recording_sink() -> (Box<dyn Sink>, CallLog) {
+        let calls: CallLog = Arc::new(Mutex::new(Vec::new()));
+        let sink = MethodRecordingSink {
+            calls: Arc::clone(&calls),
+        };
+        (Box::new(sink) as Box<dyn Sink>, calls)
+    }
+
+    #[async_trait]
+    impl Sink for MethodRecordingSink {
+        async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            self.calls
+                .lock()
+                .expect("recording sink mutex poisoned")
+                .push(SinkCall::Write(data.to_vec()));
+            Ok(())
+        }
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+        async fn write_metric_event(
+            &mut self,
+            event: &MetricEvent,
+            encoded: &[u8],
+        ) -> Result<(), SondaError> {
+            self.calls
+                .lock()
+                .expect("recording sink mutex poisoned")
+                .push(SinkCall::MetricEvent {
+                    name: event.name.arc().to_string(),
+                    bytes: encoded.to_vec(),
+                });
+            Ok(())
+        }
+    }
+
+    fn metric_event(name: &str, value: f64) -> MetricEvent {
+        use crate::model::metric::{Labels, ValidatedMetricName};
+        let labels = Labels::from_pairs(&[("device", "leaf-1")]).expect("labels must build");
+        MetricEvent::from_parts(
+            ValidatedMetricName::new(name).expect("metric name must validate"),
+            value,
+            Arc::new(labels),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        )
+    }
+
+    #[tokio::test]
+    async fn metric_command_dispatches_to_write_metric_event() {
+        let (mut sink, calls) = method_recording_sink();
+        let mut output = TickOutput::default();
+        output.writes.push(WriteCommand::Metric {
+            event: metric_event("ifHCInOctets", 42.5),
+            bytes: b"encoded-metric".to_vec(),
+        });
+        drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+
+        let captured = calls.lock().expect("recording sink mutex poisoned").clone();
+        assert_eq!(
+            captured.len(),
+            1,
+            "the sink must have been called exactly once; got {captured:?}"
+        );
+        assert_eq!(
+            captured[0],
+            SinkCall::MetricEvent {
+                name: "ifHCInOctets".to_string(),
+                bytes: b"encoded-metric".to_vec(),
+            },
+            "WriteCommand::Metric must reach write_metric_event with the event and bytes intact"
+        );
+    }
+
+    #[tokio::test]
+    async fn metric_command_default_forwards_bytes() {
+        // `SharedSink` does not override `write_metric_event`, so the default
+        // trait body must forward the bytes to `write`.
+        let (mut sink, writes) = shared_sink();
+        let mut output = TickOutput::default();
+        output.writes.push(WriteCommand::Metric {
+            event: metric_event("ifHCOutOctets", 7.0),
+            bytes: b"encoded-metric".to_vec(),
+        });
+        drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+
+        let captured = writes.lock().expect("shared sink mutex poisoned").clone();
+        assert_eq!(
+            captured.len(),
+            1,
+            "the sink must have been written to exactly once; got {captured:?}"
+        );
+        assert_eq!(
+            captured[0],
+            b"encoded-metric".to_vec(),
+            "the default write_metric_event must forward the encoded bytes unchanged"
+        );
     }
 
     #[tokio::test]

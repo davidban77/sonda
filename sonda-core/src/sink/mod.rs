@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::model::log::LogEvent;
+use crate::model::metric::MetricEvent;
 use crate::sink::memory::CapturedRing;
 use crate::SondaError;
 
@@ -57,6 +58,17 @@ pub trait Sink: Send + Sync {
     async fn write_log_event(
         &mut self,
         _event: &LogEvent,
+        encoded: &[u8],
+    ) -> Result<(), SondaError> {
+        self.write(encoded).await
+    }
+
+    /// Write an encoded metric event with its originating context. The default
+    /// forwards `encoded` to [`Sink::write`] and ignores the event, so existing
+    /// sinks are unaffected. Sinks that need the series identity override it.
+    async fn write_metric_event(
+        &mut self,
+        _event: &MetricEvent,
         encoded: &[u8],
     ) -> Result<(), SondaError> {
         self.write(encoded).await

@@ -112,9 +112,10 @@ pub async fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&event, &mut buf)?;
         let bytes_written = buf.len() as u64;
-        output
-            .writes
-            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+        output.writes.push(WriteCommand::Metric {
+            event: event.clone(),
+            bytes: std::mem::take(&mut buf),
+        });
 
         events_buf.push(event);
 
@@ -1311,6 +1312,11 @@ mod tests {
                     SinkTrait::write_log_event(dest, &event, &bytes)
                         .await
                         .expect("memory log write ok")
+                }
+                WriteCommand::Metric { event, bytes } => {
+                    SinkTrait::write_metric_event(dest, &event, &bytes)
+                        .await
+                        .expect("memory metric write ok")
                 }
             }
         }
