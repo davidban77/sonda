@@ -40,6 +40,8 @@ http = ["dep:ureq", "dep:chrono", "runtime"]
 kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots", "runtime"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]
+# Throwaway Phase 0 spike feature. Not referenced by any default build.
+gnmi-spike = ["dep:tonic", "tonic/server", "dep:prost", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "runtime"]
 # JSON Schema for the scenario config types. Implies `config`: schemars
 # reads the `#[serde(...)]` attributes to know the WIRE shape, and those
 # attributes are themselves behind the config feature.
@@ -66,6 +68,8 @@ snap = { version = "1", optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "channel", "tls-ring"], optional = true }
 bytes = { version = "1", optional = true }
 http = { version = "1", optional = true }
+tower = { version = "0.5", default-features = false, optional = true }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"], optional = true }
 schemars = { version = "1", optional = true }
 
 [dev-dependencies]

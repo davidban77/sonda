@@ -18,6 +18,7 @@ http = ["sonda-core/http", "dep:chrono"]
 remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 otlp = ["sonda-core/otlp"]
+gnmi-spike = ["sonda-core/gnmi-spike"]
 
 [[bin]]
 name = "sonda"

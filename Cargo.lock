@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "sonda"
-version = "1.22.3"
+version = "1.23.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2602,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-core"
-version = "1.22.3"
+version = "1.23.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2626,8 +2626,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tonic",
+ "tower",
  "tracing",
  "tracing-test",
  "ureq",
@@ -2636,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-server"
-version = "1.22.3"
+version = "1.23.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2664,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-wasm"
-version = "1.22.3"
+version = "1.23.1"
 dependencies = [
  "serde",
  "serde_json",

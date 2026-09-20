@@ -6,6 +6,8 @@
 pub mod channel;
 #[cfg(feature = "runtime")]
 pub mod file;
+#[cfg(feature = "gnmi-spike")]
+pub mod gnmi_spike;
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "kafka")]
