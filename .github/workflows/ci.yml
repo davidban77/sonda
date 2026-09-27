@@ -469,6 +469,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Full history so git-revision-date-localized shows real dates. This
+          # job runs `mkdocs build --strict`, and on a shallow checkout the
+          # plugin's warning is promoted to an error, same as in docs.yml.
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v7
