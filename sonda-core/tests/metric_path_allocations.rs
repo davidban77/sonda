@@ -4,9 +4,18 @@
 //! because `#[global_allocator]` is process-wide: in the lib test binary the
 //! counter would be shared with every other test running in parallel.
 //!
-//! The budget is a number, not "no panic", so a later change that boxes an
-//! extra future, deep-clones a label map or formats a string on this path fails
-//! here. `scheduler_baseline` cannot see a cost this small — it measures drift,
+//! Two checks, both numbers rather than "no panic":
+//!
+//! - the plain path has an absolute budget at its measured baseline, so a
+//!   regression every sink pays fails;
+//! - the opt-in path is measured against the plain path in the same test, so
+//!   anything only an opt-in sink pays — an extra boxed future, a deep-cloned
+//!   label set, a formatted string — fails however long the encoded line is.
+//!
+//! The scenario carries two labels on purpose. With none, cloning the empty
+//! label map allocates nothing and a label deep-clone would pass unnoticed.
+//!
+//! `scheduler_baseline` cannot see a cost this small: it measures drift,
 //! dropped ticks and process-wide RSS.
 
 // The whole file drives `schedule::runner`, which the `runtime` feature owns.
@@ -112,7 +121,12 @@ fn scenario() -> ScenarioConfig {
             bursts: None,
             cardinality_spikes: None,
             dynamic_labels: None,
-            labels: None,
+            // Non-empty so a deep clone of the label set costs allocations;
+            // see the module doc.
+            labels: Some(std::collections::HashMap::from([
+                ("device".to_string(), "leaf-1".to_string()),
+                ("site".to_string(), "ams".to_string()),
+            ])),
             sink: SinkConfig::Memory {
                 capture: false,
                 max_events: None,
@@ -174,35 +188,43 @@ fn allocations_per_event(sink: &mut Box<dyn Sink>, delivered: &AtomicUsize) -> f
     allocs as f64 / n as f64
 }
 
-/// A sink that does not opt in must not pay for the event-carrying path.
-///
-/// `Sink` is `#[async_trait]`, so reaching the *default* `write_metric_event`
-/// costs a second boxed future on top of the `write` it forwards to. 4 allocations per event is the cost before
-/// the hook existed; the budget leaves one slot for per-run fixed cost
-/// amortised across the ticks and still fails the 5-per-event double-box.
-#[test]
-fn plain_sink_pays_no_extra_allocation_per_event() {
+/// Allocations per event for a sink that does not opt in.
+fn plain_cost() -> f64 {
     let delivered = Arc::new(AtomicUsize::new(0));
     let mut sink: Box<dyn Sink> = Box::new(PlainSink {
         delivered: Arc::clone(&delivered),
     });
-    let per_event = allocations_per_event(&mut sink, &delivered);
+    allocations_per_event(&mut sink, &delivered)
+}
 
+/// A sink that does not opt in must not pay for the event-carrying path.
+///
+/// `Sink` is `#[async_trait]`, so reaching the *default* `write_metric_event`
+/// costs a second boxed future on top of the `write` it forwards to. The
+/// labelled scenario measures 5.01 allocations per event before and after
+/// the hook; the budget sits just above that and fails the 6-per-event
+/// double-box.
+#[test]
+fn plain_sink_pays_no_extra_allocation_per_event() {
+    let per_event = plain_cost();
     assert!(
-        per_event < 5.0,
+        per_event < 6.0,
         "a sink that does not want metric events must keep its original \
-         per-event cost: {per_event:.3} allocations per event, budget < 5.0"
+         per-event cost: {per_event:.3} allocations per event, budget < 6.0"
     );
 }
 
 /// The opt-in path costs the same as the plain one.
 ///
 /// A sink that overrides `write_metric_event` never calls `write`, so it boxes
-/// exactly one future per event, as a plain sink's `write` does. The budget is
-/// therefore the plain one: an extra boxed future or a deep-cloned label set
-/// on this path fails here.
+/// exactly one future per event, as a plain sink's `write` does. Checked
+/// relative to the plain path measured in this same test, so the bound stays
+/// tight whatever the encoded line costs, including after the encode buffer
+/// stops regrowing.
 #[test]
 fn opt_in_sink_receives_events_at_the_plain_cost() {
+    let plain = plain_cost();
+
     let delivered = Arc::new(AtomicUsize::new(0));
     let wrong_name = Arc::new(AtomicUsize::new(0));
     let plain_writes = Arc::new(AtomicUsize::new(0));
@@ -212,7 +234,7 @@ fn opt_in_sink_receives_events_at_the_plain_cost() {
         plain_writes: Arc::clone(&plain_writes),
     });
     // `allocations_per_event` asserts >= 500 deliveries before dividing.
-    let per_event = allocations_per_event(&mut sink, &delivered);
+    let opt_in = allocations_per_event(&mut sink, &delivered);
 
     assert_eq!(
         wrong_name.load(Ordering::Relaxed),
@@ -225,8 +247,10 @@ fn opt_in_sink_receives_events_at_the_plain_cost() {
         "an opt-in sink must receive no metric through the plain write path"
     );
     assert!(
-        per_event < 5.0,
-        "the opt-in path must cost what the plain path costs: {per_event:.3} \
-         allocations per event, budget < 5.0"
+        opt_in - plain < 0.5,
+        "the opt-in path must cost what the plain path costs: opt-in \
+         {opt_in:.3} vs plain {plain:.3} allocations per event, a surcharge of \
+         {:.3} (allowed < 0.5)",
+        opt_in - plain
     );
 }
