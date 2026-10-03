@@ -34,7 +34,7 @@ pub async fn emit_metric(
     let mut sink = create_sink(sink, labels).await?;
     let mut buf: Vec<u8> = Vec::new();
     encoder.encode_metric(event, &mut buf)?;
-    sink.write(&buf).await?;
+    sink.write_metric_event(event, &buf).await?;
     sink.flush().await
 }
 

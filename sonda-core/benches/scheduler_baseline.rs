@@ -97,38 +97,6 @@ const DEFAULT_SWEEP: &[SweepRow] = &[
         rate_hz: 1_000.0,
         label: "stress:100x1kHz",
     },
-    // Memory-sink grid: rate x concurrency, for comparing the per-write
-    // dispatch cost of the metric runner between two builds.
-    SweepRow {
-        n: 1,
-        rate_hz: 1.0,
-        label: "mem:1x1Hz",
-    },
-    SweepRow {
-        n: 16,
-        rate_hz: 1.0,
-        label: "mem:16x1Hz",
-    },
-    SweepRow {
-        n: 1,
-        rate_hz: 100.0,
-        label: "mem:1x100Hz",
-    },
-    SweepRow {
-        n: 16,
-        rate_hz: 100.0,
-        label: "mem:16x100Hz",
-    },
-    SweepRow {
-        n: 1,
-        rate_hz: 1_000.0,
-        label: "mem:1x1kHz",
-    },
-    SweepRow {
-        n: 16,
-        rate_hz: 1_000.0,
-        label: "mem:16x1kHz",
-    },
 ];
 
 struct RowResult {

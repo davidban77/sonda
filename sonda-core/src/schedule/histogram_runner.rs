@@ -8,9 +8,7 @@ use crate::config::HistogramScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::histogram::HistogramGenerator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use crate::schedule::core_loop::{
-    self, GateContext, TickContext, TickOutput, TickResult, WriteCommand,
-};
+use crate::schedule::core_loop::{self, GateContext, TickContext, TickOutput, TickResult};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -98,6 +96,9 @@ pub async fn run_with_sink_gated(
     // Pre-allocate encode buffer.
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
+    // Asked once, not per tick; see `TickOutput::push_metric`.
+    let wants_events = sink.wants_metric_events();
+
     let mut tick_fn = |ctx: &TickContext<'_>,
                        output: &mut TickOutput,
                        events_buf: &mut Vec<MetricEvent>|
@@ -139,9 +140,7 @@ pub async fn run_with_sink_gated(
             buf.clear();
             encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
-            output
-                .writes
-                .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+            output.push_metric(wants_events, &event, &mut buf);
             events_buf.push(event);
         }
 
@@ -169,9 +168,7 @@ pub async fn run_with_sink_gated(
             buf.clear();
             encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
-            output
-                .writes
-                .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+            output.push_metric(wants_events, &event, &mut buf);
             events_buf.push(event);
         }
 
@@ -199,9 +196,7 @@ pub async fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&sum_event, &mut buf)?;
         total_bytes += buf.len() as u64;
-        output
-            .writes
-            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+        output.push_metric(wants_events, &sum_event, &mut buf);
         events_buf.push(sum_event);
 
         let count_event = MetricEvent::from_parts(
@@ -213,9 +208,7 @@ pub async fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&count_event, &mut buf)?;
         total_bytes += buf.len() as u64;
-        output
-            .writes
-            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+        output.push_metric(wants_events, &count_event, &mut buf);
         events_buf.push(count_event);
 
         Ok(TickResult {

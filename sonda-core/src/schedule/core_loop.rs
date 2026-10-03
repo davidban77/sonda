@@ -136,6 +136,26 @@ impl TickOutput {
     pub fn clear(&mut self) {
         self.writes.clear();
     }
+
+    /// Queue one encoded metric event, taking the bytes out of `buf`.
+    ///
+    /// `wants_events` is [`Sink::wants_metric_events`], read once by the caller
+    /// before its loop. When it is false this queues a plain
+    /// [`WriteCommand::Bytes`] and the event is not cloned, so the sinks that do
+    /// not need the series identity keep their original per-event cost. Every
+    /// single-event metric path goes through here so the choice has one
+    /// definition.
+    pub fn push_metric(&mut self, wants_events: bool, event: &MetricEvent, buf: &mut Vec<u8>) {
+        let bytes = std::mem::take(buf);
+        if wants_events {
+            self.writes.push(WriteCommand::Metric {
+                event: event.clone(),
+                bytes,
+            });
+        } else {
+            self.writes.push(WriteCommand::Bytes(bytes));
+        }
+    }
 }
 
 /// A per-tick callback that encodes events into `output`; the loop drains the
