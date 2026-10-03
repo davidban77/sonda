@@ -9,6 +9,9 @@
 //! here. `scheduler_baseline` cannot see a cost this small — it measures drift,
 //! dropped ticks and process-wide RSS.
 
+// The whole file drives `schedule::runner`, which the `runtime` feature owns.
+#![cfg(all(feature = "runtime", feature = "config"))]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
