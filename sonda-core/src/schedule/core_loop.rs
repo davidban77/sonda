@@ -1574,6 +1574,102 @@ impl DebounceState {
     }
 }
 
+/// Test sink that records which path each metric reached it through.
+///
+/// It overrides `write_metric_event` whether or not it opts in, and `opt_in`
+/// only sets what `wants_metric_events` returns. That way one probe catches
+/// both failure directions: a producer that drops the event shows up as plain
+/// writes when `opt_in` is true, and a producer that ignores the flag shows up
+/// as delivered events when it is false.
+#[cfg(test)]
+pub(crate) mod routing_probe {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+
+    use crate::model::metric::MetricEvent;
+    use crate::sink::Sink;
+    use crate::SondaError;
+
+    /// One metric delivered through `write_metric_event`.
+    #[derive(Debug, Clone, PartialEq)]
+    pub(crate) struct Delivered {
+        pub(crate) name: String,
+        pub(crate) value: f64,
+        /// Sorted, as `Labels` iterates.
+        pub(crate) labels: Vec<(String, String)>,
+    }
+
+    impl Delivered {
+        /// Value of label `key`, if present.
+        pub(crate) fn label(&self, key: &str) -> Option<&str> {
+            self.labels
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
+    /// Everything the probe saw.
+    #[derive(Debug, Default)]
+    pub(crate) struct Seen {
+        pub(crate) events: Vec<Delivered>,
+        pub(crate) plain_writes: usize,
+    }
+
+    pub(crate) type SeenLog = Arc<Mutex<Seen>>;
+
+    struct RoutingProbe {
+        opt_in: bool,
+        seen: SeenLog,
+    }
+
+    /// Build a probe whose `wants_metric_events` returns `opt_in`.
+    pub(crate) fn routing_probe(opt_in: bool) -> (Box<dyn Sink>, SeenLog) {
+        let seen: SeenLog = Arc::new(Mutex::new(Seen::default()));
+        let sink = RoutingProbe {
+            opt_in,
+            seen: Arc::clone(&seen),
+        };
+        (Box::new(sink) as Box<dyn Sink>, seen)
+    }
+
+    #[async_trait]
+    impl Sink for RoutingProbe {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            self.seen.lock().expect("probe mutex poisoned").plain_writes += 1;
+            Ok(())
+        }
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+        fn wants_metric_events(&self) -> bool {
+            self.opt_in
+        }
+        async fn write_metric_event(
+            &mut self,
+            event: &MetricEvent,
+            _encoded: &[u8],
+        ) -> Result<(), SondaError> {
+            let labels = event
+                .labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            self.seen
+                .lock()
+                .expect("probe mutex poisoned")
+                .events
+                .push(Delivered {
+                    name: event.name.arc().to_string(),
+                    value: event.value,
+                    labels,
+                });
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -1697,6 +1793,10 @@ mod tests {
         }
         async fn flush(&mut self) -> Result<(), SondaError> {
             Ok(())
+        }
+        // Overrides `write_metric_event`, so it must opt in too.
+        fn wants_metric_events(&self) -> bool {
+            true
         }
         async fn write_metric_event(
             &mut self,

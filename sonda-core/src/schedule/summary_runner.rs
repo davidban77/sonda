@@ -276,6 +276,74 @@ mod tests {
         }
     }
 
+    // ---- Routing through the metric-event hook ------------------------------
+
+    /// Every series a summary tick emits reaches an opt-in sink with its
+    /// identity: each quantile, `_sum` and `_count`.
+    #[tokio::test]
+    async fn opt_in_sink_receives_every_quantile_sum_and_count() {
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+
+        let config = make_config(50.0, "200ms", Some(vec![0.5, 0.9, 0.99]));
+        let (mut sink, seen) = routing_probe(true);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("summary run must succeed");
+
+        let seen = seen.lock().expect("probe mutex poisoned");
+        let named = |suffix: &str| {
+            let name = format!("rpc_duration_seconds{suffix}");
+            seen.events
+                .iter()
+                .filter(|e| e.name == name)
+                .collect::<Vec<_>>()
+        };
+        let (quantiles, sums, counts) = (named(""), named("_sum"), named("_count"));
+
+        // Vacuity guard: at least one full tick must have arrived.
+        assert!(!sums.is_empty(), "no summary tick reached the opt-in sink");
+        assert_eq!(seen.plain_writes, 0, "no series may fall back to write");
+        assert_eq!(
+            seen.events.len(),
+            quantiles.len() + sums.len() + counts.len(),
+            "every delivered event must be a quantile, _sum or _count series"
+        );
+        assert_eq!(counts.len(), sums.len(), "one _count per tick");
+        assert_eq!(quantiles.len(), 3 * sums.len(), "three quantiles per tick");
+        let mut q: Vec<&str> = quantiles
+            .iter()
+            .filter_map(|e| e.label("quantile"))
+            .collect();
+        q.sort_unstable();
+        q.dedup();
+        assert_eq!(q.len(), 3, "three distinct quantile labels: {q:?}");
+        assert!(
+            sums.iter()
+                .chain(&counts)
+                .all(|e| e.label("quantile").is_none()),
+            "_sum and _count carry no quantile label"
+        );
+    }
+
+    /// A summary never hands the event to a sink that did not opt in.
+    #[tokio::test]
+    async fn sink_that_does_not_opt_in_receives_only_plain_writes() {
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+
+        let config = make_config(50.0, "200ms", Some(vec![0.5, 0.9, 0.99]));
+        let (mut sink, seen) = routing_probe(false);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("summary run must succeed");
+
+        let seen = seen.lock().expect("probe mutex poisoned");
+        assert!(seen.plain_writes > 0, "the run must have written something");
+        assert!(
+            seen.events.is_empty(),
+            "a sink that does not opt in must not be handed the event"
+        );
+    }
+
     // ---- Run completes without error ----------------------------------------
 
     #[tokio::test]

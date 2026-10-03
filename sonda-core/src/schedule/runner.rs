@@ -137,7 +137,7 @@ pub async fn run_with_sink_gated(
                 stats.as_ref(),
                 ctx.delay.as_ref(),
                 Arc::clone(&encoder),
-                wants_events,
+                sink.as_ref(),
             );
             ctx.holds_on_close = ctx.delay.as_ref().and_then(|d| d.close_snap_to).is_some();
             core_loop::gated_loop(
@@ -158,13 +158,15 @@ pub async fn run_with_sink_gated(
 /// when the user sets `delay.close.snap_to`.
 ///
 /// Resolves the close-emit policy (StaleMarker vs SnapTo) using the shared
-/// scenario encoder. Returns `None` when no emission is wanted.
+/// scenario encoder, and carries each marker's event to `sink` when it opts in
+/// through [`Sink::wants_metric_events`]. Returns `None` when no emission is
+/// wanted.
 fn build_close_emit(
     config: &ScenarioConfig,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     delay: Option<&crate::compiler::DelayClause>,
     encoder: Arc<dyn crate::encoder::Encoder>,
-    wants_events: bool,
+    sink: &dyn Sink,
 ) -> Option<CloseEmitFn> {
     let stats = stats?.clone();
 
@@ -190,7 +192,14 @@ fn build_close_emit(
         Ok(mut st) => st.enable_close_series_tracking(),
         Err(p) => p.into_inner().enable_close_series_tracking(),
     }
-    Some(make_close_emitter(stats, encoder, signal, wants_events))
+    // Read from the sink here, as the tick path does, so the marker cannot be
+    // wired to a flag that disagrees with the sink it is written to.
+    Some(make_close_emitter(
+        stats,
+        encoder,
+        signal,
+        sink.wants_metric_events(),
+    ))
 }
 
 fn make_close_emitter(
@@ -310,50 +319,9 @@ mod tests {
         }
     }
 
-    use crate::model::metric::MetricEvent;
+    use crate::schedule::core_loop::routing_probe::routing_probe;
 
-    /// One delivery recorded by [`EventProbeSink`]: name, value, sorted labels.
-    type SeenEvent = (String, f64, Vec<(String, String)>);
-    type SeenLog = std::sync::Arc<Mutex<Vec<SeenEvent>>>;
-
-    /// Sink that opts into the metric-event hook and records what it is handed.
-    struct EventProbeSink {
-        seen: SeenLog,
-        plain_writes: std::sync::Arc<Mutex<usize>>,
-    }
-
-    #[async_trait]
-    impl Sink for EventProbeSink {
-        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
-            *self.plain_writes.lock().expect("probe mutex poisoned") += 1;
-            Ok(())
-        }
-        async fn flush(&mut self) -> Result<(), SondaError> {
-            Ok(())
-        }
-        fn wants_metric_events(&self) -> bool {
-            true
-        }
-        async fn write_metric_event(
-            &mut self,
-            event: &MetricEvent,
-            _encoded: &[u8],
-        ) -> Result<(), SondaError> {
-            let labels = event
-                .labels
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
-            self.seen.lock().expect("probe mutex poisoned").push((
-                event.name.arc().to_string(),
-                event.value,
-                labels,
-            ));
-            Ok(())
-        }
-    }
-
-    /// The runner must actually route single-event metric ticks through
+    /// The runner must route single-event metric ticks through
     /// `write_metric_event` when the sink opts in, carrying the series identity.
     ///
     /// Covers the producer side: reverting the push site back to
@@ -367,13 +335,7 @@ mod tests {
         ]));
         config.generator = GeneratorConfig::Constant { value: 42.5 };
 
-        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let plain_writes = std::sync::Arc::new(Mutex::new(0usize));
-        let mut sink: Box<dyn Sink> = Box::new(EventProbeSink {
-            seen: std::sync::Arc::clone(&seen),
-            plain_writes: std::sync::Arc::clone(&plain_writes),
-        });
-
+        let (mut sink, seen) = routing_probe(true);
         super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
@@ -381,22 +343,21 @@ mod tests {
         let seen = seen.lock().expect("probe mutex poisoned");
         // Vacuity guard: assert events arrived before asserting their contents.
         assert!(
-            !seen.is_empty(),
+            !seen.events.is_empty(),
             "the opt-in sink must have received metric events through \
              write_metric_event; got none"
         );
         assert_eq!(
-            *plain_writes.lock().expect("probe mutex poisoned"),
-            0,
+            seen.plain_writes, 0,
             "no metric tick may fall back to the plain write path when the sink \
              opts in"
         );
-        for (name, value, labels) in seen.iter() {
-            assert_eq!(name, "up", "metric name must reach the sink");
-            assert_eq!(*value, 42.5, "generator value must reach the sink");
+        for event in &seen.events {
+            assert_eq!(event.name, "up", "metric name must reach the sink");
+            assert_eq!(event.value, 42.5, "generator value must reach the sink");
             assert_eq!(
-                labels,
-                &vec![
+                event.labels,
+                vec![
                     ("device".to_string(), "leaf-1".to_string()),
                     ("site".to_string(), "ams".to_string()),
                 ],
@@ -405,19 +366,93 @@ mod tests {
         }
     }
 
-    /// A sink that does not opt in keeps receiving plain byte writes.
+    /// A sink that does not opt in never reaches `write_metric_event`.
+    ///
+    /// The probe overrides `write_metric_event` but leaves the flag false, so
+    /// this fails if the runner ignores the flag. Asserting only that bytes
+    /// arrived could not: the default `write_metric_event` forwards to `write`.
     #[tokio::test]
-    async fn run_with_sink_keeps_the_plain_path_for_a_sink_that_does_not_opt_in() {
+    async fn run_with_sink_never_hands_the_event_to_a_sink_that_does_not_opt_in() {
         let config = make_config(100.0, "300ms", None);
-        let (mut sink, buf) = probe_sink();
+        let (mut sink, seen) = routing_probe(false);
         super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
-        let captured = buf.lock().expect("probe mutex poisoned");
+
+        let seen = seen.lock().expect("probe mutex poisoned");
         assert!(
-            captured.contains(&b'\n'),
-            "the default sink must still receive encoded bytes through write"
+            seen.plain_writes > 0,
+            "the run must have written through the plain path before the \
+             absence of events means anything"
         );
+        assert!(
+            seen.events.is_empty(),
+            "a sink that does not opt in must not be handed the event; got {}",
+            seen.events.len()
+        );
+    }
+
+    /// The gate-close marker carries its identity to a sink that opts in.
+    ///
+    /// Drives `build_close_emit`, which `run_with_sink_gated` calls, so the
+    /// flag is read from the sink exactly as in a real run. Every other
+    /// close-emitter test builds a plain-path emitter, so without this the
+    /// marker could drop the event on the path the gNMI sink will use.
+    #[test]
+    fn build_close_emit_carries_the_marker_event_to_an_opt_in_sink() {
+        use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+        use crate::schedule::core_loop::{TickOutput, WriteCommand};
+        use crate::schedule::stats::ScenarioStats;
+        use std::sync::{Arc, RwLock};
+        use std::time::SystemTime;
+
+        let config = make_config(10.0, "100ms", None);
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        let delay = crate::compiler::DelayClause {
+            open: None,
+            close: None,
+            close_stale_marker: None,
+            close_snap_to: Some(7.0),
+        };
+        let encoder: Arc<dyn crate::encoder::Encoder> =
+            Arc::from(crate::encoder::create_encoder(&config.encoder).expect("encoder must build"));
+        let (opt_in, _) = routing_probe(true);
+        let mut emit =
+            super::build_close_emit(&config, Some(&stats), Some(&delay), encoder, &*opt_in)
+                .expect("snap_to must yield a close-emitter");
+
+        // Tracking is enabled by `build_close_emit`; seed one series after it.
+        stats
+            .write()
+            .expect("stats lock poisoned")
+            .push_metric(MetricEvent::from_parts(
+                ValidatedMetricName::new("up").expect("valid name"),
+                1.0,
+                Arc::new(Labels::from_pairs(&[("host", "a")]).expect("valid labels")),
+                SystemTime::now(),
+            ));
+
+        let mut output = TickOutput::default();
+        emit(&mut output).expect("close-emit must succeed");
+
+        assert_eq!(
+            output.writes.len(),
+            1,
+            "one tracked series must yield exactly one marker"
+        );
+        match &output.writes[0] {
+            WriteCommand::Metric { event, bytes } => {
+                assert_eq!(&**event.name.arc(), "up", "marker must keep the name");
+                assert_eq!(event.value, 7.0, "marker must carry the snap-to value");
+                assert_eq!(
+                    event.labels.iter().collect::<Vec<_>>(),
+                    vec![("host", "a")],
+                    "marker must keep the series labels"
+                );
+                assert!(!bytes.is_empty(), "marker must still carry its encoding");
+            }
+            _ => panic!("an opt-in sink's close marker must be queued as WriteCommand::Metric"),
+        }
     }
 
     // ---- run: basic correctness ----------------------------------------------
@@ -1651,7 +1686,9 @@ mod tests {
         };
         let encoder: Arc<dyn crate::encoder::Encoder> =
             Arc::from(crate::encoder::create_encoder(&config.encoder).unwrap());
-        let emitter = super::build_close_emit(&config, Some(&stats), Some(&delay), encoder, false);
+        let (plain, _) = routing_probe(false);
+        let emitter =
+            super::build_close_emit(&config, Some(&stats), Some(&delay), encoder, &*plain);
         assert!(emitter.is_some(), "snap_to must yield a close-emitter");
         assert!(
             stats.read().unwrap().track_close_series,

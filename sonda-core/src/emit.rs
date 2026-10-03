@@ -34,7 +34,13 @@ pub async fn emit_metric(
     let mut sink = create_sink(sink, labels).await?;
     let mut buf: Vec<u8> = Vec::new();
     encoder.encode_metric(event, &mut buf)?;
-    sink.write_metric_event(event, &buf).await?;
+    // Same rule as the schedule runners: only a sink that asked for the event
+    // receives it; every other sink keeps the plain write path.
+    if sink.wants_metric_events() {
+        sink.write_metric_event(event, &buf).await?;
+    } else {
+        sink.write(&buf).await?;
+    }
     sink.flush().await
 }
 

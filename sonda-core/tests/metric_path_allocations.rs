@@ -67,15 +67,19 @@ impl Sink for PlainSink {
     }
 }
 
-/// Sink that opts in, recording the identity it was handed.
+/// Sink that opts in. It checks the identity it was handed without allocating
+/// — a `String` or a growing `Vec` here would be charged to the path under
+/// measurement and hide a regression of the same size.
 struct EventSink {
     delivered: Arc<AtomicUsize>,
-    names: Arc<Mutex<Vec<String>>>,
+    wrong_name: Arc<AtomicUsize>,
+    plain_writes: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl Sink for EventSink {
     async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+        self.plain_writes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
     async fn flush(&mut self) -> Result<(), SondaError> {
@@ -90,10 +94,9 @@ impl Sink for EventSink {
         _encoded: &[u8],
     ) -> Result<(), SondaError> {
         self.delivered.fetch_add(1, Ordering::Relaxed);
-        self.names
-            .lock()
-            .expect("name log mutex poisoned")
-            .push(event.name.arc().to_string());
+        if event.name.arc().as_ref() != "alloc_probe" {
+            self.wrong_name.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(())
     }
 }
@@ -173,8 +176,8 @@ fn allocations_per_event(sink: &mut Box<dyn Sink>, delivered: &AtomicUsize) -> f
 
 /// A sink that does not opt in must not pay for the event-carrying path.
 ///
-/// `write_metric_event` is `#[async_trait]`, so reaching it costs a second
-/// boxed future on top of `write`'s. 4 allocations per event is the cost before
+/// `Sink` is `#[async_trait]`, so reaching the *default* `write_metric_event`
+/// costs a second boxed future on top of the `write` it forwards to. 4 allocations per event is the cost before
 /// the hook existed; the budget leaves one slot for per-run fixed cost
 /// amortised across the ticks and still fails the 5-per-event double-box.
 #[test]
@@ -192,32 +195,38 @@ fn plain_sink_pays_no_extra_allocation_per_event() {
     );
 }
 
-/// The opt-in sink is actually handed the event, and its cost stays bounded.
+/// The opt-in path costs the same as the plain one.
+///
+/// A sink that overrides `write_metric_event` never calls `write`, so it boxes
+/// exactly one future per event, as a plain sink's `write` does. The budget is
+/// therefore the plain one: an extra boxed future or a deep-cloned label set
+/// on this path fails here.
 #[test]
-fn opt_in_sink_receives_events_within_a_bounded_budget() {
+fn opt_in_sink_receives_events_at_the_plain_cost() {
     let delivered = Arc::new(AtomicUsize::new(0));
-    let names = Arc::new(Mutex::new(Vec::new()));
+    let wrong_name = Arc::new(AtomicUsize::new(0));
+    let plain_writes = Arc::new(AtomicUsize::new(0));
     let mut sink: Box<dyn Sink> = Box::new(EventSink {
         delivered: Arc::clone(&delivered),
-        names: Arc::clone(&names),
+        wrong_name: Arc::clone(&wrong_name),
+        plain_writes: Arc::clone(&plain_writes),
     });
+    // `allocations_per_event` asserts >= 500 deliveries before dividing.
     let per_event = allocations_per_event(&mut sink, &delivered);
 
-    let captured = names.lock().expect("name log mutex poisoned");
-    assert!(
-        captured.len() >= 500,
-        "the opt-in sink must have been handed the events: got {}",
-        captured.len()
-    );
-    assert!(
-        captured.iter().all(|n| n == "alloc_probe"),
+    assert_eq!(
+        wrong_name.load(Ordering::Relaxed),
+        0,
         "every delivered event must carry the scenario's metric name"
     );
-    drop(captured);
-
+    assert_eq!(
+        plain_writes.load(Ordering::Relaxed),
+        0,
+        "an opt-in sink must receive no metric through the plain write path"
+    );
     assert!(
-        per_event < 7.0,
-        "the opt-in path must stay bounded: {per_event:.3} allocations per \
-         event, budget < 7.0"
+        per_event < 5.0,
+        "the opt-in path must cost what the plain path costs: {per_event:.3} \
+         allocations per event, budget < 5.0"
     );
 }
