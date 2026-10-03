@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.23.2](https://github.com/davidban77/sonda/compare/v1.23.1...v1.23.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **ci:** rustls 0.23.45 for RUSTSEC-2026-0285 and full history for the strict docs build ([#650](https://github.com/davidban77/sonda/issues/650)) ([576efc2](https://github.com/davidban77/sonda/commit/576efc28c63d2dde4a67a5852d6efa221870df9a))
+
 ## [1.23.1](https://github.com/davidban77/sonda/compare/v1.23.0...v1.23.1) (2026-09-04)
 
 
