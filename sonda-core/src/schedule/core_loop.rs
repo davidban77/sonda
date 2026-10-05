@@ -700,30 +700,32 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
 
 /// Write every queued command to `sink` in order, stopping at the first error.
 ///
-/// The buffer of each [`WriteCommand::Bytes`] or [`WriteCommand::Metric`] whose
-/// write succeeded is cleared and kept in `output`'s spare list while it holds
-/// fewer than [`SPARE_BUFFERS`]; the rest are dropped. Those are the commands
-/// [`TickOutput::push_metric`] queues, and it is the only taker from the list.
-/// [`WriteCommand::LogEvent`] buffers are always dropped. The buffer whose
-/// write failed is dropped with the error.
+/// The buffer of each [`WriteCommand::Bytes`] or [`WriteCommand::Metric`] that
+/// reached the sink is cleared and kept in `output`'s spare list while it holds
+/// fewer than [`SPARE_BUFFERS`], whether its write succeeded or failed; the
+/// rest are dropped. Those are the commands [`TickOutput::push_metric`]
+/// queues, and it is the only taker from the list. [`WriteCommand::LogEvent`]
+/// buffers are always dropped, as are the buffers of commands queued after a
+/// failed write.
 async fn drain_writes(
     output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
 ) -> Result<Option<bool>, SondaError> {
     let mut delivered: Option<bool> = None;
     for cmd in output.writes.drain(..) {
-        match &cmd {
-            WriteCommand::Bytes(bytes) => sink.write(bytes).await?,
-            WriteCommand::LogEvent { event, bytes } => sink.write_log_event(event, bytes).await?,
-            WriteCommand::Metric { event, bytes } => sink.write_metric_event(event, bytes).await?,
-        }
-        delivered = Some(sink.last_write_delivered());
+        let written = match &cmd {
+            WriteCommand::Bytes(bytes) => sink.write(bytes).await,
+            WriteCommand::LogEvent { event, bytes } => sink.write_log_event(event, bytes).await,
+            WriteCommand::Metric { event, bytes } => sink.write_metric_event(event, bytes).await,
+        };
         if let WriteCommand::Bytes(mut bytes) | WriteCommand::Metric { mut bytes, .. } = cmd {
             if output.spare.len() < SPARE_BUFFERS {
                 bytes.clear();
                 output.spare.push(bytes);
             }
         }
+        written?;
+        delivered = Some(sink.last_write_delivered());
     }
     Ok(delivered)
 }
@@ -2207,7 +2209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_error_does_not_recycle() {
+    async fn write_error_still_recycles() {
         let mut output = TickOutput::default();
         output.writes.push(WriteCommand::Bytes(b"seed".to_vec()));
         drain_writes(&mut output, &mut null_sink())
@@ -2219,7 +2221,8 @@ mod tests {
             "the seeding drain must leave one spare buffer before the error path is checked"
         );
 
-        // Fails on its first write, so no command in this drain completes.
+        // Fails on its first write, so the drain stops there and the second
+        // command never reaches the sink.
         let (mut sink, writes) = shared_sink_failing(0);
         output.writes.push(WriteCommand::Bytes(b"first".to_vec()));
         output.writes.push(WriteCommand::Bytes(b"second".to_vec()));
@@ -2242,8 +2245,8 @@ mod tests {
         );
         assert_eq!(
             output.spare.len(),
-            1,
-            "a failed write must not put its buffer on the spare list"
+            2,
+            "the failed write's buffer, and only that one, must join the spare list"
         );
     }
 
