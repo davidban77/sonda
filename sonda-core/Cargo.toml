@@ -40,10 +40,7 @@ http = ["dep:ureq", "dep:chrono", "runtime"]
 kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots", "runtime"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]
-# gNMI encoder and target. tonic's `transport` already implies `server`, so
-# `tonic/server` only matters for a `--no-default-features --features gnmi`
-# build; keep it.
-gnmi = ["dep:tonic", "tonic/server", "dep:prost", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "runtime"]
+gnmi = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "runtime"]
 # JSON Schema for the scenario config types. Implies `config`: schemars
 # reads the `#[serde(...)]` attributes to know the WIRE shape, and those
 # attributes are themselves behind the config feature.

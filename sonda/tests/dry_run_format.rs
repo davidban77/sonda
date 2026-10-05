@@ -100,3 +100,19 @@ fn dry_run_pack_backed_expands_sub_signals() {
     assert!(stderr.contains("pack_metric_a"));
     assert!(stderr.contains("pack_metric_b"));
 }
+
+/// The gnmi encoder renders with its origin rather than the `unknown (...)`
+/// fallback. The file validates first, so a rejection would fail in
+/// `dry_run_stderr` rather than pass a missing-line check vacuously.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_shows_the_gnmi_encoder_and_its_origin() {
+    let stderr = dry_run_stderr("gnmi.v2.yaml");
+    assert!(stderr.contains("Validation: OK"), "{stderr}");
+    assert!(stderr.contains("encoder:"), "{stderr}");
+    assert!(
+        stderr.contains("gnmi (openconfig-interfaces)"),
+        "dry-run must name the gnmi encoder and its origin:\n{stderr}"
+    );
+    assert!(!stderr.contains("unknown ("), "{stderr}");
+}

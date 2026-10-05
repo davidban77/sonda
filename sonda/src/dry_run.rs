@@ -286,6 +286,10 @@ fn encoder_display(enc: &sonda_core::encoder::EncoderConfig) -> String {
         EncoderConfig::Otlp => "otlp".to_string(),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled {} => "otlp (disabled)".to_string(),
+        #[cfg(feature = "gnmi")]
+        EncoderConfig::Gnmi(cfg) => format!("gnmi ({})", cfg.origin),
+        #[cfg(not(feature = "gnmi"))]
+        EncoderConfig::GnmiDisabled {} => "gnmi (disabled)".to_string(),
         // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
         // fall back to the Debug form so a future variant still renders.
         other => format!("unknown ({other:?})"),

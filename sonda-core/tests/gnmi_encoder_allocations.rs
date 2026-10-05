@@ -11,6 +11,8 @@
 // The `--no-default-features` test job compiles this file to nothing.
 #![cfg(feature = "gnmi")]
 
+mod common;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

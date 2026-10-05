@@ -121,8 +121,12 @@ impl From<GnmiValueType> for GnmiValueTypeWire {
 }
 
 /// Configuration for [`GnmiEncoder`]; the body of `encoder: { type: gnmi, ... }`.
+///
+/// Unknown keys are rejected, so a misspelt field such as `vaules:` is an
+/// error rather than a silent fallback to the defaults.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GnmiEncoderConfig {
     /// `Path.origin` on every notification prefix. Default `"openconfig"`.
@@ -140,6 +144,14 @@ pub struct GnmiEncoderConfig {
     /// Per-metric typed value; default `double`.
     #[cfg_attr(feature = "config", serde(default))]
     pub values: HashMap<String, GnmiValueType>,
+    /// Labels deliberately left out of the path.
+    ///
+    /// Validation requires every key in an entry's `labels` and
+    /// `dynamic_labels` to be referenced by its template, be the
+    /// `target_label`, or be listed here; series that differ only in an
+    /// unlisted, unreferenced label would otherwise share one path.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub drop_labels: Vec<String>,
 }
 
 fn default_origin() -> String {
@@ -159,6 +171,7 @@ impl Default for GnmiEncoderConfig {
             path: None,
             paths: HashMap::new(),
             values: HashMap::new(),
+            drop_labels: Vec::new(),
         }
     }
 }
@@ -183,13 +196,15 @@ impl GnmiEncoder {
     ///
     /// Returns [`SondaError::Config`] when `origin` is empty, an `enum` value
     /// map is empty, or `path` or a `paths:` entry is not a valid template.
+    /// `values` and `paths` are checked in metric-name order, so the same
+    /// config always reports the same first error.
     pub fn new(cfg: &GnmiEncoderConfig) -> Result<Self, SondaError> {
         if cfg.origin.is_empty() {
             return Err(SondaError::Config(ConfigError::invalid(
                 "gnmi encoder origin must not be empty",
             )));
         }
-        for (metric, value) in &cfg.values {
+        for (metric, value) in cfg.values.iter().collect::<BTreeMap<_, _>>() {
             if matches!(value, GnmiValueType::Enum(map) if map.is_empty()) {
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "gnmi encoder values.{metric}: enum map must not be empty"
@@ -200,6 +215,8 @@ impl GnmiEncoder {
         let overrides = cfg
             .paths
             .iter()
+            .collect::<BTreeMap<_, _>>()
+            .into_iter()
             .map(|(metric, t)| Ok((metric.clone(), PathTemplate::parse(t)?)))
             .collect::<Result<HashMap<_, _>, SondaError>>()?;
 
@@ -232,7 +249,7 @@ impl GnmiEncoder {
 
         let name: &str = &event.name;
         let template = self.template_for(name).ok_or_else(|| {
-            SondaError::Encoder(EncoderError::Other(format!(
+            SondaError::Config(ConfigError::invalid(format!(
                 "gnmi encoder has no path template for metric {name:?}: set encoder.path \
                  or encoder.paths.{name}"
             )))
@@ -257,9 +274,12 @@ enum Scalar<'a> {
 
 impl Scalar<'_> {
     /// Encoded length of the `TypedValue` message holding this payload.
+    ///
+    /// `string_val` is a oneof member, so it is written even when empty;
+    /// omitting it would decode as a `TypedValue` with no value at all.
     fn encoded_len(&self) -> usize {
         match self {
-            Scalar::Str(s) => str_field_len(1, s),
+            Scalar::Str(s) => delimited_field_len(1, s.len()),
             Scalar::Int(v) => encoding::int64::encoded_len(2, v),
             Scalar::Uint(v) => encoding::uint64::encoded_len(3, v),
             Scalar::Bool(v) => encoding::bool::encoded_len(4, v),
@@ -270,7 +290,10 @@ impl Scalar<'_> {
     /// Append the `TypedValue` message body.
     fn encode(&self, buf: &mut Vec<u8>) {
         match self {
-            Scalar::Str(s) => encode_str_field(1, s, buf),
+            Scalar::Str(s) => {
+                encode_delimited_header(1, s.len(), buf);
+                buf.extend_from_slice(s.as_bytes());
+            }
             Scalar::Int(v) => encoding::int64::encode(2, v, buf),
             Scalar::Uint(v) => encoding::uint64::encode(3, v, buf),
             Scalar::Bool(v) => encoding::bool::encode(4, v, buf),
@@ -326,10 +349,15 @@ impl Encoder for GnmiEncoder {
     /// One call = one notification with one `Update`. `buf` is cleared by the caller, not here.
     ///
     /// The prefix carries `origin` and, when the event has the target label,
-    /// `target`. Returns [`SondaError::Encoder`] when the timestamp predates
-    /// the epoch or exceeds `i64` nanoseconds, the metric has no template, a
-    /// template placeholder names a label the event lacks, or an `enum` value
-    /// has no mapping.
+    /// `target`. Returns [`SondaError::Config`] when the metric has no
+    /// template, which is a defect of the configuration rather than of this
+    /// event. Returns [`SondaError::Encoder`] when the timestamp predates the
+    /// epoch or exceeds `i64` nanoseconds, a template placeholder names a
+    /// label this event lacks, or an `enum` value has no mapping.
+    ///
+    /// The output is not length-prefixed, so it is only usable by a sink that
+    /// takes one notification per write. Pairing with any other sink is not
+    /// rejected by validation.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         let since_epoch = event
             .timestamp
@@ -349,14 +377,18 @@ impl Encoder for GnmiEncoder {
             .find(|(k, _)| *k == self.target_label)
             .map_or("", |(_, v)| v);
 
-        let mut text = [0u8; F64_TEXT_CAPACITY];
+        // Initialised only on the `String` path; every other type skips it.
+        let mut text: [u8; F64_TEXT_CAPACITY];
         let value = event.value;
         let scalar = match self.values.get(name) {
             None | Some(GnmiValueType::Double) => Scalar::Double(value),
             Some(GnmiValueType::Uint) => Scalar::Uint(value.max(0.0) as u64),
             Some(GnmiValueType::Int) => Scalar::Int(value as i64),
             Some(GnmiValueType::Bool) => Scalar::Bool(value != 0.0),
-            Some(GnmiValueType::String) => Scalar::Str(format_f64(value, &mut text)?),
+            Some(GnmiValueType::String) => {
+                text = [0u8; F64_TEXT_CAPACITY];
+                Scalar::Str(format_f64(value, &mut text)?)
+            }
             Some(GnmiValueType::Enum(map)) => Scalar::Str(
                 map.get(&(value as i64))
                     .map(String::as_str)
@@ -469,15 +501,30 @@ mod tests {
     fn hand_encoding_is_byte_identical_to_prost() {
         let mut cfg = config();
         cfg.values.insert("up".into(), GnmiValueType::Bool);
+        cfg.values.insert(
+            "state".into(),
+            GnmiValueType::Enum(BTreeMap::from([(1, String::new())])),
+        );
         let encoder = GnmiEncoder::new(&cfg).unwrap();
         for e in [
             event("in_octets", 42.0),
             event("up", 1.0),
+            event("state", 1.0),
             event_at("in_octets", 1.0, &[("ifName", "x")], 0),
         ] {
             let mut buf = Vec::new();
             encoder.encode_metric(&e, &mut buf).unwrap();
             let decoded = proto::Notification::decode(buf.as_slice()).unwrap();
+            // Re-encoding only proves the bytes are well formed; a value
+            // dropped before decoding round-trips identically. Assert it is there.
+            assert!(
+                decoded.update[0]
+                    .val
+                    .as_ref()
+                    .and_then(|v| v.value.as_ref())
+                    .is_some(),
+                "decoded update has no value: {e:?}"
+            );
             assert_eq!(decoded.encode_to_vec(), buf, "{e:?}");
         }
     }
@@ -533,14 +580,19 @@ mod tests {
     }
 
     #[test]
-    fn metric_without_a_template_is_an_encoder_error() {
+    fn metric_without_a_template_is_a_config_error() {
         let mut cfg = GnmiEncoderConfig::default();
         cfg.paths.insert("a".into(), "/a".into());
         let encoder = GnmiEncoder::new(&cfg).unwrap();
+        // The covered metric encodes, so the failure below is the template
+        // lookup and nothing else.
+        encoder
+            .encode_metric(&event("a", 1.0), &mut Vec::new())
+            .expect("a metric with a template must encode");
         let err = encoder
             .encode_metric(&event("b", 1.0), &mut Vec::new())
             .unwrap_err();
-        assert!(matches!(err, SondaError::Encoder(_)));
+        assert!(matches!(err, SondaError::Config(_)), "{err:?}");
         assert!(err.to_string().contains("no path template"), "{err}");
     }
 
@@ -612,6 +664,10 @@ mod tests {
         assert!(buf.is_empty());
     }
 
+    fn empty_enum_label() -> GnmiValueType {
+        GnmiValueType::Enum(BTreeMap::from([(1, String::new())]))
+    }
+
     fn enum_map() -> GnmiValueType {
         GnmiValueType::Enum(BTreeMap::from([
             (1, "UP".to_string()),
@@ -633,6 +689,7 @@ mod tests {
     #[case::string_huge(          Some(GnmiValueType::String), -1e300, Ok(Value::StringVal(format!("{}", -1e300))))]
     #[case::enum_mapped(          Some(enum_map()),            2.0,    Ok(Value::StringVal("DOWN".into())))]
     #[case::enum_unmapped(        Some(enum_map()),            3.0,    Err("no enum mapping"))]
+    #[case::enum_empty_string(    Some(empty_enum_label()),    1.0,    Ok(Value::StringVal(String::new())))]
     fn value_mapping(
         #[case] value_type: Option<GnmiValueType>,
         #[case] value: f64,
@@ -672,27 +729,50 @@ mod tests {
         }
     }
 
+    /// `config()` with one change applied.
+    fn with(change: impl FnOnce(&mut GnmiEncoderConfig)) -> GnmiEncoderConfig {
+        let mut cfg = config();
+        change(&mut cfg);
+        cfg
+    }
+
+    #[rustfmt::skip]
     #[rstest]
-    #[case::empty_origin(GnmiEncoderConfig { origin: String::new(), ..config() }, "origin")]
-    #[case::empty_enum(
-        GnmiEncoderConfig {
-            values: HashMap::from([("m".to_string(), GnmiValueType::Enum(BTreeMap::new()))]),
-            ..config()
-        },
-        "enum map"
-    )]
-    #[case::bad_path(GnmiEncoderConfig { path: Some("/a//b".into()), ..config() }, "empty path segment")]
-    #[case::bad_paths_entry(
-        GnmiEncoderConfig {
-            paths: HashMap::from([("m".to_string(), "/a[k".to_string())]),
-            ..config()
-        },
-        "unclosed"
-    )]
+    #[case::empty_origin(    with(|c| c.origin = String::new()),                                          "origin")]
+    #[case::empty_enum(      with(|c| { c.values.insert("m".into(), GnmiValueType::Enum(BTreeMap::new())); }), "enum map")]
+    #[case::bad_path(        with(|c| c.path = Some("/a//b".into())),                                     "empty path segment")]
+    #[case::bad_paths_entry( with(|c| { c.paths.insert("m".into(), "/a[k".into()); }),                     "unclosed")]
+    #[case::origin_prefix(   with(|c| c.path = Some("openconfig:/a/{name}".into())),                      "origin prefix")]
     fn new_rejects(#[case] cfg: GnmiEncoderConfig, #[case] needle: &str) {
         let err = GnmiEncoder::new(&cfg).err().expect("must be rejected");
         assert!(matches!(err, SondaError::Config(_)));
         assert!(err.to_string().contains(needle), "{err}");
+    }
+
+    /// Two bad entries, reported in metric-name order. Each `HashMap` gets
+    /// its own random iteration order, so building the config many times
+    /// would report both errors if `new` walked the maps unsorted.
+    #[test]
+    fn new_reports_the_same_error_for_the_same_config() {
+        for _ in 0..64 {
+            let cfg = with(|c| {
+                c.values
+                    .insert("b".into(), GnmiValueType::Enum(BTreeMap::new()));
+                c.values
+                    .insert("a".into(), GnmiValueType::Enum(BTreeMap::new()));
+                c.paths.insert("z".into(), "/z[k".into());
+                c.paths.insert("y".into(), "/y//x".into());
+            });
+            let err = GnmiEncoder::new(&cfg).err().expect("must be rejected");
+            assert!(err.to_string().contains("values.a:"), "{err}");
+
+            let cfg = with(|c| {
+                c.paths.insert("z".into(), "/z[k".into());
+                c.paths.insert("y".into(), "/y//x".into());
+            });
+            let err = GnmiEncoder::new(&cfg).err().expect("must be rejected");
+            assert!(err.to_string().contains("\"/y//x\""), "{err}");
+        }
     }
 
     /// Three events from a seeded generator, encoded twice by two encoders,
@@ -804,6 +884,27 @@ values:
     fn enum_with_an_extra_key_fails_to_deserialize() {
         let yaml = "values:\n  m:\n    enum: { 1: UP }\n    extra: 1\n";
         assert!(serde_yaml_ng::from_str::<GnmiEncoderConfig>(yaml).is_err());
+    }
+
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::values_typo("type: gnmi\npath: /a/{name}\nvaules:\n  m: uint\n", "vaules")]
+    #[case::origin_typo("type: gnmi\npath: /a/{name}\norgin: x\n", "orgin")]
+    #[case::drop_label_typo("type: gnmi\npath: /a/{name}\ndrop_label: [job]\n", "drop_label")]
+    fn unknown_encoder_keys_are_rejected(#[case] yaml: &str, #[case] key: &str) {
+        // Positive control: the same block without the typo parses, so the
+        // rejection below can only come from the misspelt key — and `type`
+        // itself is not treated as unknown.
+        let valid =
+            "type: gnmi\npath: /a/{name}\norigin: x\nvalues:\n  m: uint\ndrop_labels: [job]\n";
+        serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(valid)
+            .expect("a well-formed gnmi block must parse");
+
+        let err = serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(yaml)
+            .expect_err("a misspelt key must be rejected")
+            .to_string();
+        assert!(err.contains(key), "error should name {key:?}: {err}");
     }
 
     #[cfg(feature = "config")]

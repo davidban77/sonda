@@ -762,12 +762,72 @@
           "description": "gNMI `Notification` protobuf format.\n\nEncodes each metric event as one `Notification` with one `Update`\nwhose path is rendered from a template. See\n[`gnmi::GnmiEncoderConfig`] for the fields. Requires the `gnmi`\nfeature flag.",
           "type": "object",
           "properties": {
+            "drop_labels": {
+              "description": "Labels deliberately left out of the path.\n\nValidation requires every key in an entry's `labels` and\n`dynamic_labels` to be referenced by its template, be the\n`target_label`, or be listed here; series that differ only in an\nunlisted, unreferenced label would otherwise share one path.",
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "origin": {
+              "description": "`Path.origin` on every notification prefix. Default `\"openconfig\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "openconfig"
+            },
+            "path": {
+              "description": "Path template; `{name}` and `{<label>}` placeholders. Required unless every metric has a `paths:` entry.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "paths": {
+              "description": "Exact per-metric path overrides, keyed by metric name.",
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "default": {}
+            },
+            "target_label": {
+              "description": "Label whose value becomes `Path.target` on the notification prefix. Default `\"device\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "device"
+            },
             "type": {
               "type": "string",
               "const": "gnmi"
+            },
+            "values": {
+              "description": "Per-metric typed value; default `double`.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/GnmiValueType"
+              },
+              "default": {}
             }
           },
-          "$ref": "#/$defs/GnmiEncoderConfig",
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -2214,60 +2274,6 @@
           ]
         }
       ]
-    },
-    "GnmiEncoderConfig": {
-      "description": "Configuration for [`GnmiEncoder`]; the body of `encoder: { type: gnmi, ... }`.",
-      "type": "object",
-      "properties": {
-        "origin": {
-          "description": "`Path.origin` on every notification prefix. Default `\"openconfig\"`.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ],
-          "default": "openconfig"
-        },
-        "path": {
-          "description": "Path template; `{name}` and `{<label>}` placeholders. Required unless every metric has a `paths:` entry.",
-          "type": [
-            "string",
-            "null",
-            "number",
-            "boolean"
-          ],
-          "default": null
-        },
-        "paths": {
-          "description": "Exact per-metric path overrides, keyed by metric name.",
-          "type": "object",
-          "additionalProperties": {
-            "type": [
-              "string",
-              "number",
-              "boolean"
-            ]
-          },
-          "default": {}
-        },
-        "target_label": {
-          "description": "Label whose value becomes `Path.target` on the notification prefix. Default `\"device\"`.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ],
-          "default": "device"
-        },
-        "values": {
-          "description": "Per-metric typed value; default `double`.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/GnmiValueType"
-          },
-          "default": {}
-        }
-      }
     },
     "GnmiEnumWire": {
       "description": "`{ enum: { <i64>: <string>, ... } }`.",

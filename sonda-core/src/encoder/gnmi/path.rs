@@ -7,6 +7,9 @@
 //! # Template grammar
 //!
 //! - Segments are separated by `/`; a leading `/` is optional.
+//! - A template carries no `origin:` prefix; the origin comes from the
+//!   encoder's `origin` field. A colon elsewhere — a module-prefixed element
+//!   name or a key value — is literal text.
 //! - A segment is `name` or `name[key=value]` with one or more `[key=value]`
 //!   groups. Key names are literals.
 //! - An element name or a key value is either a literal or exactly one
@@ -47,8 +50,8 @@ impl PathTemplate {
     /// Parse a template string.
     ///
     /// Returns [`SondaError::Config`] naming the template and the problem for
-    /// an empty template, an empty segment, a malformed `[key=value]` group,
-    /// or a brace that is not a whole-part placeholder.
+    /// an empty template, an `origin:` prefix, an empty segment, a malformed
+    /// `[key=value]` group, or a brace that is not a whole-part placeholder.
     pub fn parse(template: &str) -> Result<Self, SondaError> {
         let invalid = |reason: &str| {
             SondaError::Config(ConfigError::invalid(format!(
@@ -56,6 +59,12 @@ impl PathTemplate {
             )))
         };
 
+        if let (Some(origin), _) = split_origin(template) {
+            return Err(invalid(&format!(
+                "the template carries an origin prefix {origin:?}; set the encoder's \
+                 `origin` field instead"
+            )));
+        }
         let body = template.strip_prefix('/').unwrap_or(template);
         if body.is_empty() {
             return Err(invalid("the path has no elements"));
@@ -123,6 +132,20 @@ fn resolve(part: &Part, name: &str, labels: &Labels) -> Result<String, SondaErro
                      {name:?} does not carry"
                 )))
             }),
+    }
+}
+
+/// Split an `origin:` prefix off a path string.
+///
+/// The origin is the text before the first `:/`, and only when that text
+/// contains no `/` or `[`, so a module-prefixed element name
+/// (`/openconfig-interfaces:interfaces`) or a colon inside a key value is never
+/// taken for one. Returns `(None, s)` when there is no prefix. Both
+/// [`PathTemplate::parse`] and [`parse_client_path`] use this one rule.
+fn split_origin(s: &str) -> (Option<&str>, &str) {
+    match s.find(":/") {
+        Some(i) if !s[..i].contains(['/', '[']) => (Some(&s[..i]), &s[i + 1..]),
+        _ => (None, s),
     }
 }
 
@@ -225,10 +248,8 @@ pub fn parse_client_path(s: &str) -> Result<proto::Path, SondaError> {
         )))
     };
 
-    let (origin, rest) = match s.find(":/") {
-        Some(i) if !s[..i].contains(['/', '[']) => (&s[..i], &s[i + 1..]),
-        _ => ("", s),
-    };
+    let (origin, rest) = split_origin(s);
+    let origin = origin.unwrap_or("");
     let body = rest.strip_prefix('/').unwrap_or(rest);
 
     let mut elem = Vec::new();
@@ -353,6 +374,10 @@ mod tests {
     #[case::empty_template(      "/",                                                         "m",            Err("no elements"))]
     #[case::mixed_braces(        "/a/x{ifName}",                                              "m",            Err("mixes text and braces"))]
     #[case::empty_placeholder(   "/a/{}",                                                     "m",            Err("malformed placeholder"))]
+    #[case::origin_prefix(       "openconfig:/interfaces/state",                              "m",            Err("origin prefix \"openconfig\""))]
+    #[case::module_prefixed_elem("/openconfig-interfaces:interfaces/state",                   "m",            Ok(vec![elem("openconfig-interfaces:interfaces", &[]), elem("state", &[])]))]
+    #[case::colon_in_key_value(  "/a[k=Ethernet1:1]",                                         "m",            Ok(vec![elem("a", &[("k", "Ethernet1:1")])]))]
+    #[case::colon_slash_in_key(  "/a[k=x:/y]",                                                "m",            Ok(vec![elem("a", &[("k", "x:/y")])]))]
     fn template_renders(
         #[case] template: &str,
         #[case] metric: &str,
