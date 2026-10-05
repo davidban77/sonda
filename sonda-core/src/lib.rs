@@ -255,6 +255,14 @@ pub enum EncoderError {
     #[error("{0}")]
     NotSupported(String),
 
+    /// The event cannot be encoded under a valid encoder configuration.
+    ///
+    /// The configuration itself passed validation; this particular event does
+    /// not satisfy it — for example it lacks a label the gnmi path template
+    /// needs, or carries a label the template neither references nor drops.
+    #[error("the event does not satisfy the encoder's configuration: {0}")]
+    EventRejected(String),
+
     /// A catch-all for encoder errors that do not fit other variants.
     ///
     /// Used for feature-gated encoders (protobuf, snappy) where preserving

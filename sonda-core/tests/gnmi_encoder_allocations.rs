@@ -11,7 +11,8 @@
 // The `--no-default-features` test job compiles this file to nothing.
 #![cfg(feature = "gnmi")]
 
-mod common;
+// No `mod common;` here: its own `#[cfg(test)]` tests would run in this binary
+// in parallel and allocate inside the counted windows.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;

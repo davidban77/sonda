@@ -187,6 +187,7 @@ pub struct GnmiEncoder {
     template: Option<PathTemplate>,
     overrides: HashMap<String, PathTemplate>,
     values: HashMap<String, GnmiValueType>,
+    drop_labels: Vec<String>,
     /// Encoded `Path` bytes per series, filled on first sight.
     paths: RwLock<HashMap<MetricKey, Arc<[u8]>>>,
 }
@@ -226,6 +227,7 @@ impl GnmiEncoder {
             template,
             overrides,
             values: cfg.values.clone(),
+            drop_labels: cfg.drop_labels.clone(),
             paths: RwLock::new(HashMap::new()),
         })
     }
@@ -233,6 +235,27 @@ impl GnmiEncoder {
     /// The template used for `metric`: its `paths:` entry if present, else `path`.
     pub(crate) fn template_for(&self, metric: &str) -> Option<&PathTemplate> {
         self.overrides.get(metric).or(self.template.as_ref())
+    }
+
+    /// The first of `keys` that is not covered by `template`: not referenced by
+    /// one of its placeholders (`{name}` is the metric name, never a label),
+    /// not the `target_label`, and not listed in `drop_labels`. `None` when
+    /// every key is covered.
+    ///
+    /// Validation and [`Encoder::encode_metric`] both apply this one rule, so
+    /// a configuration that validates never has an event rejected by it.
+    pub(crate) fn uncovered_label<'a>(
+        &self,
+        template: &PathTemplate,
+        mut keys: impl Iterator<Item = &'a str>,
+    ) -> Option<&'a str> {
+        keys.find(|key| {
+            *key != self.target_label
+                && !self.drop_labels.iter().any(|dropped| dropped == key)
+                && !template
+                    .placeholders()
+                    .any(|p| p != path::NAME_PLACEHOLDER && p == *key)
+        })
     }
 
     /// Encoded `Path` bytes for the event's series, rendering and caching them on first sight.
@@ -254,6 +277,13 @@ impl GnmiEncoder {
                  or encoder.paths.{name}"
             )))
         })?;
+        if let Some(label) = self.uncovered_label(template, event.labels.iter().map(|(k, _)| k)) {
+            return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
+                "metric {name:?} carries label `{label}`, which the gnmi path template does \
+                 not reference; reference it, make it the target_label, or list it in \
+                 drop_labels"
+            ))));
+        }
         let bytes: Arc<[u8]> = template.render(name, &event.labels)?.encode_to_vec().into();
         self.paths
             .write()
@@ -351,9 +381,16 @@ impl Encoder for GnmiEncoder {
     /// The prefix carries `origin` and, when the event has the target label,
     /// `target`. Returns [`SondaError::Config`] when the metric has no
     /// template, which is a defect of the configuration rather than of this
-    /// event. Returns [`SondaError::Encoder`] when the timestamp predates the
-    /// epoch or exceeds `i64` nanoseconds, a template placeholder names a
-    /// label this event lacks, or an `enum` value has no mapping.
+    /// event. Returns [`EncoderError::EventRejected`] when a template
+    /// placeholder names a label this event lacks, or the event carries a
+    /// label the template does not reference that is neither the
+    /// `target_label` nor listed in `drop_labels`. Returns another
+    /// [`SondaError::Encoder`] variant when the timestamp predates the epoch or
+    /// exceeds `i64` nanoseconds, or an `enum` value has no mapping.
+    ///
+    /// The label checks run only when a series is first seen and its path is
+    /// rendered and cached; later events for the same series skip them, so
+    /// they cost nothing in steady state.
     ///
     /// The output is not length-prefixed, so it is only usable by a sink that
     /// takes one notification per write. Pairing with any other sink is not
@@ -582,7 +619,7 @@ mod tests {
     #[test]
     fn metric_without_a_template_is_a_config_error() {
         let mut cfg = GnmiEncoderConfig::default();
-        cfg.paths.insert("a".into(), "/a".into());
+        cfg.paths.insert("a".into(), "/a[if={ifName}]".into());
         let encoder = GnmiEncoder::new(&cfg).unwrap();
         // The covered metric encodes, so the failure below is the template
         // lookup and nothing else.
@@ -597,13 +634,57 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_naming_a_missing_label_is_an_encoder_error() {
+    fn placeholder_naming_a_missing_label_rejects_the_event() {
         let encoder = GnmiEncoder::new(&config()).unwrap();
         let err = encoder
             .encode_metric(&event_at("m", 1.0, &[("device", "d")], 1), &mut Vec::new())
             .unwrap_err();
-        assert!(matches!(err, SondaError::Encoder(_)));
+        assert!(
+            matches!(err, SondaError::Encoder(EncoderError::EventRejected(_))),
+            "{err:?}"
+        );
         assert!(err.to_string().contains("{ifName}"), "{err}");
+    }
+
+    /// The baseline event (`device` is the target, `ifName` is referenced)
+    /// encodes, so each rejection below comes from the one label added.
+    #[test]
+    fn event_with_an_uncovered_label_is_rejected_unless_dropped() {
+        let labels = [("device", "rtr-1"), ("ifName", "Gi0/0/0"), ("job", "edge")];
+        let encoder = GnmiEncoder::new(&config()).unwrap();
+        encoder
+            .encode_metric(&event("m", 1.0), &mut Vec::new())
+            .expect("the baseline event must encode");
+
+        let err = encoder
+            .encode_metric(&event_at("m", 1.0, &labels, 1), &mut Vec::new())
+            .unwrap_err();
+        assert!(
+            matches!(err, SondaError::Encoder(EncoderError::EventRejected(_))),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("label `job`"), "{err}");
+
+        let dropping = GnmiEncoder::new(&with(|c| c.drop_labels.push("job".into()))).unwrap();
+        dropping
+            .encode_metric(&event_at("m", 1.0, &labels, 1), &mut Vec::new())
+            .expect("a label listed in drop_labels is allowed");
+    }
+
+    /// `device` passes only as the target label: move the target and the
+    /// same event is rejected for carrying it.
+    #[test]
+    fn target_label_is_the_only_reason_device_is_allowed() {
+        GnmiEncoder::new(&config())
+            .unwrap()
+            .encode_metric(&event("m", 1.0), &mut Vec::new())
+            .expect("`device` is allowed while it is the target label");
+
+        let encoder = GnmiEncoder::new(&with(|c| c.target_label = "host".into())).unwrap();
+        let err = encoder
+            .encode_metric(&event("m", 1.0), &mut Vec::new())
+            .unwrap_err();
+        assert!(err.to_string().contains("label `device`"), "{err}");
     }
 
     #[test]

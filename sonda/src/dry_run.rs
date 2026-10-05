@@ -794,6 +794,21 @@ fn to_compiled_scenario_dto<'a>(
 mod tests {
     use super::*;
 
+    /// The gnmi arm, not the `unknown (...)` fallback, renders a gnmi encoder.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn encoder_display_gnmi_is_not_the_unknown_fallback() {
+        let config = sonda_core::encoder::EncoderConfig::Gnmi(
+            sonda_core::encoder::gnmi::GnmiEncoderConfig {
+                origin: "openconfig".to_string(),
+                ..Default::default()
+            },
+        );
+        let shown = encoder_display(&config);
+        assert!(shown.starts_with("gnmi ("), "{shown}");
+        assert!(!shown.contains("unknown ("), "{shown}");
+    }
+
     /// Build the printer's input by running the REAL expansion pipeline.
     ///
     /// Not a transcription of it: these tests exist to pin what `--dry-run`

@@ -95,8 +95,8 @@ impl PathTemplate {
     /// Render into a `proto::Path` for this series. Allocates; called once per series.
     ///
     /// The returned path has empty `origin` and `target`. Returns
-    /// [`SondaError::Encoder`] when a placeholder names a label that `labels`
-    /// does not contain.
+    /// [`EncoderError::EventRejected`] when a placeholder names a label that
+    /// `labels` does not contain.
     pub fn render(&self, name: &str, labels: &Labels) -> Result<proto::Path, SondaError> {
         let mut elem = Vec::with_capacity(self.segments.len());
         for segment in &self.segments {
@@ -127,7 +127,7 @@ fn resolve(part: &Part, name: &str, labels: &Labels) -> Result<String, SondaErro
             .find(|(k, _)| *k == p.as_str())
             .map(|(_, v)| v.to_string())
             .ok_or_else(|| {
-                SondaError::Encoder(EncoderError::Other(format!(
+                SondaError::Encoder(EncoderError::EventRejected(format!(
                     "gnmi path template placeholder {{{p}}} names a label that metric \
                      {name:?} does not carry"
                 )))
@@ -402,11 +402,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_label_is_an_encoder_error_and_bad_grammar_is_a_config_error() {
+    fn missing_label_rejects_the_event_and_bad_grammar_is_a_config_error() {
         let template = PathTemplate::parse("/a[k={nope}]").unwrap();
         assert!(matches!(
             template.render("m", &labels()),
-            Err(SondaError::Encoder(_))
+            Err(SondaError::Encoder(EncoderError::EventRejected(_)))
         ));
         assert!(matches!(
             PathTemplate::parse("/a[k"),

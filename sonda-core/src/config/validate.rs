@@ -493,6 +493,12 @@ fn reject_gnmi_encoder(
 /// - Every key in `labels` and `dynamic_labels` is referenced by the template,
 ///   is the encoder's `target_label`, or is listed in its `drop_labels`.
 ///   Otherwise series that differ only in that label would share one path.
+/// - Every `cardinality_spikes` label is covered the same way. It cannot be
+///   referenced as a placeholder, so in practice it is the target label, a
+///   referenced static label of the same key, or listed in `drop_labels`.
+/// - The coverage rule is [`GnmiEncoder`]'s own, which the encoder applies to
+///   each new series at encode time, so a configuration that validates never
+///   has an event rejected by it.
 ///
 /// Every failure is a [`SondaError::Config`].
 ///
@@ -569,10 +575,6 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         ))));
     }
 
-    let referenced: std::collections::BTreeSet<&str> = template
-        .placeholders()
-        .filter(|p| *p != NAME_PLACEHOLDER)
-        .collect();
     let mut entry_labels: Vec<&str> = config
         .labels
         .iter()
@@ -588,15 +590,28 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         .collect();
     entry_labels.sort_unstable();
     entry_labels.dedup();
-    if let Some(unreferenced) = entry_labels.into_iter().find(|key| {
-        !referenced.contains(key)
-            && *key != cfg.target_label
-            && !cfg.drop_labels.iter().any(|dropped| dropped == key)
-    }) {
+    if let Some(unreferenced) = encoder.uncovered_label(template, entry_labels.into_iter()) {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for metric {:?} does not reference label `{unreferenced}`, \
              so series that differ only in it would share one path; reference it as \
              {{{unreferenced}}} or list it in the encoder's drop_labels",
+            config.name
+        ))));
+    }
+
+    let mut spike_labels: Vec<&str> = config
+        .cardinality_spikes
+        .iter()
+        .flatten()
+        .map(|spike| spike.label.as_str())
+        .collect();
+    spike_labels.sort_unstable();
+    spike_labels.dedup();
+    if let Some(spiked) = encoder.uncovered_label(template, spike_labels.into_iter()) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "metric {:?} has cardinality_spikes label `{spiked}`, which events carry while \
+             the spike window is open but the gnmi path template cannot reference; list it \
+             in the encoder's drop_labels",
             config.name
         ))));
     }
@@ -2378,6 +2393,26 @@ generator:
         );
         config.base.dynamic_labels = Some(vec![counter_label("pod")]);
         validate_config(&config).expect("a dynamic label is on every event");
+    }
+
+    /// Events carry a spike label while its window is open, and the template
+    /// may not reference it, so it must be dropped.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_spike_label_must_be_dropped() {
+        let mut config = gnmi_config(Some("/a[if={ifName}]/{name}"));
+        validate_config(&config).expect("baseline without spikes must validate");
+
+        config.base.cardinality_spikes = Some(vec![spike("burst")]);
+        let msg = err_msg(validate_config(&config));
+        assert!(
+            msg.contains("cardinality_spikes label `burst`"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("drop_labels"), "got: {msg}");
+
+        gnmi_cfg(&mut config).drop_labels.push("burst".to_string());
+        validate_config(&config).expect("a dropped spike label is allowed");
     }
 
     #[cfg(feature = "gnmi")]
