@@ -126,18 +126,32 @@ pub enum WriteCommand {
     },
 }
 
+/// Most drained write buffers [`TickOutput`] keeps for reuse.
+const SPARE_BUFFERS: usize = 64;
+
 /// Buffer of pending sink writes emitted by a tick callback.
 #[derive(Default)]
 pub struct TickOutput {
     pub writes: Vec<WriteCommand>,
+    /// Cleared buffers returned by [`drain_writes`], capacity kept, which
+    /// [`push_metric`](Self::push_metric) hands back to the caller in place of
+    /// the bytes it queues.
+    ///
+    /// Holds at most [`SPARE_BUFFERS`]. Capacity is never trimmed, so the
+    /// retained memory is bounded by `SPARE_BUFFERS` times the longest
+    /// encoded write seen.
+    spare: Vec<Vec<u8>>,
 }
 
 impl TickOutput {
+    /// Drop any queued writes. The spare buffers are kept.
     pub fn clear(&mut self) {
         self.writes.clear();
     }
 
-    /// Queue one encoded metric event, taking the bytes out of `buf`.
+    /// Queue one encoded metric event, moving the bytes out of `buf` and
+    /// leaving a recycled spare buffer (or an empty one when none is spare)
+    /// in its place, so the caller's next encode reuses its capacity.
     ///
     /// `wants_events` is [`Sink::wants_metric_events`], read once by the caller
     /// before its loop. When it is false this queues a plain
@@ -146,7 +160,7 @@ impl TickOutput {
     /// single-event metric path goes through here so the choice has one
     /// definition.
     pub fn push_metric(&mut self, wants_events: bool, event: &MetricEvent, buf: &mut Vec<u8>) {
-        let bytes = std::mem::take(buf);
+        let bytes = std::mem::replace(buf, self.spare.pop().unwrap_or_default());
         if wants_events {
             self.writes.push(WriteCommand::Metric {
                 event: event.clone(),
@@ -292,6 +306,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
     let mut events_buf: Vec<MetricEvent> = Vec::with_capacity(16);
     let mut tick_output = TickOutput {
         writes: Vec::with_capacity(16),
+        spare: Vec::new(),
     };
 
     loop {
@@ -661,20 +676,36 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
     Ok(())
 }
 
+/// Write every queued command to `sink` in order, stopping at the first error.
+///
+/// Each buffer whose write succeeded is cleared and kept in `output`'s spare
+/// list while it holds fewer than [`SPARE_BUFFERS`]; the rest are dropped. The
+/// buffer whose write failed is dropped with the error.
 async fn drain_writes(
     output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
 ) -> Result<Option<bool>, SondaError> {
     let mut delivered: Option<bool> = None;
     for cmd in output.writes.drain(..) {
-        match cmd {
-            WriteCommand::Bytes(buf) => sink.write(&buf).await?,
-            WriteCommand::LogEvent { event, bytes } => sink.write_log_event(&event, &bytes).await?,
-            WriteCommand::Metric { event, bytes } => {
-                sink.write_metric_event(&event, &bytes).await?
+        let mut bytes = match cmd {
+            WriteCommand::Bytes(bytes) => {
+                sink.write(&bytes).await?;
+                bytes
             }
-        }
+            WriteCommand::LogEvent { event, bytes } => {
+                sink.write_log_event(&event, &bytes).await?;
+                bytes
+            }
+            WriteCommand::Metric { event, bytes } => {
+                sink.write_metric_event(&event, &bytes).await?;
+                bytes
+            }
+        };
         delivered = Some(sink.last_write_delivered());
+        if output.spare.len() < SPARE_BUFFERS {
+            bytes.clear();
+            output.spare.push(bytes);
+        }
     }
     Ok(delivered)
 }
@@ -1896,6 +1927,127 @@ mod tests {
             *writes.lock().unwrap(),
             vec![b"first".to_vec()],
             "only writes before the error must reach the sink"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_metric_hands_back_a_recycled_buffer() {
+        let (mut sink, writes) = shared_sink();
+        let mut output = TickOutput::default();
+        let event = metric_event("ifHCInOctets", 1.0);
+
+        let mut buf = vec![b'x'; 200];
+        output.push_metric(false, &event, &mut buf);
+        drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+        {
+            let captured = writes.lock().expect("shared sink mutex poisoned");
+            assert_eq!(
+                captured.len(),
+                1,
+                "the first drain must reach the sink exactly once"
+            );
+            assert_eq!(
+                captured[0].len(),
+                200,
+                "the first drain must write the 200-byte buffer"
+            );
+        }
+
+        let mut buf = Vec::new();
+        output.push_metric(false, &event, &mut buf);
+        assert!(
+            buf.capacity() >= 200,
+            "push_metric must hand back the drained buffer's capacity; got {}",
+            buf.capacity()
+        );
+        assert!(buf.is_empty(), "the recycled buffer must come back cleared");
+    }
+
+    #[tokio::test]
+    async fn spare_list_is_bounded() {
+        let (mut sink, writes) = shared_sink();
+        let mut output = TickOutput::default();
+        let event = metric_event("ifHCInOctets", 1.0);
+        for _ in 0..1_000 {
+            let mut buf = b"line".to_vec();
+            output.push_metric(false, &event, &mut buf);
+        }
+        drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+
+        assert_eq!(
+            writes.lock().expect("shared sink mutex poisoned").len(),
+            1_000,
+            "all 1 000 writes must reach the sink before the spare list is checked"
+        );
+        assert_eq!(
+            output.spare.len(),
+            64,
+            "the spare list must keep at most 64 drained buffers"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_keeps_the_spare_list() {
+        let mut sink = null_sink();
+        let mut output = TickOutput::default();
+        output.writes.push(WriteCommand::Bytes(b"line".to_vec()));
+        drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+        assert_eq!(
+            output.spare.len(),
+            1,
+            "the drain must leave its buffer on the spare list before clear() is checked"
+        );
+
+        output.writes.push(WriteCommand::Bytes(b"pending".to_vec()));
+        output.clear();
+        assert!(output.writes.is_empty(), "clear() must drop queued writes");
+        assert_eq!(output.spare.len(), 1, "clear() must keep the spare list");
+    }
+
+    #[tokio::test]
+    async fn write_error_does_not_recycle() {
+        let mut output = TickOutput::default();
+        output.writes.push(WriteCommand::Bytes(b"seed".to_vec()));
+        drain_writes(&mut output, &mut null_sink())
+            .await
+            .expect("seeding drain must succeed");
+        assert_eq!(
+            output.spare.len(),
+            1,
+            "the seeding drain must leave one spare buffer before the error path is checked"
+        );
+
+        // Fails on its first write, so no command in this drain completes.
+        let (mut sink, writes) = shared_sink_failing(0);
+        output.writes.push(WriteCommand::Bytes(b"first".to_vec()));
+        output.writes.push(WriteCommand::Bytes(b"second".to_vec()));
+        let result = drain_writes(&mut output, &mut sink).await;
+
+        assert!(
+            result.is_err(),
+            "sink error must propagate from drain_writes"
+        );
+        assert!(
+            writes
+                .lock()
+                .expect("shared sink mutex poisoned")
+                .is_empty(),
+            "no write may reach the failing sink"
+        );
+        assert!(
+            output.writes.is_empty(),
+            "the queue must be empty after the error"
+        );
+        assert_eq!(
+            output.spare.len(),
+            1,
+            "a failed write must not put its buffer on the spare list"
         );
     }
 
