@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::model::log::LogEvent;
+use crate::model::metric::MetricEvent;
 use crate::sink::memory::CapturedRing;
 use crate::SondaError;
 
@@ -57,6 +58,33 @@ pub trait Sink: Send + Sync {
     async fn write_log_event(
         &mut self,
         _event: &LogEvent,
+        encoded: &[u8],
+    ) -> Result<(), SondaError> {
+        self.write(encoded).await
+    }
+
+    /// Whether this sink wants metric events delivered through
+    /// [`Sink::write_metric_event`] instead of [`Sink::write`].
+    ///
+    /// Defaults to `false`, and a sink that overrides `write_metric_event` must
+    /// override this too. Schedule runners call it once before their loop; when
+    /// it is `false` they keep pushing plain byte writes, so a sink that does
+    /// not need the series identity pays nothing per event. Not `async`, so
+    /// this call allocates no future.
+    fn wants_metric_events(&self) -> bool {
+        false
+    }
+
+    /// Write an encoded metric event with its originating context.
+    ///
+    /// Reached only when [`Sink::wants_metric_events`] returns `true`. Every
+    /// path that encodes a single [`MetricEvent`] routes through here: the
+    /// metric, histogram and summary tick runners, the gate-close marker
+    /// emitter, and `emit_metric`. The default body forwards `encoded` to
+    /// [`Sink::write`] and drops the event.
+    async fn write_metric_event(
+        &mut self,
+        _event: &MetricEvent,
         encoded: &[u8],
     ) -> Result<(), SondaError> {
         self.write(encoded).await

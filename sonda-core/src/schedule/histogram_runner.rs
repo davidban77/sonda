@@ -8,9 +8,7 @@ use crate::config::HistogramScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::histogram::HistogramGenerator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use crate::schedule::core_loop::{
-    self, GateContext, TickContext, TickOutput, TickResult, WriteCommand,
-};
+use crate::schedule::core_loop::{self, GateContext, TickContext, TickOutput, TickResult};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -98,6 +96,9 @@ pub async fn run_with_sink_gated(
     // Pre-allocate encode buffer.
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
+    // Asked once, not per tick; see `TickOutput::push_metric`.
+    let wants_events = sink.wants_metric_events();
+
     let mut tick_fn = |ctx: &TickContext<'_>,
                        output: &mut TickOutput,
                        events_buf: &mut Vec<MetricEvent>|
@@ -139,9 +140,7 @@ pub async fn run_with_sink_gated(
             buf.clear();
             encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
-            output
-                .writes
-                .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+            output.push_metric(wants_events, &event, &mut buf);
             events_buf.push(event);
         }
 
@@ -169,9 +168,7 @@ pub async fn run_with_sink_gated(
             buf.clear();
             encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
-            output
-                .writes
-                .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+            output.push_metric(wants_events, &event, &mut buf);
             events_buf.push(event);
         }
 
@@ -199,9 +196,7 @@ pub async fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&sum_event, &mut buf)?;
         total_bytes += buf.len() as u64;
-        output
-            .writes
-            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+        output.push_metric(wants_events, &sum_event, &mut buf);
         events_buf.push(sum_event);
 
         let count_event = MetricEvent::from_parts(
@@ -213,9 +208,7 @@ pub async fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&count_event, &mut buf)?;
         total_bytes += buf.len() as u64;
-        output
-            .writes
-            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
+        output.push_metric(wants_events, &count_event, &mut buf);
         events_buf.push(count_event);
 
         Ok(TickResult {
@@ -328,6 +321,81 @@ mod tests {
             metric_type: None,
             help: None,
         }
+    }
+
+    // ---- Routing through the metric-event hook ------------------------------
+
+    /// Every series a histogram tick emits reaches an opt-in sink with its
+    /// identity: each finite bucket, `+Inf`, `_sum` and `_count`.
+    #[tokio::test]
+    async fn opt_in_sink_receives_every_bucket_inf_sum_and_count() {
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+
+        let config = make_config(50.0, "200ms", Some(vec![0.1, 0.5, 1.0]));
+        let (mut sink, seen) = routing_probe(true);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("histogram run must succeed");
+
+        let seen = seen.lock().expect("probe mutex poisoned");
+        let named = |suffix: &str| {
+            let name = format!("http_request_duration_seconds{suffix}");
+            seen.events
+                .iter()
+                .filter(|e| e.name == name)
+                .collect::<Vec<_>>()
+        };
+        let (buckets, sums, counts) = (named("_bucket"), named("_sum"), named("_count"));
+
+        // Vacuity guard: at least one full tick must have arrived.
+        assert!(
+            !sums.is_empty(),
+            "no histogram tick reached the opt-in sink"
+        );
+        assert_eq!(seen.plain_writes, 0, "no series may fall back to write");
+        assert_eq!(
+            seen.events.len(),
+            buckets.len() + sums.len() + counts.len(),
+            "every delivered event must be a bucket, _sum or _count series"
+        );
+        assert_eq!(counts.len(), sums.len(), "one _count per tick");
+        assert_eq!(
+            buckets.len(),
+            4 * sums.len(),
+            "three finite buckets plus +Inf per tick"
+        );
+        let mut le: Vec<&str> = buckets.iter().filter_map(|e| e.label("le")).collect();
+        le.sort_unstable();
+        le.dedup();
+        assert_eq!(
+            le.len(),
+            4,
+            "three distinct finite bounds plus +Inf: {le:?}"
+        );
+        assert!(le.contains(&"+Inf"), "the +Inf bucket must arrive: {le:?}");
+        assert!(
+            sums.iter().chain(&counts).all(|e| e.label("le").is_none()),
+            "_sum and _count carry no le label"
+        );
+    }
+
+    /// A histogram never hands the event to a sink that did not opt in.
+    #[tokio::test]
+    async fn sink_that_does_not_opt_in_receives_only_plain_writes() {
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+
+        let config = make_config(50.0, "200ms", Some(vec![0.1, 0.5, 1.0]));
+        let (mut sink, seen) = routing_probe(false);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("histogram run must succeed");
+
+        let seen = seen.lock().expect("probe mutex poisoned");
+        assert!(seen.plain_writes > 0, "the run must have written something");
+        assert!(
+            seen.events.is_empty(),
+            "a sink that does not opt in must not be handed the event"
+        );
     }
 
     // ---- Run completes without error ----------------------------------------
