@@ -11,9 +11,11 @@
 //! No production caller reaches `sink_write_metric_event/default`: the runners
 //! and `emit_metric` call `write_metric_event` only when `wants_metric_events`
 //! is true, and `MemorySink` returns false. The row is a reference for the
-//! second boxed future that check avoids, not a cost a plain sink pays. The CI allocation gate lives separately
-//! as `#[test] fn`s in `tests/metric_path_allocations.rs`; this bench is the
-//! developer-facing profiler and asserts no timings.
+//! second boxed future that check avoids, not a cost a plain sink pays.
+//!
+//! The CI allocation gate lives separately as `#[test] fn`s in
+//! `tests/metric_path_allocations.rs`; this bench is the developer-facing
+//! profiler and asserts no timings.
 //!
 //! Run with `cargo bench -p sonda-core --bench metric_dispatch`.
 
