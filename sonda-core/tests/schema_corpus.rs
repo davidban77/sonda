@@ -49,7 +49,8 @@
     feature = "http",
     feature = "kafka",
     feature = "otlp",
-    feature = "remote-write"
+    feature = "remote-write",
+    feature = "gnmi"
 ))]
 
 use std::path::{Path, PathBuf};
@@ -102,11 +103,15 @@ fn yaml_to_json(value: serde_yaml_ng::Value) -> serde_json::Value {
         Y::Mapping(map) => serde_json::Value::Object(
             map.into_iter()
                 .map(|(k, v)| {
-                    // Non-string keys cannot appear in a scenario file, and
-                    // rendering one as its debug form would silently produce
-                    // a key no schema matches. Fail loudly instead.
+                    // Integer keys (the gnmi encoder's `enum: { 1: UP }` map)
+                    // become their decimal text, as a YAML language server
+                    // renders them. Any other non-string key cannot appear in
+                    // a scenario file, and rendering one as its debug form
+                    // would silently produce a key no schema matches. Fail
+                    // loudly instead.
                     let key = match k {
                         Y::String(s) => s,
+                        Y::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
                         other => panic!("scenario YAML must use string keys, found {other:?}"),
                     };
                     (key, yaml_to_json(v))
@@ -672,6 +677,106 @@ scenarios:
             errors.join("\n")
         );
     }
+}
+
+/// A `gnmi` encoder block with every field, including the integer-keyed
+/// `enum:` value map. No file in the corpus roots uses the `gnmi` encoder, so
+/// this is the positive control for its schema.
+#[test]
+fn the_schema_accepts_a_gnmi_encoder() {
+    const YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+    path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+    paths:
+      oper_status: "/interfaces/interface[name={ifName}]/state/oper-status"
+    values:
+      in_octets: uint
+      oper_status:
+        enum: { 1: UP, 2: DOWN }
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      device: rtr-1
+      ifName: Gi0/0/0
+"#;
+    // The parser accepts it, so the schema must too.
+    sonda_core::compiler::parse::parse(YAML).expect("the parser accepts the gnmi encoder");
+
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(YAML).expect("loads");
+    let json = yaml_to_json(value);
+    let errors: Vec<String> = validator()
+        .iter_errors(&json)
+        .map(|e| format!("  at {}: {e}", e.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the schema rejected a valid gnmi encoder:\n{}",
+        errors.join("\n")
+    );
+}
+
+/// `values:` entries are a closed set of names or an `enum:` map. `float` is
+/// the plausible mistake (it is a deprecated gNMI `TypedValue` field).
+#[test]
+fn the_schema_rejects_an_unknown_gnmi_value_type() {
+    assert_rejected(
+        "values.in_octets: float",
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{name}"
+    values:
+      in_octets: float
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+}
+
+/// `enum:` keys are integers. A name in key position is the mistake of
+/// writing the map the wrong way round.
+#[test]
+fn the_schema_rejects_a_gnmi_enum_map_with_non_integer_keys() {
+    assert_rejected(
+        "enum: { UP: 1 }",
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{name}"
+    values:
+      oper_status:
+        enum: { UP: 1 }
+scenarios:
+  - signal_type: metrics
+    name: oper_status
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
 }
 
 /// The committed schema is a build output. This is the same comparison

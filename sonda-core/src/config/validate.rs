@@ -328,6 +328,9 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
     validate_encoder_precision(&config.encoder)?;
 
+    #[cfg(feature = "gnmi")]
+    validate_gnmi_encoder(config)?;
+
     validate_sink_config(&config.base.sink)?;
 
     Ok(())
@@ -446,7 +449,65 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
         crate::encoder::EncoderConfig::RemoteWriteDisabled { .. } => None,
         #[cfg(not(feature = "otlp"))]
         crate::encoder::EncoderConfig::OtlpDisabled { .. } => None,
+        #[cfg(feature = "gnmi")]
+        crate::encoder::EncoderConfig::Gnmi(_) => None,
+        #[cfg(not(feature = "gnmi"))]
+        crate::encoder::EncoderConfig::GnmiDisabled { .. } => None,
     }
+}
+
+/// Validate a metrics entry's `gnmi` encoder against the entry.
+///
+/// Checks:
+/// - `origin` is non-empty, every `enum` map is non-empty, and `path` and
+///   every `paths:` entry parse as templates (via
+///   [`GnmiEncoder::new`](crate::encoder::gnmi::GnmiEncoder::new)).
+/// - A template exists for the entry's metric name: its `paths:` entry or `path`.
+/// - Every placeholder in that template is `name` or a key of the entry's
+///   `labels`, `dynamic_labels` or `cardinality_spikes`.
+///
+/// Returns `Ok(())` for any other encoder.
+#[cfg(feature = "gnmi")]
+pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> {
+    use crate::encoder::gnmi::{path::NAME_PLACEHOLDER, GnmiEncoder};
+
+    let crate::encoder::EncoderConfig::Gnmi(ref cfg) = config.encoder else {
+        return Ok(());
+    };
+    let encoder = GnmiEncoder::new(cfg)?;
+    let template = encoder.template_for(&config.name).ok_or_else(|| {
+        SondaError::Config(ConfigError::invalid(format!(
+            "gnmi encoder has no path template for metric {:?}: set encoder.path or \
+             encoder.paths.{}",
+            config.name, config.name
+        )))
+    })?;
+
+    let known = |placeholder: &str| {
+        placeholder == NAME_PLACEHOLDER
+            || config
+                .labels
+                .as_ref()
+                .is_some_and(|labels| labels.contains_key(placeholder))
+            || config
+                .dynamic_labels
+                .iter()
+                .flatten()
+                .any(|dl| dl.key == placeholder)
+            || config
+                .cardinality_spikes
+                .iter()
+                .flatten()
+                .any(|spike| spike.label == placeholder)
+    };
+    if let Some(unknown) = template.placeholders().find(|p| !known(p)) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} uses placeholder {{{unknown}}}, which is \
+             neither {{name}} nor a label of this entry",
+            config.name
+        ))));
+    }
+    Ok(())
 }
 
 /// Validate the optional jitter amplitude for semantic correctness.
@@ -2104,6 +2165,145 @@ generator:
             metric_type: None,
             help: None,
         }
+    }
+
+    // ---- validate_config: gnmi encoder ---------------------------------------
+
+    #[cfg(feature = "gnmi")]
+    fn gnmi_config(path: Option<&str>) -> ScenarioConfig {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.name = "in_octets".to_string();
+        config.base.labels = Some(std::collections::HashMap::from([
+            ("device".to_string(), "rtr-1".to_string()),
+            ("ifName".to_string(), "Gi0/0/0".to_string()),
+        ]));
+        config.encoder = EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+            path: path.map(str::to_string),
+            ..Default::default()
+        });
+        config
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_template_using_entry_labels_and_name_is_accepted() {
+        let config = gnmi_config(Some(
+            "/interfaces/interface[name={ifName}]/state/counters/{name}",
+        ));
+        validate_config(&config).expect("known placeholders must validate");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_unknown_placeholder_is_rejected_and_named() {
+        let config = gnmi_config(Some("/interfaces/interface[name={ifname}]/state"));
+        let msg = err_msg(validate_config(&config));
+        assert!(
+            msg.contains("{ifname}"),
+            "error must name the placeholder: {msg}"
+        );
+        assert!(
+            msg.contains("in_octets"),
+            "error must name the metric: {msg}"
+        );
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_config_without_a_template_for_the_metric_is_rejected() {
+        let mut config = gnmi_config(None);
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("no path template"), "got: {msg}");
+        assert!(
+            msg.contains("in_octets"),
+            "error must name the metric: {msg}"
+        );
+
+        // A `paths:` entry for another metric does not cover this one.
+        let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
+            unreachable!()
+        };
+        cfg.paths.insert("out_octets".to_string(), "/a".to_string());
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_paths_entry_alone_is_enough_and_is_checked() {
+        let mut config = gnmi_config(None);
+        let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
+            unreachable!()
+        };
+        cfg.paths.insert(
+            "in_octets".to_string(),
+            "/a[k={device}]/{missing}".to_string(),
+        );
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("{missing}"), "got: {msg}");
+
+        let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
+            unreachable!()
+        };
+        cfg.paths
+            .insert("in_octets".to_string(), "/a[k={device}]".to_string());
+        validate_config(&config).expect("paths entry with known labels must validate");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_dynamic_label_and_spike_keys_are_known_placeholders() {
+        let mut config = gnmi_config(Some("/a[pod={pod}][burst={burst}]/{name}"));
+        assert!(
+            validate_config(&config).is_err(),
+            "neither key is declared yet"
+        );
+
+        config.base.dynamic_labels = Some(vec![DynamicLabelConfig {
+            key: "pod".to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 3,
+            },
+        }]);
+        config.base.cardinality_spikes = Some(vec![CardinalitySpikeConfig {
+            label: "burst".to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 5,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        }]);
+        validate_config(&config).expect("dynamic and spike keys are known placeholders");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rstest::rstest]
+    #[case::empty_origin(crate::encoder::gnmi::GnmiEncoderConfig {
+        origin: String::new(),
+        path: Some("/a".into()),
+        ..Default::default()
+    }, "origin")]
+    #[case::empty_enum(crate::encoder::gnmi::GnmiEncoderConfig {
+        path: Some("/a".into()),
+        values: std::collections::HashMap::from([(
+            "in_octets".to_string(),
+            crate::encoder::gnmi::GnmiValueType::Enum(Default::default()),
+        )]),
+        ..Default::default()
+    }, "enum map")]
+    #[case::bad_grammar(crate::encoder::gnmi::GnmiEncoderConfig {
+        path: Some("/a[k".into()),
+        ..Default::default()
+    }, "unclosed")]
+    fn gnmi_encoder_field_errors_are_rejected(
+        #[case] cfg: crate::encoder::gnmi::GnmiEncoderConfig,
+        #[case] needle: &str,
+    ) {
+        let mut config = gnmi_config(None);
+        config.encoder = EncoderConfig::Gnmi(cfg);
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains(needle), "got: {msg}");
     }
 
     // ---- validate_config: encoder precision validation ------------------------
