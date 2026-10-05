@@ -210,8 +210,10 @@ fn plain_sink_pays_no_extra_allocation_per_event() {
     let per_event = plain_cost();
     assert!(
         per_event < 1.6,
-        "a sink that does not want metric events must keep its original \
-         per-event cost: {per_event:.3} allocations per event, budget < 1.6"
+        "the plain metric write path is over budget: {per_event:.3} allocations \
+         per event, budget < 1.6. About 2.0 means a sink that does not opt in \
+         is reaching the default write_metric_event; about 5.0 means \
+         push_metric no longer hands back a recycled encode buffer"
     );
 }
 

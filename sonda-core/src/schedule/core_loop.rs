@@ -137,13 +137,25 @@ pub struct TickOutput {
     /// [`push_metric`](Self::push_metric) hands back to the caller in place of
     /// the bytes it queues.
     ///
-    /// Holds at most [`SPARE_BUFFERS`]. Capacity is never trimmed, so the
-    /// retained memory is bounded by `SPARE_BUFFERS` times the longest
-    /// encoded write seen.
+    /// Holds at most [`SPARE_BUFFERS`]. Capacity is never trimmed: each buffer
+    /// keeps the capacity its producer's encode buffer had reached, which can
+    /// exceed the longest write it held (the runner's up-front reservation, or
+    /// growth slack). Retained memory is bounded by `SPARE_BUFFERS` times the
+    /// largest such capacity.
     spare: Vec<Vec<u8>>,
 }
 
 impl TickOutput {
+    /// An empty output for one scenario's schedule loop. `writes` is sized to
+    /// cover a typical histogram (10 buckets + 3) or summary (~6 quantiles +
+    /// 2) tick without reallocating.
+    fn for_schedule_loop() -> Self {
+        Self {
+            writes: Vec::with_capacity(16),
+            spare: Vec::new(),
+        }
+    }
+
     /// Drop any queued writes. The spare buffers are kept.
     pub fn clear(&mut self) {
         self.writes.clear();
@@ -247,8 +259,18 @@ pub(crate) async fn run_schedule_loop(
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let stats_for_flush = stats.clone();
+    let mut tick_output = TickOutput::for_schedule_loop();
     let loop_result = run_schedule_loop_with_initial_tick(
-        schedule, rate, cancel, stats, 0, None, None, sink, tick_fn,
+        schedule,
+        rate,
+        cancel,
+        stats,
+        0,
+        None,
+        None,
+        &mut tick_output,
+        sink,
+        tick_fn,
     )
     .await;
     finalize_sink(schedule, stats_for_flush.as_ref(), sink, loop_result).await
@@ -272,6 +294,9 @@ async fn finalize_sink(
 /// Run the schedule loop starting from `initial_tick`, optionally reporting the
 /// last tick reached on exit through `last_tick_out`. Used by `gated_loop` to
 /// continue the tick counter across pause/resume instead of restarting at 0.
+///
+/// Ticks queue their writes in `tick_output`, which the caller owns so its
+/// spare buffers outlive one segment.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_schedule_loop_with_initial_tick(
     schedule: &ParsedSchedule,
@@ -281,6 +306,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
     initial_tick: u64,
     last_tick_out: Option<&AtomicU64>,
     wall: Option<WallClock>,
+    tick_output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
@@ -304,10 +330,6 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
     // Sized to cover typical histogram (10 buckets + 3) and summary
     // (~6 quantiles + 2) without reallocating.
     let mut events_buf: Vec<MetricEvent> = Vec::with_capacity(16);
-    let mut tick_output = TickOutput {
-        writes: Vec::with_capacity(16),
-        spare: Vec::new(),
-    };
 
     loop {
         if cancel.is_cancelled() {
@@ -581,8 +603,8 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         };
         events_buf.clear();
         tick_output.clear();
-        let tick_outcome = match tick_fn(&ctx, &mut tick_output, &mut events_buf) {
-            Ok(mut result) => match drain_writes(&mut tick_output, sink).await {
+        let tick_outcome = match tick_fn(&ctx, tick_output, &mut events_buf) {
+            Ok(mut result) => match drain_writes(tick_output, sink).await {
                 Ok(Some(delivered)) => {
                     result.delivered = delivered;
                     Ok(result)
@@ -678,33 +700,29 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
 
 /// Write every queued command to `sink` in order, stopping at the first error.
 ///
-/// Each buffer whose write succeeded is cleared and kept in `output`'s spare
-/// list while it holds fewer than [`SPARE_BUFFERS`]; the rest are dropped. The
-/// buffer whose write failed is dropped with the error.
+/// The buffer of each [`WriteCommand::Bytes`] or [`WriteCommand::Metric`] whose
+/// write succeeded is cleared and kept in `output`'s spare list while it holds
+/// fewer than [`SPARE_BUFFERS`]; the rest are dropped. Those are the commands
+/// [`TickOutput::push_metric`] queues, and it is the only taker from the list.
+/// [`WriteCommand::LogEvent`] buffers are always dropped. The buffer whose
+/// write failed is dropped with the error.
 async fn drain_writes(
     output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
 ) -> Result<Option<bool>, SondaError> {
     let mut delivered: Option<bool> = None;
     for cmd in output.writes.drain(..) {
-        let mut bytes = match cmd {
-            WriteCommand::Bytes(bytes) => {
-                sink.write(&bytes).await?;
-                bytes
-            }
-            WriteCommand::LogEvent { event, bytes } => {
-                sink.write_log_event(&event, &bytes).await?;
-                bytes
-            }
-            WriteCommand::Metric { event, bytes } => {
-                sink.write_metric_event(&event, &bytes).await?;
-                bytes
-            }
-        };
+        match &cmd {
+            WriteCommand::Bytes(bytes) => sink.write(bytes).await?,
+            WriteCommand::LogEvent { event, bytes } => sink.write_log_event(event, bytes).await?,
+            WriteCommand::Metric { event, bytes } => sink.write_metric_event(event, bytes).await?,
+        }
         delivered = Some(sink.last_write_delivered());
-        if output.spare.len() < SPARE_BUFFERS {
-            bytes.clear();
-            output.spare.push(bytes);
+        if let WriteCommand::Bytes(mut bytes) | WriteCommand::Metric { mut bytes, .. } = cmd {
+            if output.spare.len() < SPARE_BUFFERS {
+                bytes.clear();
+                output.spare.push(bytes);
+            }
         }
     }
     Ok(delivered)
@@ -793,14 +811,15 @@ async fn invoke_close_emit(
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     limiter: &mut SinkErrorRateLimiter,
     close_emit: Option<&mut CloseEmitFn>,
+    output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
 ) -> Result<(), SondaError> {
     let Some(emit) = close_emit else {
         return Ok(());
     };
-    let mut output = TickOutput::default();
-    let outcome = match emit(&mut output) {
-        Ok(()) => drain_writes(&mut output, sink).await.map(|_| ()),
+    output.clear();
+    let outcome = match emit(output) {
+        Ok(()) => drain_writes(output, sink).await.map(|_| ()),
         Err(e) => Err(e),
     };
     match outcome {
@@ -921,6 +940,9 @@ pub(crate) async fn gated_loop(
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let mut close_warn_limiter = SinkErrorRateLimiter::new();
+    // One output for every running segment and close-emit of this scenario,
+    // so recycled buffers survive pause/resume.
+    let mut tick_output = TickOutput::for_schedule_loop();
 
     let stats_for_flush = stats.clone();
     let body_result = gated_loop_body(
@@ -930,6 +952,7 @@ pub(crate) async fn gated_loop(
         stats.as_ref(),
         &mut gate_ctx,
         &mut close_warn_limiter,
+        &mut tick_output,
         sink,
         tick_fn,
     )
@@ -941,6 +964,7 @@ pub(crate) async fn gated_loop(
                 stats.as_ref(),
                 &mut close_warn_limiter,
                 gate_ctx.close_emit.as_mut(),
+                &mut tick_output,
                 sink,
             )
             .await
@@ -963,6 +987,7 @@ async fn gated_loop_body(
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &mut GateContext,
     close_warn_limiter: &mut SinkErrorRateLimiter,
+    tick_output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<LoopExit, SondaError> {
@@ -1065,6 +1090,7 @@ async fn gated_loop_body(
                     next_tick,
                     Arc::clone(&last_tick),
                     wall,
+                    tick_output,
                     sink,
                     tick_fn,
                     false,
@@ -1087,6 +1113,7 @@ async fn gated_loop_body(
                         stats,
                         close_warn_limiter,
                         gate_ctx.close_emit.as_mut(),
+                        tick_output,
                         sink,
                     )
                     .await?;
@@ -1109,6 +1136,7 @@ async fn gated_loop_body(
                         stats,
                         close_warn_limiter,
                         gate_ctx.close_emit.as_mut(),
+                        tick_output,
                         sink,
                     )
                     .await?;
@@ -1190,6 +1218,7 @@ async fn gated_loop_body(
                             next_tick,
                             Arc::clone(&last_tick),
                             wall,
+                            tick_output,
                             sink,
                             tick_fn,
                             true,
@@ -1210,6 +1239,7 @@ async fn gated_loop_body(
                                     stats,
                                     close_warn_limiter,
                                     gate_ctx.close_emit.as_mut(),
+                                    tick_output,
                                     sink,
                                 )
                                 .await?;
@@ -1439,6 +1469,7 @@ async fn run_running_segment(
     initial_tick: u64,
     last_tick: Arc<AtomicU64>,
     wall: WallClock,
+    tick_output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
     exit_on_while_open: bool,
@@ -1498,6 +1529,7 @@ async fn run_running_segment(
         initial_tick,
         Some(last_tick.as_ref()),
         Some(wall),
+        tick_output,
         sink,
         wrapped.as_mut(),
     )
@@ -1706,6 +1738,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use rstest::rstest;
 
     use super::*;
     use crate::schedule::{BurstWindow, GapWindow};
@@ -1930,14 +1963,24 @@ mod tests {
         );
     }
 
+    /// Both commands `push_metric` queues give their buffer back: `Bytes` for
+    /// a sink that does not want metric events, `Metric` for one that does.
+    #[rstest]
+    #[case::plain_bytes(false)]
+    #[case::metric_event(true)]
     #[tokio::test]
-    async fn push_metric_hands_back_a_recycled_buffer() {
+    async fn push_metric_hands_back_a_recycled_buffer(#[case] wants_events: bool) {
         let (mut sink, writes) = shared_sink();
         let mut output = TickOutput::default();
         let event = metric_event("ifHCInOctets", 1.0);
 
         let mut buf = vec![b'x'; 200];
-        output.push_metric(false, &event, &mut buf);
+        output.push_metric(wants_events, &event, &mut buf);
+        assert_eq!(
+            matches!(output.writes[0], WriteCommand::Metric { .. }),
+            wants_events,
+            "the case must exercise the command it names"
+        );
         drain_writes(&mut output, &mut sink)
             .await
             .expect("drain must succeed");
@@ -1967,10 +2010,14 @@ mod tests {
 
     #[tokio::test]
     async fn spare_list_is_bounded() {
+        const QUEUED: usize = 1_000;
+        // Queueing no more than the bound would pass without bounding anything.
+        const _: () = assert!(SPARE_BUFFERS < QUEUED);
+
         let (mut sink, writes) = shared_sink();
         let mut output = TickOutput::default();
         let event = metric_event("ifHCInOctets", 1.0);
-        for _ in 0..1_000 {
+        for _ in 0..QUEUED {
             let mut buf = b"line".to_vec();
             output.push_metric(false, &event, &mut buf);
         }
@@ -1980,13 +2027,162 @@ mod tests {
 
         assert_eq!(
             writes.lock().expect("shared sink mutex poisoned").len(),
-            1_000,
-            "all 1 000 writes must reach the sink before the spare list is checked"
+            QUEUED,
+            "every queued write must reach the sink before the spare list is checked"
         );
         assert_eq!(
             output.spare.len(),
-            64,
-            "the spare list must keep at most 64 drained buffers"
+            SPARE_BUFFERS,
+            "the spare list must keep at most SPARE_BUFFERS drained buffers"
+        );
+    }
+
+    /// Only `push_metric` takes from the spare list, so a log write's buffer
+    /// is dropped rather than parked where nothing will reuse it.
+    #[tokio::test]
+    async fn log_event_buffers_are_not_recycled() {
+        use crate::model::log::{LogEvent, Severity};
+        use crate::model::metric::Labels;
+
+        let (mut sink, writes) = shared_sink();
+        let mut output = TickOutput::default();
+        let mut log_bytes = Vec::with_capacity(4096);
+        log_bytes.extend_from_slice(b"log line");
+        output.writes.push(WriteCommand::LogEvent {
+            event: LogEvent::new(
+                Severity::Info,
+                "log line".to_string(),
+                Labels::default(),
+                std::collections::BTreeMap::new(),
+            ),
+            bytes: log_bytes,
+        });
+        output
+            .writes
+            .push(WriteCommand::Bytes(b"metric line".to_vec()));
+        drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+
+        assert_eq!(
+            writes.lock().expect("shared sink mutex poisoned").len(),
+            2,
+            "both writes must reach the sink before the spare list is checked"
+        );
+        assert_eq!(
+            output.spare.len(),
+            1,
+            "only the metric write's buffer may be kept"
+        );
+        assert!(
+            output.spare[0].capacity() < 4096,
+            "the kept buffer must be the metric write's, not the log write's"
+        );
+    }
+
+    /// One `TickOutput` serves every running segment and close-emit of a
+    /// gated scenario, so a resumed segment and the close emitter start from
+    /// the buffers earlier ticks gave back.
+    #[tokio::test]
+    async fn spare_list_survives_pause_resume_and_reaches_close_emit() {
+        use crate::compiler::WhileOp;
+        use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
+
+        let bus = GateBus::new();
+        bus.tick(1.0);
+        let (rx, init) = bus.subscribe(SubscriptionSpec {
+            after: None,
+            while_: Some(WhileSpec {
+                op: WhileOp::GreaterThan,
+                threshold: 0.5,
+            }),
+        });
+        assert_eq!(init.while_gate_open, Some(true), "the gate must start open");
+
+        // Spare-list length each close-emit call saw.
+        let close_seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let close_seen_in_emit = Arc::clone(&close_seen);
+        let close_emit: CloseEmitFn = Box::new(move |output: &mut TickOutput| {
+            close_seen_in_emit
+                .lock()
+                .expect("close log mutex poisoned")
+                .push(output.spare.len());
+            Ok(())
+        });
+        let gate_ctx = GateContext::new(rx, init)
+            .with_has_while(true)
+            .with_close_emit(Some(close_emit));
+
+        // (close-emit calls so far, spare-list length) at the start of each tick.
+        let ticks: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+        let event = metric_event("ifHCInOctets", 1.0);
+        let mut buf: Vec<u8> = Vec::new();
+        let mut tick_fn = |_ctx: &TickContext<'_>,
+                           output: &mut TickOutput,
+                           _events_buf: &mut Vec<MetricEvent>|
+         -> Result<TickResult, SondaError> {
+            let closes = close_seen.lock().expect("close log mutex poisoned").len();
+            ticks
+                .lock()
+                .expect("tick log mutex poisoned")
+                .push((closes, output.spare.len()));
+            buf.clear();
+            buf.extend_from_slice(b"line");
+            output.push_metric(false, &event, &mut buf);
+            Ok(TickResult {
+                bytes_written: 4,
+                delivered: true,
+            })
+        };
+
+        let schedule = minimal_schedule(None);
+        let cancel = CancellationToken::new();
+        let mut sink = null_sink();
+        let drive_gate = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            bus.tick(0.0);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            bus.tick(1.0);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(
+            gated_loop(
+                &schedule,
+                100.0,
+                &cancel,
+                None,
+                gate_ctx,
+                &mut sink,
+                &mut tick_fn
+            ),
+            drive_gate,
+        );
+        result.expect("gated loop must finish cleanly");
+
+        let ticks = ticks.into_inner().expect("tick log mutex poisoned");
+        let close_seen = close_seen.lock().expect("close log mutex poisoned").clone();
+        assert_eq!(
+            close_seen.len(),
+            2,
+            "close-emit must run once on the pause and once at the tail; saw {close_seen:?}"
+        );
+        assert!(
+            ticks.iter().any(|&(closes, _)| closes == 0),
+            "ticks must run before the pause"
+        );
+        let first_resumed = ticks
+            .iter()
+            .find(|&&(closes, _)| closes == 1)
+            .expect("ticks must run after the resume");
+        assert_eq!(
+            first_resumed.1, 1,
+            "the first tick after resume must find the buffer given back before the pause"
+        );
+        assert_eq!(
+            close_seen,
+            vec![1, 1],
+            "each close-emit must see the buffer the last tick gave back"
         );
     }
 
@@ -2922,6 +3118,7 @@ mod tests {
             30,
             None,
             None,
+            &mut TickOutput::default(),
             &mut sink,
             &mut tick_fn,
         )
@@ -2959,6 +3156,7 @@ mod tests {
             10,
             Some(&last_tick),
             None,
+            &mut TickOutput::default(),
             &mut sink,
             &mut tick_fn,
         )
