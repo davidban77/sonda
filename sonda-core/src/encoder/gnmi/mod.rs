@@ -45,23 +45,31 @@ const F64_TEXT_CAPACITY: usize = 400;
 )]
 pub enum GnmiValueType {
     /// `uint_val`: the value truncated toward zero, negatives clamped to 0.
+    /// A non-finite value rejects the event.
     Uint,
-    /// `int_val`: the value truncated toward zero.
+    /// `int_val`: the value truncated toward zero. A non-finite value
+    /// rejects the event.
     Int,
     /// `double_val` (field 14).
     Double,
-    /// `bool_val`: `true` for any value other than `0.0`.
+    /// `bool_val`: `true` for any value other than `0.0`. A non-finite value
+    /// rejects the event.
     Bool,
     /// `string_val`: the shortest decimal text that round-trips the `f64`.
     String,
-    /// `string_val` looked up by the value truncated to `i64`. A value with
-    /// no entry is an encode error.
+    /// `string_val` looked up by the value rounded to the nearest `i64`, so
+    /// float noise such as `0.9999999999999999` still selects code `1`. A
+    /// value with no entry, or a non-finite value, rejects the event.
     Enum(BTreeMap<i64, String>),
 }
 
 /// YAML shape of [`GnmiValueType`]: a bare name, or a one-key `enum:` map.
+///
+/// `Deserialize` is written by hand so that enum keys may be integers or
+/// integer strings (`1` or `"1"`, as JSON requires), and so that a mistake
+/// names what is accepted instead of failing as an unmatched untagged enum.
 #[cfg(feature = "config")]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum GnmiValueTypeWire {
@@ -71,7 +79,7 @@ enum GnmiValueTypeWire {
 
 /// The scalar value type names.
 #[cfg(feature = "config")]
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 enum GnmiScalarName {
@@ -84,12 +92,133 @@ enum GnmiScalarName {
 
 /// `{ enum: { <i64>: <string>, ... } }`.
 #[cfg(feature = "config")]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct GnmiEnumWire {
     #[serde(rename = "enum")]
     map: BTreeMap<i64, String>,
+}
+
+/// What a value type may be, for error messages.
+#[cfg(feature = "config")]
+const VALUE_TYPE_EXPECTED: &str =
+    "one of uint, int, double, bool, string, or { enum: { <integer>: <label>, ... } }";
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for GnmiValueTypeWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(ValueTypeVisitor)
+    }
+}
+
+#[cfg(feature = "config")]
+struct ValueTypeVisitor;
+
+#[cfg(feature = "config")]
+impl<'de> serde::de::Visitor<'de> for ValueTypeVisitor {
+    type Value = GnmiValueTypeWire;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a gnmi value type: {VALUE_TYPE_EXPECTED}")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        let name = match v {
+            "uint" => GnmiScalarName::Uint,
+            "int" => GnmiScalarName::Int,
+            "double" => GnmiScalarName::Double,
+            "bool" => GnmiScalarName::Bool,
+            "string" => GnmiScalarName::String,
+            other => {
+                return Err(E::custom(format!(
+                    "unknown gnmi value type {other:?}; expected {VALUE_TYPE_EXPECTED}"
+                )))
+            }
+        };
+        Ok(GnmiValueTypeWire::Name(name))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error as _;
+        let mut entries: Option<BTreeMap<i64, String>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key != "enum" {
+                return Err(A::Error::custom(format!(
+                    "unknown key {key:?} in a gnmi value type; expected {VALUE_TYPE_EXPECTED}"
+                )));
+            }
+            if entries.is_some() {
+                return Err(A::Error::custom(
+                    "duplicate `enum` key in a gnmi value type",
+                ));
+            }
+            entries = Some(map.next_value::<EnumEntries>()?.0);
+        }
+        entries
+            .map(|map| GnmiValueTypeWire::Enum(GnmiEnumWire { map }))
+            .ok_or_else(|| A::Error::custom(format!("empty map; expected {VALUE_TYPE_EXPECTED}")))
+    }
+}
+
+/// The body of `enum:`: keys are integers, written bare or as strings.
+#[cfg(feature = "config")]
+struct EnumEntries(BTreeMap<i64, String>);
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for EnumEntries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntriesVisitor;
+        impl<'de> serde::de::Visitor<'de> for EntriesVisitor {
+            type Value = EnumEntries;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map from integer codes to labels, e.g. { 1: UP, 2: DOWN }")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = BTreeMap::new();
+                while let Some(EnumCode(code)) = map.next_key()? {
+                    out.insert(code, map.next_value::<String>()?);
+                }
+                Ok(EnumEntries(out))
+            }
+        }
+        deserializer.deserialize_map(EntriesVisitor)
+    }
+}
+
+/// One `enum:` key: an integer, or a string holding one.
+#[cfg(feature = "config")]
+struct EnumCode(i64);
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for EnumCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CodeVisitor;
+        impl serde::de::Visitor<'_> for CodeVisitor {
+            type Value = EnumCode;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an integer enum code")
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(EnumCode(v))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                i64::try_from(v)
+                    .map(EnumCode)
+                    .map_err(|_| E::custom(format!("enum code {v} does not fit in i64")))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                v.trim()
+                    .parse::<i64>()
+                    .map(EnumCode)
+                    .map_err(|_| E::custom(format!("enum key {v:?} is not an integer")))
+            }
+        }
+        deserializer.deserialize_any(CodeVisitor)
+    }
 }
 
 #[cfg(feature = "config")]
@@ -232,9 +361,18 @@ impl GnmiEncoder {
         })
     }
 
-    /// The template used for `metric`: its `paths:` entry if present, else `path`.
-    pub(crate) fn template_for(&self, metric: &str) -> Option<&PathTemplate> {
-        self.overrides.get(metric).or(self.template.as_ref())
+    /// The template used for `metric`: its `paths:` entry if present, else
+    /// `path`. Returns [`SondaError::Config`] when neither covers the metric.
+    pub(crate) fn template_for(&self, metric: &str) -> Result<&PathTemplate, SondaError> {
+        self.overrides
+            .get(metric)
+            .or(self.template.as_ref())
+            .ok_or_else(|| {
+                SondaError::Config(ConfigError::invalid(format!(
+                    "gnmi encoder has no path template for metric {metric:?}: set \
+                     encoder.path or encoder.paths.{metric}"
+                )))
+            })
     }
 
     /// The first of `keys` that is not covered by `template`: not referenced by
@@ -271,12 +409,7 @@ impl GnmiEncoder {
         }
 
         let name: &str = &event.name;
-        let template = self.template_for(name).ok_or_else(|| {
-            SondaError::Config(ConfigError::invalid(format!(
-                "gnmi encoder has no path template for metric {name:?}: set encoder.path \
-                 or encoder.paths.{name}"
-            )))
-        })?;
+        let template = self.template_for(name)?;
         if let Some(label) = self.uncovered_label(template, event.labels.iter().map(|(k, _)| k)) {
             return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
                 "metric {name:?} carries label `{label}`, which the gnmi path template does \
@@ -417,21 +550,30 @@ impl Encoder for GnmiEncoder {
         // Initialised only on the `String` path; every other type skips it.
         let mut text: [u8; F64_TEXT_CAPACITY];
         let value = event.value;
+        let finite = |kind: &str| {
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(SondaError::Encoder(EncoderError::EventRejected(format!(
+                    "value {value} of metric {name:?} cannot be encoded as {kind}"
+                ))))
+            }
+        };
         let scalar = match self.values.get(name) {
             None | Some(GnmiValueType::Double) => Scalar::Double(value),
-            Some(GnmiValueType::Uint) => Scalar::Uint(value.max(0.0) as u64),
-            Some(GnmiValueType::Int) => Scalar::Int(value as i64),
-            Some(GnmiValueType::Bool) => Scalar::Bool(value != 0.0),
+            Some(GnmiValueType::Uint) => Scalar::Uint(finite("uint")?.max(0.0) as u64),
+            Some(GnmiValueType::Int) => Scalar::Int(finite("int")? as i64),
+            Some(GnmiValueType::Bool) => Scalar::Bool(finite("bool")? != 0.0),
             Some(GnmiValueType::String) => {
                 text = [0u8; F64_TEXT_CAPACITY];
                 Scalar::Str(format_f64(value, &mut text)?)
             }
             Some(GnmiValueType::Enum(map)) => Scalar::Str(
-                map.get(&(value as i64))
+                map.get(&(finite("enum")?.round() as i64))
                     .map(String::as_str)
                     .ok_or_else(|| {
-                        SondaError::Encoder(EncoderError::Other(format!(
-                            "gnmi encoder: value {value} of metric {name:?} has no enum mapping"
+                        SondaError::Encoder(EncoderError::EventRejected(format!(
+                            "value {value} of metric {name:?} has no gnmi enum mapping"
                         )))
                     })?,
             ),
@@ -769,8 +911,15 @@ mod tests {
     #[case::string_integral(      Some(GnmiValueType::String), 3.0,    Ok(Value::StringVal("3".into())))]
     #[case::string_huge(          Some(GnmiValueType::String), -1e300, Ok(Value::StringVal(format!("{}", -1e300))))]
     #[case::enum_mapped(          Some(enum_map()),            2.0,    Ok(Value::StringVal("DOWN".into())))]
-    #[case::enum_unmapped(        Some(enum_map()),            3.0,    Err("no enum mapping"))]
+    #[case::enum_unmapped(        Some(enum_map()),            3.0,    Err("no gnmi enum mapping"))]
     #[case::enum_empty_string(    Some(empty_enum_label()),    1.0,    Ok(Value::StringVal(String::new())))]
+    #[case::enum_rounds_noise(    Some(enum_map()),            0.9999999999999999, Ok(Value::StringVal("UP".into())))]
+    #[case::enum_rounds_down(     Some(enum_map()),            2.4,    Ok(Value::StringVal("DOWN".into())))]
+    #[case::enum_nan(             Some(enum_map()),            f64::NAN, Err("cannot be encoded as enum"))]
+    #[case::uint_nan(             Some(GnmiValueType::Uint),   f64::NAN, Err("cannot be encoded as uint"))]
+    #[case::int_infinite(         Some(GnmiValueType::Int),    f64::INFINITY, Err("cannot be encoded as int"))]
+    #[case::bool_nan(             Some(GnmiValueType::Bool),   f64::NAN, Err("cannot be encoded as bool"))]
+    #[case::double_keeps_nan(     Some(GnmiValueType::Double), f64::INFINITY, Ok(Value::DoubleVal(f64::INFINITY)))]
     fn value_mapping(
         #[case] value_type: Option<GnmiValueType>,
         #[case] value: f64,
@@ -788,7 +937,10 @@ mod tests {
                 assert_eq!(only_value(&n), want);
             }
             (Err(e), Err(needle)) => {
-                assert!(matches!(e, SondaError::Encoder(_)));
+                assert!(
+                    matches!(e, SondaError::Encoder(EncoderError::EventRejected(_))),
+                    "{e:?}"
+                );
                 assert!(e.to_string().contains(needle), "{e}");
             }
             (got, want) => panic!("got {got:?}, want {want:?}"),
@@ -986,6 +1138,58 @@ values:
             .expect_err("a misspelt key must be rejected")
             .to_string();
         assert!(err.contains(key), "error should name {key:?}: {err}");
+    }
+
+    /// JSON object keys are always strings, so `POST /events` and
+    /// `POST /scenarios` can only send `"1"`. Quoted YAML keys are the same.
+    /// The unquoted YAML form must keep working alongside them.
+    #[cfg(feature = "config")]
+    #[rstest]
+    #[case::yaml_integer_keys(
+        "type: gnmi\npath: /a/{name}\nvalues:\n  m:\n    enum: { 1: UP, -2: DOWN }\n"
+    )]
+    #[case::yaml_quoted_keys(
+        "type: gnmi\npath: /a/{name}\nvalues:\n  m:\n    enum: { \"1\": UP, \"-2\": DOWN }\n"
+    )]
+    fn enum_codes_parse_bare_or_quoted_from_yaml(#[case] yaml: &str) {
+        let cfg = serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(yaml).unwrap();
+        let crate::encoder::EncoderConfig::Gnmi(cfg) = cfg else {
+            panic!("not the gnmi variant")
+        };
+        assert_eq!(
+            cfg.values["m"],
+            GnmiValueType::Enum(BTreeMap::from([(1, "UP".into()), (-2, "DOWN".into())]))
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn enum_codes_parse_from_json_string_keys() {
+        let json =
+            r#"{"type":"gnmi","path":"/a/{name}","values":{"m":{"enum":{"1":"UP","2":"DOWN"}}}}"#;
+        let cfg = serde_json::from_str::<crate::encoder::EncoderConfig>(json).unwrap();
+        let crate::encoder::EncoderConfig::Gnmi(cfg) = cfg else {
+            panic!("not the gnmi variant")
+        };
+        assert_eq!(cfg.values["m"], enum_map());
+    }
+
+    #[cfg(feature = "config")]
+    #[rstest]
+    #[case::misspelt_name("values:\n  m: unit\n", "unknown gnmi value type \"unit\"")]
+    #[case::non_integer_key(
+        "values:\n  m:\n    enum: { UP: 1 }\n",
+        "enum key \"UP\" is not an integer"
+    )]
+    #[case::wrong_map_key("values:\n  m:\n    enums: { 1: UP }\n", "unknown key \"enums\"")]
+    fn value_type_errors_say_what_is_accepted(#[case] yaml: &str, #[case] needle: &str) {
+        let err = serde_yaml_ng::from_str::<GnmiEncoderConfig>(yaml)
+            .expect_err("must be rejected")
+            .to_string();
+        assert!(err.contains(needle), "{err}");
+        if !needle.starts_with("enum key") {
+            assert!(err.contains("uint, int, double, bool, string"), "{err}");
+        }
     }
 
     #[cfg(feature = "config")]

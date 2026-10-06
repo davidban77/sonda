@@ -11,7 +11,8 @@
 //!   encoder's `origin` field. A colon elsewhere — a module-prefixed element
 //!   name or a key value — is literal text.
 //! - A segment is `name` or `name[key=value]` with one or more `[key=value]`
-//!   groups. Key names are literals.
+//!   groups. Key names are literals, and a key appears at most once per
+//!   segment.
 //! - An element name or a key value is either a literal or exactly one
 //!   placeholder `{x}`. A brace anywhere else is an error.
 //! - `{name}` renders the metric name with `_` replaced by `-`. Any other
@@ -96,7 +97,10 @@ impl PathTemplate {
     ///
     /// The returned path has empty `origin` and `target`. Returns
     /// [`EncoderError::EventRejected`] when a placeholder names a label that
-    /// `labels` does not contain.
+    /// `labels` does not contain, or when a placeholder in element-name
+    /// position resolves to an empty string or one containing `/`, `[` or
+    /// `]`, which would not read back as a single element. Key values may
+    /// contain any of these.
     pub fn render(&self, name: &str, labels: &Labels) -> Result<proto::Path, SondaError> {
         let mut elem = Vec::with_capacity(self.segments.len());
         for segment in &self.segments {
@@ -104,10 +108,14 @@ impl PathTemplate {
             for (k, v) in &segment.keys {
                 key.insert(k.clone(), resolve(v, name, labels)?);
             }
-            elem.push(proto::PathElem {
-                name: resolve(&segment.name, name, labels)?,
-                key,
-            });
+            let element = resolve(&segment.name, name, labels)?;
+            if element.is_empty() || element.contains(['/', '[', ']']) {
+                return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
+                    "metric {name:?} renders gnmi path element {element:?}; an element name \
+                     must be non-empty and contain no '/', '[' or ']'"
+                ))));
+            }
+            elem.push(proto::PathElem { name: element, key });
         }
         Ok(proto::Path {
             origin: String::new(),
@@ -209,6 +217,11 @@ fn parse_segment(raw: &str) -> Result<Segment, String> {
         if key.contains(['{', '}']) {
             return Err(format!(
                 "key name {key:?} in segment {raw:?} must be a literal, not a placeholder"
+            ));
+        }
+        if keys.iter().any(|(existing, _)| existing == key) {
+            return Err(format!(
+                "key {key:?} appears more than once in segment {raw:?}"
             ));
         }
         keys.push((key.to_string(), parse_part(value)?));
@@ -374,6 +387,9 @@ mod tests {
     #[case::empty_template(      "/",                                                         "m",            Err("no elements"))]
     #[case::mixed_braces(        "/a/x{ifName}",                                              "m",            Err("mixes text and braces"))]
     #[case::empty_placeholder(   "/a/{}",                                                     "m",            Err("malformed placeholder"))]
+    #[case::repeated_key(        "/a[k={ifName}][k={device}]",                                "m",            Err("appears more than once"))]
+    #[case::slash_in_element(    "/interfaces/{ifName}/state",                                "m",            Err("element name"))]
+    #[case::bracket_in_element(  "/a/{odd}",                                                  "m",            Err("element name"))]
     #[case::origin_prefix(       "openconfig:/interfaces/state",                              "m",            Err("origin prefix \"openconfig\""))]
     #[case::module_prefixed_elem("/openconfig-interfaces:interfaces/state",                   "m",            Ok(vec![elem("openconfig-interfaces:interfaces", &[]), elem("state", &[])]))]
     #[case::colon_in_key_value(  "/a[k=Ethernet1:1]",                                         "m",            Ok(vec![elem("a", &[("k", "Ethernet1:1")])]))]
@@ -399,6 +415,23 @@ mod tests {
             }
             (got, want) => panic!("template {template:?}: got {got:?}, want {want:?}"),
         }
+    }
+
+    /// An empty label value in element position would render `/a//b`, which
+    /// `parse_client_path` itself rejects. In key position it is fine.
+    #[test]
+    fn empty_label_value_is_rejected_only_as_an_element_name() {
+        let labels = Labels::from_pairs(&[("e", "")]).unwrap();
+        let as_key = PathTemplate::parse("/a[k={e}]/b").unwrap();
+        as_key
+            .render("m", &labels)
+            .expect("an empty key value renders");
+        let as_element = PathTemplate::parse("/a/{e}/b").unwrap();
+        let err = as_element.render("m", &labels).unwrap_err();
+        assert!(
+            matches!(err, SondaError::Encoder(EncoderError::EventRejected(_))),
+            "{err:?}"
+        );
     }
 
     #[test]

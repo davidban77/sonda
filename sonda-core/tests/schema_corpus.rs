@@ -1045,3 +1045,20 @@ fn the_schema_checks_gnmi_drop_labels() {
         &GNMI_WITH_EXTRA.replace("{EXTRA}", "drop_label: [job]"),
     );
 }
+
+/// Quoted enum codes are what JSON clients send. The schema has always
+/// accepted them; the parser must too, so the two agree.
+#[test]
+fn the_parser_and_schema_accept_quoted_gnmi_enum_codes() {
+    let yaml = GNMI_WITH_EXTRA.replace(
+        "{EXTRA}",
+        "values: { in_octets: { enum: { \"1\": UP, \"2\": DOWN } } }",
+    );
+    sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts quoted enum codes");
+    let errors = schema_errors(&yaml);
+    assert!(
+        errors.is_empty(),
+        "the schema rejected quoted enum codes:\n{}",
+        errors.join("\n")
+    );
+}

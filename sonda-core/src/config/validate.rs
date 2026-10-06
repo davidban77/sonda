@@ -381,6 +381,7 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 /// Returns [`SondaError::Config`] with a descriptive message naming the field
 /// and the invalid value.
 pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError> {
+    reject_gnmi_encoder(&config.encoder, "logs")?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -456,11 +457,12 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
     }
 }
 
-/// Reject the `gnmi` encoder on a histogram or summary entry.
+/// Reject the `gnmi` encoder on a logs, histogram or summary entry.
 ///
-/// Those entries emit derived series (`<name>_bucket`, `_count`, `_sum`, or a
-/// series per quantile) that no `paths:` entry is keyed by, so the gnmi
-/// encoder supports metrics entries only.
+/// The encoder does not encode log events at all, and histogram and summary
+/// entries emit derived series (`<name>_bucket`, `_count`, `_sum`, or a series
+/// per quantile) that no `paths:` entry is keyed by, so the gnmi encoder
+/// supports metrics entries only.
 fn reject_gnmi_encoder(
     encoder: &crate::encoder::EncoderConfig,
     kind: &str,
@@ -489,7 +491,9 @@ fn reject_gnmi_encoder(
 ///   the spike window is open, so rendering would fail once the window closed.
 /// - A template that uses `{name}` is rejected when the entry also carries a
 ///   label called `name`, because `{name}` always renders the metric name and
-///   every series would collapse onto one path.
+///   every series would collapse onto one path. The exception is
+///   `target_label: name`: the label then reaches the notification prefix, so
+///   series still differ.
 /// - Every key in `labels` and `dynamic_labels` is referenced by the template,
 ///   is the encoder's `target_label`, or is listed in its `drop_labels`.
 ///   Otherwise series that differ only in that label would share one path.
@@ -511,13 +515,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         return Ok(());
     };
     let encoder = GnmiEncoder::new(cfg)?;
-    let template = encoder.template_for(&config.name).ok_or_else(|| {
-        SondaError::Config(ConfigError::invalid(format!(
-            "gnmi encoder has no path template for metric {:?}: set encoder.path or \
-             encoder.paths.{}",
-            config.name, config.name
-        )))
-    })?;
+    let template = encoder.template_for(&config.name)?;
 
     let static_label = |key: &str| {
         config
@@ -541,6 +539,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     };
 
     if template.placeholders().any(|p| p == NAME_PLACEHOLDER)
+        && cfg.target_label != NAME_PLACEHOLDER
         && (static_label(NAME_PLACEHOLDER)
             || dynamic_label(NAME_PLACEHOLDER)
             || spike_label(NAME_PLACEHOLDER))
@@ -2453,6 +2452,66 @@ generator:
         add_name_label(&mut config);
         let msg = err_msg(validate_config(&config));
         assert!(msg.contains("label called `name`"), "got: {msg}");
+    }
+
+    /// With `target_label: name` the label reaches the prefix, so `{name}`
+    /// in the path collides with nothing. The same config with the default
+    /// target is the collision.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_name_placeholder_is_fine_when_name_is_the_target_label() {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state/{name}"));
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("name".to_string(), "rtr-1".to_string());
+        gnmi_cfg(&mut config).drop_labels.push("device".to_string());
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("label called `name`"), "got: {msg}");
+
+        gnmi_cfg(&mut config).target_label = "name".to_string();
+        validate_config(&config).expect("`name` as the target label collides with nothing");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn validate_log_config_rejects_the_gnmi_encoder() {
+        let mut config = crate::config::LogScenarioConfig {
+            base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
+                name: "test".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
+            },
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        };
+        validate_log_config(&config).expect("the baseline must validate");
+        config.encoder = gnmi_encoder_for("test");
+        let msg = err_msg(validate_log_config(&config));
+        assert!(msg.contains("metrics entries only"), "got: {msg}");
+        assert!(msg.contains("logs"), "got: {msg}");
     }
 
     #[cfg(feature = "gnmi")]
