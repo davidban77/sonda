@@ -180,7 +180,13 @@ impl<'de> serde::Deserialize<'de> for EnumEntries {
             ) -> Result<Self::Value, A::Error> {
                 let mut out = BTreeMap::new();
                 while let Some(EnumCode(code)) = map.next_key()? {
-                    out.insert(code, map.next_value::<String>()?);
+                    let label = map.next_value::<String>()?;
+                    if out.insert(code, label).is_some() {
+                        return Err(serde::de::Error::custom(format!(
+                            "enum code {code} is given more than once (keys such as 1 and \
+                             \"01\" are the same code)"
+                        )));
+                    }
                 }
                 Ok(EnumEntries(out))
             }
@@ -210,11 +216,19 @@ impl<'de> serde::Deserialize<'de> for EnumCode {
                     .map(EnumCode)
                     .map_err(|_| E::custom(format!("enum code {v} does not fit in i64")))
             }
+            /// Accepts exactly the schema's `^-?\\d+$`: digits with an
+            /// optional leading `-`, no sign, spaces or decimal point.
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                v.trim()
-                    .parse::<i64>()
+                let digits = v.strip_prefix('-').unwrap_or(v);
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(E::custom(format!(
+                        "enum key {v:?} is not an integer: write digits with an optional \
+                         leading '-'"
+                    )));
+                }
+                v.parse::<i64>()
                     .map(EnumCode)
-                    .map_err(|_| E::custom(format!("enum key {v:?} is not an integer")))
+                    .map_err(|_| E::custom(format!("enum code {v:?} does not fit in i64")))
             }
         }
         deserializer.deserialize_any(CodeVisitor)
@@ -514,12 +528,21 @@ impl Encoder for GnmiEncoder {
     /// The prefix carries `origin` and, when the event has the target label,
     /// `target`. Returns [`SondaError::Config`] when the metric has no
     /// template, which is a defect of the configuration rather than of this
-    /// event. Returns [`EncoderError::EventRejected`] when a template
-    /// placeholder names a label this event lacks, or the event carries a
-    /// label the template does not reference that is neither the
-    /// `target_label` nor listed in `drop_labels`. Returns another
-    /// [`SondaError::Encoder`] variant when the timestamp predates the epoch or
-    /// exceeds `i64` nanoseconds, or an `enum` value has no mapping.
+    /// event. Returns [`EncoderError::EventRejected`] when this event does not
+    /// fit the configuration:
+    ///
+    /// - a template placeholder names a label the event lacks;
+    /// - the event carries a label the template does not reference that is
+    ///   neither the `target_label` nor listed in `drop_labels`;
+    /// - a placeholder in element-name position renders empty or containing
+    ///   `/`, `[` or `]`;
+    /// - the value is NaN or infinite and the metric is `uint`, `int`, `bool`
+    ///   or `enum`;
+    /// - the rounded value has no `enum` mapping.
+    ///
+    /// Returns [`EncoderError::TimestampBeforeEpoch`] or
+    /// [`EncoderError::Other`] when the timestamp predates the epoch or exceeds
+    /// `i64` nanoseconds.
     ///
     /// The label checks run only when a series is first seen and its path is
     /// rendered and cached; later events for the same series skip them, so
@@ -1182,12 +1205,28 @@ values:
         "enum key \"UP\" is not an integer"
     )]
     #[case::wrong_map_key("values:\n  m:\n    enums: { 1: UP }\n", "unknown key \"enums\"")]
+    #[case::plus_sign(
+        "values:\n  m:\n    enum: { \"+1\": UP }\n",
+        "enum key \"+1\" is not an integer"
+    )]
+    #[case::padded(
+        "values:\n  m:\n    enum: { \" 1\": UP }\n",
+        "enum key \" 1\" is not an integer"
+    )]
+    #[case::decimal(
+        "values:\n  m:\n    enum: { \"1.0\": UP }\n",
+        "enum key \"1.0\" is not an integer"
+    )]
+    #[case::same_code_twice(
+        "values:\n  m:\n    enum: { 1: UP, \"01\": DOWN }\n",
+        "enum code 1 is given more than once"
+    )]
     fn value_type_errors_say_what_is_accepted(#[case] yaml: &str, #[case] needle: &str) {
         let err = serde_yaml_ng::from_str::<GnmiEncoderConfig>(yaml)
             .expect_err("must be rejected")
             .to_string();
         assert!(err.contains(needle), "{err}");
-        if !needle.starts_with("enum key") {
+        if needle.starts_with("unknown") {
             assert!(err.contains("uint, int, double, bool, string"), "{err}");
         }
     }

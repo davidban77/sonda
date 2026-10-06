@@ -1062,3 +1062,22 @@ fn the_parser_and_schema_accept_quoted_gnmi_enum_codes() {
         errors.join("\n")
     );
 }
+
+/// Enum keys the schema's `^-?\d+$` refuses are refused by the parser too, so
+/// neither accepts what the other rejects.
+#[rustfmt::skip]
+#[rstest::rstest]
+#[case::plus_sign("\"+1\"")]
+#[case::padded("\" 1\"")]
+#[case::decimal("\"1.0\"")]
+fn the_parser_and_schema_both_reject_non_integer_enum_codes(#[case] key: &str) {
+    let yaml = GNMI_WITH_EXTRA.replace(
+        "{EXTRA}",
+        &format!("values: {{ in_octets: {{ enum: {{ {key}: UP }} }} }}"),
+    );
+    assert!(
+        sonda_core::compiler::parse::parse(&yaml).is_err(),
+        "the parser accepted enum key {key}"
+    );
+    assert_rejected(&format!("enum key {key}"), &yaml);
+}

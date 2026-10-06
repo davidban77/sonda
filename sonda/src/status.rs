@@ -868,7 +868,7 @@ fn encoder_display(encoder: &EncoderConfig) -> String {
         #[cfg(feature = "gnmi")]
         EncoderConfig::Gnmi(cfg) => return format!("gnmi ({})", cfg.origin),
         #[cfg(not(feature = "gnmi"))]
-        EncoderConfig::GnmiDisabled { .. } => ("gnmi (disabled)", None),
+        EncoderConfig::GnmiDisabled { .. } => ("gnmi (feature disabled)", None),
         // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
         // fall back to a generic marker so a future variant still renders.
         _ => ("unknown", None),
@@ -1101,7 +1101,7 @@ mod tests {
     fn encoder_display_gnmi_disabled() {
         assert_eq!(
             encoder_display(&EncoderConfig::GnmiDisabled {}),
-            "gnmi (disabled)"
+            "gnmi (feature disabled)"
         );
     }
 

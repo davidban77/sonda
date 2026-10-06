@@ -491,9 +491,10 @@ fn reject_gnmi_encoder(
 ///   the spike window is open, so rendering would fail once the window closed.
 /// - A template that uses `{name}` is rejected when the entry also carries a
 ///   label called `name`, because `{name}` always renders the metric name and
-///   every series would collapse onto one path. The exception is
-///   `target_label: name`: the label then reaches the notification prefix, so
-///   series still differ.
+///   every series would collapse onto one path. The exceptions are
+///   `target_label: name`, where the label reaches the notification prefix so
+///   series still differ, and `name` listed in `drop_labels`, which opts out
+///   of the label on purpose.
 /// - Every key in `labels` and `dynamic_labels` is referenced by the template,
 ///   is the encoder's `target_label`, or is listed in its `drop_labels`.
 ///   Otherwise series that differ only in that label would share one path.
@@ -540,6 +541,10 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
 
     if template.placeholders().any(|p| p == NAME_PLACEHOLDER)
         && cfg.target_label != NAME_PLACEHOLDER
+        && !cfg
+            .drop_labels
+            .iter()
+            .any(|dropped| dropped == NAME_PLACEHOLDER)
         && (static_label(NAME_PLACEHOLDER)
             || dynamic_label(NAME_PLACEHOLDER)
             || spike_label(NAME_PLACEHOLDER))
@@ -2472,6 +2477,28 @@ generator:
 
         gnmi_cfg(&mut config).target_label = "name".to_string();
         validate_config(&config).expect("`name` as the target label collides with nothing");
+    }
+
+    /// A `name` label listed in `drop_labels` is deliberately out of the path,
+    /// so `{name}` collides with nothing. For a spike label called `name` this
+    /// is the only valid configuration.
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::static_label(|c: &mut ScenarioConfig| {
+        c.base.labels.get_or_insert_with(Default::default).insert("name".to_string(), "x".to_string());
+    })]
+    #[case::spike_label(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![spike("name")]))]
+    fn gnmi_name_placeholder_is_fine_when_name_is_dropped(
+        #[case] add_name_label: fn(&mut ScenarioConfig),
+    ) {
+        let mut config = gnmi_config(Some("/interfaces/interface[if={ifName}]/state/{name}"));
+        add_name_label(&mut config);
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("label called `name`"), "got: {msg}");
+
+        gnmi_cfg(&mut config).drop_labels.push("name".to_string());
+        validate_config(&config).expect("a dropped `name` label collides with nothing");
     }
 
     #[cfg(feature = "gnmi")]

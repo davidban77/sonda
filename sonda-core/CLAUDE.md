@@ -105,6 +105,15 @@ src/
 │   ├── otlp.rs         ← OTLP protobuf: hand-written prost structs for metrics + logs,
 │   │                      OtlpEncoder (Metric/LogRecord), parser helpers (feature = "otlp")
 │   ├── remote_write.rs ← Prometheus remote write protobuf (feature = "remote-write")
+│   ├── gnmi/           ← gNMI Notification encoder (feature = "gnmi"):
+│   │   ├── mod.rs      ←   GnmiEncoder, GnmiEncoderConfig (deny_unknown_fields; drop_labels),
+│   │   │                   GnmiValueType (hand-written Deserialize: enum codes as ints or
+│   │   │                   integer strings). Per-series path bytes cached on first sight;
+│   │   │                   uncovered_label + template_for are the ONE coverage and
+│   │   │                   template rules validation also calls. Output is one Notification
+│   │   │                   per call, NOT length-prefixed.
+│   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path
+│   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory
@@ -226,11 +235,12 @@ src/
 |---------|---------|-------------|
 | `config` | yes | Enables `serde::Deserialize` impls on all config types and pulls in `serde_yaml_ng` for YAML parsing. Disable for library consumers who construct configs in code and do not need YAML/JSON deserialization. |
 | `strict-config` | yes | Rejects unknown YAML keys at parse time (`serde_ignored` at the deserialization choke point in `compiler/parse.rs`). Split from `config` because it compiles a second copy of the whole `ScenarioFile` deserializer: +170 KB on the optimized wasm bundle. The binaries enable it via their own `config` feature; `sonda-wasm` deliberately does not, so the playground parses as it did before. |
-| `runtime` | yes | The async scheduling and delivery layer: `tokio`, `tokio-util`, the `schedule/` module, `emit.rs`, the tokio-backed sinks (`stdout`, `file`, `tcp`, `udp`, `channel`), and `create_sink()`. Disable for pure-engine consumers — generators, encoders, the compiler, and config types all work without it, which is how `sonda-wasm` compiles the engine to `wasm32-unknown-unknown`. The `http`/`kafka`/`remote-write`/`otlp` features all imply `runtime`. |
+| `runtime` | yes | The async scheduling and delivery layer: `tokio`, `tokio-util`, the `schedule/` module, `emit.rs`, the tokio-backed sinks (`stdout`, `file`, `tcp`, `udp`, `channel`), and `create_sink()`. Disable for pure-engine consumers — generators, encoders, the compiler, and config types all work without it, which is how `sonda-wasm` compiles the engine to `wasm32-unknown-unknown`. The `http`/`kafka`/`remote-write`/`otlp`/`gnmi` features all imply `runtime`. |
 | `http` | no | Enables `ureq` and HTTP-based sinks (`HttpPush`, `Loki`). |
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
+| `gnmi` | no | Enables `tonic` + `prost` + `bytes` + `http` + `tower` + `tokio-stream` (`net`) and `runtime` for the gNMI encoder (`encoder/gnmi/`). The encoder itself uses only `prost`. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain
@@ -327,7 +337,9 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
     the original I/O error for programmatic inspection (e.g., `ErrorKind::NotFound`).
   - `EncoderError` — encoding errors. `SerializationFailed(serde_json::Error)` and
     `TimestampBeforeEpoch(SystemTimeError)` preserve the original error. `NotSupported(String)`
-    for unsupported event types. `Other(String)` for feature-gated encoder errors (protobuf, snappy).
+    for unsupported event types. `EventRejected(String)` when one event does not fit a valid
+    encoder configuration (the gnmi encoder: missing or uncovered label, unencodable value,
+    unmapped enum code). `Other(String)` for feature-gated encoder errors (protobuf, snappy).
   - `RuntimeError` — system/environment errors. `SpawnFailed(#[source] io::Error)` for thread
     spawn failures (preserves the original `io::Error` via `#[source]`), `ThreadPanicked` for
     panicked scenario threads, `ScenariosFailed(String)` for collected errors from multi-scenario

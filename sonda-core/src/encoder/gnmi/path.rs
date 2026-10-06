@@ -316,6 +316,11 @@ pub fn parse_client_path(s: &str) -> Result<proto::Path, SondaError> {
                         None => return Err(invalid(format!("unclosed '[' in element {name:?}"))),
                     }
                 }
+                if key.contains_key(&k) {
+                    return Err(invalid(format!(
+                        "key {k:?} appears more than once in element {name:?}"
+                    )));
+                }
                 key.insert(k, v);
             }
 
@@ -520,6 +525,7 @@ mod tests {
     #[case::stray_close(     "/a]",        "unmatched ']'")]
     #[case::junk_after_key(  "/a[k=v]x",   "unexpected 'x'")]
     #[case::bare_key_group(  "[k=*]",      "empty path element")]
+    #[case::repeated_key(    "/a[k=1][k=2]", "appears more than once")]
     fn client_path_errors(#[case] input: &str, #[case] needle: &str) {
         let err = parse_client_path(input).unwrap_err();
         assert!(matches!(err, SondaError::Config(_)));
