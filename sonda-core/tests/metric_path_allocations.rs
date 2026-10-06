@@ -201,16 +201,19 @@ fn plain_cost() -> f64 {
 ///
 /// `Sink` is `#[async_trait]`, so reaching the *default* `write_metric_event`
 /// costs a second boxed future on top of the `write` it forwards to. The
-/// labelled scenario measures 5.01 allocations per event before and after
-/// the hook; the budget sits just above that and fails the 6-per-event
-/// double-box.
+/// labelled scenario measures 1.02 allocations per event: the one boxed
+/// future of `write`, the encode buffer being recycled through the write
+/// queue. The budget is that plus 0.5, so the 2.02-per-event double-box
+/// fails, as does an encode buffer that regrows every tick (5.01).
 #[test]
 fn plain_sink_pays_no_extra_allocation_per_event() {
     let per_event = plain_cost();
     assert!(
-        per_event < 6.0,
-        "a sink that does not want metric events must keep its original \
-         per-event cost: {per_event:.3} allocations per event, budget < 6.0"
+        per_event < 1.6,
+        "the plain metric write path is over budget: {per_event:.3} allocations \
+         per event, budget < 1.6. About 2.0 means a sink that does not opt in \
+         is reaching the default write_metric_event; about 5.0 means \
+         push_metric no longer hands back a recycled encode buffer"
     );
 }
 
