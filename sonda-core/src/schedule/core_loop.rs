@@ -2222,9 +2222,12 @@ mod tests {
         );
 
         // Fails on its first write, so the drain stops there and the second
-        // command never reaches the sink.
+        // command never reaches the sink. The failed command's capacity tells
+        // its buffer apart from the other two.
         let (mut sink, writes) = shared_sink_failing(0);
-        output.writes.push(WriteCommand::Bytes(b"first".to_vec()));
+        let mut failed_bytes = Vec::with_capacity(4096);
+        failed_bytes.extend_from_slice(b"first");
+        output.writes.push(WriteCommand::Bytes(failed_bytes));
         output.writes.push(WriteCommand::Bytes(b"second".to_vec()));
         let result = drain_writes(&mut output, &mut sink).await;
 
@@ -2246,7 +2249,12 @@ mod tests {
         assert_eq!(
             output.spare.len(),
             2,
-            "the failed write's buffer, and only that one, must join the spare list"
+            "exactly one buffer must join the spare list"
+        );
+        assert!(
+            output.spare[1].capacity() >= 4096,
+            "the buffer that joined must be the failed write's; got capacity {}",
+            output.spare[1].capacity()
         );
     }
 
