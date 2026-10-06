@@ -333,6 +333,31 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
 
     validate_sink_config(&config.base.sink)?;
 
+    validate_encoder_sink_pairing(&config.encoder, &config.base.sink)?;
+
+    Ok(())
+}
+
+/// Reject a `gnmi` encoder paired with any sink but `gnmi_target`.
+///
+/// The encoder's output is one unframed notification per event, which only a
+/// sink taking one notification per write can carry: written back to back,
+/// two notifications decode as one. No sink in this build qualifies, so
+/// every pairing is rejected with a [`SondaError::Config`] naming
+/// `gnmi_target`.
+///
+/// Returns `Ok(())` for any other encoder.
+pub fn validate_encoder_sink_pairing(
+    encoder: &crate::encoder::EncoderConfig,
+    sink: &SinkConfig,
+) -> Result<(), SondaError> {
+    #[cfg(feature = "gnmi")]
+    if matches!(encoder, crate::encoder::EncoderConfig::Gnmi(_)) {
+        return Err(SondaError::Config(ConfigError::invalid(
+            "the gnmi encoder can only be used with the gnmi_target sink",
+        )));
+    }
+    let _ = (encoder, sink);
     Ok(())
 }
 
@@ -2281,7 +2306,7 @@ generator:
         }
     }
 
-    // ---- validate_config: gnmi encoder ---------------------------------------
+    // ---- validate_gnmi_encoder ----------------------------------------------
 
     #[cfg(feature = "gnmi")]
     fn gnmi_config(path: Option<&str>) -> ScenarioConfig {
@@ -2304,14 +2329,14 @@ generator:
         let config = gnmi_config(Some(
             "/interfaces/interface[name={ifName}]/state/counters/{name}",
         ));
-        validate_config(&config).expect("known placeholders must validate");
+        validate_gnmi_encoder(&config).expect("known placeholders must validate");
     }
 
     #[cfg(feature = "gnmi")]
     #[test]
     fn gnmi_unknown_placeholder_is_rejected_and_named() {
         let config = gnmi_config(Some("/interfaces/interface[name={ifname}]/state"));
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(
             msg.contains("{ifname}"),
             "error must name the placeholder: {msg}"
@@ -2326,7 +2351,7 @@ generator:
     #[test]
     fn gnmi_config_without_a_template_for_the_metric_is_rejected() {
         let mut config = gnmi_config(None);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("no path template"), "got: {msg}");
         assert!(
             msg.contains("in_octets"),
@@ -2338,7 +2363,7 @@ generator:
             unreachable!()
         };
         cfg.paths.insert("out_octets".to_string(), "/a".to_string());
-        assert!(validate_config(&config).is_err());
+        assert!(validate_gnmi_encoder(&config).is_err());
     }
 
     #[cfg(feature = "gnmi")]
@@ -2352,7 +2377,7 @@ generator:
             "in_octets".to_string(),
             "/a[k={ifName}]/{missing}".to_string(),
         );
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("{missing}"), "got: {msg}");
 
         let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
@@ -2360,7 +2385,7 @@ generator:
         };
         cfg.paths
             .insert("in_octets".to_string(), "/a[k={ifName}]".to_string());
-        validate_config(&config).expect("paths entry with known labels must validate");
+        validate_gnmi_encoder(&config).expect("paths entry with known labels must validate");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2392,11 +2417,11 @@ generator:
     fn gnmi_dynamic_label_key_is_a_known_placeholder() {
         let mut config = gnmi_config(Some("/a[if={ifName}][pod={pod}]/{name}"));
         assert!(
-            validate_config(&config).is_err(),
+            validate_gnmi_encoder(&config).is_err(),
             "the key is not declared yet"
         );
         config.base.dynamic_labels = Some(vec![counter_label("pod")]);
-        validate_config(&config).expect("a dynamic label is on every event");
+        validate_gnmi_encoder(&config).expect("a dynamic label is on every event");
     }
 
     /// Events carry a spike label while its window is open, and the template
@@ -2405,10 +2430,10 @@ generator:
     #[test]
     fn gnmi_spike_label_must_be_dropped() {
         let mut config = gnmi_config(Some("/a[if={ifName}]/{name}"));
-        validate_config(&config).expect("baseline without spikes must validate");
+        validate_gnmi_encoder(&config).expect("baseline without spikes must validate");
 
         config.base.cardinality_spikes = Some(vec![spike("burst")]);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(
             msg.contains("cardinality_spikes label `burst`"),
             "got: {msg}"
@@ -2416,7 +2441,7 @@ generator:
         assert!(msg.contains("drop_labels"), "got: {msg}");
 
         gnmi_cfg(&mut config).drop_labels.push("burst".to_string());
-        validate_config(&config).expect("a dropped spike label is allowed");
+        validate_gnmi_encoder(&config).expect("a dropped spike label is allowed");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2424,7 +2449,7 @@ generator:
     fn gnmi_spike_label_is_rejected_as_a_placeholder() {
         let mut config = gnmi_config(Some("/a[if={ifName}][burst={burst}]/{name}"));
         config.base.cardinality_spikes = Some(vec![spike("burst")]);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(
             msg.contains("{burst}"),
             "error must name the placeholder: {msg}"
@@ -2437,7 +2462,7 @@ generator:
             .labels
             .get_or_insert_with(Default::default)
             .insert("burst".to_string(), "x".to_string());
-        validate_config(&config).expect("a static label of the same key is always present");
+        validate_gnmi_encoder(&config).expect("a static label of the same key is always present");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2452,10 +2477,10 @@ generator:
         #[case] add_name_label: fn(&mut ScenarioConfig),
     ) {
         let mut config = gnmi_config(Some("/interfaces/interface[name={name}][if={ifName}]/state"));
-        validate_config(&config).expect("without a `name` label, {name} is the metric name");
+        validate_gnmi_encoder(&config).expect("without a `name` label, {name} is the metric name");
 
         add_name_label(&mut config);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label called `name`"), "got: {msg}");
     }
 
@@ -2472,11 +2497,11 @@ generator:
             .get_or_insert_with(Default::default)
             .insert("name".to_string(), "rtr-1".to_string());
         gnmi_cfg(&mut config).drop_labels.push("device".to_string());
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label called `name`"), "got: {msg}");
 
         gnmi_cfg(&mut config).target_label = "name".to_string();
-        validate_config(&config).expect("`name` as the target label collides with nothing");
+        validate_gnmi_encoder(&config).expect("`name` as the target label collides with nothing");
     }
 
     /// A `name` label listed in `drop_labels` is deliberately out of the path,
@@ -2494,11 +2519,11 @@ generator:
     ) {
         let mut config = gnmi_config(Some("/interfaces/interface[if={ifName}]/state/{name}"));
         add_name_label(&mut config);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label called `name`"), "got: {msg}");
 
         gnmi_cfg(&mut config).drop_labels.push("name".to_string());
-        validate_config(&config).expect("a dropped `name` label collides with nothing");
+        validate_gnmi_encoder(&config).expect("a dropped `name` label collides with nothing");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2551,11 +2576,11 @@ generator:
             .get_or_insert_with(Default::default)
             .insert("name".to_string(), "x".to_string());
         // {name} is never the label, so a `name` label can only be dropped.
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label `name`"), "got: {msg}");
 
         gnmi_cfg(&mut config).drop_labels.push("name".to_string());
-        validate_config(&config).expect("a dropped `name` label collides with nothing");
+        validate_gnmi_encoder(&config).expect("a dropped `name` label collides with nothing");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2570,14 +2595,14 @@ generator:
     #[test]
     fn gnmi_unreferenced_static_label_is_rejected_and_named() {
         let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
-        validate_config(&config).expect("baseline: ifName referenced, device is the target");
+        validate_gnmi_encoder(&config).expect("baseline: ifName referenced, device is the target");
 
         config
             .base
             .labels
             .get_or_insert_with(Default::default)
             .insert("job".to_string(), "edge".to_string());
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(
             msg.contains("label `job`"),
             "error must name the label: {msg}"
@@ -2588,7 +2613,7 @@ generator:
         );
 
         gnmi_cfg(&mut config).drop_labels.push("job".to_string());
-        validate_config(&config).expect("a label listed in drop_labels is allowed");
+        validate_gnmi_encoder(&config).expect("a label listed in drop_labels is allowed");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2596,11 +2621,11 @@ generator:
     fn gnmi_unreferenced_dynamic_label_is_rejected_and_named() {
         let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
         config.base.dynamic_labels = Some(vec![counter_label("pod")]);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label `pod`"), "got: {msg}");
 
         gnmi_cfg(&mut config).drop_labels.push("pod".to_string());
-        validate_config(&config).expect("a dropped dynamic label is allowed");
+        validate_gnmi_encoder(&config).expect("a dropped dynamic label is allowed");
     }
 
     /// `device` passes unreferenced only because it is the target label:
@@ -2609,10 +2634,10 @@ generator:
     #[test]
     fn gnmi_target_label_is_exempt_from_the_reference_rule() {
         let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
-        validate_config(&config).expect("device is the default target label");
+        validate_gnmi_encoder(&config).expect("device is the default target label");
 
         gnmi_cfg(&mut config).target_label = "host".to_string();
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label `device`"), "got: {msg}");
     }
 
@@ -2625,7 +2650,7 @@ generator:
             let labels = config.base.labels.get_or_insert_with(Default::default);
             labels.insert("zone".to_string(), "z".to_string());
             labels.insert("job".to_string(), "j".to_string());
-            let msg = err_msg(validate_config(&config));
+            let msg = err_msg(validate_gnmi_encoder(&config));
             assert!(msg.contains("label `job`"), "got: {msg}");
         }
     }
@@ -2656,8 +2681,60 @@ generator:
     ) {
         let mut config = gnmi_config(None);
         config.encoder = EncoderConfig::Gnmi(cfg);
-        let msg = err_msg(validate_config(&config));
+        let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains(needle), "got: {msg}");
+    }
+
+    // ---- validate_config: gnmi encoder and sink pairing ----------------------
+
+    #[cfg(feature = "gnmi")]
+    fn valid_gnmi_config_with_sink(sink: SinkConfig) -> ScenarioConfig {
+        let mut config = gnmi_config(Some(
+            "/interfaces/interface[name={ifName}]/state/counters/{name}",
+        ));
+        config.base.sink = sink;
+        config
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rstest::rstest]
+    #[case::stdout(SinkConfig::Stdout)]
+    #[case::file(SinkConfig::File { path: "/tmp/x".to_string() })]
+    #[case::udp(SinkConfig::Udp { address: "127.0.0.1:9999".to_string() })]
+    #[case::tcp(SinkConfig::Tcp { address: "127.0.0.1:9999".to_string(), retry: None })]
+    fn gnmi_encoder_is_rejected_with_every_sink(#[case] sink: SinkConfig) {
+        let config = valid_gnmi_config_with_sink(sink);
+        // Positive controls: the encoder block is valid, and the same entry
+        // with another encoder validates, so only the pairing is rejected.
+        validate_gnmi_encoder(&config).expect("the gnmi block itself is valid");
+        let mut other = config.clone();
+        other.encoder = EncoderConfig::PrometheusText { precision: None };
+        validate_config(&other).expect("the entry validates with another encoder");
+
+        let msg = err_msg(validate_config(&config));
+        assert!(
+            msg.contains("can only be used with the gnmi_target sink"),
+            "got: {msg}"
+        );
+    }
+
+    /// `validate_config` runs the gnmi checks, so an invalid block reports its
+    /// own defect rather than only the pairing.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn validate_config_reports_gnmi_block_errors_before_the_pairing() {
+        let mut config = valid_gnmi_config_with_sink(SinkConfig::Stdout);
+        gnmi_cfg(&mut config).path = Some("/a/{nope}".into());
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("nope"), "got: {msg}");
+        assert!(!msg.contains("gnmi_target"), "got: {msg}");
+    }
+
+    #[test]
+    fn pairing_accepts_every_other_encoder() {
+        let encoder = EncoderConfig::PrometheusText { precision: None };
+        validate_encoder_sink_pairing(&encoder, &SinkConfig::Stdout)
+            .expect("only the gnmi encoder has a pairing rule");
     }
 
     // ---- validate_config: encoder precision validation ------------------------

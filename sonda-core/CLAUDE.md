@@ -111,7 +111,8 @@ src/
 │   │   │                   integer strings). Per-series path bytes cached on first sight;
 │   │   │                   uncovered_label + template_for are the ONE coverage and
 │   │   │                   template rules validation also calls. Output is one Notification
-│   │   │                   per call, NOT length-prefixed.
+│   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
+│   │   │                   rejects it with every sink but gnmi_target.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path
 │   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
@@ -240,7 +241,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `gnmi` | no | Enables `tonic` + `prost` + `bytes` + `http` + `tower` + `tokio-stream` (`net`) and `runtime` for the gNMI encoder (`encoder/gnmi/`). The encoder itself uses only `prost`. |
+| `gnmi` | no | Enables `prost` and `runtime` for the gNMI encoder (`encoder/gnmi/`). Validation rejects the encoder with every sink except `gnmi_target`. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain
@@ -339,7 +340,8 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
     `TimestampBeforeEpoch(SystemTimeError)` preserve the original error. `NotSupported(String)`
     for unsupported event types. `EventRejected(String)` when one event does not fit a valid
     encoder configuration (the gnmi encoder: missing or uncovered label, unencodable value,
-    unmapped enum code). `Other(String)` for feature-gated encoder errors (protobuf, snappy).
+    unmapped enum code). The schedule loop skips such an event, counts it in
+    `ScenarioStats::rejected_events` and `errors`, and keeps running. `Other(String)` for feature-gated encoder errors (protobuf, snappy).
   - `RuntimeError` — system/environment errors. `SpawnFailed(#[source] io::Error)` for thread
     spawn failures (preserves the original `io::Error` via `#[source]`), `ThreadPanicked` for
     panicked scenario threads, `ScenariosFailed(String)` for collected errors from multi-scenario

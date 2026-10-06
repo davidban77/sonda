@@ -44,22 +44,24 @@ const F64_TEXT_CAPACITY: usize = 400;
     serde(from = "GnmiValueTypeWire", into = "GnmiValueTypeWire")
 )]
 pub enum GnmiValueType {
-    /// `uint_val`: the value truncated toward zero, negatives clamped to 0.
-    /// A non-finite value rejects the event.
+    /// `uint_val`: the value rounded to the nearest integer (halves away
+    /// from zero), then clamped at 0. A non-finite value rejects the event.
     Uint,
-    /// `int_val`: the value truncated toward zero. A non-finite value
-    /// rejects the event.
+    /// `int_val`: the value rounded to the nearest integer (halves away from
+    /// zero). A non-finite value rejects the event.
     Int,
     /// `double_val` (field 14).
     Double,
-    /// `bool_val`: `true` for any value other than `0.0`. A non-finite value
+    /// `bool_val`: `true` when the value rounded to the nearest integer is not
+    /// 0, so float noise such as `1.2e-16` is `false`. A non-finite value
     /// rejects the event.
     Bool,
     /// `string_val`: the shortest decimal text that round-trips the `f64`.
     String,
-    /// `string_val` looked up by the value rounded to the nearest `i64`, so
-    /// float noise such as `0.9999999999999999` still selects code `1`. A
-    /// value with no entry, or a non-finite value, rejects the event.
+    /// `string_val` looked up by the value rounded to the nearest integer, as
+    /// for [`Int`](Self::Int), so float noise such as `0.9999999999999999`
+    /// still selects code `1`. A value with no entry, or a non-finite value,
+    /// rejects the event.
     Enum(BTreeMap<i64, String>),
 }
 
@@ -549,8 +551,8 @@ impl Encoder for GnmiEncoder {
     /// they cost nothing in steady state.
     ///
     /// The output is not length-prefixed, so it is only usable by a sink that
-    /// takes one notification per write. Pairing with any other sink is not
-    /// rejected by validation.
+    /// takes one notification per write. Validation rejects pairing this
+    /// encoder with any sink other than `gnmi_target`.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         let since_epoch = event
             .timestamp
@@ -573,9 +575,10 @@ impl Encoder for GnmiEncoder {
         // Initialised only on the `String` path; every other type skips it.
         let mut text: [u8; F64_TEXT_CAPACITY];
         let value = event.value;
-        let finite = |kind: &str| {
+        // Every integer-shaped type rounds the same way.
+        let rounded = |kind: &str| {
             if value.is_finite() {
-                Ok(value)
+                Ok(value.round())
             } else {
                 Err(SondaError::Encoder(EncoderError::EventRejected(format!(
                     "value {value} of metric {name:?} cannot be encoded as {kind}"
@@ -584,15 +587,15 @@ impl Encoder for GnmiEncoder {
         };
         let scalar = match self.values.get(name) {
             None | Some(GnmiValueType::Double) => Scalar::Double(value),
-            Some(GnmiValueType::Uint) => Scalar::Uint(finite("uint")?.max(0.0) as u64),
-            Some(GnmiValueType::Int) => Scalar::Int(finite("int")? as i64),
-            Some(GnmiValueType::Bool) => Scalar::Bool(finite("bool")? != 0.0),
+            Some(GnmiValueType::Uint) => Scalar::Uint(rounded("uint")?.max(0.0) as u64),
+            Some(GnmiValueType::Int) => Scalar::Int(rounded("int")? as i64),
+            Some(GnmiValueType::Bool) => Scalar::Bool(rounded("bool")? != 0.0),
             Some(GnmiValueType::String) => {
                 text = [0u8; F64_TEXT_CAPACITY];
                 Scalar::Str(format_f64(value, &mut text)?)
             }
             Some(GnmiValueType::Enum(map)) => Scalar::Str(
-                map.get(&(finite("enum")?.round() as i64))
+                map.get(&(rounded("enum")? as i64))
                     .map(String::as_str)
                     .ok_or_else(|| {
                         SondaError::Encoder(EncoderError::EventRejected(format!(
@@ -923,13 +926,20 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case::uint_truncates(       Some(GnmiValueType::Uint),   3.7,    Ok(Value::UintVal(3)))]
+    #[case::uint_rounds_up(       Some(GnmiValueType::Uint),   3.7,    Ok(Value::UintVal(4)))]
+    #[case::uint_rounds_down(     Some(GnmiValueType::Uint),   3.4,    Ok(Value::UintVal(3)))]
+    #[case::uint_rounds_noise(    Some(GnmiValueType::Uint),   0.9999999999999999, Ok(Value::UintVal(1)))]
     #[case::uint_clamps_negative( Some(GnmiValueType::Uint),   -5.0,   Ok(Value::UintVal(0)))]
-    #[case::int_truncates(        Some(GnmiValueType::Int),    -2.9,   Ok(Value::IntVal(-2)))]
+    #[case::int_rounds(           Some(GnmiValueType::Int),    -2.9,   Ok(Value::IntVal(-3)))]
+    #[case::int_half_away(        Some(GnmiValueType::Int),    2.5,    Ok(Value::IntVal(3)))]
+    #[case::int_rounds_noise(     Some(GnmiValueType::Int),    0.9999999999999999, Ok(Value::IntVal(1)))]
     #[case::double(               Some(GnmiValueType::Double), 1.25,   Ok(Value::DoubleVal(1.25)))]
     #[case::default_is_double(    None,                        0.5,    Ok(Value::DoubleVal(0.5)))]
     #[case::bool_zero_is_false(   Some(GnmiValueType::Bool),   0.0,    Ok(Value::BoolVal(false)))]
-    #[case::bool_nonzero_is_true( Some(GnmiValueType::Bool),   -0.1,   Ok(Value::BoolVal(true)))]
+    #[case::bool_nonzero_is_true( Some(GnmiValueType::Bool),   -0.6,   Ok(Value::BoolVal(true)))]
+    #[case::bool_rounds_to_false( Some(GnmiValueType::Bool),   0.4,    Ok(Value::BoolVal(false)))]
+    #[case::bool_sin_pi_is_false( Some(GnmiValueType::Bool),   std::f64::consts::PI.sin(), Ok(Value::BoolVal(false)))]
+    #[case::bool_rounds_noise(    Some(GnmiValueType::Bool),   0.9999999999999999, Ok(Value::BoolVal(true)))]
     #[case::string_shortest(      Some(GnmiValueType::String), 0.1,    Ok(Value::StringVal("0.1".into())))]
     #[case::string_integral(      Some(GnmiValueType::String), 3.0,    Ok(Value::StringVal("3".into())))]
     #[case::string_huge(          Some(GnmiValueType::String), -1e300, Ok(Value::StringVal(format!("{}", -1e300))))]

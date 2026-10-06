@@ -101,18 +101,22 @@ fn dry_run_pack_backed_expands_sub_signals() {
     assert!(stderr.contains("pack_metric_b"));
 }
 
-/// The gnmi encoder renders with its origin rather than the `unknown (...)`
-/// fallback. The file validates first, so a rejection would fail in
-/// `dry_run_stderr` rather than pass a missing-line check vacuously.
+/// A valid gnmi block on a stdout sink is rejected by the pairing rule, which
+/// runs only after the block itself has validated, so the message proves both.
 #[cfg(feature = "gnmi")]
 #[test]
-fn dry_run_shows_the_gnmi_encoder_and_its_origin() {
-    let stderr = dry_run_stderr("gnmi.v2.yaml");
-    assert!(stderr.contains("Validation: OK"), "{stderr}");
-    assert!(stderr.contains("encoder:"), "{stderr}");
+fn dry_run_rejects_the_gnmi_encoder_without_a_gnmi_target_sink() {
+    let fixture = cli_fixtures_dir().join("gnmi.v2.yaml");
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(&fixture)
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
     assert!(
-        stderr.contains("gnmi (openconfig-interfaces)"),
-        "dry-run must name the gnmi encoder and its origin:\n{stderr}"
+        stderr.contains("the gnmi encoder can only be used with the gnmi_target sink"),
+        "{stderr}"
     );
-    assert!(!stderr.contains("unknown ("), "{stderr}");
 }
