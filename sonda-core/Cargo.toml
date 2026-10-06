@@ -94,5 +94,9 @@ harness = false
 name = "scheduler_baseline"
 harness = false
 
+[[bench]]
+name = "metric_dispatch"
+harness = false
+
 [lints]
 workspace = true
