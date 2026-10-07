@@ -25,12 +25,13 @@ use super::ParsedSchedule;
 /// Minimum interval between rate-limited sink-error stderr emissions.
 const SINK_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Per-scenario rate limiter for the loop's stderr warnings: sink errors, and
-/// events the encoder rejected (one instance each).
+/// Per-scenario rate limiter for the loop's stderr warnings.
 ///
-/// Stack-local in [`run_schedule_loop`]; not shared, not telemetry. Counts
-/// suppressed errors and emits a single line at most once per
-/// [`SINK_WARN_INTERVAL`].
+/// [`run_schedule_loop_with_initial_tick`] holds one instance for sink errors
+/// and one for events the encoder rejected; [`gated_loop`] holds one for
+/// close-emit errors. Each is a local of that function: not shared, not
+/// telemetry. Counts suppressed errors and emits a single line at most once
+/// per [`SINK_WARN_INTERVAL`].
 struct SinkErrorRateLimiter {
     last_emit: Option<Instant>,
     suppressed_count: u64,

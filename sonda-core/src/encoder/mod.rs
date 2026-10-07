@@ -211,8 +211,7 @@ pub fn create_encoder(config: &EncoderConfig) -> Result<Box<dyn Encoder>, crate:
         #[cfg(not(feature = "gnmi"))]
         EncoderConfig::GnmiDisabled { .. } => {
             Err(crate::SondaError::Config(crate::ConfigError::invalid(
-                "encoder type 'gnmi' is unavailable: compiled without the gnmi feature \
-                 (cargo build -F gnmi)",
+                "encoder type 'gnmi' requires the 'gnmi' feature: cargo build -F gnmi",
             )))
         }
     }
@@ -792,7 +791,7 @@ sink:
         assert!(matches!(err, crate::SondaError::Config(_)));
         assert!(
             err.to_string()
-                .contains("compiled without the gnmi feature"),
+                .contains("requires the 'gnmi' feature: cargo build -F gnmi"),
             "got: {err}"
         );
     }

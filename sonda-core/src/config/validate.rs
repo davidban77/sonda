@@ -526,7 +526,10 @@ fn reject_gnmi_encoder(
 /// - Every `cardinality_spikes` label is covered the same way. It cannot be
 ///   referenced as a placeholder, so in practice it is the target label, a
 ///   referenced static label of the same key, or listed in `drop_labels`.
-/// - The coverage rule is [`GnmiEncoder`]'s own, which the encoder applies to
+/// - A static label used as an element-name placeholder has a value that
+///   reads back as one element: non-empty, with no `/`, `[` or `]`. The rule
+///   is the one the encoder applies when it renders the path.
+/// - The coverage rule is [`GnmiEncoder`](crate::encoder::gnmi::GnmiEncoder)'s own, which the encoder applies to
 ///   each new series at encode time, so a configuration that validates never
 ///   has an event rejected by it.
 ///
@@ -535,7 +538,8 @@ fn reject_gnmi_encoder(
 /// Returns `Ok(())` for any other encoder.
 #[cfg(feature = "gnmi")]
 pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> {
-    use crate::encoder::gnmi::{path::NAME_PLACEHOLDER, GnmiEncoder};
+    use crate::encoder::gnmi::path::{is_valid_element_name, NAME_PLACEHOLDER};
+    use crate::encoder::gnmi::GnmiEncoder;
 
     let crate::encoder::EncoderConfig::Gnmi(ref cfg) = config.encoder else {
         return Ok(());
@@ -565,11 +569,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     };
 
     if template.placeholders().any(|p| p == NAME_PLACEHOLDER)
-        && cfg.target_label != NAME_PLACEHOLDER
-        && !cfg
-            .drop_labels
-            .iter()
-            .any(|dropped| dropped == NAME_PLACEHOLDER)
+        && !encoder.label_needs_no_reference(NAME_PLACEHOLDER)
         && (static_label(NAME_PLACEHOLDER)
             || dynamic_label(NAME_PLACEHOLDER)
             || spike_label(NAME_PLACEHOLDER))
@@ -600,6 +600,28 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for metric {:?} uses placeholder {{{unknown}}}, which is \
              neither {{name}} nor a label of this entry",
+            config.name
+        ))));
+    }
+
+    // A dynamic label replaces a static label of the same key on every event,
+    // so only an unshadowed static value is ever rendered.
+    let bad_element = template
+        .element_name_placeholders()
+        .filter(|p| *p != NAME_PLACEHOLDER && !dynamic_label(p))
+        .find_map(|p| {
+            config
+                .labels
+                .as_ref()?
+                .get_key_value(p)
+                .filter(|(_, value)| !is_valid_element_name(value))
+        });
+    if let Some((label, value)) = bad_element {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} uses label `{label}` as an element name, \
+             but its value {value:?} is empty or contains '/', '[' or ']', so every event \
+             would be rejected; use it as a key value instead, for example \
+             [name={{{label}}}]",
             config.name
         ))));
     }
@@ -2363,7 +2385,8 @@ generator:
             unreachable!()
         };
         cfg.paths.insert("out_octets".to_string(), "/a".to_string());
-        assert!(validate_gnmi_encoder(&config).is_err());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("no path template"), "got: {msg}");
     }
 
     #[cfg(feature = "gnmi")]
@@ -2416,12 +2439,52 @@ generator:
     #[test]
     fn gnmi_dynamic_label_key_is_a_known_placeholder() {
         let mut config = gnmi_config(Some("/a[if={ifName}][pod={pod}]/{name}"));
-        assert!(
-            validate_gnmi_encoder(&config).is_err(),
-            "the key is not declared yet"
-        );
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("{pod}"), "the key is not declared yet: {msg}");
         config.base.dynamic_labels = Some(vec![counter_label("pod")]);
         validate_gnmi_encoder(&config).expect("a dynamic label is on every event");
+    }
+
+    /// A static label value is known at validation time, so one that cannot be
+    /// an element name is rejected there rather than on every event.
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::slash(        "Gi0/0/0")]
+    #[case::empty(        "")]
+    #[case::open_bracket( "a[b")]
+    #[case::close_bracket("a]b")]
+    fn gnmi_static_label_value_must_be_a_valid_element_name(#[case] value: &str) {
+        let mut config = gnmi_config(Some("/interfaces/{ifName}/state/{name}"));
+        config.base.labels.get_or_insert_with(Default::default)
+            .insert("ifName".to_string(), value.to_string());
+
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label `ifName` as an element name"), "got: {msg}");
+        assert!(msg.contains(&format!("{value:?}")), "the value must be named: {msg}");
+        assert!(msg.contains("in_octets"), "the metric must be named: {msg}");
+
+        // Positive control: the same value as a key value is fine.
+        gnmi_cfg(&mut config).path =
+            Some("/interfaces/interface[name={ifName}]/state/{name}".to_string());
+        validate_gnmi_encoder(&config).expect("any value may be a key value");
+    }
+
+    /// A dynamic label of the same key replaces the static one on every event,
+    /// so the static value is never rendered and is not checked.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_shadowed_static_label_value_is_not_an_element_name() {
+        let mut config = gnmi_config(Some("/interfaces/{ifName}/state/{name}"));
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("ifName".to_string(), "Gi0/0/0".to_string());
+        assert!(err_msg(validate_gnmi_encoder(&config)).contains("element name"));
+
+        config.base.dynamic_labels = Some(vec![counter_label("ifName")]);
+        validate_gnmi_encoder(&config).expect("the dynamic value is what renders");
     }
 
     /// Events carry a spike label while its window is open, and the template

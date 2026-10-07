@@ -10,8 +10,9 @@ src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── emit.rs             ← synchronous single-event helpers: emit_log, emit_metric.
-│                          Build a one-shot encoder + sink, encode one event, write,
-│                          flush, drop. Used by the sonda-server `POST /events` handler.
+│                          Check the encoder/sink pairing, build a one-shot encoder +
+│                          sink, encode one event, write, flush, drop. Used by the
+│                          sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
@@ -113,7 +114,9 @@ src/
 │   │   │                   template rules validation also calls. Output is one Notification
 │   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
 │   │   │                   rejects it with every sink but gnmi_target.
-│   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path
+│   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
+│   │   │                   is_valid_element_name is the ONE element-name rule that
+│   │   │                   render and validation (static label values) both apply
 │   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/

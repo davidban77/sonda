@@ -93,6 +93,17 @@ impl PathTemplate {
         })
     }
 
+    /// Placeholders in element-name position, in template order. Placeholders
+    /// in key values are not included: those may render to any text.
+    pub(crate) fn element_name_placeholders(&self) -> impl Iterator<Item = &str> {
+        self.segments
+            .iter()
+            .filter_map(|segment| match &segment.name {
+                Part::Placeholder(p) => Some(p.as_str()),
+                Part::Literal(_) => None,
+            })
+    }
+
     /// Render into a `proto::Path` for this series. Allocates; called once per series.
     ///
     /// The returned path has empty `origin` and `target`. Returns
@@ -109,7 +120,7 @@ impl PathTemplate {
                 key.insert(k.clone(), resolve(v, name, labels)?);
             }
             let element = resolve(&segment.name, name, labels)?;
-            if element.is_empty() || element.contains(['/', '[', ']']) {
+            if !is_valid_element_name(&element) {
                 return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
                     "metric {name:?} renders gnmi path element {element:?}; an element name \
                      must be non-empty and contain no '/', '[' or ']'"
@@ -123,6 +134,13 @@ impl PathTemplate {
             target: String::new(),
         })
     }
+}
+
+/// Whether `element` reads back as exactly one path element: non-empty, with
+/// no `/`, `[` or `]`. [`PathTemplate::render`] rejects an element name that
+/// fails it, and validation applies it to label values known in advance.
+pub(crate) fn is_valid_element_name(element: &str) -> bool {
+    !element.is_empty() && !element.contains(['/', '[', ']'])
 }
 
 /// Resolve one part of a segment for a series.
@@ -458,6 +476,23 @@ mod tests {
             PathTemplate::parse("/{root}/interface[name={ifName}][kind=eth]/state/{name}").unwrap();
         let got: Vec<&str> = template.placeholders().collect();
         assert_eq!(got, vec!["root", "ifName", "name"]);
+    }
+
+    #[test]
+    fn element_name_placeholders_skip_key_values() {
+        let t = PathTemplate::parse("/a[k={key}]/{elem}/{name}/c[x={other}]").unwrap();
+        let names: Vec<&str> = t.element_name_placeholders().collect();
+        assert_eq!(names, ["elem", "name"]);
+    }
+
+    #[rstest]
+    #[case::plain("Gi0", true)]
+    #[case::empty("", false)]
+    #[case::slash("Gi0/0/0", false)]
+    #[case::open_bracket("a[b", false)]
+    #[case::close_bracket("a]b", false)]
+    fn element_name_rule(#[case] element: &str, #[case] valid: bool) {
+        assert_eq!(is_valid_element_name(element), valid);
     }
 
     #[test]

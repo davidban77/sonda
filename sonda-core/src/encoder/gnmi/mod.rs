@@ -16,7 +16,7 @@ use std::time::UNIX_EPOCH;
 use prost::encoding::{self, encode_key, encode_varint, encoded_len_varint, key_len, WireType};
 use prost::Message;
 
-use crate::model::metric::MetricEvent;
+use crate::model::metric::{is_valid_metric_name, MetricEvent};
 use crate::schedule::stats::MetricKey;
 use crate::{ConfigError, EncoderError, SondaError};
 
@@ -45,10 +45,12 @@ const F64_TEXT_CAPACITY: usize = 400;
 )]
 pub enum GnmiValueType {
     /// `uint_val`: the value rounded to the nearest integer (halves away
-    /// from zero), then clamped at 0. A non-finite value rejects the event.
+    /// from zero), then clamped to `0..=u64::MAX`. A non-finite value rejects
+    /// the event.
     Uint,
     /// `int_val`: the value rounded to the nearest integer (halves away from
-    /// zero). A non-finite value rejects the event.
+    /// zero), then clamped to the `i64` range. A non-finite value rejects the
+    /// event.
     Int,
     /// `double_val` (field 14).
     Double,
@@ -340,17 +342,30 @@ pub struct GnmiEncoder {
 impl GnmiEncoder {
     /// Build an encoder, parsing every template in `cfg`.
     ///
-    /// Returns [`SondaError::Config`] when `origin` is empty, an `enum` value
-    /// map is empty, or `path` or a `paths:` entry is not a valid template.
-    /// `values` and `paths` are checked in metric-name order, so the same
-    /// config always reports the same first error.
+    /// Returns [`SondaError::Config`] when `origin` is empty, a `values:` or
+    /// `paths:` key is not a valid metric name, an `enum` value map is empty,
+    /// or `path` or a `paths:` entry is not a valid template. `values` and
+    /// `paths` are checked in key order, so the same config always reports
+    /// the same first error.
     pub fn new(cfg: &GnmiEncoderConfig) -> Result<Self, SondaError> {
         if cfg.origin.is_empty() {
             return Err(SondaError::Config(ConfigError::invalid(
                 "gnmi encoder origin must not be empty",
             )));
         }
+        let check_key = |field: &str, metric: &str| {
+            if is_valid_metric_name(metric) {
+                Ok(())
+            } else {
+                Err(SondaError::Config(ConfigError::invalid(format!(
+                    "gnmi encoder {field} key {metric:?} is not a metric name; keys are \
+                     metric names as the scenario writes them, with '_' (in_octets, not \
+                     in-octets)"
+                ))))
+            }
+        };
         for (metric, value) in cfg.values.iter().collect::<BTreeMap<_, _>>() {
+            check_key("values", metric)?;
             if matches!(value, GnmiValueType::Enum(map) if map.is_empty()) {
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "gnmi encoder values.{metric}: enum map must not be empty"
@@ -363,7 +378,10 @@ impl GnmiEncoder {
             .iter()
             .collect::<BTreeMap<_, _>>()
             .into_iter()
-            .map(|(metric, t)| Ok((metric.clone(), PathTemplate::parse(t)?)))
+            .map(|(metric, t)| {
+                check_key("paths", metric)?;
+                Ok((metric.clone(), PathTemplate::parse(t)?))
+            })
             .collect::<Result<HashMap<_, _>, SondaError>>()?;
 
         Ok(Self {
@@ -391,6 +409,12 @@ impl GnmiEncoder {
             })
     }
 
+    /// Whether `key` is the `target_label` or listed in `drop_labels`, the two
+    /// ways a label may stay out of the path on purpose.
+    pub(crate) fn label_needs_no_reference(&self, key: &str) -> bool {
+        key == self.target_label || self.drop_labels.iter().any(|dropped| dropped == key)
+    }
+
     /// The first of `keys` that is not covered by `template`: not referenced by
     /// one of its placeholders (`{name}` is the metric name, never a label),
     /// not the `target_label`, and not listed in `drop_labels`. `None` when
@@ -404,8 +428,7 @@ impl GnmiEncoder {
         mut keys: impl Iterator<Item = &'a str>,
     ) -> Option<&'a str> {
         keys.find(|key| {
-            *key != self.target_label
-                && !self.drop_labels.iter().any(|dropped| dropped == key)
+            !self.label_needs_no_reference(key)
                 && !template
                     .placeholders()
                     .any(|p| p != path::NAME_PLACEHOLDER && p == *key)
@@ -539,7 +562,8 @@ impl Encoder for GnmiEncoder {
     /// - a placeholder in element-name position renders empty or containing
     ///   `/`, `[` or `]`;
     /// - the value is NaN or infinite and the metric is `uint`, `int`, `bool`
-    ///   or `enum`;
+    ///   or `enum` (a finite value outside the `int` or `uint` range is not
+    ///   rejected: it saturates at that type's bound);
     /// - the rounded value has no `enum` mapping.
     ///
     /// Returns [`EncoderError::TimestampBeforeEpoch`] or
@@ -952,7 +976,14 @@ mod tests {
     #[case::uint_nan(             Some(GnmiValueType::Uint),   f64::NAN, Err("cannot be encoded as uint"))]
     #[case::int_infinite(         Some(GnmiValueType::Int),    f64::INFINITY, Err("cannot be encoded as int"))]
     #[case::bool_nan(             Some(GnmiValueType::Bool),   f64::NAN, Err("cannot be encoded as bool"))]
-    #[case::double_keeps_nan(     Some(GnmiValueType::Double), f64::INFINITY, Ok(Value::DoubleVal(f64::INFINITY)))]
+    #[case::double_keeps_infinity(Some(GnmiValueType::Double), f64::INFINITY, Ok(Value::DoubleVal(f64::INFINITY)))]
+    #[case::double_keeps_nan(     Some(GnmiValueType::Double), f64::NAN, Ok(Value::DoubleVal(f64::NAN)))]
+    #[case::bool_small_negative(  Some(GnmiValueType::Bool),   -0.4,   Ok(Value::BoolVal(false)))]
+    #[case::uint_small_negative(  Some(GnmiValueType::Uint),   -0.4,   Ok(Value::UintVal(0)))]
+    #[case::int_small_negative(   Some(GnmiValueType::Int),    -0.4,   Ok(Value::IntVal(0)))]
+    #[case::int_saturates(        Some(GnmiValueType::Int),    1e20,   Ok(Value::IntVal(i64::MAX)))]
+    #[case::int_saturates_low(    Some(GnmiValueType::Int),    -1e20,  Ok(Value::IntVal(i64::MIN)))]
+    #[case::uint_saturates(       Some(GnmiValueType::Uint),   1e25,   Ok(Value::UintVal(u64::MAX)))]
     fn value_mapping(
         #[case] value_type: Option<GnmiValueType>,
         #[case] value: f64,
@@ -967,7 +998,13 @@ mod tests {
         match (encoder.encode_metric(&event("m", value), &mut buf), expected) {
             (Ok(()), Ok(want)) => {
                 let n = proto::Notification::decode(buf.as_slice()).unwrap();
-                assert_eq!(only_value(&n), want);
+                match (only_value(&n), want) {
+                    // Bit equality, so NaN matches NaN and -0.0 differs from 0.0.
+                    (Value::DoubleVal(got), Value::DoubleVal(want)) => {
+                        assert_eq!(got.to_bits(), want.to_bits(), "got {got}, want {want}")
+                    }
+                    (got, want) => assert_eq!(got, want),
+                }
             }
             (Err(e), Err(needle)) => {
                 assert!(
@@ -1009,10 +1046,30 @@ mod tests {
     #[case::bad_path(        with(|c| c.path = Some("/a//b".into())),                                     "empty path segment")]
     #[case::bad_paths_entry( with(|c| { c.paths.insert("m".into(), "/a[k".into()); }),                     "unclosed")]
     #[case::origin_prefix(   with(|c| c.path = Some("openconfig:/a/{name}".into())),                      "origin prefix")]
+    #[case::values_key_dash( with(|c| { c.values.insert("in-octets".into(), GnmiValueType::Uint); }),       "values key \"in-octets\" is not a metric name")]
+    #[case::paths_key_dash(  with(|c| { c.paths.insert("in-octets".into(), "/a".into()); }),                "paths key \"in-octets\" is not a metric name")]
     fn new_rejects(#[case] cfg: GnmiEncoderConfig, #[case] needle: &str) {
         let err = GnmiEncoder::new(&cfg).err().expect("must be rejected");
         assert!(matches!(err, SondaError::Config(_)));
         assert!(err.to_string().contains(needle), "{err}");
+    }
+
+    /// The positive control for the key cases of `new_rejects`: the same keys
+    /// in metric-name form are accepted and used.
+    #[test]
+    fn values_and_paths_keys_in_metric_name_form_are_accepted() {
+        let cfg = with(|c| {
+            c.values.insert("in_octets".into(), GnmiValueType::Uint);
+            c.path = None;
+            c.paths.insert("in_octets".into(), TEMPLATE.into());
+        });
+        let encoder = GnmiEncoder::new(&cfg).expect("metric-name keys are valid");
+        let mut buf = Vec::new();
+        encoder
+            .encode_metric(&event("in_octets", 3.0), &mut buf)
+            .unwrap();
+        let n = proto::Notification::decode(buf.as_slice()).unwrap();
+        assert_eq!(only_value(&n), Value::UintVal(3));
     }
 
     /// Two bad entries, reported in metric-name order. Each `HashMap` gets
