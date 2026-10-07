@@ -518,6 +518,9 @@ pub fn version_string() -> String {
     if cfg!(feature = "otlp") {
         features.push("otlp");
     }
+    if cfg!(feature = "gnmi") {
+        features.push("gnmi");
+    }
 
     if features.is_empty() {
         format!("sonda {version}")
@@ -862,6 +865,10 @@ fn encoder_display(encoder: &EncoderConfig) -> String {
         EncoderConfig::RemoteWriteDisabled { .. } => ("remote_write (feature disabled)", None),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled { .. } => ("otlp (feature disabled)", None),
+        #[cfg(feature = "gnmi")]
+        EncoderConfig::Gnmi(cfg) => return format!("gnmi ({})", cfg.origin),
+        #[cfg(not(feature = "gnmi"))]
+        EncoderConfig::GnmiDisabled { .. } => ("gnmi (feature disabled)", None),
         // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
         // fall back to a generic marker so a future variant still renders.
         _ => ("unknown", None),
@@ -1077,6 +1084,25 @@ mod tests {
     #[test]
     fn encoder_display_otlp() {
         assert_eq!(encoder_display(&EncoderConfig::Otlp), "otlp");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn encoder_display_gnmi_shows_the_origin() {
+        let config = EncoderConfig::Gnmi(sonda_core::encoder::gnmi::GnmiEncoderConfig {
+            origin: "openconfig-interfaces".to_string(),
+            ..Default::default()
+        });
+        assert_eq!(encoder_display(&config), "gnmi (openconfig-interfaces)");
+    }
+
+    #[cfg(not(feature = "gnmi"))]
+    #[test]
+    fn encoder_display_gnmi_disabled() {
+        assert_eq!(
+            encoder_display(&EncoderConfig::GnmiDisabled {}),
+            "gnmi (feature disabled)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1656,6 +1682,18 @@ mod tests {
         assert!(
             vs.contains(expected_version),
             "version_string() must contain CARGO_PKG_VERSION ({expected_version}), got: {vs}"
+        );
+    }
+
+    /// Holds in both directions, so neither build can pass by accident.
+    #[test]
+    fn version_string_lists_gnmi_exactly_when_compiled_in() {
+        let vs = version_string();
+        assert_eq!(
+            vs.contains("gnmi"),
+            cfg!(feature = "gnmi"),
+            "gnmi feature compiled in: {}, version string: {vs}",
+            cfg!(feature = "gnmi")
         );
     }
 

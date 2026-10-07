@@ -618,7 +618,7 @@
       ]
     },
     "EncoderConfig": {
-      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, or `otlp`.\n\nFeature-gated encoders (`remote_write`, `otlp`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
+      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, `otlp`, or `gnmi`.\n\nFeature-gated encoders (`remote_write`, `otlp`, `gnmi`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Prometheus text exposition format (version 0.0.4).\n\n`precision` optionally limits the number of decimal places in metric values.",
@@ -754,6 +754,80 @@
               "const": "otlp"
             }
           },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "gNMI `Notification` protobuf format.\n\nEncodes each metric event as one `Notification` with one `Update`\nwhose path is rendered from a template. See\n[`gnmi::GnmiEncoderConfig`] for the fields. Requires the `gnmi`\nfeature flag.",
+          "type": "object",
+          "properties": {
+            "drop_labels": {
+              "description": "Labels deliberately left out of the path.\n\nValidation requires every key in an entry's `labels` and\n`dynamic_labels` to be referenced by its template, be the\n`target_label`, or be listed here; series that differ only in an\nunlisted, unreferenced label would otherwise share one path.",
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "origin": {
+              "description": "`Path.origin` on every notification prefix. Default `\"openconfig\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "openconfig"
+            },
+            "path": {
+              "description": "Path template; `{name}` and `{<label>}` placeholders. Required unless every metric has a `paths:` entry.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "paths": {
+              "description": "Exact per-metric path overrides, keyed by metric name.",
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "default": {}
+            },
+            "target_label": {
+              "description": "Label whose value becomes `Path.target` on the notification prefix. Default `\"device\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "device"
+            },
+            "type": {
+              "type": "string",
+              "const": "gnmi"
+            },
+            "values": {
+              "description": "Per-metric typed value; default `double`.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/GnmiValueType"
+              },
+              "default": {}
+            }
+          },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -2198,6 +2272,51 @@
           "required": [
             "type"
           ]
+        }
+      ]
+    },
+    "GnmiEnumWire": {
+      "description": "`{ enum: { <i64>: <string>, ... } }`.",
+      "type": "object",
+      "properties": {
+        "enum": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^-?\\d+$": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enum"
+      ]
+    },
+    "GnmiScalarName": {
+      "description": "The scalar value type names.",
+      "type": "string",
+      "enum": [
+        "uint",
+        "int",
+        "double",
+        "bool",
+        "string"
+      ]
+    },
+    "GnmiValueType": {
+      "description": "The `TypedValue` variant a metric's value is encoded as.\n\nYAML forms: `uint`, `int`, `double`, `bool`, `string`, and\n`{ enum: { 1: UP, 2: DOWN } }`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GnmiScalarName"
+        },
+        {
+          "$ref": "#/$defs/GnmiEnumWire"
         }
       ]
     },

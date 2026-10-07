@@ -18,6 +18,7 @@ http = ["sonda-core/http"]
 remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 otlp = ["sonda-core/otlp"]
+gnmi = ["sonda-core/gnmi"]
 
 [[bin]]
 name = "sonda-server"

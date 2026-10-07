@@ -328,8 +328,36 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
     validate_encoder_precision(&config.encoder)?;
 
+    #[cfg(feature = "gnmi")]
+    validate_gnmi_encoder(config)?;
+
     validate_sink_config(&config.base.sink)?;
 
+    validate_encoder_sink_pairing(&config.encoder, &config.base.sink)?;
+
+    Ok(())
+}
+
+/// Reject a `gnmi` encoder paired with any sink but `gnmi_target`.
+///
+/// The encoder's output is one unframed notification per event, which only a
+/// sink taking one notification per write can carry: written back to back,
+/// two notifications decode as one. No sink in this build qualifies, so
+/// every pairing is rejected with a [`SondaError::Config`] naming
+/// `gnmi_target`.
+///
+/// Returns `Ok(())` for any other encoder.
+pub fn validate_encoder_sink_pairing(
+    encoder: &crate::encoder::EncoderConfig,
+    sink: &SinkConfig,
+) -> Result<(), SondaError> {
+    #[cfg(feature = "gnmi")]
+    if matches!(encoder, crate::encoder::EncoderConfig::Gnmi(_)) {
+        return Err(SondaError::Config(ConfigError::invalid(
+            "the gnmi encoder can only be used with the gnmi_target sink",
+        )));
+    }
+    let _ = (encoder, sink);
     Ok(())
 }
 
@@ -378,6 +406,7 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 /// Returns [`SondaError::Config`] with a descriptive message naming the field
 /// and the invalid value.
 pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError> {
+    reject_gnmi_encoder(&config.encoder, "logs")?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -446,7 +475,198 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
         crate::encoder::EncoderConfig::RemoteWriteDisabled { .. } => None,
         #[cfg(not(feature = "otlp"))]
         crate::encoder::EncoderConfig::OtlpDisabled { .. } => None,
+        #[cfg(feature = "gnmi")]
+        crate::encoder::EncoderConfig::Gnmi(_) => None,
+        #[cfg(not(feature = "gnmi"))]
+        crate::encoder::EncoderConfig::GnmiDisabled { .. } => None,
     }
+}
+
+/// Reject the `gnmi` encoder on a logs, histogram or summary entry.
+///
+/// The encoder does not encode log events at all, and histogram and summary
+/// entries emit derived series (`<name>_bucket`, `_count`, `_sum`, or a series
+/// per quantile) that no `paths:` entry is keyed by, so the gnmi encoder
+/// supports metrics entries only.
+fn reject_gnmi_encoder(
+    encoder: &crate::encoder::EncoderConfig,
+    kind: &str,
+) -> Result<(), SondaError> {
+    #[cfg(feature = "gnmi")]
+    if matches!(encoder, crate::encoder::EncoderConfig::Gnmi(_)) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "the gnmi encoder supports metrics entries only, not {kind} entries"
+        ))));
+    }
+    #[cfg(not(feature = "gnmi"))]
+    let _ = (encoder, kind);
+    Ok(())
+}
+
+/// Validate a metrics entry's `gnmi` encoder against the entry.
+///
+/// Checks:
+/// - `origin` is non-empty, every `enum` map is non-empty, and `path` and
+///   every `paths:` entry parse as templates (via
+///   [`GnmiEncoder::new`](crate::encoder::gnmi::GnmiEncoder::new)).
+/// - A template exists for the entry's metric name: its `paths:` entry or `path`.
+/// - Every placeholder in that template is `name` or a key of the entry's
+///   `labels` or `dynamic_labels` — labels every event carries. A
+///   `cardinality_spikes` label is not accepted: the runner adds it only while
+///   the spike window is open, so rendering would fail once the window closed.
+/// - A template that uses `{name}` is rejected when the entry also carries a
+///   label called `name`, because `{name}` always renders the metric name and
+///   every series would collapse onto one path. The exceptions are
+///   `target_label: name`, where the label reaches the notification prefix so
+///   series still differ, and `name` listed in `drop_labels`, which opts out
+///   of the label on purpose.
+/// - Every key in `labels` and `dynamic_labels` is referenced by the template,
+///   is the encoder's `target_label`, or is listed in its `drop_labels`.
+///   Otherwise series that differ only in that label would share one path.
+/// - Every `cardinality_spikes` label is covered the same way. It cannot be
+///   referenced as a placeholder, so in practice it is the target label, a
+///   referenced static label of the same key, or listed in `drop_labels`.
+/// - A static label used as an element-name placeholder has a value that
+///   reads back as one element: non-empty, with no `/`, `[` or `]`. The rule
+///   is the one the encoder applies when it renders the path.
+/// - The coverage rule is [`GnmiEncoder`](crate::encoder::gnmi::GnmiEncoder)'s own, which the encoder applies to
+///   each new series at encode time, so a configuration that validates never
+///   has an event rejected by it.
+///
+/// Every failure is a [`SondaError::Config`].
+///
+/// Returns `Ok(())` for any other encoder.
+#[cfg(feature = "gnmi")]
+pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> {
+    use crate::encoder::gnmi::path::{is_valid_element_name, NAME_PLACEHOLDER};
+    use crate::encoder::gnmi::GnmiEncoder;
+
+    let crate::encoder::EncoderConfig::Gnmi(ref cfg) = config.encoder else {
+        return Ok(());
+    };
+    let encoder = GnmiEncoder::new(cfg)?;
+    let template = encoder.template_for(&config.name)?;
+
+    let static_label = |key: &str| {
+        config
+            .labels
+            .as_ref()
+            .is_some_and(|labels| labels.contains_key(key))
+    };
+    let dynamic_label = |key: &str| {
+        config
+            .dynamic_labels
+            .iter()
+            .flatten()
+            .any(|dl| dl.key == key)
+    };
+    let spike_label = |key: &str| {
+        config
+            .cardinality_spikes
+            .iter()
+            .flatten()
+            .any(|spike| spike.label == key)
+    };
+
+    if template.placeholders().any(|p| p == NAME_PLACEHOLDER)
+        && !encoder.label_needs_no_reference(NAME_PLACEHOLDER)
+        && (static_label(NAME_PLACEHOLDER)
+            || dynamic_label(NAME_PLACEHOLDER)
+            || spike_label(NAME_PLACEHOLDER))
+    {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} uses {{name}}, which always renders the \
+             metric name, but this entry also has a label called `name`; rename the label \
+             (for example to `ifName`) and reference it as {{ifName}}",
+            config.name
+        ))));
+    }
+
+    let known = |placeholder: &str| {
+        placeholder == NAME_PLACEHOLDER || static_label(placeholder) || dynamic_label(placeholder)
+    };
+    if let Some(spiked) = template
+        .placeholders()
+        .find(|p| !known(p) && spike_label(p))
+    {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} uses placeholder {{{spiked}}}, a \
+             cardinality_spikes label; it exists only while the spike window is open, so \
+             the path could not be rendered outside it",
+            config.name
+        ))));
+    }
+    if let Some(unknown) = template.placeholders().find(|p| !known(p)) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} uses placeholder {{{unknown}}}, which is \
+             neither {{name}} nor a label of this entry",
+            config.name
+        ))));
+    }
+
+    // A dynamic label replaces a static label of the same key on every event,
+    // so only an unshadowed static value is ever rendered.
+    let bad_element = template
+        .element_name_placeholders()
+        .filter(|p| *p != NAME_PLACEHOLDER && !dynamic_label(p))
+        .find_map(|p| {
+            config
+                .labels
+                .as_ref()?
+                .get_key_value(p)
+                .filter(|(_, value)| !is_valid_element_name(value))
+        });
+    if let Some((label, value)) = bad_element {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} uses label `{label}` as an element name, \
+             but its value {value:?} is empty or contains '/', '[' or ']', so every event \
+             would be rejected; use it as a key value instead, for example \
+             [name={{{label}}}]",
+            config.name
+        ))));
+    }
+
+    let mut entry_labels: Vec<&str> = config
+        .labels
+        .iter()
+        .flatten()
+        .map(|(key, _)| key.as_str())
+        .chain(
+            config
+                .dynamic_labels
+                .iter()
+                .flatten()
+                .map(|dl| dl.key.as_str()),
+        )
+        .collect();
+    entry_labels.sort_unstable();
+    entry_labels.dedup();
+    if let Some(unreferenced) = encoder.uncovered_label(template, entry_labels.into_iter()) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi path template for metric {:?} does not reference label `{unreferenced}`, \
+             so series that differ only in it would share one path; reference it as \
+             {{{unreferenced}}} or list it in the encoder's drop_labels",
+            config.name
+        ))));
+    }
+
+    let mut spike_labels: Vec<&str> = config
+        .cardinality_spikes
+        .iter()
+        .flatten()
+        .map(|spike| spike.label.as_str())
+        .collect();
+    spike_labels.sort_unstable();
+    spike_labels.dedup();
+    if let Some(spiked) = encoder.uncovered_label(template, spike_labels.into_iter()) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "metric {:?} has cardinality_spikes label `{spiked}`, which events carry while \
+             the spike window is open but the gnmi path template cannot reference; list it \
+             in the encoder's drop_labels",
+            config.name
+        ))));
+    }
+    Ok(())
 }
 
 /// Validate the optional jitter amplitude for semantic correctness.
@@ -622,6 +842,7 @@ pub fn validate_quantiles(quantiles: &[f64]) -> Result<(), SondaError> {
 ///
 /// Returns [`SondaError::Config`] with a descriptive message if validation fails.
 pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
+    reject_gnmi_encoder(&config.encoder, "histogram")?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -704,6 +925,7 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
 ///
 /// Returns [`SondaError::Config`] with a descriptive message if validation fails.
 pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
+    reject_gnmi_encoder(&config.encoder, "summary")?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -2106,6 +2328,478 @@ generator:
         }
     }
 
+    // ---- validate_gnmi_encoder ----------------------------------------------
+
+    #[cfg(feature = "gnmi")]
+    fn gnmi_config(path: Option<&str>) -> ScenarioConfig {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.name = "in_octets".to_string();
+        config.base.labels = Some(std::collections::HashMap::from([
+            ("device".to_string(), "rtr-1".to_string()),
+            ("ifName".to_string(), "Gi0/0/0".to_string()),
+        ]));
+        config.encoder = EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+            path: path.map(str::to_string),
+            ..Default::default()
+        });
+        config
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_template_using_entry_labels_and_name_is_accepted() {
+        let config = gnmi_config(Some(
+            "/interfaces/interface[name={ifName}]/state/counters/{name}",
+        ));
+        validate_gnmi_encoder(&config).expect("known placeholders must validate");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_unknown_placeholder_is_rejected_and_named() {
+        let config = gnmi_config(Some("/interfaces/interface[name={ifname}]/state"));
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains("{ifname}"),
+            "error must name the placeholder: {msg}"
+        );
+        assert!(
+            msg.contains("in_octets"),
+            "error must name the metric: {msg}"
+        );
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_config_without_a_template_for_the_metric_is_rejected() {
+        let mut config = gnmi_config(None);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("no path template"), "got: {msg}");
+        assert!(
+            msg.contains("in_octets"),
+            "error must name the metric: {msg}"
+        );
+
+        // A `paths:` entry for another metric does not cover this one.
+        let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
+            unreachable!()
+        };
+        cfg.paths.insert("out_octets".to_string(), "/a".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("no path template"), "got: {msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_paths_entry_alone_is_enough_and_is_checked() {
+        let mut config = gnmi_config(None);
+        let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
+            unreachable!()
+        };
+        cfg.paths.insert(
+            "in_octets".to_string(),
+            "/a[k={ifName}]/{missing}".to_string(),
+        );
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("{missing}"), "got: {msg}");
+
+        let crate::encoder::EncoderConfig::Gnmi(ref mut cfg) = config.encoder else {
+            unreachable!()
+        };
+        cfg.paths
+            .insert("in_octets".to_string(), "/a[k={ifName}]".to_string());
+        validate_gnmi_encoder(&config).expect("paths entry with known labels must validate");
+    }
+
+    #[cfg(feature = "gnmi")]
+    fn spike(label: &str) -> CardinalitySpikeConfig {
+        CardinalitySpikeConfig {
+            label: label.to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 5,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    fn counter_label(key: &str) -> DynamicLabelConfig {
+        DynamicLabelConfig {
+            key: key.to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 3,
+            },
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_dynamic_label_key_is_a_known_placeholder() {
+        let mut config = gnmi_config(Some("/a[if={ifName}][pod={pod}]/{name}"));
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("{pod}"), "the key is not declared yet: {msg}");
+        config.base.dynamic_labels = Some(vec![counter_label("pod")]);
+        validate_gnmi_encoder(&config).expect("a dynamic label is on every event");
+    }
+
+    /// A static label value is known at validation time, so one that cannot be
+    /// an element name is rejected there rather than on every event.
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::slash(        "Gi0/0/0")]
+    #[case::empty(        "")]
+    #[case::open_bracket( "a[b")]
+    #[case::close_bracket("a]b")]
+    fn gnmi_static_label_value_must_be_a_valid_element_name(#[case] value: &str) {
+        let mut config = gnmi_config(Some("/interfaces/{ifName}/state/{name}"));
+        config.base.labels.get_or_insert_with(Default::default)
+            .insert("ifName".to_string(), value.to_string());
+
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label `ifName` as an element name"), "got: {msg}");
+        assert!(msg.contains(&format!("{value:?}")), "the value must be named: {msg}");
+        assert!(msg.contains("in_octets"), "the metric must be named: {msg}");
+
+        // Positive control: the same value as a key value is fine.
+        gnmi_cfg(&mut config).path =
+            Some("/interfaces/interface[name={ifName}]/state/{name}".to_string());
+        validate_gnmi_encoder(&config).expect("any value may be a key value");
+    }
+
+    /// A dynamic label of the same key replaces the static one on every event,
+    /// so the static value is never rendered and is not checked.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_shadowed_static_label_value_is_not_an_element_name() {
+        let mut config = gnmi_config(Some("/interfaces/{ifName}/state/{name}"));
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("ifName".to_string(), "Gi0/0/0".to_string());
+        assert!(err_msg(validate_gnmi_encoder(&config)).contains("element name"));
+
+        config.base.dynamic_labels = Some(vec![counter_label("ifName")]);
+        validate_gnmi_encoder(&config).expect("the dynamic value is what renders");
+    }
+
+    /// Events carry a spike label while its window is open, and the template
+    /// may not reference it, so it must be dropped.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_spike_label_must_be_dropped() {
+        let mut config = gnmi_config(Some("/a[if={ifName}]/{name}"));
+        validate_gnmi_encoder(&config).expect("baseline without spikes must validate");
+
+        config.base.cardinality_spikes = Some(vec![spike("burst")]);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains("cardinality_spikes label `burst`"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("drop_labels"), "got: {msg}");
+
+        gnmi_cfg(&mut config).drop_labels.push("burst".to_string());
+        validate_gnmi_encoder(&config).expect("a dropped spike label is allowed");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_spike_label_is_rejected_as_a_placeholder() {
+        let mut config = gnmi_config(Some("/a[if={ifName}][burst={burst}]/{name}"));
+        config.base.cardinality_spikes = Some(vec![spike("burst")]);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains("{burst}"),
+            "error must name the placeholder: {msg}"
+        );
+        assert!(msg.contains("spike window"), "error must say why: {msg}");
+
+        // The same key as a static label is on every event, so it is fine.
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("burst".to_string(), "x".to_string());
+        validate_gnmi_encoder(&config).expect("a static label of the same key is always present");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::static_label(|c: &mut ScenarioConfig| {
+        c.base.labels.get_or_insert_with(Default::default).insert("name".to_string(), "Gi0/0/0".to_string());
+    })]
+    #[case::dynamic_label(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![counter_label("name")]))]
+    #[case::spike_label(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![spike("name")]))]
+    fn gnmi_name_placeholder_with_a_name_label_is_rejected(
+        #[case] add_name_label: fn(&mut ScenarioConfig),
+    ) {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={name}][if={ifName}]/state"));
+        validate_gnmi_encoder(&config).expect("without a `name` label, {name} is the metric name");
+
+        add_name_label(&mut config);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label called `name`"), "got: {msg}");
+    }
+
+    /// With `target_label: name` the label reaches the prefix, so `{name}`
+    /// in the path collides with nothing. The same config with the default
+    /// target is the collision.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_name_placeholder_is_fine_when_name_is_the_target_label() {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state/{name}"));
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("name".to_string(), "rtr-1".to_string());
+        gnmi_cfg(&mut config).drop_labels.push("device".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label called `name`"), "got: {msg}");
+
+        gnmi_cfg(&mut config).target_label = "name".to_string();
+        validate_gnmi_encoder(&config).expect("`name` as the target label collides with nothing");
+    }
+
+    /// A `name` label listed in `drop_labels` is deliberately out of the path,
+    /// so `{name}` collides with nothing. For a spike label called `name` this
+    /// is the only valid configuration.
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::static_label(|c: &mut ScenarioConfig| {
+        c.base.labels.get_or_insert_with(Default::default).insert("name".to_string(), "x".to_string());
+    })]
+    #[case::spike_label(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![spike("name")]))]
+    fn gnmi_name_placeholder_is_fine_when_name_is_dropped(
+        #[case] add_name_label: fn(&mut ScenarioConfig),
+    ) {
+        let mut config = gnmi_config(Some("/interfaces/interface[if={ifName}]/state/{name}"));
+        add_name_label(&mut config);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label called `name`"), "got: {msg}");
+
+        gnmi_cfg(&mut config).drop_labels.push("name".to_string());
+        validate_gnmi_encoder(&config).expect("a dropped `name` label collides with nothing");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn validate_log_config_rejects_the_gnmi_encoder() {
+        let mut config = crate::config::LogScenarioConfig {
+            base: crate::config::BaseScheduleConfig {
+                gap_windows: None,
+                name: "test".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
+            },
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        };
+        validate_log_config(&config).expect("the baseline must validate");
+        config.encoder = gnmi_encoder_for("test");
+        let msg = err_msg(validate_log_config(&config));
+        assert!(msg.contains("metrics entries only"), "got: {msg}");
+        assert!(msg.contains("logs"), "got: {msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_name_label_without_the_name_placeholder_needs_drop_labels() {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("name".to_string(), "x".to_string());
+        // {name} is never the label, so a `name` label can only be dropped.
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label `name`"), "got: {msg}");
+
+        gnmi_cfg(&mut config).drop_labels.push("name".to_string());
+        validate_gnmi_encoder(&config).expect("a dropped `name` label collides with nothing");
+    }
+
+    #[cfg(feature = "gnmi")]
+    fn gnmi_cfg(config: &mut ScenarioConfig) -> &mut crate::encoder::gnmi::GnmiEncoderConfig {
+        match config.encoder {
+            EncoderConfig::Gnmi(ref mut cfg) => cfg,
+            _ => panic!("test config must use the gnmi encoder"),
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_unreferenced_static_label_is_rejected_and_named() {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
+        validate_gnmi_encoder(&config).expect("baseline: ifName referenced, device is the target");
+
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("job".to_string(), "edge".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains("label `job`"),
+            "error must name the label: {msg}"
+        );
+        assert!(
+            msg.contains("drop_labels"),
+            "error must name the opt-out: {msg}"
+        );
+
+        gnmi_cfg(&mut config).drop_labels.push("job".to_string());
+        validate_gnmi_encoder(&config).expect("a label listed in drop_labels is allowed");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_unreferenced_dynamic_label_is_rejected_and_named() {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
+        config.base.dynamic_labels = Some(vec![counter_label("pod")]);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label `pod`"), "got: {msg}");
+
+        gnmi_cfg(&mut config).drop_labels.push("pod".to_string());
+        validate_gnmi_encoder(&config).expect("a dropped dynamic label is allowed");
+    }
+
+    /// `device` passes unreferenced only because it is the target label:
+    /// moving the target elsewhere makes the same config fail.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_target_label_is_exempt_from_the_reference_rule() {
+        let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
+        validate_gnmi_encoder(&config).expect("device is the default target label");
+
+        gnmi_cfg(&mut config).target_label = "host".to_string();
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("label `device`"), "got: {msg}");
+    }
+
+    /// Two unreferenced labels: the error names the first in key order, every time.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_unreferenced_label_error_is_deterministic() {
+        for _ in 0..64 {
+            let mut config = gnmi_config(Some("/interfaces/interface[name={ifName}]/state"));
+            let labels = config.base.labels.get_or_insert_with(Default::default);
+            labels.insert("zone".to_string(), "z".to_string());
+            labels.insert("job".to_string(), "j".to_string());
+            let msg = err_msg(validate_gnmi_encoder(&config));
+            assert!(msg.contains("label `job`"), "got: {msg}");
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::empty_origin(crate::encoder::gnmi::GnmiEncoderConfig {
+        origin: String::new(),
+        path: Some("/a".into()),
+        ..Default::default()
+    }, "origin")]
+    #[case::empty_enum(crate::encoder::gnmi::GnmiEncoderConfig {
+        path: Some("/a".into()),
+        values: std::collections::HashMap::from([(
+            "in_octets".to_string(),
+            crate::encoder::gnmi::GnmiValueType::Enum(Default::default()),
+        )]),
+        ..Default::default()
+    }, "enum map")]
+    #[case::bad_grammar(crate::encoder::gnmi::GnmiEncoderConfig {
+        path: Some("/a[k".into()),
+        ..Default::default()
+    }, "unclosed")]
+    fn gnmi_encoder_field_errors_are_rejected(
+        #[case] cfg: crate::encoder::gnmi::GnmiEncoderConfig,
+        #[case] needle: &str,
+    ) {
+        let mut config = gnmi_config(None);
+        config.encoder = EncoderConfig::Gnmi(cfg);
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains(needle), "got: {msg}");
+    }
+
+    // ---- validate_config: gnmi encoder and sink pairing ----------------------
+
+    #[cfg(feature = "gnmi")]
+    fn valid_gnmi_config_with_sink(sink: SinkConfig) -> ScenarioConfig {
+        let mut config = gnmi_config(Some(
+            "/interfaces/interface[name={ifName}]/state/counters/{name}",
+        ));
+        config.base.sink = sink;
+        config
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rstest::rstest]
+    #[case::stdout(SinkConfig::Stdout)]
+    #[case::file(SinkConfig::File { path: "/tmp/x".to_string() })]
+    #[case::udp(SinkConfig::Udp { address: "127.0.0.1:9999".to_string() })]
+    #[case::tcp(SinkConfig::Tcp { address: "127.0.0.1:9999".to_string(), retry: None })]
+    fn gnmi_encoder_is_rejected_with_every_sink(#[case] sink: SinkConfig) {
+        let config = valid_gnmi_config_with_sink(sink);
+        // Positive controls: the encoder block is valid, and the same entry
+        // with another encoder validates, so only the pairing is rejected.
+        validate_gnmi_encoder(&config).expect("the gnmi block itself is valid");
+        let mut other = config.clone();
+        other.encoder = EncoderConfig::PrometheusText { precision: None };
+        validate_config(&other).expect("the entry validates with another encoder");
+
+        let msg = err_msg(validate_config(&config));
+        assert!(
+            msg.contains("can only be used with the gnmi_target sink"),
+            "got: {msg}"
+        );
+    }
+
+    /// `validate_config` runs the gnmi checks, so an invalid block reports its
+    /// own defect rather than only the pairing.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn validate_config_reports_gnmi_block_errors_before_the_pairing() {
+        let mut config = valid_gnmi_config_with_sink(SinkConfig::Stdout);
+        gnmi_cfg(&mut config).path = Some("/a/{nope}".into());
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("nope"), "got: {msg}");
+        assert!(!msg.contains("gnmi_target"), "got: {msg}");
+    }
+
+    #[test]
+    fn pairing_accepts_every_other_encoder() {
+        let encoder = EncoderConfig::PrometheusText { precision: None };
+        validate_encoder_sink_pairing(&encoder, &SinkConfig::Stdout)
+            .expect("only the gnmi encoder has a pairing rule");
+    }
+
     // ---- validate_config: encoder precision validation ------------------------
 
     #[test]
@@ -2978,6 +3672,41 @@ generator:
         let mut config = make_histogram_config();
         config.base.name = "123-invalid".to_string();
         assert!(validate_histogram_config(&config).is_err());
+    }
+
+    /// A `paths:` entry keyed by the histogram's own name, which would look
+    /// like it covers the entry.
+    #[cfg(feature = "gnmi")]
+    fn gnmi_encoder_for(name: &str) -> EncoderConfig {
+        EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+            paths: std::collections::HashMap::from([(
+                name.to_string(),
+                "/state/{name}".to_string(),
+            )]),
+            ..Default::default()
+        })
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn validate_histogram_config_rejects_the_gnmi_encoder() {
+        let mut config = make_histogram_config();
+        validate_histogram_config(&config).expect("the baseline must validate");
+        config.encoder = gnmi_encoder_for(&config.base.name);
+        let msg = err_msg(validate_histogram_config(&config));
+        assert!(msg.contains("metrics entries only"), "got: {msg}");
+        assert!(msg.contains("histogram"), "got: {msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn validate_summary_config_rejects_the_gnmi_encoder() {
+        let mut config = make_summary_config();
+        validate_summary_config(&config).expect("the baseline must validate");
+        config.encoder = gnmi_encoder_for(&config.base.name);
+        let msg = err_msg(validate_summary_config(&config));
+        assert!(msg.contains("metrics entries only"), "got: {msg}");
+        assert!(msg.contains("summary"), "got: {msg}");
     }
 
     // ---- validate_summary_config --------------------------------------------

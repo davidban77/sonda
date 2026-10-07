@@ -49,7 +49,8 @@
     feature = "http",
     feature = "kafka",
     feature = "otlp",
-    feature = "remote-write"
+    feature = "remote-write",
+    feature = "gnmi"
 ))]
 
 use std::path::{Path, PathBuf};
@@ -76,6 +77,17 @@ fn validator() -> Validator {
 /// before applying a JSON Schema, so doing it here keeps the test honest
 /// about what a reader would actually experience.
 fn yaml_to_json(value: serde_yaml_ng::Value) -> serde_json::Value {
+    convert(value, false)
+}
+
+/// The key whose value is the one integer-keyed mapping a scenario file may
+/// hold: the gnmi encoder's `enum: { 1: UP, 2: DOWN }` value map.
+const INTEGER_KEYED: &str = "enum";
+
+/// [`yaml_to_json`] for one value. `int_keys` is true only for the value of an
+/// [`INTEGER_KEYED`] key, whose integer keys become their decimal text, as a
+/// YAML language server renders them.
+fn convert(value: serde_yaml_ng::Value, int_keys: bool) -> serde_json::Value {
     use serde_yaml_ng::Value as Y;
     match value {
         Y::Null => serde_json::Value::Null,
@@ -97,23 +109,25 @@ fn yaml_to_json(value: serde_yaml_ng::Value) -> serde_json::Value {
         }
         Y::String(s) => serde_json::Value::String(s),
         Y::Sequence(items) => {
-            serde_json::Value::Array(items.into_iter().map(yaml_to_json).collect())
+            serde_json::Value::Array(items.into_iter().map(|v| convert(v, false)).collect())
         }
         Y::Mapping(map) => serde_json::Value::Object(
             map.into_iter()
                 .map(|(k, v)| {
-                    // Non-string keys cannot appear in a scenario file, and
-                    // rendering one as its debug form would silently produce
-                    // a key no schema matches. Fail loudly instead.
+                    // Anywhere else a non-string key cannot appear in a
+                    // scenario file, and rendering one as its debug form would
+                    // silently produce a key no schema matches. Fail loudly.
                     let key = match k {
                         Y::String(s) => s,
+                        Y::Number(n) if int_keys && (n.is_i64() || n.is_u64()) => n.to_string(),
                         other => panic!("scenario YAML must use string keys, found {other:?}"),
                     };
-                    (key, yaml_to_json(v))
+                    let child_int_keys = key == INTEGER_KEYED;
+                    (key, convert(v, child_int_keys))
                 })
                 .collect(),
         ),
-        Y::Tagged(tagged) => yaml_to_json(tagged.value),
+        Y::Tagged(tagged) => convert(tagged.value, int_keys),
     }
 }
 
@@ -674,6 +688,108 @@ scenarios:
     }
 }
 
+/// A `gnmi` encoder block with every field, including the integer-keyed
+/// `enum:` value map. No file in the corpus roots uses the `gnmi` encoder, so
+/// this is the positive control for its schema.
+#[test]
+fn the_schema_accepts_a_gnmi_encoder() {
+    const YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+    path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+    paths:
+      oper_status: "/interfaces/interface[name={ifName}]/state/oper-status"
+    values:
+      in_octets: uint
+      oper_status:
+        enum: { 1: UP, 2: DOWN }
+    drop_labels: [job]
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      device: rtr-1
+      ifName: Gi0/0/0
+      job: edge
+"#;
+    // The parser accepts it, so the schema must too.
+    sonda_core::compiler::parse::parse(YAML).expect("the parser accepts the gnmi encoder");
+
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(YAML).expect("loads");
+    let json = yaml_to_json(value);
+    let errors: Vec<String> = validator()
+        .iter_errors(&json)
+        .map(|e| format!("  at {}: {e}", e.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the schema rejected a valid gnmi encoder:\n{}",
+        errors.join("\n")
+    );
+}
+
+/// `values:` entries are a closed set of names or an `enum:` map. `float` is
+/// the plausible mistake (it is a deprecated gNMI `TypedValue` field).
+#[test]
+fn the_schema_rejects_an_unknown_gnmi_value_type() {
+    assert_rejected(
+        "values.in_octets: float",
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{name}"
+    values:
+      in_octets: float
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+}
+
+/// `enum:` keys are integers. A name in key position is the mistake of
+/// writing the map the wrong way round.
+#[test]
+fn the_schema_rejects_a_gnmi_enum_map_with_non_integer_keys() {
+    assert_rejected(
+        "enum: { UP: 1 }",
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{name}"
+    values:
+      oper_status:
+        enum: { UP: 1 }
+scenarios:
+  - signal_type: metrics
+    name: oper_status
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+}
+
 /// The committed schema is a build output. This is the same comparison
 /// `task schema:check` makes, run inside `cargo test` so a contributor who
 /// never runs the task still learns before CI does.
@@ -855,4 +971,113 @@ fn the_schema_accepts_a_pack_with_either_metrics_or_extends() {
             "the schema rejected a valid pack ({label}):\n{yaml}"
         );
     }
+}
+
+/// Integer keys are text only under `enum:`; the positive half proves the
+/// conversion runs, so the panic below cannot come from a broken fixture.
+#[test]
+fn integer_keys_convert_under_enum() {
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str("values:\n  m:\n    enum: { 1: UP, 2: DOWN }\n").unwrap();
+    let json = yaml_to_json(yaml);
+    assert_eq!(json["values"]["m"]["enum"]["1"], "UP");
+    assert_eq!(json["values"]["m"]["enum"]["2"], "DOWN");
+}
+
+#[test]
+#[should_panic(expected = "scenario YAML must use string keys")]
+fn integer_keys_outside_enum_still_panic() {
+    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str("labels: { 200: ok }\n").unwrap();
+    yaml_to_json(yaml);
+}
+
+/// A gnmi scenario whose encoder block ends with `{EXTRA}`, which each case
+/// below replaces. Everything else is valid, so a rejection can only come
+/// from the replacement.
+const GNMI_WITH_EXTRA: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={ifName}]/{name}"
+    {EXTRA}
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      ifName: Gi0/0/0
+      job: edge
+"#;
+
+fn schema_errors(yaml: &str) -> Vec<String> {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).expect("loads");
+    let json = yaml_to_json(value);
+    validator()
+        .iter_errors(&json)
+        .map(|e| format!("  at {}: {e}", e.instance_path()))
+        .collect()
+}
+
+/// `drop_labels` is a list of label names. The positive control proves the
+/// surrounding document is valid, so the negatives fail on the field alone.
+#[test]
+fn the_schema_checks_gnmi_drop_labels() {
+    let valid = GNMI_WITH_EXTRA.replace("{EXTRA}", "drop_labels: [job]");
+    sonda_core::compiler::parse::parse(&valid).expect("the parser accepts drop_labels");
+    let errors = schema_errors(&valid);
+    assert!(
+        errors.is_empty(),
+        "the schema rejected a valid drop_labels list:\n{}",
+        errors.join("\n")
+    );
+
+    assert_rejected(
+        "drop_labels as a string, not a list",
+        &GNMI_WITH_EXTRA.replace("{EXTRA}", "drop_labels: job"),
+    );
+    assert_rejected(
+        "`drop_label` for `drop_labels`",
+        &GNMI_WITH_EXTRA.replace("{EXTRA}", "drop_label: [job]"),
+    );
+}
+
+/// Quoted enum codes are what JSON clients send. The schema has always
+/// accepted them; the parser must too, so the two agree.
+#[test]
+fn the_parser_and_schema_accept_quoted_gnmi_enum_codes() {
+    let yaml = GNMI_WITH_EXTRA.replace(
+        "{EXTRA}",
+        "values: { in_octets: { enum: { \"1\": UP, \"2\": DOWN } } }",
+    );
+    sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts quoted enum codes");
+    let errors = schema_errors(&yaml);
+    assert!(
+        errors.is_empty(),
+        "the schema rejected quoted enum codes:\n{}",
+        errors.join("\n")
+    );
+}
+
+/// Enum keys the schema's `^-?\d+$` refuses are refused by the parser too, so
+/// neither accepts what the other rejects.
+#[rustfmt::skip]
+#[rstest::rstest]
+#[case::plus_sign("\"+1\"")]
+#[case::padded("\" 1\"")]
+#[case::decimal("\"1.0\"")]
+fn the_parser_and_schema_both_reject_non_integer_enum_codes(#[case] key: &str) {
+    let yaml = GNMI_WITH_EXTRA.replace(
+        "{EXTRA}",
+        &format!("values: {{ in_octets: {{ enum: {{ {key}: UP }} }} }}"),
+    );
+    assert!(
+        sonda_core::compiler::parse::parse(&yaml).is_err(),
+        "the parser accepted enum key {key}"
+    );
+    assert_rejected(&format!("enum key {key}"), &yaml);
 }
