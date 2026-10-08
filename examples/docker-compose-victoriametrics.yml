@@ -167,7 +167,7 @@ services:
   # Admin credentials (if needed): admin / admin
   # ---------------------------------------------------------------------------
   grafana:
-    image: grafana/grafana:13.2.0
+    image: grafana/grafana:13.2.1
     ports:
       - "3000:3000"
     environment:
