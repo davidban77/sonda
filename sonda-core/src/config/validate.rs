@@ -526,9 +526,12 @@ fn reject_gnmi_encoder(
 /// - Every `cardinality_spikes` label is covered the same way. It cannot be
 ///   referenced as a placeholder, so in practice it is the target label, a
 ///   referenced static label of the same key, or listed in `drop_labels`.
-/// - A static label used as an element-name placeholder has a value that
-///   reads back as one element: non-empty, with no `/`, `[` or `]`. The rule
-///   is the one the encoder applies when it renders the path.
+/// - Every value a label used as an element-name placeholder can render to
+///   reads back as one element: non-empty, with no `/`, `[` or `]`. That is
+///   the static value (unless a dynamic label of the same key replaces it),
+///   every `values:` entry of a dynamic label, and the explicit `prefix:` of
+///   a counter dynamic label or of a `cardinality_spikes` entry on that key.
+///   The rule is the one the encoder applies when it renders the path.
 /// - The coverage rule is [`GnmiEncoder`](crate::encoder::gnmi::GnmiEncoder)'s own, which the encoder applies to
 ///   each new series at encode time, so a configuration that validates never
 ///   has an event rejected by it.
@@ -604,22 +607,58 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         ))));
     }
 
-    // A dynamic label replaces a static label of the same key on every event,
-    // so only an unshadowed static value is ever rendered.
+    // Every value an element-name placeholder can render to is known here. A
+    // dynamic label replaces a static label of the same key on every event and
+    // a spike label replaces either while its window is open. Counter and
+    // spike values are an explicit prefix plus digits or hex digits, so the
+    // prefix alone decides whether they are valid; the default prefix is the
+    // label key and an underscore, which always is.
+    let element_values = |label: &str| -> Vec<(String, String)> {
+        let prefixed =
+            |prefix: &str| (format!("{prefix}0"), format!("values beginning {prefix:?}"));
+        let mut values = Vec::new();
+        let dynamics: Vec<&DynamicLabelConfig> = config
+            .dynamic_labels
+            .iter()
+            .flatten()
+            .filter(|dl| dl.key == label)
+            .collect();
+        if dynamics.is_empty() {
+            if let Some(value) = config.labels.as_ref().and_then(|l| l.get(label)) {
+                values.push((value.clone(), format!("value {value:?}")));
+            }
+        }
+        for dl in dynamics {
+            match &dl.strategy {
+                DynamicLabelStrategy::ValuesList { values: list } => values.extend(
+                    list.iter()
+                        .map(|value| (value.clone(), format!("value {value:?}"))),
+                ),
+                DynamicLabelStrategy::Counter { prefix, .. } => {
+                    values.extend(prefix.as_deref().map(prefixed))
+                }
+            }
+        }
+        for spike in config.cardinality_spikes.iter().flatten() {
+            if spike.label == label {
+                values.extend(spike.prefix.as_deref().map(prefixed));
+            }
+        }
+        values
+    };
     let bad_element = template
         .element_name_placeholders()
-        .filter(|p| *p != NAME_PLACEHOLDER && !dynamic_label(p))
+        .filter(|p| *p != NAME_PLACEHOLDER)
         .find_map(|p| {
-            config
-                .labels
-                .as_ref()?
-                .get_key_value(p)
-                .filter(|(_, value)| !is_valid_element_name(value))
+            element_values(p)
+                .into_iter()
+                .find(|(rendered, _)| !is_valid_element_name(rendered))
+                .map(|(_, shown)| (p, shown))
         });
-    if let Some((label, value)) = bad_element {
+    if let Some((label, shown)) = bad_element {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for metric {:?} uses label `{label}` as an element name, \
-             but its value {value:?} is empty or contains '/', '[' or ']', so every event \
+             but its {shown} is empty or contains '/', '[' or ']', so those events \
              would be rejected; use it as a key value instead, for example \
              [name={{{label}}}]",
             config.name
@@ -642,10 +681,18 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     entry_labels.sort_unstable();
     entry_labels.dedup();
     if let Some(unreferenced) = encoder.uncovered_label(template, entry_labels.into_iter()) {
+        // {name} always renders the metric name, so a `name` label cannot be
+        // referenced by it.
+        let advice = if unreferenced == NAME_PLACEHOLDER {
+            "rename it (for example to `ifName`) and reference it as {ifName}, or list it \
+             in the encoder's drop_labels"
+                .to_string()
+        } else {
+            format!("reference it as {{{unreferenced}}} or list it in the encoder's drop_labels")
+        };
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for metric {:?} does not reference label `{unreferenced}`, \
-             so series that differ only in it would share one path; reference it as \
-             {{{unreferenced}}} or list it in the encoder's drop_labels",
+             so series that differ only in it would share one path; {advice}",
             config.name
         ))));
     }
@@ -2470,6 +2517,66 @@ generator:
         validate_gnmi_encoder(&config).expect("any value may be a key value");
     }
 
+    /// Dynamic and spike values are known at validation time too, so a bad one
+    /// is rejected there. The template uses `ifName` as an element name; the
+    /// static value is valid, so only the dynamic or spike source can fail.
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::values_list(   Some(values_label(&["Gi0", "Gi0/0/1"])), None,         Some("value \"Gi0/0/1\""))]
+    #[case::counter_prefix(Some(prefixed_counter(Some("Gi0/"))),     None,         Some("values beginning \"Gi0/\""))]
+    #[case::spike_prefix(  None,                                     Some("a["),   Some("values beginning \"a[\""))]
+    #[case::valid_values(  Some(values_label(&["Gi0", "Gi1"])),      None,         None)]
+    #[case::default_prefix(Some(prefixed_counter(None)),             None,         None)]
+    #[case::empty_prefix(  Some(prefixed_counter(Some(""))),         None,         None)]
+    #[case::valid_spike(   None,                                     Some("eth"),  None)]
+    fn gnmi_dynamic_and_spike_values_must_be_valid_element_names(
+        #[case] dynamic: Option<DynamicLabelConfig>,
+        #[case] spike_prefix: Option<&str>,
+        #[case] rejected: Option<&str>,
+    ) {
+        let mut config = gnmi_config(Some("/interfaces/{ifName}/state/{name}"));
+        config.base.labels.get_or_insert_with(Default::default)
+            .insert("ifName".to_string(), "Gi0".to_string());
+        validate_gnmi_encoder(&config).expect("baseline: a valid static value");
+
+        config.base.dynamic_labels = dynamic.map(|dl| vec![dl]);
+        if let Some(prefix) = spike_prefix {
+            let mut window = spike("ifName");
+            window.prefix = Some(prefix.to_string());
+            config.base.cardinality_spikes = Some(vec![window]);
+        }
+        match rejected {
+            Some(shown) => {
+                let msg = err_msg(validate_gnmi_encoder(&config));
+                assert!(msg.contains("label `ifName` as an element name"), "got: {msg}");
+                assert!(msg.contains(shown), "the offending {shown} must be named: {msg}");
+            }
+            None => validate_gnmi_encoder(&config).expect("every value is a valid element name"),
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    fn values_label(values: &[&str]) -> DynamicLabelConfig {
+        DynamicLabelConfig {
+            key: "ifName".to_string(),
+            strategy: DynamicLabelStrategy::ValuesList {
+                values: values.iter().map(|v| v.to_string()).collect(),
+            },
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    fn prefixed_counter(prefix: Option<&str>) -> DynamicLabelConfig {
+        DynamicLabelConfig {
+            key: "ifName".to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: prefix.map(str::to_string),
+                cardinality: 3,
+            },
+        }
+    }
+
     /// A dynamic label of the same key replaces the static one on every event,
     /// so the static value is never rendered and is not checked.
     #[cfg(feature = "gnmi")]
@@ -2641,6 +2748,11 @@ generator:
         // {name} is never the label, so a `name` label can only be dropped.
         let msg = err_msg(validate_gnmi_encoder(&config));
         assert!(msg.contains("label `name`"), "got: {msg}");
+        assert!(
+            !msg.contains("reference it as {name}"),
+            "{{name}} renders the metric name, so it cannot be the advice: {msg}"
+        );
+        assert!(msg.contains("rename it"), "got: {msg}");
 
         gnmi_cfg(&mut config).drop_labels.push("name".to_string());
         validate_gnmi_encoder(&config).expect("a dropped `name` label collides with nothing");

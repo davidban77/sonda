@@ -763,7 +763,7 @@
           "type": "object",
           "properties": {
             "drop_labels": {
-              "description": "Labels deliberately left out of the path.\n\nValidation requires every key in an entry's `labels` and\n`dynamic_labels` to be referenced by its template, be the\n`target_label`, or be listed here; series that differ only in an\nunlisted, unreferenced label would otherwise share one path.",
+              "description": "Labels deliberately left out of the path.\n\nValidation requires every key in an entry's `labels` and\n`dynamic_labels`, and every `cardinality_spikes` label, to be\nreferenced by its template, be the `target_label`, or be listed here;\nseries that differ only in an unlisted, unreferenced label would\notherwise share one path. A `cardinality_spikes` label cannot be a\ntemplate placeholder, so unless it is the `target_label` or shares a\nkey with a referenced label, it must be listed here.",
               "type": "array",
               "default": [],
               "items": {

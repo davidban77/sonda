@@ -1063,6 +1063,46 @@ fn the_parser_and_schema_accept_quoted_gnmi_enum_codes() {
     );
 }
 
+/// The schema accepts a number or boolean wherever it accepts a string, so an
+/// enum label written as `false` or `10` must parse too. It is stored as that
+/// scalar's text.
+#[rustfmt::skip]
+#[rstest::rstest]
+#[case::booleans("{ 0: false, 1: true }", &[(0, "false"), (1, "true")])]
+#[case::integers("{ 1: 10, 2: 100 }",     &[(1, "10"), (2, "100")])]
+#[case::mixed(   "{ 0: false, 1: 10 }",   &[(0, "false"), (1, "10")])]
+fn the_parser_and_schema_accept_scalar_gnmi_enum_labels(
+    #[case] map: &str,
+    #[case] want: &[(i64, &str)],
+) {
+    let yaml = GNMI_WITH_EXTRA.replace(
+        "{EXTRA}",
+        &format!("values: {{ in_octets: {{ enum: {map} }} }}"),
+    );
+    let file = sonda_core::compiler::parse::parse(&yaml)
+        .unwrap_or_else(|e| panic!("the parser rejected enum labels {map}: {e}"));
+    let encoder = file
+        .defaults
+        .and_then(|d| d.encoder)
+        .expect("the defaults carry the encoder");
+    let sonda_core::encoder::EncoderConfig::Gnmi(cfg) = encoder else {
+        panic!("not the gnmi encoder: {encoder:?}")
+    };
+    let want: std::collections::BTreeMap<i64, String> =
+        want.iter().map(|(k, v)| (*k, v.to_string())).collect();
+    assert_eq!(
+        cfg.values.get("in_octets"),
+        Some(&sonda_core::encoder::gnmi::GnmiValueType::Enum(want))
+    );
+
+    let errors = schema_errors(&yaml);
+    assert!(
+        errors.is_empty(),
+        "the schema rejected enum labels {map}:\n{}",
+        errors.join("\n")
+    );
+}
+
 /// Enum keys the schema's `^-?\d+$` refuses are refused by the parser too, so
 /// neither accepts what the other rejects.
 #[rustfmt::skip]

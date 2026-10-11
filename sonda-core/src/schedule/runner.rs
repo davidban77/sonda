@@ -17,7 +17,7 @@ use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
 use crate::sink::{create_sink, Sink, SinkConfig};
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 /// Run a scenario to completion, emitting encoded metric events at the configured rate.
 pub async fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
@@ -236,8 +236,14 @@ fn make_close_emitter(
         for (name, labels) in series {
             buf.clear();
             let marker = MetricEvent::from_parts(name, value, labels, close_ts);
-            encoder.encode_metric(&marker, &mut buf)?;
-            output.push_metric(wants_events, &marker, &mut buf);
+            match encoder.encode_metric(&marker, &mut buf) {
+                Ok(()) => output.push_metric(wants_events, &marker, &mut buf),
+                // One rejected marker does not cost the other series theirs.
+                Err(SondaError::Encoder(EncoderError::EventRejected(reason))) => {
+                    output.reject(reason)
+                }
+                Err(other) => return Err(other),
+            }
         }
         Ok(())
     })
@@ -1584,6 +1590,88 @@ mod tests {
                 "close ts {close_ms} must be strictly greater than watermark ts {watermark_ms}; line: {line}"
             );
         }
+    }
+
+    /// A close marker the encoder rejects is skipped and counted, and the
+    /// other series still get theirs: three series, one whose enum has no
+    /// mapping for the snap-to value.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn rejected_close_marker_is_skipped_and_the_rest_are_delivered() {
+        use std::collections::{BTreeMap, HashMap};
+
+        use crate::encoder::gnmi::{GnmiEncoderConfig, GnmiValueType};
+        use crate::encoder::{create_encoder, EncoderConfig};
+        use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+        use crate::schedule::core_loop::{invoke_close_emit, CloseLimiters, CloseSignal};
+        use crate::schedule::stats::ScenarioStats;
+        use crate::schedule::ParsedSchedule;
+        use std::sync::{Arc, RwLock};
+        use std::time::SystemTime;
+
+        let down = || GnmiValueType::Enum(BTreeMap::from([(0, "DOWN".to_string())]));
+        let up_only = GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())]));
+        let encoder: Arc<dyn crate::encoder::Encoder> = Arc::from(
+            create_encoder(&EncoderConfig::Gnmi(GnmiEncoderConfig {
+                path: Some("/a/{name}".to_string()),
+                values: HashMap::from([
+                    ("oper_a".to_string(), down()),
+                    ("oper_b".to_string(), down()),
+                    ("oper_c".to_string(), up_only),
+                ]),
+                ..Default::default()
+            }))
+            .unwrap(),
+        );
+
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            st.enable_close_series_tracking();
+            for name in ["oper_a", "oper_b", "oper_c"] {
+                st.push_metric(MetricEvent::from_parts(
+                    ValidatedMetricName::new(name).unwrap(),
+                    1.0,
+                    Arc::new(Labels::from_pairs(&[]).unwrap()),
+                    SystemTime::now(),
+                ));
+            }
+        }
+
+        let mut emit =
+            super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0), true);
+        let (mut sink, seen) = routing_probe(true);
+        let schedule = ParsedSchedule::from_base_config(&make_config(10.0, "1s", None).base)
+            .expect("schedule");
+        let mut output = crate::schedule::core_loop::TickOutput::default();
+
+        invoke_close_emit(
+            &schedule,
+            Some(&stats),
+            &mut CloseLimiters::new(),
+            Some(&mut emit),
+            &mut output,
+            &mut sink,
+        )
+        .await
+        .expect("a rejected marker must not fail the close");
+
+        let mut delivered: Vec<String> = seen
+            .lock()
+            .expect("probe mutex poisoned")
+            .events
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        delivered.sort();
+        assert_eq!(
+            delivered,
+            ["oper_a", "oper_b"],
+            "the mapped series get markers"
+        );
+        let st = stats.read().unwrap();
+        assert_eq!(st.rejected_events, 1, "the unmapped marker is counted");
+        assert_eq!(st.errors, 1);
     }
 
     #[tokio::test]

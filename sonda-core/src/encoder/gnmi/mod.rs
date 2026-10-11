@@ -184,7 +184,7 @@ impl<'de> serde::Deserialize<'de> for EnumEntries {
             ) -> Result<Self::Value, A::Error> {
                 let mut out = BTreeMap::new();
                 while let Some(EnumCode(code)) = map.next_key()? {
-                    let label = map.next_value::<String>()?;
+                    let EnumLabel(label) = map.next_value()?;
                     if out.insert(code, label).is_some() {
                         return Err(serde::de::Error::custom(format!(
                             "enum code {code} is given more than once (keys such as 1 and \
@@ -196,6 +196,44 @@ impl<'de> serde::Deserialize<'de> for EnumEntries {
             }
         }
         deserializer.deserialize_map(EntriesVisitor)
+    }
+}
+
+/// One `enum:` label: a string, or a bool or number stored as its display
+/// text (`false` becomes `"false"`, `10` becomes `"10"`, `1.5` becomes
+/// `"1.5"`; a float with no fractional part, such as `1.0`, becomes `"1"`).
+#[cfg(feature = "config")]
+struct EnumLabel(String);
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for EnumLabel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct LabelVisitor;
+        impl serde::de::Visitor<'_> for LabelVisitor {
+            type Value = EnumLabel;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an enum label: a string, number or boolean")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(EnumLabel(v.to_string()))
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(EnumLabel(v))
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(EnumLabel(v.to_string()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(EnumLabel(v.to_string()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(EnumLabel(v.to_string()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(EnumLabel(v.to_string()))
+            }
+        }
+        deserializer.deserialize_any(LabelVisitor)
     }
 }
 
@@ -294,9 +332,12 @@ pub struct GnmiEncoderConfig {
     /// Labels deliberately left out of the path.
     ///
     /// Validation requires every key in an entry's `labels` and
-    /// `dynamic_labels` to be referenced by its template, be the
-    /// `target_label`, or be listed here; series that differ only in an
-    /// unlisted, unreferenced label would otherwise share one path.
+    /// `dynamic_labels`, and every `cardinality_spikes` label, to be
+    /// referenced by its template, be the `target_label`, or be listed here;
+    /// series that differ only in an unlisted, unreferenced label would
+    /// otherwise share one path. A `cardinality_spikes` label cannot be a
+    /// template placeholder, so unless it is the `target_label` or shares a
+    /// key with a referenced label, it must be listed here.
     #[cfg_attr(feature = "config", serde(default))]
     pub drop_labels: Vec<String>,
 }
@@ -1250,6 +1291,30 @@ values:
             cfg.values["m"],
             GnmiValueType::Enum(BTreeMap::from([(1, "UP".into()), (-2, "DOWN".into())]))
         );
+    }
+
+    /// Labels written as numbers or booleans are stored as their text, from
+    /// YAML and from JSON alike.
+    #[cfg(feature = "config")]
+    #[test]
+    fn enum_labels_may_be_numbers_or_booleans() {
+        let want = GnmiValueType::Enum(BTreeMap::from([
+            (0, "false".into()),
+            (1, "10".into()),
+            (2, "1.5".into()),
+            (3, "UP".into()),
+        ]));
+        let yaml = "type: gnmi\npath: /a/{name}\nvalues:\n  m:\n    enum: { 0: false, 1: 10, 2: 1.5, 3: UP }\n";
+        let json = r#"{"type":"gnmi","path":"/a/{name}","values":{"m":{"enum":{"0":false,"1":10,"2":1.5,"3":"UP"}}}}"#;
+        for cfg in [
+            serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(yaml).unwrap(),
+            serde_json::from_str::<crate::encoder::EncoderConfig>(json).unwrap(),
+        ] {
+            let crate::encoder::EncoderConfig::Gnmi(cfg) = cfg else {
+                panic!("not the gnmi variant")
+            };
+            assert_eq!(cfg.values["m"], want);
+        }
     }
 
     #[cfg(feature = "config")]

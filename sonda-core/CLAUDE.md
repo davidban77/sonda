@@ -109,14 +109,16 @@ src/
 │   ├── gnmi/           ← gNMI Notification encoder (feature = "gnmi"):
 │   │   ├── mod.rs      ←   GnmiEncoder, GnmiEncoderConfig (deny_unknown_fields; drop_labels),
 │   │   │                   GnmiValueType (hand-written Deserialize: enum codes as ints or
-│   │   │                   integer strings). Per-series path bytes cached on first sight;
+│   │   │                   integer strings; enum labels as any scalar, stored as text).
+│   │   │                   Per-series path bytes cached on first sight;
 │   │   │                   uncovered_label + template_for are the ONE coverage and
 │   │   │                   template rules validation also calls. Output is one Notification
 │   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
 │   │   │                   rejects it with every sink but gnmi_target.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
 │   │   │                   is_valid_element_name is the ONE element-name rule that
-│   │   │                   render and validation (static label values) both apply
+│   │   │                   render and validation (every static, dynamic and spike
+│   │   │                   value an element-name placeholder can render to) both apply
 │   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
