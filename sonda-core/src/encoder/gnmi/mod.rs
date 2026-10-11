@@ -45,12 +45,12 @@ const F64_TEXT_CAPACITY: usize = 400;
 )]
 pub enum GnmiValueType {
     /// `uint_val`: the value rounded to the nearest integer (halves away
-    /// from zero), then clamped to `0..=u64::MAX`. A non-finite value rejects
-    /// the event.
+    /// from zero). A non-finite value, or one whose rounded value is outside
+    /// the `u64` range (so any value at or below -0.5), rejects the event.
     Uint,
     /// `int_val`: the value rounded to the nearest integer (halves away from
-    /// zero), then clamped to the `i64` range. A non-finite value rejects the
-    /// event.
+    /// zero). A non-finite value, or one whose rounded value is outside the
+    /// `i64` range, rejects the event.
     Int,
     /// `double_val` (field 14).
     Double,
@@ -573,6 +573,14 @@ fn encode_str_field(tag: u32, s: &str, buf: &mut Vec<u8>) {
     }
 }
 
+/// The rounded values that fit an `i64`: from -2^63 up to, not including,
+/// 2^63. Both bounds are exact `f64`s.
+const I64_RANGE: std::ops::Range<f64> = -9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0;
+
+/// The rounded values that fit a `u64`: from 0 up to, not including, 2^64.
+/// `-0.0`, which `-0.4` rounds to, is in range.
+const U64_RANGE: std::ops::Range<f64> = 0.0..18_446_744_073_709_551_616.0;
+
 /// Format `value` with `Display` (shortest round-trip decimal) into `out` without allocating.
 fn format_f64(value: f64, out: &mut [u8; F64_TEXT_CAPACITY]) -> Result<&str, SondaError> {
     use std::io::Write as _;
@@ -603,8 +611,9 @@ impl Encoder for GnmiEncoder {
     /// - a placeholder in element-name position renders empty or containing
     ///   `/`, `[` or `]`;
     /// - the value is NaN or infinite and the metric is `uint`, `int`, `bool`
-    ///   or `enum` (a finite value outside the `int` or `uint` range is not
-    ///   rejected: it saturates at that type's bound);
+    ///   or `enum`;
+    /// - the rounded value is outside the `i64` range for `int`, or the `u64`
+    ///   range for `uint` (negatives included);
     /// - the rounded value has no `enum` mapping.
     ///
     /// Returns [`EncoderError::TimestampBeforeEpoch`] or
@@ -650,17 +659,36 @@ impl Encoder for GnmiEncoder {
                 ))))
             }
         };
+        let out_of_range = |kind: &str| {
+            SondaError::Encoder(EncoderError::EventRejected(format!(
+                "value {value} of metric {name:?} is outside the {kind} range"
+            )))
+        };
         let scalar = match self.values.get(name) {
             None | Some(GnmiValueType::Double) => Scalar::Double(value),
-            Some(GnmiValueType::Uint) => Scalar::Uint(rounded("uint")?.max(0.0) as u64),
-            Some(GnmiValueType::Int) => Scalar::Int(rounded("int")? as i64),
+            Some(GnmiValueType::Uint) => {
+                let r = rounded("uint")?;
+                if !U64_RANGE.contains(&r) {
+                    return Err(out_of_range("uint"));
+                }
+                Scalar::Uint(r as u64)
+            }
+            Some(GnmiValueType::Int) => {
+                let r = rounded("int")?;
+                if !I64_RANGE.contains(&r) {
+                    return Err(out_of_range("int"));
+                }
+                Scalar::Int(r as i64)
+            }
             Some(GnmiValueType::Bool) => Scalar::Bool(rounded("bool")? != 0.0),
             Some(GnmiValueType::String) => {
                 text = [0u8; F64_TEXT_CAPACITY];
                 Scalar::Str(format_f64(value, &mut text)?)
             }
             Some(GnmiValueType::Enum(map)) => Scalar::Str(
-                map.get(&(rounded("enum")? as i64))
+                Some(rounded("enum")?)
+                    .filter(|r| I64_RANGE.contains(r))
+                    .and_then(|r| map.get(&(r as i64)))
                     .map(String::as_str)
                     .ok_or_else(|| {
                         SondaError::Encoder(EncoderError::EventRejected(format!(
@@ -994,7 +1022,8 @@ mod tests {
     #[case::uint_rounds_up(       Some(GnmiValueType::Uint),   3.7,    Ok(Value::UintVal(4)))]
     #[case::uint_rounds_down(     Some(GnmiValueType::Uint),   3.4,    Ok(Value::UintVal(3)))]
     #[case::uint_rounds_noise(    Some(GnmiValueType::Uint),   0.9999999999999999, Ok(Value::UintVal(1)))]
-    #[case::uint_clamps_negative( Some(GnmiValueType::Uint),   -5.0,   Ok(Value::UintVal(0)))]
+    #[case::uint_rejects_negative(Some(GnmiValueType::Uint),   -5.0,   Err("outside the uint range"))]
+    #[case::uint_rejects_minus_06(Some(GnmiValueType::Uint),   -0.6,   Err("outside the uint range"))]
     #[case::int_rounds(           Some(GnmiValueType::Int),    -2.9,   Ok(Value::IntVal(-3)))]
     #[case::int_half_away(        Some(GnmiValueType::Int),    2.5,    Ok(Value::IntVal(3)))]
     #[case::int_rounds_noise(     Some(GnmiValueType::Int),    0.9999999999999999, Ok(Value::IntVal(1)))]
@@ -1022,9 +1051,14 @@ mod tests {
     #[case::bool_small_negative(  Some(GnmiValueType::Bool),   -0.4,   Ok(Value::BoolVal(false)))]
     #[case::uint_small_negative(  Some(GnmiValueType::Uint),   -0.4,   Ok(Value::UintVal(0)))]
     #[case::int_small_negative(   Some(GnmiValueType::Int),    -0.4,   Ok(Value::IntVal(0)))]
-    #[case::int_saturates(        Some(GnmiValueType::Int),    1e20,   Ok(Value::IntVal(i64::MAX)))]
-    #[case::int_saturates_low(    Some(GnmiValueType::Int),    -1e20,  Ok(Value::IntVal(i64::MIN)))]
-    #[case::uint_saturates(       Some(GnmiValueType::Uint),   1e25,   Ok(Value::UintVal(u64::MAX)))]
+    #[case::int_rejects_high(     Some(GnmiValueType::Int),    1e20,   Err("outside the int range"))]
+    #[case::int_rejects_low(      Some(GnmiValueType::Int),    -1e20,  Err("outside the int range"))]
+    #[case::int_rejects_2_pow_63( Some(GnmiValueType::Int),    9_223_372_036_854_775_808.0, Err("outside the int range"))]
+    #[case::int_accepts_min(      Some(GnmiValueType::Int),    -9_223_372_036_854_775_808.0, Ok(Value::IntVal(i64::MIN)))]
+    #[case::uint_rejects_high(    Some(GnmiValueType::Uint),   1e25,   Err("outside the uint range"))]
+    #[case::uint_rejects_2_pow_64(Some(GnmiValueType::Uint),   18_446_744_073_709_551_616.0, Err("outside the uint range"))]
+    #[case::uint_accepts_largest( Some(GnmiValueType::Uint),   18_446_744_073_709_549_568.0, Ok(Value::UintVal(18_446_744_073_709_549_568)))]
+    #[case::enum_out_of_i64_range(Some(GnmiValueType::Enum(BTreeMap::from([(i64::MAX, "MAX".into())]))), 1e30, Err("no gnmi enum mapping"))]
     fn value_mapping(
         #[case] value_type: Option<GnmiValueType>,
         #[case] value: f64,
@@ -1303,9 +1337,10 @@ values:
             (1, "10".into()),
             (2, "1.5".into()),
             (3, "UP".into()),
+            (4, "1".into()),
         ]));
-        let yaml = "type: gnmi\npath: /a/{name}\nvalues:\n  m:\n    enum: { 0: false, 1: 10, 2: 1.5, 3: UP }\n";
-        let json = r#"{"type":"gnmi","path":"/a/{name}","values":{"m":{"enum":{"0":false,"1":10,"2":1.5,"3":"UP"}}}}"#;
+        let yaml = "type: gnmi\npath: /a/{name}\nvalues:\n  m:\n    enum: { 0: false, 1: 10, 2: 1.5, 3: UP, 4: 1.0 }\n";
+        let json = r#"{"type":"gnmi","path":"/a/{name}","values":{"m":{"enum":{"0":false,"1":10,"2":1.5,"3":"UP","4":1.0}}}}"#;
         for cfg in [
             serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(yaml).unwrap(),
             serde_json::from_str::<crate::encoder::EncoderConfig>(json).unwrap(),

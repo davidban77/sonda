@@ -1019,7 +1019,7 @@ pub(crate) async fn gated_loop(
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
-    let mut close_warn_limiter = CloseLimiters::new();
+    let mut close_limiters = CloseLimiters::new();
     // One output for every running segment and close-emit of this scenario,
     // so recycled buffers survive pause/resume.
     let mut tick_output = TickOutput::for_schedule_loop();
@@ -1031,7 +1031,7 @@ pub(crate) async fn gated_loop(
         cancel,
         stats.as_ref(),
         &mut gate_ctx,
-        &mut close_warn_limiter,
+        &mut close_limiters,
         &mut tick_output,
         sink,
         tick_fn,
@@ -1042,7 +1042,7 @@ pub(crate) async fn gated_loop(
             match invoke_close_emit(
                 schedule,
                 stats.as_ref(),
-                &mut close_warn_limiter,
+                &mut close_limiters,
                 gate_ctx.close_emit.as_mut(),
                 &mut tick_output,
                 sink,
@@ -1066,7 +1066,7 @@ async fn gated_loop_body(
     cancel: &CancellationToken,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &mut GateContext,
-    close_warn_limiter: &mut CloseLimiters,
+    close_limiters: &mut CloseLimiters,
     tick_output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
@@ -1191,7 +1191,7 @@ async fn gated_loop_body(
                     invoke_close_emit(
                         schedule,
                         stats,
-                        close_warn_limiter,
+                        close_limiters,
                         gate_ctx.close_emit.as_mut(),
                         tick_output,
                         sink,
@@ -1214,7 +1214,7 @@ async fn gated_loop_body(
                     invoke_close_emit(
                         schedule,
                         stats,
-                        close_warn_limiter,
+                        close_limiters,
                         gate_ctx.close_emit.as_mut(),
                         tick_output,
                         sink,
@@ -1317,7 +1317,7 @@ async fn gated_loop_body(
                                 invoke_close_emit(
                                     schedule,
                                     stats,
-                                    close_warn_limiter,
+                                    close_limiters,
                                     gate_ctx.close_emit.as_mut(),
                                     tick_output,
                                     sink,

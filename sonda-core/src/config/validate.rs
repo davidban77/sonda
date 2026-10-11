@@ -613,9 +613,15 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     // spike values are an explicit prefix plus digits or hex digits, so the
     // prefix alone decides whether they are valid; the default prefix is the
     // label key and an underscore, which always is.
+    let value_clause =
+        |value: &str| format!("its value {value:?} is empty or contains '/', '[' or ']'");
     let element_values = |label: &str| -> Vec<(String, String)> {
-        let prefixed =
-            |prefix: &str| (format!("{prefix}0"), format!("values beginning {prefix:?}"));
+        let prefixed = |prefix: &str| {
+            (
+                format!("{prefix}0"),
+                format!("values from its prefix {prefix:?} contain '/', '[' or ']'"),
+            )
+        };
         let mut values = Vec::new();
         let dynamics: Vec<&DynamicLabelConfig> = config
             .dynamic_labels
@@ -625,14 +631,14 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
             .collect();
         if dynamics.is_empty() {
             if let Some(value) = config.labels.as_ref().and_then(|l| l.get(label)) {
-                values.push((value.clone(), format!("value {value:?}")));
+                values.push((value.clone(), value_clause(value)));
             }
         }
         for dl in dynamics {
             match &dl.strategy {
                 DynamicLabelStrategy::ValuesList { values: list } => values.extend(
                     list.iter()
-                        .map(|value| (value.clone(), format!("value {value:?}"))),
+                        .map(|value| (value.clone(), value_clause(value))),
                 ),
                 DynamicLabelStrategy::Counter { prefix, .. } => {
                     values.extend(prefix.as_deref().map(prefixed))
@@ -658,8 +664,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     if let Some((label, shown)) = bad_element {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for metric {:?} uses label `{label}` as an element name, \
-             but its {shown} is empty or contains '/', '[' or ']', so those events \
-             would be rejected; use it as a key value instead, for example \
+             but {shown}, so those events would be rejected; use it as a key value instead, for example \
              [name={{{label}}}]",
             config.name
         ))));
@@ -2524,8 +2529,8 @@ generator:
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::values_list(   Some(values_label(&["Gi0", "Gi0/0/1"])), None,         Some("value \"Gi0/0/1\""))]
-    #[case::counter_prefix(Some(prefixed_counter(Some("Gi0/"))),     None,         Some("values beginning \"Gi0/\""))]
-    #[case::spike_prefix(  None,                                     Some("a["),   Some("values beginning \"a[\""))]
+    #[case::counter_prefix(Some(prefixed_counter(Some("Gi0/"))),     None,         Some("values from its prefix \"Gi0/\" contain"))]
+    #[case::spike_prefix(  None,                                     Some("a["),   Some("values from its prefix \"a[\" contain"))]
     #[case::valid_values(  Some(values_label(&["Gi0", "Gi1"])),      None,         None)]
     #[case::default_prefix(Some(prefixed_counter(None)),             None,         None)]
     #[case::empty_prefix(  Some(prefixed_counter(Some(""))),         None,         None)]

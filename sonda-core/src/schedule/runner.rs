@@ -1593,8 +1593,10 @@ mod tests {
     }
 
     /// A close marker the encoder rejects is skipped and counted, and the
-    /// other series still get theirs: three series, one whose enum has no
-    /// mapping for the snap-to value.
+    /// other series still get theirs: four series, two whose enum has no
+    /// mapping for the snap-to value. The series come out of a set in no
+    /// fixed order, so two rejections are needed for a loop that stops at
+    /// the first one to fail the count every time.
     #[cfg(feature = "gnmi")]
     #[tokio::test]
     async fn rejected_close_marker_is_skipped_and_the_rest_are_delivered() {
@@ -1610,14 +1612,15 @@ mod tests {
         use std::time::SystemTime;
 
         let down = || GnmiValueType::Enum(BTreeMap::from([(0, "DOWN".to_string())]));
-        let up_only = GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())]));
+        let up_only = || GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())]));
         let encoder: Arc<dyn crate::encoder::Encoder> = Arc::from(
             create_encoder(&EncoderConfig::Gnmi(GnmiEncoderConfig {
                 path: Some("/a/{name}".to_string()),
                 values: HashMap::from([
                     ("oper_a".to_string(), down()),
                     ("oper_b".to_string(), down()),
-                    ("oper_c".to_string(), up_only),
+                    ("oper_c".to_string(), up_only()),
+                    ("oper_d".to_string(), up_only()),
                 ]),
                 ..Default::default()
             }))
@@ -1628,7 +1631,7 @@ mod tests {
         {
             let mut st = stats.write().unwrap();
             st.enable_close_series_tracking();
-            for name in ["oper_a", "oper_b", "oper_c"] {
+            for name in ["oper_a", "oper_b", "oper_c", "oper_d"] {
                 st.push_metric(MetricEvent::from_parts(
                     ValidatedMetricName::new(name).unwrap(),
                     1.0,
@@ -1670,8 +1673,8 @@ mod tests {
             "the mapped series get markers"
         );
         let st = stats.read().unwrap();
-        assert_eq!(st.rejected_events, 1, "the unmapped marker is counted");
-        assert_eq!(st.errors, 1);
+        assert_eq!(st.rejected_events, 2, "both unmapped markers are counted");
+        assert_eq!(st.errors, 2);
     }
 
     #[tokio::test]
