@@ -613,7 +613,7 @@ impl Encoder for GnmiEncoder {
     /// - the value is NaN or infinite and the metric is `uint`, `int`, `bool`
     ///   or `enum`;
     /// - the rounded value is outside the `i64` range for `int`, or the `u64`
-    ///   range for `uint` (negatives included);
+    ///   range for `uint` (so any value at or below -0.5);
     /// - the rounded value has no `enum` mapping.
     ///
     /// Returns [`EncoderError::TimestampBeforeEpoch`] or
@@ -1024,6 +1024,7 @@ mod tests {
     #[case::uint_rounds_noise(    Some(GnmiValueType::Uint),   0.9999999999999999, Ok(Value::UintVal(1)))]
     #[case::uint_rejects_negative(Some(GnmiValueType::Uint),   -5.0,   Err("outside the uint range"))]
     #[case::uint_rejects_minus_06(Some(GnmiValueType::Uint),   -0.6,   Err("outside the uint range"))]
+    #[case::uint_rejects_minus_05(Some(GnmiValueType::Uint),   -0.5,   Err("outside the uint range"))]
     #[case::int_rounds(           Some(GnmiValueType::Int),    -2.9,   Ok(Value::IntVal(-3)))]
     #[case::int_half_away(        Some(GnmiValueType::Int),    2.5,    Ok(Value::IntVal(3)))]
     #[case::int_rounds_noise(     Some(GnmiValueType::Int),    0.9999999999999999, Ok(Value::IntVal(1)))]
