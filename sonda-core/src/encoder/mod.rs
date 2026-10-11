@@ -3,6 +3,8 @@
 //! All encoders implement the `Encoder` trait. They write into a caller-provided
 //! `Vec<u8>` to avoid per-event allocations.
 
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 pub mod influx;
 pub mod json;
 #[cfg(feature = "otlp")]
@@ -54,9 +56,9 @@ pub trait Encoder: Send + Sync {
 ///
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `prometheus_text`, `influx_lp`,
-/// `json_lines`, `syslog`, `remote_write`, or `otlp`.
+/// `json_lines`, `syslog`, `remote_write`, `otlp`, or `gnmi`.
 ///
-/// Feature-gated encoders (`remote_write`, `otlp`) have companion
+/// Feature-gated encoders (`remote_write`, `otlp`, `gnmi`) have companion
 /// `*Disabled` variants that are compiled in when their feature is absent.
 /// These accept the YAML tag so that deserialization succeeds with a
 /// descriptive error from [`create_encoder`] instead of a generic
@@ -146,6 +148,24 @@ pub enum EncoderConfig {
     #[cfg(not(feature = "otlp"))]
     #[cfg_attr(feature = "config", serde(rename = "otlp"))]
     OtlpDisabled {},
+    /// gNMI `Notification` protobuf format.
+    ///
+    /// Encodes each metric event as one `Notification` with one `Update`
+    /// whose path is rendered from a template. See
+    /// [`gnmi::GnmiEncoderConfig`] for the fields. Requires the `gnmi`
+    /// feature flag.
+    #[cfg(feature = "gnmi")]
+    #[cfg_attr(feature = "config", serde(rename = "gnmi"))]
+    Gnmi(gnmi::GnmiEncoderConfig),
+
+    /// Placeholder variant when the `gnmi` feature is not compiled in.
+    ///
+    /// Deserializes the `gnmi` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "gnmi"))]
+    #[cfg_attr(feature = "config", serde(rename = "gnmi"))]
+    GnmiDisabled {},
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
@@ -173,6 +193,8 @@ pub fn create_encoder(config: &EncoderConfig) -> Result<Box<dyn Encoder>, crate:
         EncoderConfig::RemoteWrite => Ok(Box::new(remote_write::RemoteWriteEncoder::new())),
         #[cfg(feature = "otlp")]
         EncoderConfig::Otlp => Ok(Box::new(otlp::OtlpEncoder::new())),
+        #[cfg(feature = "gnmi")]
+        EncoderConfig::Gnmi(cfg) => Ok(Box::new(gnmi::GnmiEncoder::new(cfg)?)),
         #[cfg(not(feature = "remote-write"))]
         EncoderConfig::RemoteWriteDisabled { .. } => {
             Err(crate::SondaError::Config(crate::ConfigError::invalid(
@@ -184,6 +206,12 @@ pub fn create_encoder(config: &EncoderConfig) -> Result<Box<dyn Encoder>, crate:
         EncoderConfig::OtlpDisabled { .. } => {
             Err(crate::SondaError::Config(crate::ConfigError::invalid(
                 "encoder type 'otlp' requires the 'otlp' feature: cargo build -F otlp",
+            )))
+        }
+        #[cfg(not(feature = "gnmi"))]
+        EncoderConfig::GnmiDisabled { .. } => {
+            Err(crate::SondaError::Config(crate::ConfigError::invalid(
+                "encoder type 'gnmi' requires the 'gnmi' feature: cargo build -F gnmi",
             )))
         }
     }
@@ -692,6 +720,80 @@ sink:
         let result = enc.encode_log(&event, &mut buf);
         assert!(result.is_ok(), "otlp encoder must support encode_log");
         assert!(!buf.is_empty(), "buffer must contain encoded data");
+    }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig::Gnmi / GnmiDisabled (feature-gated tests)
+    // ---------------------------------------------------------------------------
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn encoder_config_gnmi_deserializes_from_yaml() {
+        let yaml = "type: gnmi\npath: /a/{name}\nvalues:\n  m: uint\n";
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let EncoderConfig::Gnmi(cfg) = config else {
+            panic!("should deserialize as Gnmi variant, got {config:?}");
+        };
+        assert_eq!(cfg.origin, "openconfig");
+        assert_eq!(cfg.target_label, "device");
+        assert_eq!(cfg.path.as_deref(), Some("/a/{name}"));
+        assert_eq!(cfg.values["m"], gnmi::GnmiValueType::Uint);
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn create_encoder_gnmi_produces_a_notification_through_factory() {
+        use prost::Message as _;
+        let config = EncoderConfig::Gnmi(gnmi::GnmiEncoderConfig {
+            path: Some("/state/{name}".to_string()),
+            ..gnmi::GnmiEncoderConfig::default()
+        });
+        let enc = create_encoder(&config).expect("factory must succeed");
+        let event = crate::model::metric::MetricEvent::new(
+            "up".to_string(),
+            1.0,
+            crate::model::metric::Labels::default(),
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        let n = gnmi::proto::Notification::decode(buf.as_slice()).unwrap();
+        assert_eq!(n.update.len(), 1);
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn create_encoder_gnmi_rejects_an_invalid_template() {
+        let config = EncoderConfig::Gnmi(gnmi::GnmiEncoderConfig {
+            path: Some("/a//b".to_string()),
+            ..gnmi::GnmiEncoderConfig::default()
+        });
+        assert!(matches!(
+            create_encoder(&config),
+            Err(crate::SondaError::Config(_))
+        ));
+    }
+
+    #[cfg(all(not(feature = "gnmi"), feature = "config"))]
+    #[test]
+    fn gnmi_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let config: EncoderConfig = serde_yaml_ng::from_str("type: gnmi")
+            .expect("type: gnmi must deserialize even without the gnmi feature");
+        assert!(matches!(config, EncoderConfig::GnmiDisabled {}));
+    }
+
+    #[cfg(not(feature = "gnmi"))]
+    #[test]
+    fn create_encoder_gnmi_disabled_returns_feature_hint_error() {
+        let err = create_encoder(&EncoderConfig::GnmiDisabled {})
+            .err()
+            .expect("disabled gnmi encoder must not be created");
+        assert!(matches!(err, crate::SondaError::Config(_)));
+        assert!(
+            err.to_string()
+                .contains("requires the 'gnmi' feature: cargo build -F gnmi"),
+            "got: {err}"
+        );
     }
 
     // ---------------------------------------------------------------------------
