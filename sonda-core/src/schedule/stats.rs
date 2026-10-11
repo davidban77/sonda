@@ -90,6 +90,9 @@ pub struct ScenarioStats {
     pub current_rate: f64,
     /// Number of encode or sink write errors encountered.
     pub errors: u64,
+    /// Events the encoder rejected and the scheduler skipped. Each one is also
+    /// counted in `errors`.
+    pub rejected_events: u64,
     /// Whether the scenario is currently in a gap window (no events emitted).
     pub in_gap: bool,
     /// Whether the scenario is currently in a burst window (elevated rate).
@@ -223,6 +226,7 @@ mod tests {
         assert_eq!(s.bytes_emitted, 0, "bytes_emitted must start at zero");
         assert_eq!(s.current_rate, 0.0, "current_rate must start at zero");
         assert_eq!(s.errors, 0, "errors must start at zero");
+        assert_eq!(s.rejected_events, 0, "rejected_events must start at zero");
         assert!(!s.in_gap, "in_gap must start as false");
         assert!(!s.in_burst, "in_burst must start as false");
         assert!(

@@ -286,6 +286,10 @@ fn encoder_display(enc: &sonda_core::encoder::EncoderConfig) -> String {
         EncoderConfig::Otlp => "otlp".to_string(),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled {} => "otlp (disabled)".to_string(),
+        #[cfg(feature = "gnmi")]
+        EncoderConfig::Gnmi(cfg) => format!("gnmi ({})", cfg.origin),
+        #[cfg(not(feature = "gnmi"))]
+        EncoderConfig::GnmiDisabled {} => "gnmi (disabled)".to_string(),
         // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
         // fall back to the Debug form so a future variant still renders.
         other => format!("unknown ({other:?})"),
@@ -789,6 +793,21 @@ fn to_compiled_scenario_dto<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gnmi arm, not the `unknown (...)` fallback, renders a gnmi encoder.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn encoder_display_gnmi_is_not_the_unknown_fallback() {
+        let config = sonda_core::encoder::EncoderConfig::Gnmi(
+            sonda_core::encoder::gnmi::GnmiEncoderConfig {
+                origin: "openconfig".to_string(),
+                ..Default::default()
+            },
+        );
+        let shown = encoder_display(&config);
+        assert!(shown.starts_with("gnmi ("), "{shown}");
+        assert!(!shown.contains("unknown ("), "{shown}");
+    }
 
     /// Build the printer's input by running the REAL expansion pipeline.
     ///

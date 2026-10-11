@@ -18,18 +18,20 @@ use crate::schedule::{
     time_until_gap_window_end,
 };
 use crate::sink::Sink;
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 use super::ParsedSchedule;
 
 /// Minimum interval between rate-limited sink-error stderr emissions.
 const SINK_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Per-scenario rate limiter for sink-error stderr warnings.
+/// Per-scenario rate limiter for the loop's stderr warnings.
 ///
-/// Stack-local in [`run_schedule_loop`]; not shared, not telemetry. Counts
-/// suppressed errors and emits a single line at most once per
-/// [`SINK_WARN_INTERVAL`].
+/// [`run_schedule_loop_with_initial_tick`] holds one instance for sink errors
+/// and one for events the encoder rejected; [`gated_loop`] holds the same pair
+/// for its close markers, as [`CloseLimiters`]. Each is a local of that
+/// function: not shared, not telemetry. Counts suppressed errors and emits a single line at most once
+/// per [`SINK_WARN_INTERVAL`].
 struct SinkErrorRateLimiter {
     last_emit: Option<Instant>,
     suppressed_count: u64,
@@ -48,6 +50,16 @@ impl SinkErrorRateLimiter {
     /// Always emits on the first call (so users see at least one line) and
     /// then at most once per [`SINK_WARN_INTERVAL`].
     fn observe(&mut self, scenario_name: &str, err: &std::io::Error) {
+        self.record(scenario_name, "sink errors", err);
+    }
+
+    /// Record an event the encoder rejected, under the same cooldown rule as
+    /// [`observe`](Self::observe).
+    fn observe_rejected(&mut self, scenario_name: &str, reason: &str) {
+        self.record(scenario_name, "events rejected by the encoder", &reason);
+    }
+
+    fn record(&mut self, scenario_name: &str, what: &str, last: &dyn std::fmt::Display) {
         self.suppressed_count += 1;
         let should_emit = self
             .last_emit
@@ -55,14 +67,49 @@ impl SinkErrorRateLimiter {
             .unwrap_or(true);
         if should_emit {
             eprintln!(
-                "sonda: scenario '{}': {} sink errors in last {}s (last: {})",
+                "sonda: scenario '{}': {} {} in last {}s (last: {})",
                 scenario_name,
                 self.suppressed_count,
+                what,
                 SINK_WARN_INTERVAL.as_secs(),
-                err
+                last
             );
             self.last_emit = Some(Instant::now());
             self.suppressed_count = 0;
+        }
+    }
+}
+
+/// The close path's rate limiters: one for sink errors, one for markers the
+/// encoder rejected, so the two counts never mix.
+pub(crate) struct CloseLimiters {
+    sink: SinkErrorRateLimiter,
+    rejected: SinkErrorRateLimiter,
+}
+
+impl CloseLimiters {
+    pub(crate) fn new() -> Self {
+        Self {
+            sink: SinkErrorRateLimiter::new(),
+            rejected: SinkErrorRateLimiter::new(),
+        }
+    }
+}
+
+/// Account for one event the encoder rejected: warn through `limiter` and
+/// count it in `rejected_events` and `errors`. The event itself is skipped by
+/// the caller, which keeps running.
+fn record_rejected_event(
+    schedule: &ParsedSchedule,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    limiter: &mut SinkErrorRateLimiter,
+    reason: &str,
+) {
+    limiter.observe_rejected(&schedule.name, reason);
+    if let Some(s) = stats {
+        if let Ok(mut st) = s.write() {
+            st.errors = st.errors.saturating_add(1);
+            st.rejected_events = st.rejected_events.saturating_add(1);
         }
     }
 }
@@ -143,6 +190,9 @@ pub struct TickOutput {
     /// growth slack). Retained memory is bounded by `SPARE_BUFFERS` times the
     /// largest such capacity.
     spare: Vec<Vec<u8>>,
+    /// Reasons for events a callback skipped because the encoder rejected
+    /// them. The caller accounts for each one, as for a rejected tick.
+    rejected: Vec<String>,
 }
 
 impl TickOutput {
@@ -153,12 +203,20 @@ impl TickOutput {
         Self {
             writes: Vec::with_capacity(16),
             spare: Vec::new(),
+            rejected: Vec::new(),
         }
     }
 
-    /// Drop any queued writes. The spare buffers are kept.
+    /// Drop any queued writes and recorded rejections. The spare buffers are kept.
     pub fn clear(&mut self) {
         self.writes.clear();
+        self.rejected.clear();
+    }
+
+    /// Record that an event was skipped because the encoder rejected it, with
+    /// the encoder's reason. Nothing is queued for it.
+    pub fn reject(&mut self, reason: String) {
+        self.rejected.push(reason);
     }
 
     /// Queue one encoded metric event, moving the bytes out of `buf` and
@@ -326,6 +384,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
     let mut rate_window_start = start;
 
     let mut sink_warn_limiter = SinkErrorRateLimiter::new();
+    let mut reject_warn_limiter = SinkErrorRateLimiter::new();
 
     // Sized to cover typical histogram (10 buckets + 3) and summary
     // (~6 quantiles + 2) without reallocating.
@@ -685,6 +744,16 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     return Err(SondaError::Sink(io_err));
                 }
             },
+            Err(SondaError::Encoder(EncoderError::EventRejected(reason))) => {
+                record_rejected_event(schedule, stats.as_ref(), &mut reject_warn_limiter, &reason);
+                if let Some(ref s) = stats {
+                    if let Ok(mut st) = s.write() {
+                        st.in_gap = currently_in_gap;
+                        st.in_burst = currently_in_burst;
+                        st.in_cardinality_spike = currently_in_spike;
+                    }
+                }
+            }
             Err(other) => return Err(other),
         }
 
@@ -772,13 +841,17 @@ pub(crate) fn apply_flush_policy(
 fn apply_close_emit_policy(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
-    limiter: &mut SinkErrorRateLimiter,
+    limiters: &mut CloseLimiters,
     err: SondaError,
 ) -> Result<(), SondaError> {
     match err {
+        SondaError::Encoder(EncoderError::EventRejected(reason)) => {
+            record_rejected_event(schedule, stats, &mut limiters.rejected, &reason);
+            Ok(())
+        }
         SondaError::Sink(io_err) => match schedule.on_sink_error {
             OnSinkError::Warn => {
-                limiter.observe(&schedule.name, &io_err);
+                limiters.sink.observe(&schedule.name, &io_err);
                 if let Some(s) = stats {
                     if let Ok(mut st) = s.write() {
                         st.errors = st.errors.saturating_add(1);
@@ -797,21 +870,21 @@ fn apply_close_emit_policy(
 fn apply_close_emit_policy_flush(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
-    limiter: &mut SinkErrorRateLimiter,
+    limiters: &mut CloseLimiters,
     flush_result: Result<(), SondaError>,
 ) -> Result<(), SondaError> {
     match flush_result {
         Ok(()) => Ok(()),
-        Err(e) => apply_close_emit_policy(schedule, stats, limiter, e),
+        Err(e) => apply_close_emit_policy(schedule, stats, limiters, e),
     }
 }
 
 /// Called on every committed `running → paused` transition AND on the
 /// single tail exit of `gated_loop`.
-async fn invoke_close_emit(
+pub(crate) async fn invoke_close_emit(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
-    limiter: &mut SinkErrorRateLimiter,
+    limiters: &mut CloseLimiters,
     close_emit: Option<&mut CloseEmitFn>,
     output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
@@ -824,12 +897,17 @@ async fn invoke_close_emit(
         Ok(()) => drain_writes(output, sink).await.map(|_| ()),
         Err(e) => Err(e),
     };
+    // Markers the encoder rejected were skipped; the rest were queued above.
+    for reason in std::mem::take(&mut output.rejected) {
+        let rejected = SondaError::Encoder(EncoderError::EventRejected(reason));
+        apply_close_emit_policy(schedule, stats, limiters, rejected)?;
+    }
     match outcome {
         Ok(()) => {
             let flush_result = sink.flush().await;
-            apply_close_emit_policy_flush(schedule, stats, limiter, flush_result)?;
+            apply_close_emit_policy_flush(schedule, stats, limiters, flush_result)?;
         }
-        Err(e) => apply_close_emit_policy(schedule, stats, limiter, e)?,
+        Err(e) => apply_close_emit_policy(schedule, stats, limiters, e)?,
     }
     Ok(())
 }
@@ -941,7 +1019,7 @@ pub(crate) async fn gated_loop(
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
-    let mut close_warn_limiter = SinkErrorRateLimiter::new();
+    let mut close_limiters = CloseLimiters::new();
     // One output for every running segment and close-emit of this scenario,
     // so recycled buffers survive pause/resume.
     let mut tick_output = TickOutput::for_schedule_loop();
@@ -953,7 +1031,7 @@ pub(crate) async fn gated_loop(
         cancel,
         stats.as_ref(),
         &mut gate_ctx,
-        &mut close_warn_limiter,
+        &mut close_limiters,
         &mut tick_output,
         sink,
         tick_fn,
@@ -964,7 +1042,7 @@ pub(crate) async fn gated_loop(
             match invoke_close_emit(
                 schedule,
                 stats.as_ref(),
-                &mut close_warn_limiter,
+                &mut close_limiters,
                 gate_ctx.close_emit.as_mut(),
                 &mut tick_output,
                 sink,
@@ -988,7 +1066,7 @@ async fn gated_loop_body(
     cancel: &CancellationToken,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &mut GateContext,
-    close_warn_limiter: &mut SinkErrorRateLimiter,
+    close_limiters: &mut CloseLimiters,
     tick_output: &mut TickOutput,
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
@@ -1113,7 +1191,7 @@ async fn gated_loop_body(
                     invoke_close_emit(
                         schedule,
                         stats,
-                        close_warn_limiter,
+                        close_limiters,
                         gate_ctx.close_emit.as_mut(),
                         tick_output,
                         sink,
@@ -1136,7 +1214,7 @@ async fn gated_loop_body(
                     invoke_close_emit(
                         schedule,
                         stats,
-                        close_warn_limiter,
+                        close_limiters,
                         gate_ctx.close_emit.as_mut(),
                         tick_output,
                         sink,
@@ -1239,7 +1317,7 @@ async fn gated_loop_body(
                                 invoke_close_emit(
                                     schedule,
                                     stats,
-                                    close_warn_limiter,
+                                    close_limiters,
                                     gate_ctx.close_emit.as_mut(),
                                     tick_output,
                                     sink,
@@ -3291,5 +3369,112 @@ mod tests {
         });
         let ctx = GateContext::new(rx, init).with_holds_on_close(true);
         assert!(ctx.holds_on_close);
+    }
+
+    // ---- Encoder-rejected events ----------------------------------------------
+
+    /// A metric scenario whose values sometimes have no gnmi enum mapping runs
+    /// to completion: each unmapped tick is skipped and counted, and every
+    /// mapped tick still reaches the sink, in order.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn rejected_events_are_skipped_counted_and_do_not_stop_the_scenario() {
+        use crate::config::{BaseScheduleConfig, ScenarioConfig};
+        use crate::encoder::gnmi::{GnmiEncoderConfig, GnmiValueType};
+        use crate::encoder::EncoderConfig;
+        use crate::generator::GeneratorConfig;
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+        use crate::sink::SinkConfig;
+
+        const SEQUENCE: [f64; 5] = [1.0, 2.0, 7.0, 1.0, 9.0];
+        let mapped = |v: f64| v == 1.0 || v == 2.0;
+
+        let config = ScenarioConfig {
+            base: BaseScheduleConfig {
+                gap_windows: None,
+                name: "oper_status".to_string(),
+                rate: 500.0,
+                duration: Some("100ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: OnSinkError::Fail,
+            },
+            generator: GeneratorConfig::Sequence {
+                values: SEQUENCE.to_vec(),
+                repeat: Some(true),
+            },
+            encoder: EncoderConfig::Gnmi(GnmiEncoderConfig {
+                path: Some("/a/{name}".to_string()),
+                values: std::collections::HashMap::from([(
+                    "oper_status".to_string(),
+                    GnmiValueType::Enum(std::collections::BTreeMap::from([
+                        (1, "UP".to_string()),
+                        (2, "DOWN".to_string()),
+                    ])),
+                )]),
+                ..Default::default()
+            }),
+            metric_type: None,
+            help: None,
+        };
+
+        let (mut sink, seen) = routing_probe(true);
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        let result = crate::schedule::runner::run_with_sink(
+            &config,
+            &mut sink,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+        )
+        .await;
+        result.expect("a rejected event must not end the scenario");
+
+        let st = stats.read().expect("stats lock poisoned").clone();
+        let ticks = st.total_events + st.rejected_events;
+        let expected: Vec<f64> = (0..ticks)
+            .map(|t| SEQUENCE[(t % SEQUENCE.len() as u64) as usize])
+            .filter(|v| mapped(*v))
+            .collect();
+        let expected_rejected = ticks - expected.len() as u64;
+
+        // Vacuity guard: the run spans whole cycles, so both kinds occurred.
+        assert!(ticks >= SEQUENCE.len() as u64, "only {ticks} ticks ran");
+        assert!(expected_rejected > 0);
+        assert_eq!(st.rejected_events, expected_rejected);
+        assert_eq!(st.errors, expected_rejected, "each rejection is an error");
+        let delivered: Vec<f64> = seen
+            .lock()
+            .expect("probe mutex poisoned")
+            .events
+            .iter()
+            .map(|e| e.value)
+            .collect();
+        assert_eq!(
+            delivered, expected,
+            "every mapped tick is delivered, in order"
+        );
+    }
+
+    #[test]
+    fn rate_limiter_counts_rejections_like_sink_errors() {
+        let mut limiter = SinkErrorRateLimiter::new();
+        for _ in 0..1000 {
+            limiter.observe_rejected("scenario_r", "no gnmi enum mapping");
+        }
+        assert!(limiter.last_emit.is_some(), "the first rejection emits");
+        assert_eq!(
+            limiter.suppressed_count, 999,
+            "the other 999 wait for the next window"
+        );
     }
 }

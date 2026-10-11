@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::config::validate::validate_encoder_sink_pairing;
 use crate::encoder::{create_encoder, EncoderConfig};
 use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
@@ -9,12 +10,16 @@ use crate::sink::{create_sink, SinkConfig};
 use crate::SondaError;
 
 /// Encode a [`LogEvent`] and deliver it through a one-shot sink.
+///
+/// Returns a [`SondaError::Config`] before building anything when the encoder
+/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
 pub async fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
     sink: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
+    validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
     let mut sink = create_sink(sink, labels).await?;
     let mut buf: Vec<u8> = Vec::new();
@@ -24,12 +29,16 @@ pub async fn emit_log(
 }
 
 /// Encode a [`MetricEvent`] and deliver it through a one-shot sink.
+///
+/// Returns a [`SondaError::Config`] before building anything when the encoder
+/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
 pub async fn emit_metric(
     event: &MetricEvent,
     encoder: &EncoderConfig,
     sink: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
+    validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
     let mut sink = create_sink(sink, labels).await?;
     let mut buf: Vec<u8> = Vec::new();
@@ -274,6 +283,58 @@ mod tests {
         assert!(
             matches!(err, SondaError::Config(_)),
             "invalid retry config must surface as SondaError::Config, got: {err:?}"
+        );
+    }
+
+    /// The pairing rule applies to one-shot emission too: a gnmi encoder is
+    /// refused before any sink is built, and nothing is written.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_rejects_the_gnmi_encoder_with_any_sink() {
+        let path = temp_path("emit_gnmi_pairing");
+        let _ = std::fs::remove_file(&path);
+        let sink = SinkConfig::File {
+            path: path.to_string_lossy().into_owned(),
+        };
+        let gnmi = EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            ..Default::default()
+        });
+        let metric =
+            MetricEvent::new("in_octets".to_string(), 1.0, Labels::default()).expect("metric");
+        let log = LogEvent::new(
+            Severity::Info,
+            "pairing probe".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+
+        // Positive control: the same event and sink with another encoder is
+        // delivered, so the rejection below comes from the encoder alone.
+        emit_metric(
+            &metric,
+            &EncoderConfig::PrometheusText { precision: None },
+            &sink,
+            None,
+        )
+        .await
+        .expect("prometheus_text to a file must succeed");
+        assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 0));
+        let _ = std::fs::remove_file(&path);
+
+        let metric_err = emit_metric(&metric, &gnmi, &sink, None)
+            .await
+            .expect_err("gnmi must be refused");
+        let log_err = emit_log(&log, &gnmi, &sink, None)
+            .await
+            .expect_err("gnmi must be refused");
+        for err in [metric_err, log_err] {
+            assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
+            assert!(err.to_string().contains("gnmi_target"), "got: {err}");
+        }
+        assert!(
+            std::fs::metadata(&path).is_err(),
+            "no sink may be built for a refused pairing"
         );
     }
 }

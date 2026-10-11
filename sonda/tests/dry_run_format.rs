@@ -100,3 +100,23 @@ fn dry_run_pack_backed_expands_sub_signals() {
     assert!(stderr.contains("pack_metric_a"));
     assert!(stderr.contains("pack_metric_b"));
 }
+
+/// A valid gnmi block on a stdout sink is rejected by the pairing rule, which
+/// runs only after the block itself has validated, so the message proves both.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_rejects_the_gnmi_encoder_without_a_gnmi_target_sink() {
+    let fixture = cli_fixtures_dir().join("gnmi.v2.yaml");
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(&fixture)
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("the gnmi encoder can only be used with the gnmi_target sink"),
+        "{stderr}"
+    );
+}
