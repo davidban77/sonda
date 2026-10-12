@@ -2932,7 +2932,7 @@
       ]
     },
     "SinkConfig": {
-      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, or `otlp_grpc`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
+      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, or `gnmi_target`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).",
@@ -3382,6 +3382,59 @@
             "type",
             "endpoint",
             "signal_type"
+          ]
+        },
+        {
+          "description": "Serve metric events to gNMI clients from a listener on `listen`.\n\nSinks naming the same address share one target. Pairs only with the\n`gnmi` encoder. See [`gnmi::GnmiTargetConfig`] for the fields.\nRequires the `gnmi` feature flag.",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "description": "Address to listen on, e.g. `\"0.0.0.0:57400\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`GnmiTarget::local_addr`].",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "max_subscribers": {
+              "description": "Streams beyond this are refused with `RESOURCE_EXHAUSTED`. Default 16.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 0
+            },
+            "sample_floor": {
+              "description": "Smallest `sample_interval` honoured, e.g. `\"1s\"`. Default `\"1s\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "subscriber_buffer": {
+              "description": "Broadcast capacity per target, 1 to 1048576. Default 1024.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "gnmi_target"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "listen"
           ]
         }
       ]

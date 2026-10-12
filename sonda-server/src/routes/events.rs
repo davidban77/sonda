@@ -13,7 +13,7 @@ use sonda_core::encoder::EncoderConfig;
 use sonda_core::model::log::{LogEvent, Severity};
 use sonda_core::model::metric::{Labels, MetricEvent};
 use sonda_core::sink::SinkConfig;
-use sonda_core::SondaError;
+use sonda_core::{EncoderError, SondaError};
 use tracing::info;
 
 use crate::routes::sink_warnings::{collect_warnings_for_sink, log_warnings};
@@ -179,6 +179,9 @@ fn error_response(err: SondaError) -> Response {
     match err {
         SondaError::Config(e) => unprocessable(format!("{e}")),
         SondaError::Sink(e) => bad_gateway(format!("sink error: {e}")),
+        SondaError::Encoder(EncoderError::EventRejected(e)) => {
+            unprocessable(format!("event rejected: {e}"))
+        }
         SondaError::Encoder(e) => internal_error(format!("encoder error: {e}")),
         SondaError::Generator(e) => internal_error(format!("generator error: {e}")),
         SondaError::Runtime(e) => internal_error(format!("runtime error: {e}")),
@@ -203,6 +206,8 @@ fn sink_kind(sink: &SinkConfig) -> &'static str {
         SinkConfig::Kafka { .. } => "kafka",
         #[cfg(feature = "otlp")]
         SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(_) => "gnmi_target",
         _ => "other",
     }
 }
@@ -341,6 +346,13 @@ mod tests {
             }),
             "udp"
         );
+        #[cfg(feature = "gnmi")]
+        assert_eq!(
+            sink_kind(&SinkConfig::GnmiTarget(
+                sonda_core::sink::gnmi::GnmiTargetConfig::new("127.0.0.1:0")
+            )),
+            "gnmi_target"
+        );
     }
 
     #[test]
@@ -356,5 +368,126 @@ mod tests {
         map.insert("1bad".to_string(), "value".to_string());
         let err = labels_from_map(&map).expect_err("invalid key must fail");
         assert!(matches!(err, SondaError::Config(_)));
+    }
+
+    #[test]
+    fn error_response_maps_a_rejected_event_to_422() {
+        let err = SondaError::Encoder(EncoderError::EventRejected("no ifName".to_string()));
+        let resp = error_response(err);
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn error_response_maps_other_encoder_errors_to_500() {
+        let err = SondaError::Encoder(EncoderError::Other("protobuf".to_string()));
+        let resp = error_response(err);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[cfg(feature = "gnmi")]
+    mod gnmi {
+        use std::sync::Arc;
+
+        use http_body_util::BodyExt;
+        use hyper::Request;
+        use sonda_core::sink::gnmi::{GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
+        use tower::ServiceExt;
+
+        use super::*;
+
+        /// POST a metrics event with the given encoder, on a gnmi_target
+        /// sink listening on `listen`; returns the status and the body.
+        async fn post_metric(
+            labels: serde_json::Value,
+            encoder: serde_json::Value,
+            listen: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let body = json!({
+                "signal_type": "metrics",
+                "labels": labels,
+                "metric": {"name": "in_octets", "value": 42.0},
+                "encoder": encoder,
+                "sink": {"type": "gnmi_target", "listen": listen},
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/events")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request");
+            let response = crate::routes::router(AppState::new())
+                .oneshot(request)
+                .await
+                .expect("infallible");
+            let status = response.status();
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, json)
+        }
+
+        async fn hold_target() -> (GnmiTargetSink, Arc<GnmiTarget>) {
+            let sink = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
+                .await
+                .expect("bind an ephemeral port");
+            let target = Arc::clone(sink.target());
+            (sink, target)
+        }
+
+        fn template(path: &str) -> serde_json::Value {
+            json!({"type": "gnmi", "path": path})
+        }
+
+        #[tokio::test]
+        async fn a_valid_event_reaches_the_target_with_200() {
+            let (_held, target) = hold_target().await;
+            let listen = target.local_addr().to_string();
+            assert_eq!(target.series_count(), 0);
+
+            let (status, body) = post_metric(
+                json!({"ifName": "Gi0"}),
+                template("/interfaces/interface[name={ifName}]/{name}"),
+                &listen,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(body["sent"], json!(true), "body: {body}");
+            assert_eq!(target.series_count(), 1, "the target holds the series");
+        }
+
+        #[tokio::test]
+        async fn an_invalid_template_is_422() {
+            let (_held, target) = hold_target().await;
+            let (status, body) = post_metric(
+                json!({"ifName": "Gi0"}),
+                template("/interfaces/interface[name={ifName}"),
+                &target.local_addr().to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            assert_eq!(target.series_count(), 0, "nothing was published");
+        }
+
+        #[tokio::test]
+        async fn an_event_the_template_cannot_place_is_422() {
+            let (_held, target) = hold_target().await;
+            // The template is valid, but this event carries no `ifName`.
+            let (status, body) = post_metric(
+                json!({"device": "rtr1"}),
+                template("/interfaces/interface[name={ifName}]/{name}"),
+                &target.local_addr().to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            assert!(
+                body.to_string().contains("event rejected"),
+                "the 422 is the per-event one: {body}"
+            );
+            assert_eq!(target.series_count(), 0, "nothing was published");
+        }
     }
 }

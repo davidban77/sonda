@@ -8,6 +8,11 @@
 //! the 64 encoded bytes are built once; nothing is encoded inside the measured
 //! loop.
 //!
+//! With the `gnmi` feature, `sink_write_metric_event/gnmi_target` measures
+//! `GnmiTargetSink` on a target bound to `127.0.0.1:0` with no subscriber,
+//! cloning the event per call as the runner does for a sink that opts in;
+//! compare it with `opt_in_clone`.
+//!
 //! No production caller reaches `sink_write_metric_event/default`: the runners
 //! and `emit_metric` call `write_metric_event` only when `wants_metric_events`
 //! is true, and `MemorySink` returns false. The row is a reference for the
@@ -17,7 +22,8 @@
 //! `tests/metric_path_allocations.rs`; this bench is the developer-facing
 //! profiler and asserts no timings.
 //!
-//! Run with `cargo bench -p sonda-core --bench metric_dispatch`.
+//! Run with `cargo bench -p sonda-core --bench metric_dispatch`, adding
+//! `--features gnmi` for the `gnmi_target` row.
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -204,7 +210,60 @@ fn bench_metric_dispatch(c: &mut Criterion) {
         },
     );
 
+    #[cfg(feature = "gnmi")]
+    bench_gnmi_target(&mut group, &event, bytes);
+
     group.finish();
+}
+
+/// The `gnmi_target` row. The target needs a runtime with I/O enabled for its
+/// listener; the sink and target are built once, outside the measured loop.
+#[cfg(feature = "gnmi")]
+fn bench_gnmi_target(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    event: &MetricEvent,
+    bytes: &[u8],
+) {
+    use sonda_core::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime must build");
+    let sink = rt
+        .block_on(GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0")))
+        .expect("bind an ephemeral port");
+    let target = Arc::clone(sink.target());
+    let mut sink: Box<dyn Sink> = Box::new(sink);
+    assert!(sink.wants_metric_events());
+
+    // One untimed pass: every call lands on the one series, nobody listens.
+    rt.block_on(async {
+        let sink: &mut dyn Sink = black_box(sink.as_mut());
+        for _ in 0..EVENTS_PER_ITER {
+            sink.write_metric_event(event, bytes)
+                .await
+                .expect("gnmi_target write_metric_event");
+        }
+    });
+    assert_eq!(target.series_count(), 1);
+    assert_eq!(target.subscriber_count(), 0);
+
+    group.bench_function(
+        BenchmarkId::new("sink_write_metric_event", "gnmi_target"),
+        |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let sink: &mut dyn Sink = black_box(sink.as_mut());
+                    for _ in 0..EVENTS_PER_ITER {
+                        let owned = event.clone();
+                        black_box(sink.write_metric_event(&owned, bytes).await)
+                            .expect("gnmi_target write_metric_event");
+                    }
+                });
+            });
+        },
+    );
 }
 
 criterion_group!(benches, bench_metric_dispatch);

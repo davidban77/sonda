@@ -689,8 +689,8 @@ scenarios:
 }
 
 /// A `gnmi` encoder block with every field, including the integer-keyed
-/// `enum:` value map. No file in the corpus roots uses the `gnmi` encoder, so
-/// this is the positive control for its schema.
+/// `enum:` value map, on a `gnmi_target` sink with every field. No file in
+/// the corpus roots uses either, so this is the positive control for both.
 #[test]
 fn the_schema_accepts_a_gnmi_encoder() {
     const YAML: &str = r#"
@@ -710,6 +710,12 @@ defaults:
       oper_status:
         enum: { 1: UP, 2: DOWN }
     drop_labels: [job]
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+    max_subscribers: 4
+    subscriber_buffer: 256
+    sample_floor: 500ms
 scenarios:
   - signal_type: metrics
     name: in_octets
@@ -788,6 +794,67 @@ scenarios:
       value: 1.0
 "#,
     );
+}
+
+/// The sink block denies unknown fields. `listen_addr` is the plausible
+/// misspelling, and without the rejection it would fall back to no listen
+/// address at all.
+#[test]
+fn the_schema_rejects_a_misspelled_gnmi_target_key() {
+    const YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{name}"
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+    listen_addr: 0.0.0.0:57400
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"#;
+    // The parser refuses it too, so the schema is not stricter than sonda.
+    sonda_core::compiler::parse::parse(YAML).expect_err("the parser refuses `listen_addr`");
+    assert_rejected("`listen_addr` beside `listen`", YAML);
+}
+
+/// The schema accepts any scalar for the sink's text fields, so the parser
+/// must too: a numeric `listen` is a validation error naming the field, not
+/// a parse error the schema did not predict.
+#[test]
+fn the_parser_takes_every_scalar_the_schema_takes_for_gnmi_target_text_fields() {
+    const YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{name}"
+  sink:
+    type: gnmi_target
+    listen: 57400
+    sample_floor: 5
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"#;
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(YAML).expect("loads");
+    assert!(
+        validator().is_valid(&yaml_to_json(value)),
+        "the premise: the schema accepts numeric text fields"
+    );
+    sonda_core::compiler::parse::parse(YAML).expect("the parser accepts what the schema accepts");
 }
 
 /// The committed schema is a build output. This is the same comparison

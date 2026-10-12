@@ -6,6 +6,12 @@
 pub mod channel;
 #[cfg(feature = "runtime")]
 pub mod file;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
+#[cfg(any(feature = "otlp", feature = "gnmi"))]
+// Without `otlp`, nothing in the crate constructs the codec.
+#[cfg_attr(not(feature = "otlp"), allow(dead_code))]
+pub(crate) mod grpc_codec;
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "kafka")]
@@ -143,10 +149,10 @@ impl std::fmt::Debug for KafkaSaslConfig {
 ///
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,
-/// `http_push`, `remote_write`, `kafka`, `loki`, or `otlp_grpc`.
+/// `http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, or `gnmi_target`.
 ///
 /// Feature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,
-/// `otlp_grpc`) have companion `*Disabled` variants that are compiled in
+/// `otlp_grpc`, `gnmi_target`) have companion `*Disabled` variants that are compiled in
 /// when their feature is absent. These accept the YAML tag so that
 /// deserialization succeeds with a descriptive error from [`create_sink`]
 /// instead of a generic "unknown variant" error from serde.
@@ -431,6 +437,24 @@ pub enum SinkConfig {
     #[cfg(not(feature = "otlp"))]
     #[cfg_attr(feature = "config", serde(rename = "otlp_grpc"))]
     OtlpGrpcDisabled {},
+
+    /// Serve metric events to gNMI clients from a listener on `listen`.
+    ///
+    /// Sinks naming the same address share one target. Pairs only with the
+    /// `gnmi` encoder. See [`gnmi::GnmiTargetConfig`] for the fields.
+    /// Requires the `gnmi` feature flag.
+    #[cfg(feature = "gnmi")]
+    #[cfg_attr(feature = "config", serde(rename = "gnmi_target"))]
+    GnmiTarget(gnmi::GnmiTargetConfig),
+
+    /// Placeholder variant when the `gnmi` feature is not compiled in.
+    ///
+    /// Deserializes the `gnmi_target` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "gnmi"))]
+    #[cfg_attr(feature = "config", serde(rename = "gnmi_target"))]
+    GnmiTargetDisabled {},
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -619,6 +643,8 @@ pub async fn create_sink(
                 .await?,
             ))
         }
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(cfg) => Ok(Box::new(gnmi::GnmiTargetSink::new(cfg).await?)),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
@@ -644,6 +670,12 @@ pub async fn create_sink(
         SinkConfig::OtlpGrpcDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
                 "sink type 'otlp_grpc' requires the 'otlp' feature: cargo build -F otlp",
+            )))
+        }
+        #[cfg(not(feature = "gnmi"))]
+        SinkConfig::GnmiTargetDisabled { .. } => {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "sink type 'gnmi_target' requires the 'gnmi' feature: cargo build -F gnmi",
             )))
         }
     }

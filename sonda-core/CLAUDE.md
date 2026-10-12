@@ -10,9 +10,11 @@ src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── emit.rs             ← synchronous single-event helpers: emit_log, emit_metric.
-│                          Check the encoder/sink pairing, build a one-shot encoder +
-│                          sink, encode one event, write, flush, drop. Used by the
-│                          sonda-server `POST /events` handler.
+│                          Check the encoder/sink pairing (emit_log also refuses the
+│                          gnmi encoder and gnmi_target sink), build a one-shot encoder +
+│                          sink, encode one event, write (write_metric_event for a sink
+│                          that opts in), flush, drop. Used by the sonda-server
+│                          `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
@@ -59,6 +61,8 @@ src/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),
 │   │                      MetricEvent (ValidatedMetricName name, Arc<Labels>), Labels, from_parts().
+│   │                      MetricKey = (ValidatedMetricName, Arc<Labels>), the one series key
+│   │                      (re-exported from schedule::stats).
 │   │                      Labels::iter() returns (&str, &str). Labels::new() is #[cfg(test)] pub(crate).
 │   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels).
 │                          Severity has explicit Ord/PartialOrd (rank-based, not derived from variant order).
@@ -114,7 +118,13 @@ src/
 │   │   │                   uncovered_label + template_for are the ONE coverage and
 │   │   │                   template rules validation also calls. Output is one Notification
 │   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
-│   │   │                   rejects it with every sink but gnmi_target.
+│   │   │                   pairs it with the gnmi_target sink only, in both directions.
+│   │   │                   Metrics, histogram and summary entries take it; validation
+│   │   │                   checks each series an entry emits (histogram: <name>_bucket
+│   │   │                   with `le`, _sum, _count; summary: <name> with `quantile`,
+│   │   │                   _sum, _count). The `le`/`quantile` template must reference
+│   │   │                   the key and may not drop it; _sum/_count need paths: entries
+│   │   │                   without it. Logs entries refuse both encoder and sink.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike
@@ -133,6 +143,23 @@ src/
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
+│   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages, shared by
+│   │                      otlp_grpc and gnmi (feature = "otlp" or "gnmi")
+│   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
+│   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
+│   │   │                   field check validation and the sink both call),
+│   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
+│   │   │                   synchronously from write_metric_event; write() is an error
+│   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by MetricKey,
+│   │   │                   broadcast of SeriesUpdate, listener task, root CancellationToken
+│   │   │                   cancelled on drop of the last Arc. publish() copies the
+│   │   │                   encoded bytes once and never awaits.
+│   │   ├── registry.rs ←   registry(): process-wide address → Weak<GnmiTarget>. Sinks on
+│   │   │                   one address share a target; differing settings are a
+│   │   │                   ConfigError; port 0 always binds a new target.
+│   │   └── service.rs  ←   GnmiService: tower::Service router served with
+│   │                       serve_with_incoming_shutdown (never add_service); every
+│   │                       path answers UNIMPLEMENTED.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
@@ -246,7 +273,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `gnmi` | no | Enables `prost` and `runtime` for the gNMI encoder (`encoder/gnmi/`). Validation rejects the encoder with every sink except `gnmi_target`. |
+| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream` and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain

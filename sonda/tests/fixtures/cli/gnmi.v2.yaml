@@ -10,6 +10,9 @@ defaults:
     path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
     values:
       in_octets: uint
+  sink:
+    type: gnmi_target
+    listen: 127.0.0.1:57400
 
 scenarios:
   - signal_type: metrics

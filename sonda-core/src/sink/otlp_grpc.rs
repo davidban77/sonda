@@ -12,22 +12,19 @@
 //!
 //! Requires the `otlp` feature flag.
 
-use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use bytes::Buf;
 use prost::Message;
 use tonic::client::Grpc;
-use tonic::codec::{Codec, Decoder, Encoder as TonicEncoder};
 use tonic::transport::Channel;
-use tonic::Status;
 
 use crate::encoder::otlp::{
     self, ExportLogsServiceRequest, ExportLogsServiceResponse, ExportMetricsServiceRequest,
     ExportMetricsServiceResponse, InstrumentationScope, KeyValue, LogRecord, Metric, Resource,
     ResourceLogs, ResourceMetrics, ScopeLogs, ScopeMetrics,
 };
+use crate::sink::grpc_codec::ProstCodec as OtlpCodec;
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
@@ -40,85 +37,6 @@ const METRICS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.metrics.v1.Met
 
 /// The gRPC service path for the OTLP logs export RPC.
 const LOGS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.logs.v1.LogsService/Export";
-
-// ---------------------------------------------------------------------------
-// Custom ProstCodec for tonic 0.14+
-//
-// tonic 0.14 removed the built-in ProstCodec. We implement a minimal codec
-// that uses prost for encoding/decoding, matching the pattern from earlier
-// tonic versions.
-// ---------------------------------------------------------------------------
-
-/// A gRPC codec that uses prost for protobuf encoding and decoding.
-///
-/// Type parameters `T` and `U` are the request and response message types.
-#[derive(Debug, Clone)]
-struct OtlpCodec<T, U>(PhantomData<(T, U)>);
-
-impl<T, U> Default for OtlpCodec<T, U> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<T, U> Codec for OtlpCodec<T, U>
-where
-    T: Message + 'static,
-    U: Message + Default + 'static,
-{
-    type Encode = T;
-    type Decode = U;
-    type Encoder = OtlpProstEncoder<T>;
-    type Decoder = OtlpProstDecoder<U>;
-
-    fn encoder(&mut self) -> Self::Encoder {
-        OtlpProstEncoder(PhantomData)
-    }
-
-    fn decoder(&mut self) -> Self::Decoder {
-        OtlpProstDecoder(PhantomData)
-    }
-}
-
-/// Prost-based encoder for gRPC request messages.
-#[derive(Debug)]
-struct OtlpProstEncoder<T>(PhantomData<T>);
-
-impl<T: Message + 'static> TonicEncoder for OtlpProstEncoder<T> {
-    type Item = T;
-    type Error = Status;
-
-    fn encode(
-        &mut self,
-        item: Self::Item,
-        dst: &mut tonic::codec::EncodeBuf<'_>,
-    ) -> Result<(), Self::Error> {
-        item.encode(dst)
-            .map_err(|e| Status::internal(format!("protobuf encode error: {e}")))
-    }
-}
-
-/// Prost-based decoder for gRPC response messages.
-#[derive(Debug)]
-struct OtlpProstDecoder<T>(PhantomData<T>);
-
-impl<T: Message + Default + 'static> Decoder for OtlpProstDecoder<T> {
-    type Item = T;
-    type Error = Status;
-
-    fn decode(
-        &mut self,
-        src: &mut tonic::codec::DecodeBuf<'_>,
-    ) -> Result<Option<Self::Item>, Self::Error> {
-        let buf = src.copy_to_bytes(src.remaining());
-        if buf.is_empty() {
-            return Ok(None);
-        }
-        T::decode(buf)
-            .map(Some)
-            .map_err(|e| Status::internal(format!("protobuf decode error: {e}")))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Signal type

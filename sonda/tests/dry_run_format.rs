@@ -101,12 +101,39 @@ fn dry_run_pack_backed_expands_sub_signals() {
     assert!(stderr.contains("pack_metric_b"));
 }
 
-/// A valid gnmi block on a stdout sink is rejected by the pairing rule, which
-/// runs only after the block itself has validated, so the message proves both.
+/// The gnmi encoder paired with the gnmi_target sink validates, and the
+/// dry-run names both. A dry run binds nothing, so the fixed port is never
+/// opened.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_shows_the_gnmi_encoder_and_the_gnmi_target_sink() {
+    let stderr = dry_run_stderr("gnmi.v2.yaml");
+    assert!(stderr.contains("gnmi (openconfig-interfaces)"), "{stderr}");
+    assert!(stderr.contains("gnmi_target (127.0.0.1:57400)"), "{stderr}");
+    assert!(stderr.contains("Validation: OK (1 scenario)"), "{stderr}");
+}
+
+/// The same valid gnmi block on a stdout sink is rejected by the pairing
+/// rule, which runs only after the block itself has validated, so the
+/// message proves both.
 #[cfg(feature = "gnmi")]
 #[test]
 fn dry_run_rejects_the_gnmi_encoder_without_a_gnmi_target_sink() {
-    let fixture = cli_fixtures_dir().join("gnmi.v2.yaml");
+    let source = std::fs::read_to_string(cli_fixtures_dir().join("gnmi.v2.yaml"))
+        .expect("read the gnmi fixture");
+    let sink = "  sink:\n    type: gnmi_target\n    listen: 127.0.0.1:57400\n";
+    assert!(
+        source.contains(sink),
+        "the fixture must carry the sink block"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = dir.path().join("gnmi-stdout.v2.yaml");
+    std::fs::write(
+        &fixture,
+        source.replace(sink, "  sink:\n    type: stdout\n"),
+    )
+    .expect("write the stdout variant");
+
     let output = Command::new(sonda_bin())
         .args(["run"])
         .arg(&fixture)

@@ -16,8 +16,7 @@ use std::time::UNIX_EPOCH;
 use prost::encoding::{self, encode_key, encode_varint, encoded_len_varint, key_len, WireType};
 use prost::Message;
 
-use crate::model::metric::{is_valid_metric_name, MetricEvent};
-use crate::schedule::stats::MetricKey;
+use crate::model::metric::{is_valid_metric_name, MetricEvent, MetricKey};
 use crate::{ConfigError, EncoderError, SondaError};
 
 use super::Encoder;

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::config::validate::validate_encoder_sink_pairing;
+use crate::config::validate::{reject_gnmi_for_logs, validate_encoder_sink_pairing};
 use crate::encoder::{create_encoder, EncoderConfig};
 use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
@@ -12,13 +12,16 @@ use crate::SondaError;
 /// Encode a [`LogEvent`] and deliver it through a one-shot sink.
 ///
 /// Returns a [`SondaError::Config`] before building anything when the encoder
-/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
+/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]), or
+/// when either is the `gnmi` encoder or the `gnmi_target` sink, which carry
+/// metric signals only.
 pub async fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
     sink: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
+    reject_gnmi_for_logs(encoder, sink)?;
     validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
     let mut sink = create_sink(sink, labels).await?;
@@ -328,13 +331,87 @@ mod tests {
         let log_err = emit_log(&log, &gnmi, &sink, None)
             .await
             .expect_err("gnmi must be refused");
-        for err in [metric_err, log_err] {
+        for (err, needle) in [(metric_err, "gnmi_target"), (log_err, "not logs entries")] {
             assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
-            assert!(err.to_string().contains("gnmi_target"), "got: {err}");
+            assert!(err.to_string().contains(needle), "got: {err}");
         }
         assert!(
             std::fs::metadata(&path).is_err(),
             "no sink may be built for a refused pairing"
         );
+    }
+
+    /// A target held alive here is the one `emit_metric`'s one-shot sink
+    /// joins, so what the sink published can be read back after it drops.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_metric_reaches_a_gnmi_target_through_the_hook() {
+        use crate::encoder::gnmi::{proto, GnmiEncoderConfig};
+        use crate::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+        use prost::Message;
+
+        let held = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
+            .await
+            .expect("bind an ephemeral port");
+        let target = std::sync::Arc::clone(held.target());
+        assert_eq!(target.series_count(), 0);
+
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            42.5,
+            Labels::from_pairs(&[("ifName", "Gi0")]).expect("labels"),
+        )
+        .expect("metric event");
+        let encoder = EncoderConfig::Gnmi(GnmiEncoderConfig {
+            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
+            ..Default::default()
+        });
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new(target.local_addr().to_string()));
+        emit_metric(&event, &encoder, &sink, None)
+            .await
+            .expect("emit_metric must deliver to the target");
+
+        assert_eq!(target.series_count(), 1, "the event is one series");
+        let snapshot = target.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        let notification =
+            proto::Notification::decode(snapshot[0].latest.as_ref()).expect("a notification");
+        assert_eq!(notification.update.len(), 1);
+        let value = notification.update[0]
+            .val
+            .as_ref()
+            .and_then(|v| v.value.as_ref());
+        assert_eq!(
+            value,
+            Some(&proto::typed_value::Value::DoubleVal(42.5)),
+            "the latest value is the event's"
+        );
+    }
+
+    /// The gnmi encoder and the gnmi_target sink carry metrics only; a log
+    /// sent to them is a config error, not an encode failure.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_log_rejects_the_gnmi_target_sink() {
+        use crate::encoder::gnmi::GnmiEncoderConfig;
+        use crate::sink::gnmi::GnmiTargetConfig;
+
+        let log = LogEvent::new(
+            Severity::Info,
+            "probe".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        let gnmi = EncoderConfig::Gnmi(GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            ..Default::default()
+        });
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new("127.0.0.1:0"));
+
+        let err = emit_log(&log, &gnmi, &sink, None)
+            .await
+            .expect_err("a log on gnmi_target must be refused");
+        assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
+        assert!(err.to_string().contains("not logs entries"), "got: {err}");
     }
 }

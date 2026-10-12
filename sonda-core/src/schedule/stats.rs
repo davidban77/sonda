@@ -12,7 +12,7 @@ use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 pub type CloseEmitKey = (ValidatedMetricName, Arc<Labels>);
 
 /// Series identity for the [`ScenarioStats::current_values`] map.
-pub type MetricKey = (ValidatedMetricName, Arc<Labels>);
+pub use crate::model::metric::MetricKey;
 
 /// How long since the last successful delivery before a failing scenario is
 /// considered degraded, in nanoseconds (30 seconds).
