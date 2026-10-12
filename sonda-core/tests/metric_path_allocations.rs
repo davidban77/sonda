@@ -1,8 +1,11 @@
 //! Exact allocation budget for the single-event metric write path.
 //!
 //! Lives in its own integration test rather than a `#[cfg(test)] mod tests`
-//! because `#[global_allocator]` is process-wide: in the lib test binary the
-//! counter would be shared with every other test running in parallel.
+//! because `#[global_allocator]` replaces the allocator for the whole test
+//! binary. The counter itself is thread-local, so only allocations made on the
+//! measuring thread inside a counted window are counted; the runner is driven
+//! on that thread by a current-thread runtime, and tests running in parallel
+//! on other threads cannot add to it.
 //!
 //! Two checks, both numbers rather than "no panic":
 //!
@@ -22,8 +25,9 @@
 #![cfg(all(feature = "runtime", feature = "config"))]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -35,16 +39,24 @@ use sonda_core::model::metric::MetricEvent;
 use sonda_core::sink::{Sink, SinkConfig};
 use sonda_core::{OnSinkError, SondaError};
 
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-static COUNTING: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // `const` initialisers: reading these never allocates, so the allocator
+    // below can touch them.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+}
 
 struct CountingAlloc;
 
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        // `try_with` fails only while a thread's locals are being torn down,
+        // which is never inside a counted window.
+        let _ = COUNTING.try_with(|counting| {
+            if counting.get() {
+                let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+            }
+        });
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -55,10 +67,54 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
-/// Serialises the counted windows. `ALLOCS`/`COUNTING` are process-wide, so two
-/// tests measuring at once sum into one counter — which read as ~9 allocations
-/// per event (4 + 5) instead of each test's own figure.
-static MEASURING: Mutex<()> = Mutex::new(());
+/// Run `body` with allocation counting on for this thread and return the
+/// allocations it made on this thread.
+fn count_allocations(body: impl FnOnce()) -> usize {
+    ALLOCS.with(|n| n.set(0));
+    COUNTING.with(|c| c.set(true));
+    body();
+    COUNTING.with(|c| c.set(false));
+    ALLOCS.with(Cell::get)
+}
+
+/// Another thread allocating throughout a counted window adds nothing to it.
+/// This is what lets the cases here run in parallel with each other.
+#[test]
+fn allocations_on_other_threads_are_not_counted() {
+    const OTHER_ALLOCS: usize = 10_000;
+    let go = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicUsize::new(0));
+
+    // Spawned before the window opens; inside it, this thread only flips a
+    // flag and spins, neither of which allocates.
+    let other = {
+        let (go, done) = (Arc::clone(&go), Arc::clone(&done));
+        std::thread::spawn(move || {
+            while !go.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            for i in 0..OTHER_ALLOCS {
+                std::hint::black_box(vec![i as u8; 16]);
+                done.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    };
+
+    let allocs = count_allocations(|| {
+        go.store(true, Ordering::SeqCst);
+        while done.load(Ordering::SeqCst) < OTHER_ALLOCS {
+            std::hint::spin_loop();
+        }
+    });
+    other.join().expect("allocating thread panicked");
+
+    // Vacuity guard: the other thread did allocate, all of it inside the window.
+    assert_eq!(done.load(Ordering::SeqCst), OTHER_ALLOCS);
+    assert_eq!(
+        allocs, 0,
+        "allocations on another thread leaked into this thread's count"
+    );
+}
 
 /// Sink that does not opt in, so it keeps the plain byte path.
 struct PlainSink {
@@ -151,8 +207,6 @@ fn scenario() -> ScenarioConfig {
 /// delivered event, having first warmed the same sink outside the counted
 /// window so lazily-built state is not charged to the loop.
 fn allocations_per_event(sink: &mut Box<dyn Sink>, delivered: &AtomicUsize) -> f64 {
-    let _guard = MEASURING.lock().expect("measuring mutex poisoned");
-
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -167,16 +221,13 @@ fn allocations_per_event(sink: &mut Box<dyn Sink>, delivered: &AtomicUsize) -> f
     });
 
     delivered.store(0, Ordering::Relaxed);
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
-    rt.block_on(async {
-        sonda_core::schedule::runner::run_with_sink(&config, sink, &cancel, None)
-            .await
-            .expect("counted run must succeed");
+    let allocs = count_allocations(|| {
+        rt.block_on(async {
+            sonda_core::schedule::runner::run_with_sink(&config, sink, &cancel, None)
+                .await
+                .expect("counted run must succeed");
+        });
     });
-    COUNTING.store(false, Ordering::Relaxed);
-
-    let allocs = ALLOCS.load(Ordering::Relaxed);
     let n = delivered.load(Ordering::Relaxed);
     // Vacuity guard: a run that emitted nothing would divide into a flattering
     // zero, so assert the events exist before asserting the ratio.
