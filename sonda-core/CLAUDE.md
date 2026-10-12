@@ -13,8 +13,9 @@ src/
 │                          Check the encoder/sink pairing (emit_log also refuses the
 │                          gnmi encoder and gnmi_target sink), build a one-shot encoder +
 │                          sink, encode one event, write (write_metric_event for a sink
-│                          that opts in), flush, drop. Used by the sonda-server
-│                          `POST /events` handler.
+│                          that opts in), flush, drop. A gnmi_target sink JOINS the live
+│                          target on its address and never binds; no live target is a
+│                          ConfigError. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
@@ -96,7 +97,11 @@ src/
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot;
 │   │                      recovers from poisoned stats lock instead of panicking)
 │   ├── launch.rs       ← validate_entry + prepare_entries + launch_scenario (unified launch API,
-│   │                      PreparedEntry, shared expand→validate→phase_offset pipeline)
+│   │                      PreparedEntry, shared expand→validate→phase_offset pipeline).
+│   │                      validate_file is the ONE home of cross-entry rules, run by
+│   │                      prepare_entries and the gated path: gnmi_target entries on one
+│   │                      address agree on settings, a wildcard and another address never
+│   │                      share a port, and every gnmi encoder agrees with its entries.
 │   ├── runner.rs           ← metric event loop: builds generator/encoder/labels, delegates to core_loop
 │   ├── log_runner.rs       ← log event loop: builds log generator/encoder/labels, delegates to core_loop
 │   ├── histogram_runner.rs ← histogram event loop: pre-built Arc<Labels> per bucket, delegates to core_loop
@@ -149,17 +154,27 @@ src/
 │   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
 │   │   │                   field check validation and the sink both call),
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
-│   │   │                   synchronously from write_metric_event; write() is an error
-│   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by MetricKey,
-│   │   │                   broadcast of SeriesUpdate, listener task, root CancellationToken
-│   │   │                   cancelled on drop of the last Arc. publish() copies the
-│   │   │                   encoded bytes once and never awaits.
-│   │   ├── registry.rs ←   registry(): process-wide address → Weak<GnmiTarget>. Sinks on
-│   │   │                   one address share a target; differing settings are a
-│   │   │                   ConfigError; port 0 always binds a new target.
+│   │   │                   synchronously from write_metric_event; write() is an error.
+│   │   │                   Keeps MetricKey → (SeriesId, PathKey): the first event of a
+│   │   │                   series decodes its path, later ones reuse the id. A write is
+│   │   │                   delivered once upserted. Drop releases the sink's claims.
+│   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
+│   │   │                   RENDERED PATH (PathKey: origin, target, elems), one claim per
+│   │   │                   publisher; a series leaves with its last claim. publish()
+│   │   │                   copies the encoded bytes once, takes the broadcast lock once,
+│   │   │                   never awaits. Teardown: dropping the last Arc cancels the
+│   │   │                   root token; the listening socket closes at once (Incoming
+│   │   │                   ends), connections still open after DRAIN_GRACE are closed
+│   │   │                   (Connection reads EOF), state Listening → Draining → Stopped.
+│   │   ├── registry.rs ←   registry(): process-wide address → Weak<GnmiTarget> + state.
+│   │   │                   acquire() binds or joins; a target whose listener task exited
+│   │   │                   is not live; before binding it waits (≤ 2 s) for a stopped
+│   │   │                   target's socket on that port to close. join() never binds
+│   │   │                   (emit_metric). Differing settings are a ConfigError; port 0
+│   │   │                   always binds a new target.
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
-│   │                       serve_with_incoming_shutdown (never add_service); every
-│   │                       path answers UNIMPLEMENTED.
+│   │                       serve_with_incoming (never add_service); every path
+│   │                       answers UNIMPLEMENTED.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
@@ -251,6 +266,9 @@ src/
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_log_scenario (log_csv_replay rate derivation),
     │                      expand_entry (entry-level wrapper covering both)
+    ├── scalar_text.rs  ← ScalarText + required/optional deserialize_with: a string, number
+    │                      or boolean read as text. The ONE rule for text fields the schema
+    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor).
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.

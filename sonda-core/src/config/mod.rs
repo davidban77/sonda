@@ -6,6 +6,8 @@
 //! serialization and parsing are gated.
 
 pub mod aliases;
+#[cfg(all(feature = "config", feature = "gnmi"))]
+pub(crate) mod scalar_text;
 pub mod validate;
 
 use std::collections::HashMap;

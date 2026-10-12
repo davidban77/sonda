@@ -390,10 +390,14 @@ mod tests {
 
         use http_body_util::BodyExt;
         use hyper::Request;
-        use sonda_core::sink::gnmi::{GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
+        use sonda_core::sink::gnmi::{registry, GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
         use tower::ServiceExt;
 
         use super::*;
+
+        /// Serialises the tests here: each one can then say what the
+        /// process-wide registry holds.
+        static REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
         /// POST a metrics event with the given encoder, on a gnmi_target
         /// sink listening on `listen`; returns the status and the body.
@@ -430,6 +434,7 @@ mod tests {
             (status, json)
         }
 
+        /// A target held by the test, standing in for a running scenario.
         async fn hold_target() -> (GnmiTargetSink, Arc<GnmiTarget>) {
             let sink = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
                 .await
@@ -444,6 +449,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_valid_event_reaches_the_target_with_200() {
+            let _registry = REGISTRY.lock().await;
             let (_held, target) = hold_target().await;
             let listen = target.local_addr().to_string();
             assert_eq!(target.series_count(), 0);
@@ -461,6 +467,7 @@ mod tests {
 
         #[tokio::test]
         async fn an_invalid_template_is_422() {
+            let _registry = REGISTRY.lock().await;
             let (_held, target) = hold_target().await;
             let (status, body) = post_metric(
                 json!({"ifName": "Gi0"}),
@@ -474,6 +481,7 @@ mod tests {
 
         #[tokio::test]
         async fn an_event_the_template_cannot_place_is_422() {
+            let _registry = REGISTRY.lock().await;
             let (_held, target) = hold_target().await;
             // The template is valid, but this event carries no `ifName`.
             let (status, body) = post_metric(
@@ -488,6 +496,39 @@ mod tests {
                 "the 422 is the per-event one: {body}"
             );
             assert_eq!(target.series_count(), 0, "nothing was published");
+        }
+
+        /// With no running scenario on the address the event is refused,
+        /// and the server binds nothing.
+        #[tokio::test]
+        async fn no_live_target_is_422_and_binds_nothing() {
+            let _registry = REGISTRY.lock().await;
+            // A port a target held and released, so nothing listens on it now.
+            let addr = {
+                let (held, target) = hold_target().await;
+                let stopped = target.wait();
+                let addr = target.local_addr();
+                drop((held, target));
+                stopped.await;
+                addr
+            };
+            assert!(registry().is_empty(), "the precondition: no live target");
+
+            let (status, body) = post_metric(
+                json!({"ifName": "Gi0"}),
+                template("/interfaces/interface[name={ifName}]/{name}"),
+                &addr.to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            assert!(
+                body.to_string().contains("no running scenario listens on"),
+                "body: {body}"
+            );
+            assert!(registry().is_empty(), "the request bound no target");
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .expect_err("nothing listens on the address");
         }
     }
 }

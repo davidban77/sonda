@@ -73,12 +73,61 @@ impl<T: Message + Default + 'static> Decoder for ProstDecoder<T> {
         &mut self,
         src: &mut tonic::codec::DecodeBuf<'_>,
     ) -> Result<Option<Self::Item>, Self::Error> {
+        // A zero-length frame is a message with every field at its default.
         let buf = src.copy_to_bytes(src.remaining());
-        if buf.is_empty() {
-            return Ok(None);
-        }
         T::decode(buf)
             .map(Some)
             .map_err(|e| Status::internal(format!("protobuf decode error: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::codec::Streaming;
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct Probe {
+        #[prost(string, tag = "1")]
+        name: String,
+    }
+
+    /// One uncompressed gRPC frame carrying `message`.
+    fn frame(message: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0u8];
+        frame.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        frame.extend_from_slice(message);
+        frame
+    }
+
+    /// An empty frame is a message with every field at its default, not
+    /// the end of the stream; the stream ends after it.
+    #[tokio::test]
+    async fn zero_length_frame_decodes_as_default() {
+        let named = Probe {
+            name: "x".to_string(),
+        };
+        let mut body = frame(&[]);
+        body.extend(frame(&named.encode_to_vec()));
+        let body = String::from_utf8(body).expect("these frames are valid UTF-8");
+        let mut stream =
+            Streaming::<Probe>::new_request(ProstDecoder::<Probe>(PhantomData), body, None, None);
+
+        let limit = std::time::Duration::from_secs(1);
+        let first = tokio::time::timeout(limit, stream.message())
+            .await
+            .expect("no stall")
+            .expect("the empty frame decodes");
+        assert_eq!(first, Some(Probe::default()));
+        let second = tokio::time::timeout(limit, stream.message())
+            .await
+            .expect("no stall")
+            .expect("the next frame decodes");
+        assert_eq!(second, Some(named));
+        let end = tokio::time::timeout(limit, stream.message())
+            .await
+            .expect("no stall")
+            .expect("clean end");
+        assert_eq!(end, None);
     }
 }

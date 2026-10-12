@@ -35,6 +35,11 @@ pub async fn emit_log(
 ///
 /// Returns a [`SondaError::Config`] before building anything when the encoder
 /// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
+///
+/// A `gnmi_target` sink joins the live target on its address and never
+/// binds one: with no running scenario listening there, this is a
+/// [`SondaError::Config`]. The event stays in the target's table after the
+/// call returns.
 pub async fn emit_metric(
     event: &MetricEvent,
     encoder: &EncoderConfig,
@@ -43,7 +48,11 @@ pub async fn emit_metric(
 ) -> Result<(), SondaError> {
     validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
-    let mut sink = create_sink(sink, labels).await?;
+    let mut sink: Box<dyn crate::sink::Sink> = match sink {
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(cfg) => Box::new(crate::sink::gnmi::GnmiTargetSink::join(cfg)?),
+        _ => create_sink(sink, labels).await?,
+    };
     let mut buf: Vec<u8> = Vec::new();
     encoder.encode_metric(event, &mut buf)?;
     // Same rule as the schedule runners: only a sink that asked for the event
@@ -341,8 +350,9 @@ mod tests {
         );
     }
 
-    /// A target held alive here is the one `emit_metric`'s one-shot sink
-    /// joins, so what the sink published can be read back after it drops.
+    /// A target held alive here stands in for a running scenario:
+    /// `emit_metric` joins it, and the event stays in its table after the
+    /// one-shot sink drops.
     #[cfg(feature = "gnmi")]
     #[tokio::test]
     async fn emit_metric_reaches_a_gnmi_target_through_the_hook() {
@@ -413,5 +423,46 @@ mod tests {
             .expect_err("a log on gnmi_target must be refused");
         assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
         assert!(err.to_string().contains("not logs entries"), "got: {err}");
+    }
+
+    /// With no running scenario on the address, `emit_metric` refuses the
+    /// event instead of binding a target of its own.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_metric_without_a_live_gnmi_target_is_a_config_error() {
+        use crate::encoder::gnmi::GnmiEncoderConfig;
+        use crate::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+        // A port a target held and released, so nothing listens on it now.
+        let addr = {
+            let held = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
+                .await
+                .expect("bind an ephemeral port");
+            let addr = held.target().local_addr();
+            let stopped = held.target().wait();
+            drop(held);
+            stopped.await;
+            addr
+        };
+        let event = MetricEvent::new("in_octets".to_string(), 1.0, Labels::default())
+            .expect("metric event");
+        let encoder = EncoderConfig::Gnmi(GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            ..Default::default()
+        });
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new(addr.to_string()));
+
+        let err = emit_metric(&event, &encoder, &sink, None)
+            .await
+            .expect_err("nothing to join");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string()
+                .contains(&format!("no running scenario listens on {addr}")),
+            "got {err}"
+        );
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .expect_err("emit_metric bound nothing on the address");
     }
 }

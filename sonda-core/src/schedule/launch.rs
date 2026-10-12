@@ -205,11 +205,78 @@ pub fn prepare_entries_grouped(
 /// desugaring, each paired with the index of the authored entry it came from;
 /// errors name that index. [`prepare_entries`] and the gated launch path both
 /// call this before they validate the entries one by one, so a file is held to
-/// the same cross-entry rules on either path.
+/// the same cross-entry rules on either path: entries sharing a `gnmi_target`
+/// address agree on its settings, and every `gnmi` encoder agrees with the
+/// entries that use it.
 pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
     #[cfg(feature = "gnmi")]
-    validate_gnmi_file(entries)?;
+    {
+        validate_gnmi_target_addresses(entries)?;
+        validate_gnmi_file(entries)?;
+    }
     let _ = entries;
+    Ok(())
+}
+
+/// Check that the `gnmi_target` sinks of one file can share their listen
+/// addresses.
+///
+/// Entries on one address share one target, so they must use the same
+/// `max_subscribers`, `subscriber_buffer` and `sample_floor`. A wildcard
+/// address such as `0.0.0.0:57400` and any other address on the same port
+/// cannot both listen. Port 0 always binds a target of its own and is never
+/// compared, and a sink whose config does not resolve is left to per-entry
+/// validation. Every failure is a [`SondaError::Config`] naming both entries.
+#[cfg(feature = "gnmi")]
+fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
+    use crate::sink::gnmi::TargetSettings;
+    use crate::sink::SinkConfig;
+
+    let mut seen: Vec<(usize, TargetSettings)> = Vec::new();
+    for (index, entry) in entries {
+        let SinkConfig::GnmiTarget(cfg) = &entry.base().sink else {
+            continue;
+        };
+        let Ok(settings) = cfg.settings() else {
+            continue;
+        };
+        if settings.listen.port() == 0 {
+            continue;
+        }
+        for (other, earlier) in &seen {
+            if earlier.listen.port() != settings.listen.port() {
+                continue;
+            }
+            if earlier.listen == settings.listen {
+                if !earlier.serves(&settings) {
+                    return Err(SondaError::Config(ConfigError::invalid(format!(
+                        "scenario[{other}] and scenario[{index}] both use gnmi_target {} \
+                         with different settings (max_subscribers {} and {}, \
+                         subscriber_buffer {} and {}, sample_floor {:?} and {:?}); entries \
+                         on one address must use the same settings",
+                        settings.listen,
+                        earlier.max_subscribers,
+                        settings.max_subscribers,
+                        earlier.subscriber_buffer,
+                        settings.subscriber_buffer,
+                        earlier.sample_floor,
+                        settings.sample_floor,
+                    ))));
+                }
+            } else if earlier.listen.ip().is_unspecified() || settings.listen.ip().is_unspecified()
+            {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "scenario[{other}] listens on gnmi_target {} and scenario[{index}] on {}; \
+                     a wildcard address and another address cannot share port {}, so use one \
+                     address for both",
+                    earlier.listen,
+                    settings.listen,
+                    settings.listen.port(),
+                ))));
+            }
+        }
+        seen.push((*index, settings));
+    }
     Ok(())
 }
 
@@ -2700,5 +2767,56 @@ scenarios:
         #[cfg(not(feature = "gnmi"))]
         let sink = crate::sink::SinkConfig::GnmiTargetDisabled {};
         assert_eq!(sink_type_label(&sink), "gnmi_target");
+    }
+
+    /// A metrics entry on a `gnmi_target` sink listening on `listen`.
+    #[cfg(feature = "gnmi")]
+    fn gnmi_entry(name: &str, listen: &str, max_subscribers: Option<usize>) -> ScenarioEntry {
+        let mut entry = metrics_entry(name);
+        if let ScenarioEntry::Metrics(ref mut config) = entry {
+            let mut sink = crate::sink::gnmi::GnmiTargetConfig::new(listen);
+            sink.max_subscribers = max_subscribers;
+            config.base.sink = SinkConfig::GnmiTarget(sink);
+            config.encoder = EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+                path: Some("/a/{name}".to_string()),
+                ..Default::default()
+            });
+        }
+        entry
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn entries_sharing_an_address_must_agree() {
+        prepare_entries(vec![
+            gnmi_entry("a", "127.0.0.1:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(4)),
+            gnmi_entry("c", "127.0.0.2:57400", None),
+        ])
+        .expect("identical settings on one address, and another specific address");
+
+        let err = prepare_entries(vec![
+            gnmi_entry("a", "127.0.0.1:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(8)),
+        ])
+        .expect_err("different settings on one address");
+        let msg = err.to_string();
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(msg.contains("scenario[0] and scenario[1]"), "got {msg}");
+        assert!(msg.contains("max_subscribers 4 and 8"), "got {msg}");
+
+        let err = prepare_entries(vec![
+            gnmi_entry("a", "0.0.0.0:57400", None),
+            gnmi_entry("b", "127.0.0.1:57400", None),
+        ])
+        .expect_err("a wildcard and a specific address on one port");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(err.to_string().contains("wildcard"), "got {err}");
+
+        prepare_entries(vec![
+            gnmi_entry("a", "127.0.0.1:0", Some(4)),
+            gnmi_entry("b", "127.0.0.1:0", Some(8)),
+        ])
+        .expect("port 0 binds a target per entry, so nothing is shared");
     }
 }

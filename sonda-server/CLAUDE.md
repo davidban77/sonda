@@ -44,7 +44,9 @@ src/
 │                         request body, dispatches on signal_type, builds LogEvent/MetricEvent,
 │                         awaits sonda_core::emit::{emit_log, emit_metric} directly.
 │                         Maps SondaError variants to HTTP status (Config→422,
-│                         Encoder(EventRejected)→422, Sink→502, others→500).
+│                         Encoder(EventRejected)→422, Sink→502, others→500). A
+│                         gnmi_target sink joins a running scenario's target and
+│                         never binds; with none on the address the event is a 422.
 │   ├── sink_warnings.rs ← shared loopback pre-flight helpers (extract_host,
 │                          is_loopback_host, sink_loopback_warnings, collect_warnings_for_sink,
 │                          log_warnings) used by both /scenarios and /events.

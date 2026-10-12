@@ -11,7 +11,8 @@
 //! With the `gnmi` feature, `sink_write_metric_event/gnmi_target` measures
 //! `GnmiTargetSink` on a target bound to `127.0.0.1:0` with no subscriber,
 //! cloning the event per call as the runner does for a sink that opts in;
-//! compare it with `opt_in_clone`.
+//! compare it with `opt_in_clone`. Its encoded bytes are the event's gnmi
+//! notification rather than the 64-byte stand-in.
 //!
 //! No production caller reaches `sink_write_metric_event/default`: the runners
 //! and `emit_metric` call `write_metric_event` only when `wants_metric_events`
@@ -211,20 +212,34 @@ fn bench_metric_dispatch(c: &mut Criterion) {
     );
 
     #[cfg(feature = "gnmi")]
-    bench_gnmi_target(&mut group, &event, bytes);
+    bench_gnmi_target(&mut group, &event);
 
     group.finish();
 }
 
 /// The `gnmi_target` row. The target needs a runtime with I/O enabled for its
-/// listener; the sink and target are built once, outside the measured loop.
+/// listener; the sink, the target and the event's encoded notification are
+/// built once, outside the measured loop.
 #[cfg(feature = "gnmi")]
 fn bench_gnmi_target(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     event: &MetricEvent,
-    bytes: &[u8],
 ) {
+    use sonda_core::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+    use sonda_core::encoder::Encoder;
     use sonda_core::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+    let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+        path: Some("/interfaces/interface[name={interface}]/{name}".to_string()),
+        drop_labels: vec!["region".to_string(), "role".to_string()],
+        ..GnmiEncoderConfig::default()
+    })
+    .expect("valid gnmi encoder");
+    let mut encoded = Vec::new();
+    encoder
+        .encode_metric(event, &mut encoded)
+        .expect("the event encodes");
+    let bytes: &[u8] = &encoded;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

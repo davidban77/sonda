@@ -207,3 +207,31 @@ fn dry_run_rejects_a_gnmi_values_key_naming_no_metric() {
     assert!(stderr.contains("values: key `in_octet`"), "{stderr}");
     assert!(stderr.contains("did you mean `in_octets`?"), "{stderr}");
 }
+
+/// Two entries on one gnmi_target address with different settings fail the
+/// dry run, as they would fail the run.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_rejects_entries_that_share_an_address_with_different_settings() {
+    let source = std::fs::read_to_string(cli_fixtures_dir().join("gnmi.v2.yaml"))
+        .expect("read the gnmi fixture");
+    let entry = "  - signal_type: metrics\n    name: in_octets\n";
+    assert!(source.contains(entry), "the fixture must carry the entry");
+    let second = "  - signal_type: metrics\n    name: out_octets\n    sink:\n      type: gnmi_target\n      listen: 127.0.0.1:57400\n      max_subscribers: 2\n    generator:\n      type: constant\n      value: 1\n    labels:\n      device: rtr-core-01\n      ifName: GigabitEthernet0/0/0\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = dir.path().join("gnmi-shared.v2.yaml");
+    std::fs::write(&fixture, format!("{source}{second}")).expect("write the two-entry file");
+
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(&fixture)
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("both use gnmi_target 127.0.0.1:57400 with different settings"),
+        "{stderr}"
+    );
+}

@@ -2,21 +2,43 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use bytes::Bytes;
 use prost::Message;
-use tokio::net::TcpListener;
-use tokio::sync::{broadcast, watch};
-use tokio_stream::wrappers::TcpListenerStream;
-use tokio_util::sync::CancellationToken;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, mpsc, watch};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
+use tonic::transport::server::{Connected, TcpConnectInfo};
 
 use super::service::GnmiService;
 use super::TargetSettings;
 use crate::encoder::gnmi::proto;
-use crate::model::metric::MetricKey;
 use crate::SondaError;
+
+/// How long a connection still open when its target stops may stay open
+/// before the target closes it.
+pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// Where a target's listener is in its lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TargetState {
+    /// Accepting connections.
+    Listening,
+    /// The listening socket is closed; open connections have up to
+    /// [`DRAIN_GRACE`] to finish before they are closed.
+    Draining,
+    /// The listener task has exited and every connection is closed.
+    Stopped,
+}
 
 /// A target-local series number, allocated on a series' first publish.
 pub type SeriesId = u32;
@@ -28,6 +50,77 @@ pub struct SeriesUpdate {
     pub series_id: SeriesId,
     /// One encoded `gnmi.Notification`.
     pub bytes: Bytes,
+}
+
+/// The gNMI identity of a series: its full path, with the origin and target
+/// name. Two events whose notifications carry one path are one series.
+#[derive(Clone, Debug)]
+pub(crate) struct PathKey(Arc<proto::Path>);
+
+impl PathKey {
+    /// A key for `path`.
+    pub(crate) fn new(path: proto::Path) -> Self {
+        Self(Arc::new(path))
+    }
+
+    /// The path of the first update in an encoded `gnmi.Notification`: the
+    /// prefix's origin and target with the update's elements.
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Sink`] when `encoded` is not a notification with an
+    /// update.
+    pub(crate) fn decode(encoded: &[u8]) -> Result<Self, SondaError> {
+        let not_a_notification = |detail: String| {
+            SondaError::Sink(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "gnmi_target received bytes that are not a gnmi notification with an \
+                     update: {detail}"
+                ),
+            ))
+        };
+        let mut notification =
+            proto::Notification::decode(encoded).map_err(|e| not_a_notification(e.to_string()))?;
+        let prefix = notification.prefix.take().unwrap_or_default();
+        let elem = notification
+            .update
+            .into_iter()
+            .next()
+            .and_then(|update| update.path)
+            .ok_or_else(|| not_a_notification("no update path".to_string()))?
+            .elem;
+        Ok(Self::new(proto::Path {
+            origin: prefix.origin,
+            elem,
+            target: prefix.target,
+        }))
+    }
+
+    /// The path.
+    pub(crate) fn path(&self) -> &proto::Path {
+        &self.0
+    }
+}
+
+impl PartialEq for PathKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for PathKey {}
+
+impl Hash for PathKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.origin.hash(state);
+        self.0.target.hash(state);
+        self.0.elem.len().hash(state);
+        for elem in &self.0.elem {
+            elem.name.hash(state);
+            elem.key.hash(state);
+        }
+    }
 }
 
 /// One series as held by the target, returned by [`GnmiTarget::snapshot`].
@@ -44,31 +137,43 @@ pub(crate) struct SeriesSnapshot {
 
 /// One series in the table.
 struct Slot {
-    id: SeriesId,
-    path: proto::Path,
+    path: PathKey,
     latest: Mutex<Bytes>,
+    /// Claims not yet released through [`GnmiTarget::remove`].
+    claims: usize,
 }
 
 #[derive(Default)]
 struct SeriesTable {
-    slots: HashMap<MetricKey, Slot>,
+    ids: HashMap<PathKey, SeriesId>,
+    slots: HashMap<SeriesId, Slot>,
     next_id: SeriesId,
 }
 
-/// The latest value of every series published on one listen address, the
-/// broadcast that carries new values to subscribers, and the gRPC listener.
+/// Whether the listener task has exited, and the error it exited with.
+#[derive(Default)]
+struct Serving {
+    stopped: AtomicBool,
+    error: Mutex<Option<String>>,
+}
+
+/// The latest value of every series published on one listen address, keyed
+/// by the series' path, the broadcast that carries new values to
+/// subscribers, and the gRPC listener.
 ///
 /// Obtained from the [`registry`](super::registry::registry). The listener
 /// runs on its own task until the last `Arc<GnmiTarget>` is dropped, which
-/// cancels the target's root token: the server stops accepting and every
-/// task spawned on a child of that token ends.
+/// cancels the target's root token: the listening socket closes at once,
+/// every task spawned on a child of that token ends, and connections still
+/// open after [`DRAIN_GRACE`] are closed.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
     table: RwLock<SeriesTable>,
     tx: broadcast::Sender<SeriesUpdate>,
     token: CancellationToken,
-    stopped: watch::Receiver<bool>,
+    state: watch::Receiver<TargetState>,
+    serving: Arc<Serving>,
 }
 
 impl GnmiTarget {
@@ -82,33 +187,29 @@ impl GnmiTarget {
             ))
         })?;
         let local_addr = listener.local_addr().map_err(SondaError::Sink)?;
+        tracing::info!(addr = %local_addr, "gnmi_target listening");
         let (tx, _) = broadcast::channel(settings.subscriber_buffer);
         let token = CancellationToken::new();
-        let (stopped_tx, stopped) = watch::channel(false);
+        let (state_tx, state) = watch::channel(TargetState::Listening);
+        let serving = Arc::new(Serving::default());
 
         Ok(Arc::new_cyclic(|target| {
             let service = GnmiService::new(target.clone());
-            let shutdown = token.clone().cancelled_owned();
-            tokio::spawn(async move {
-                let served = tonic::transport::Server::builder()
-                    .serve_with_incoming_shutdown(
-                        service,
-                        TcpListenerStream::new(listener),
-                        shutdown,
-                    )
-                    .await;
-                if let Err(e) = served {
-                    tracing::warn!(error = %e, addr = %local_addr, "gnmi_target server stopped with an error");
-                }
-                let _ = stopped_tx.send(true);
-            });
+            tokio::spawn(serve(
+                service,
+                listener,
+                token.clone(),
+                state_tx,
+                Arc::clone(&serving),
+            ));
             GnmiTarget {
                 local_addr,
                 settings,
                 table: RwLock::new(SeriesTable::default()),
                 tx,
                 token,
-                stopped,
+                state,
+                serving,
             }
         }))
     }
@@ -123,19 +224,57 @@ impl GnmiTarget {
         self.tx.receiver_count()
     }
 
-    /// Distinct series published so far.
+    /// Distinct series paths in the table.
     pub fn series_count(&self) -> usize {
         self.read().slots.len()
     }
 
-    /// Resolves once the listener task has exited. The returned future does
-    /// not hold the target, so it can be awaited after the last handle is
-    /// dropped.
+    /// Resolves once the listener task has exited and every connection it
+    /// accepted is closed. The returned future does not hold the target, so
+    /// it can be awaited after the last handle is dropped.
     pub fn wait(&self) -> impl Future<Output = ()> + Send + 'static {
-        let mut stopped = self.stopped.clone();
+        let mut state = self.state.clone();
         async move {
-            let _ = stopped.wait_for(|stopped| *stopped).await;
+            let _ = state.wait_for(|s| *s == TargetState::Stopped).await;
         }
+    }
+
+    /// A receiver for the listener's lifecycle state.
+    pub(crate) fn state(&self) -> watch::Receiver<TargetState> {
+        self.state.clone()
+    }
+
+    /// Whether the listener task is still running.
+    pub(crate) fn is_serving(&self) -> bool {
+        !self.serving.stopped.load(Ordering::Acquire)
+    }
+
+    /// `Ok` while the listener task runs; otherwise [`SondaError::Sink`]
+    /// naming the address and the error the task exited with.
+    pub(crate) fn check_serving(&self) -> Result<(), SondaError> {
+        if self.is_serving() {
+            return Ok(());
+        }
+        let error = self
+            .serving
+            .error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| "it was stopped".to_string());
+        Err(SondaError::Sink(io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!(
+                "gnmi_target {} is no longer serving: {error}",
+                self.local_addr
+            ),
+        )))
+    }
+
+    /// Stop the listener while handles to the target remain.
+    #[cfg(test)]
+    pub(crate) fn stop_serving(&self) {
+        self.token.cancel();
     }
 
     /// The settings the target was bound with.
@@ -143,25 +282,54 @@ impl GnmiTarget {
         &self.settings
     }
 
-    /// Upsert the latest encoded notification for a series; allocates the
-    /// `SeriesId` on first sight.
+    /// Upsert `encoded` as the latest notification of a series. Returns the
+    /// series' id and whether any receiver was subscribed.
     ///
-    /// Synchronous. Takes the table write lock only on a series' first
-    /// publish; `broadcast::Sender::send` never blocks. Copies `encoded`
-    /// once. The path stored for a new series is decoded from `encoded`; a
-    /// buffer that is not a `gnmi.Notification` with an update is stored
-    /// with an empty path.
-    pub(crate) fn publish(&self, key: &MetricKey, encoded: &[u8]) -> SeriesId {
+    /// With `id` naming a series in the table, that series is updated under
+    /// the read lock. Otherwise the series for `path` is claimed, under the
+    /// write lock: created, with a new id, when no series has that path yet.
+    /// Each claim is released by one [`remove`](Self::remove) of the id; the
+    /// series leaves the table with its last claim.
+    ///
+    /// Synchronous; `broadcast::Sender::send` never blocks. Copies `encoded`
+    /// once.
+    pub(crate) fn publish(
+        &self,
+        id: Option<SeriesId>,
+        path: &PathKey,
+        encoded: &[u8],
+    ) -> (SeriesId, bool) {
         let latest = Bytes::copy_from_slice(encoded);
+        let receivers = self.tx.receiver_count() > 0;
         // A clone shares the buffer but allocates its refcount on first use,
         // so it is made only when someone will receive it.
-        let update = (self.tx.receiver_count() > 0).then(|| latest.clone());
-        let series_id = self.store(key, latest);
+        let update = receivers.then(|| latest.clone());
+        let series_id = self.store(id, path, latest);
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
             let _ = self.tx.send(SeriesUpdate { series_id, bytes });
         }
-        series_id
+        (series_id, receivers)
+    }
+
+    /// Release one claim on each of `ids`; a series whose last claim is
+    /// released leaves the table. Unknown ids are ignored.
+    pub(crate) fn remove(&self, ids: &[SeriesId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut table = self.write();
+        for id in ids {
+            let Some(slot) = table.slots.get_mut(id) else {
+                continue;
+            };
+            slot.claims = slot.claims.saturating_sub(1);
+            if slot.claims == 0 {
+                if let Some(slot) = table.slots.remove(id) {
+                    table.ids.remove(&slot.path);
+                }
+            }
+        }
     }
 
     /// A receiver for every update published from now on.
@@ -175,42 +343,51 @@ impl GnmiTarget {
     pub(crate) fn snapshot(&self) -> Vec<SeriesSnapshot> {
         self.read()
             .slots
-            .values()
-            .map(|slot| SeriesSnapshot {
-                series_id: slot.id,
-                path: slot.path.clone(),
+            .iter()
+            .map(|(id, slot)| SeriesSnapshot {
+                series_id: *id,
+                path: slot.path.path().clone(),
                 latest: lock(&slot.latest).clone(),
             })
             .collect()
     }
 
-    fn store(&self, key: &MetricKey, latest: Bytes) -> SeriesId {
-        if let Some(slot) = self.read().slots.get(key) {
-            *lock(&slot.latest) = latest;
-            return slot.id;
+    fn store(&self, id: Option<SeriesId>, path: &PathKey, latest: Bytes) -> SeriesId {
+        if let Some(id) = id {
+            if let Some(slot) = self.read().slots.get(&id) {
+                *lock(&slot.latest) = latest;
+                return id;
+            }
         }
-        let mut table = self.table.write().unwrap_or_else(PoisonError::into_inner);
-        // Another writer may have inserted the series since the read above.
-        if let Some(slot) = table.slots.get(key) {
-            *lock(&slot.latest) = latest;
-            return slot.id;
-        }
-        let id = table.next_id;
-        table.next_id = table.next_id.wrapping_add(1);
-        let path = series_path(&latest);
-        table.slots.insert(
-            key.clone(),
-            Slot {
-                id,
-                path,
-                latest: Mutex::new(latest),
-            },
-        );
+        let mut table = self.write();
+        let id = match table.ids.get(path) {
+            Some(id) => *id,
+            None => {
+                let id = table.next_id;
+                table.next_id = table.next_id.wrapping_add(1);
+                table.ids.insert(path.clone(), id);
+                id
+            }
+        };
+        let slot = table.slots.entry(id).or_insert_with(|| Slot {
+            path: path.clone(),
+            latest: Mutex::new(Bytes::new()),
+            claims: 0,
+        });
+        slot.claims += 1;
+        *slot
+            .latest
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner) = latest;
         id
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SeriesTable> {
         self.table.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, SeriesTable> {
+        self.table.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -220,37 +397,158 @@ impl Drop for GnmiTarget {
     }
 }
 
+/// Serve `service` on `listener` until `token` is cancelled, then close the
+/// listening socket, give open connections [`DRAIN_GRACE`] to finish, and
+/// close the rest. Reports each step on `state`.
+async fn serve(
+    service: GnmiService,
+    listener: TcpListener,
+    token: CancellationToken,
+    state: watch::Sender<TargetState>,
+    serving: Arc<Serving>,
+) {
+    let local_addr = listener.local_addr().ok();
+    let kill = CancellationToken::new();
+    // Every connection holds a sender; `recv` returns `None` once all of
+    // them, and the one held by `Incoming`, are dropped.
+    let (alive, mut connections) = mpsc::channel::<()>(1);
+    let incoming = Incoming {
+        listener: Some(listener),
+        stop: Box::pin(token.cancelled_owned()),
+        kill: kill.clone(),
+        alive,
+    };
+    // Returns once `incoming` ends, which drops the listening socket.
+    let served = tonic::transport::Server::builder()
+        .serve_with_incoming(service, incoming)
+        .await;
+    if let Err(e) = served {
+        tracing::warn!(error = %e, addr = ?local_addr, "gnmi_target server stopped with an error");
+        *serving.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+    }
+    serving.stopped.store(true, Ordering::Release);
+    let _ = state.send(TargetState::Draining);
+    if tokio::time::timeout(DRAIN_GRACE, connections.recv())
+        .await
+        .is_err()
+    {
+        kill.cancel();
+        let _ = connections.recv().await;
+    }
+    let _ = state.send(TargetState::Stopped);
+}
+
+/// The accepted connections of one listener. Ends, dropping the listener,
+/// as soon as `stop` resolves.
+struct Incoming {
+    listener: Option<TcpListener>,
+    stop: Pin<Box<WaitForCancellationFutureOwned>>,
+    kill: CancellationToken,
+    alive: mpsc::Sender<()>,
+}
+
+impl tokio_stream::Stream for Incoming {
+    type Item = io::Result<Connection>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.listener.is_none() {
+            return Poll::Ready(None);
+        }
+        if this.stop.as_mut().poll(cx).is_ready() {
+            this.listener = None;
+            return Poll::Ready(None);
+        }
+        let Some(listener) = this.listener.as_ref() else {
+            return Poll::Ready(None);
+        };
+        match listener.poll_accept(cx) {
+            Poll::Ready(Ok((io, _))) => Poll::Ready(Some(Ok(Connection {
+                io,
+                kill: this.kill.clone(),
+                killed: Box::pin(this.kill.clone().cancelled_owned()),
+                _alive: this.alive.clone(),
+            }))),
+            Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// An accepted TCP connection that reads end-of-stream, and refuses writes,
+/// once `kill` is cancelled.
+struct Connection {
+    io: TcpStream,
+    kill: CancellationToken,
+    killed: Pin<Box<WaitForCancellationFutureOwned>>,
+    _alive: mpsc::Sender<()>,
+}
+
+impl Connection {
+    /// Whether `kill` is cancelled; otherwise registers `cx` to be woken
+    /// when it is.
+    fn is_killed(&mut self, cx: &mut Context<'_>) -> bool {
+        self.kill.is_cancelled() || self.killed.as_mut().poll(cx).is_ready()
+    }
+}
+
+impl AsyncRead for Connection {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if this.is_killed(cx) {
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut this.io).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Connection {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        if this.is_killed(cx) {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        Pin::new(&mut this.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().io).poll_shutdown(cx)
+    }
+}
+
+impl Connected for Connection {
+    type ConnectInfo = TcpConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.io.connect_info()
+    }
+}
+
 fn lock(latest: &Mutex<Bytes>) -> std::sync::MutexGuard<'_, Bytes> {
     latest.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The full path of the first update in an encoded notification: the
-/// prefix's origin and target with the update's elements.
-fn series_path(encoded: &[u8]) -> proto::Path {
-    let Ok(mut notification) = proto::Notification::decode(encoded) else {
-        return proto::Path::default();
-    };
-    let prefix = notification.prefix.take().unwrap_or_default();
-    let elem = notification
-        .update
-        .into_iter()
-        .next()
-        .and_then(|update| update.path)
-        .map(|path| path.elem)
-        .unwrap_or_default();
-    proto::Path {
-        origin: prefix.origin,
-        elem,
-        target: prefix.target,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::model::metric::{Labels, ValidatedMetricName};
+    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+    use crate::encoder::Encoder;
+    use crate::model::metric::{Labels, MetricEvent};
     use crate::sink::gnmi::GnmiTargetConfig;
 
     async fn bind(subscriber_buffer: usize) -> Arc<GnmiTarget> {
@@ -261,25 +559,61 @@ mod tests {
             .expect("bind an ephemeral port")
     }
 
-    fn key(name: &str, pairs: &[(&str, &str)]) -> MetricKey {
-        (
-            ValidatedMetricName::new(name).expect("valid name"),
-            Arc::new(Labels::from_pairs(pairs).expect("valid labels")),
+    /// `/interfaces/interface[name=<if_name>]/<leaf>`.
+    fn path(if_name: &str, leaf: &str) -> PathKey {
+        PathKey::new(proto::Path {
+            origin: String::new(),
+            elem: vec![
+                proto::PathElem {
+                    name: "interfaces".to_string(),
+                    key: BTreeMap::new(),
+                },
+                proto::PathElem {
+                    name: "interface".to_string(),
+                    key: BTreeMap::from([("name".to_string(), if_name.to_string())]),
+                },
+                proto::PathElem {
+                    name: leaf.to_string(),
+                    key: BTreeMap::new(),
+                },
+            ],
+            target: String::new(),
+        })
+    }
+
+    /// One encoded notification for `labels`, through a gnmi encoder that
+    /// places `ifName` and drops `job`.
+    fn encoded(labels: &[(&str, &str)], value: f64) -> Vec<u8> {
+        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+            origin: "openconfig".to_string(),
+            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
+            drop_labels: vec!["job".to_string()],
+            ..Default::default()
+        })
+        .expect("valid encoder");
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            value,
+            Labels::from_pairs(labels).expect("valid labels"),
         )
+        .expect("valid event");
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).expect("encodes");
+        buf
     }
 
     #[tokio::test]
     async fn publish_allocates_id_once_per_series() {
         let target = bind(16).await;
-        let a = key("in_octets", &[("ifName", "Gi0")]);
-        let b = key("in_octets", &[("ifName", "Gi1")]);
+        let a = path("Gi0", "in-octets");
+        let b = path("Gi1", "in-octets");
 
-        let first = target.publish(&a, b"one");
-        let again = target.publish(&a, b"two");
-        let other = target.publish(&b, b"three");
+        let (first, _) = target.publish(None, &a, b"one");
+        let (again, _) = target.publish(Some(first), &a, b"two");
+        let (other, _) = target.publish(None, &b, b"three");
 
-        assert_eq!(first, again, "the same key keeps its id");
-        assert_ne!(first, other, "different labels are a different series");
+        assert_eq!(first, again, "the same path keeps its id");
+        assert_ne!(first, other, "a different path is a different series");
         assert_eq!(target.series_count(), 2);
         let latest: Vec<Bytes> = {
             let mut snapshot = target.snapshot();
@@ -295,11 +629,13 @@ mod tests {
     #[tokio::test]
     async fn publish_never_blocks_without_receivers() {
         let target = bind(4).await;
-        let series = key("in_octets", &[]);
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target.publish(None, &series, b"value");
         let started = Instant::now();
         let mut published = 0usize;
         for _ in 0..10_000 {
-            target.publish(&series, b"value");
+            let (_, receivers) = target.publish(Some(id), &series, b"value");
+            assert!(!receivers);
             published += 1;
         }
         let elapsed = started.elapsed();
@@ -315,9 +651,11 @@ mod tests {
     async fn lagged_receiver_does_not_block_publisher() {
         let target = bind(4).await;
         let mut receiver = target.subscribe();
-        let series = key("in_octets", &[]);
+        let series = path("Gi0", "in-octets");
+        let (id, receivers) = target.publish(None, &series, b"value");
+        assert!(receivers, "the receiver counts as subscribed");
         for _ in 0..1_000 {
-            target.publish(&series, b"value");
+            target.publish(Some(id), &series, b"value");
         }
         match receiver.recv().await {
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -329,28 +667,11 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_carries_the_decoded_series_path() {
-        use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
-        use crate::encoder::Encoder;
-        use crate::model::metric::MetricEvent;
-
-        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
-            origin: "openconfig".to_string(),
-            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
-            ..Default::default()
-        })
-        .expect("valid encoder");
-        let series = key("in_octets", &[("device", "rtr1"), ("ifName", "Gi0")]);
-        let event = MetricEvent::from_parts(
-            series.0.clone(),
-            1.0,
-            Arc::clone(&series.1),
-            std::time::SystemTime::now(),
-        );
-        let mut buf = Vec::new();
-        encoder.encode_metric(&event, &mut buf).expect("encodes");
+        let buf = encoded(&[("device", "rtr1"), ("ifName", "Gi0")], 1.0);
+        let key = PathKey::decode(&buf).expect("a notification with an update");
 
         let target = bind(16).await;
-        target.publish(&series, &buf);
+        target.publish(None, &key, &buf);
         let snapshot = target.snapshot();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
@@ -358,5 +679,108 @@ mod tests {
             "openconfig:/interfaces/interface[name=Gi0]/in-octets"
         );
         assert_eq!(snapshot[0].path.target, "rtr1");
+    }
+
+    /// Label sets that render to one path are one series, holding the
+    /// latest value; a different path is another series.
+    #[tokio::test]
+    async fn series_identity_is_the_rendered_path() {
+        let target = bind(16).await;
+        let mut last = Vec::new();
+        for (job, value) in [("a", 1.0), ("b", 2.0), ("c", 3.0)] {
+            last = encoded(&[("ifName", "Gi0"), ("job", job)], value);
+            let key = PathKey::decode(&last).expect("decodes");
+            target.publish(None, &key, &last);
+        }
+        assert_eq!(target.series_count(), 1, "`job` is dropped from the path");
+        let snapshot = target.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].latest.as_ref(), last.as_slice());
+
+        let other = encoded(&[("ifName", "Gi1"), ("job", "a")], 4.0);
+        target.publish(None, &PathKey::decode(&other).expect("decodes"), &other);
+        assert_eq!(target.series_count(), 2);
+    }
+
+    /// A series leaves the table with its last claim.
+    #[tokio::test]
+    async fn remove_releases_one_claim_per_id() {
+        let target = bind(16).await;
+        let shared = path("Gi0", "in-octets");
+        let (id, _) = target.publish(None, &shared, b"a");
+        let (same, _) = target.publish(None, &shared, b"b");
+        assert_eq!(id, same, "a second claim on one path");
+        let (own, _) = target.publish(None, &path("Gi1", "in-octets"), b"c");
+        assert_eq!(target.series_count(), 2);
+
+        target.remove(&[id, own]);
+        assert_eq!(target.series_count(), 1, "the shared path keeps a claim");
+        target.remove(&[id]);
+        assert_eq!(target.series_count(), 0);
+        target.remove(&[id]);
+        assert_eq!(target.series_count(), 0, "an unknown id is ignored");
+    }
+
+    #[test]
+    fn decode_refuses_bytes_that_are_not_a_notification() {
+        let err = PathKey::decode(b"\xff\xff").expect_err("not protobuf");
+        assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
+        let empty = proto::Notification::default().encode_to_vec();
+        let err = PathKey::decode(&empty).expect_err("no update");
+        assert!(err.to_string().contains("no update path"), "got {err}");
+    }
+
+    /// A client that connects and never speaks does not hold the port or
+    /// the teardown: the port re-binds at once and the connection is
+    /// closed within the drain grace.
+    #[tokio::test]
+    async fn silent_tcp_connection_does_not_hold_teardown() {
+        use tokio::io::AsyncReadExt;
+
+        let target = bind(16).await;
+        let addr = target.local_addr();
+        let mut silent = TcpStream::connect(addr)
+            .await
+            .expect("the port accepts while the target lives");
+        // The server's HTTP/2 preface proves the connection was accepted.
+        let mut preface = [0u8; 1];
+        tokio::time::timeout(Duration::from_secs(1), silent.read_exact(&mut preface))
+            .await
+            .expect("the server answers an accepted connection")
+            .expect("the server writes its preface");
+
+        let stopped = target.wait();
+        let mut state = target.state();
+        let started = Instant::now();
+        drop(target);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            state.wait_for(|s| *s != TargetState::Listening),
+        )
+        .await
+        .expect("the listening socket closes at once")
+        .expect("the listener task reports its state");
+        let settings = GnmiTargetConfig::new(addr.to_string())
+            .settings()
+            .expect("valid settings");
+        let rebound = GnmiTarget::bind(settings)
+            .await
+            .expect("the port re-binds while the silent client is still connected");
+        assert_eq!(rebound.local_addr(), addr);
+        drop(rebound);
+
+        tokio::time::timeout(Duration::from_secs(2), stopped)
+            .await
+            .expect("teardown completes within 2 s");
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), silent.read_to_end(&mut rest))
+            .await
+            .expect("the silent connection is closed, not left open")
+            .ok();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "teardown took {:?}",
+            started.elapsed()
+        );
     }
 }

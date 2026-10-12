@@ -14,6 +14,7 @@ pub mod registry;
 pub mod service;
 pub mod target;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,11 +22,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::config::validate::{parse_duration, prepend_context};
-use crate::model::metric::MetricEvent;
+use crate::model::metric::{MetricEvent, MetricKey};
 use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
 pub use registry::{registry, GnmiTargetRegistry};
+use target::PathKey;
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
 
 /// Streams allowed per target when `max_subscribers` is not set.
@@ -59,7 +61,10 @@ pub const DEFAULT_SAMPLE_FLOOR: Duration = Duration::from_secs(1);
 pub struct GnmiTargetConfig {
     /// Address to listen on, e.g. `"0.0.0.0:57400"`. `"127.0.0.1:0"` binds an
     /// ephemeral port, readable from [`GnmiTarget::local_addr`].
-    #[cfg_attr(feature = "config", serde(deserialize_with = "scalar_text::required"))]
+    #[cfg_attr(
+        feature = "config",
+        serde(deserialize_with = "crate::config::scalar_text::required")
+    )]
     pub listen: String,
     /// Streams beyond this are refused with `RESOURCE_EXHAUSTED`. Default 16.
     #[cfg_attr(feature = "config", serde(default))]
@@ -70,66 +75,9 @@ pub struct GnmiTargetConfig {
     /// Smallest `sample_interval` honoured, e.g. `"1s"`. Default `"1s"`.
     #[cfg_attr(
         feature = "config",
-        serde(default, deserialize_with = "scalar_text::optional")
+        serde(default, deserialize_with = "crate::config::scalar_text::optional")
     )]
     pub sample_floor: Option<String>,
-}
-
-/// Deserializers that take a string, number or boolean as its display text
-/// (`57400` becomes `"57400"`, `1.0` becomes `"1"`), so every value the
-/// generated schema accepts for a text field parses, and the field's own
-/// validation reports what is wrong with it.
-#[cfg(feature = "config")]
-mod scalar_text {
-    use std::fmt;
-
-    use serde::de::{Deserializer, Error, Visitor};
-    use serde::Deserialize;
-
-    struct ScalarText(String);
-
-    impl<'de> Deserialize<'de> for ScalarText {
-        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            struct TextVisitor;
-            impl Visitor<'_> for TextVisitor {
-                type Value = ScalarText;
-                fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    f.write_str("a string, number or boolean")
-                }
-                fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-                    Ok(ScalarText(v.to_string()))
-                }
-                fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
-                    Ok(ScalarText(v))
-                }
-                fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
-                    Ok(ScalarText(v.to_string()))
-                }
-                fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
-                    Ok(ScalarText(v.to_string()))
-                }
-                fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
-                    Ok(ScalarText(v.to_string()))
-                }
-                fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
-                    Ok(ScalarText(v.to_string()))
-                }
-            }
-            deserializer.deserialize_any(TextVisitor)
-        }
-    }
-
-    /// A required text field.
-    pub(super) fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-        ScalarText::deserialize(deserializer).map(|text| text.0)
-    }
-
-    /// An optional text field; `null` is `None`.
-    pub(super) fn optional<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<String>, D::Error> {
-        Option::<ScalarText>::deserialize(deserializer).map(|text| text.map(|text| text.0))
-    }
 }
 
 impl GnmiTargetConfig {
@@ -210,11 +158,16 @@ impl TargetSettings {
 ///
 /// Only [`Sink::write_metric_event`] carries data: the sink needs the event's
 /// series identity, so it opts in through [`Sink::wants_metric_events`] and
-/// [`Sink::write`] is an error. Dropping the last sink on an address stops
-/// its listener.
+/// [`Sink::write`] is an error. The first event of each series decodes the
+/// series' path from the encoded notification; later events of that series
+/// reuse the id the target returned. Dropping the sink removes its series
+/// from the target, unless another sink also publishes them; dropping the
+/// last sink on an address stops its listener.
 pub struct GnmiTargetSink {
     target: Arc<GnmiTarget>,
+    owned: HashMap<MetricKey, (SeriesId, PathKey)>,
     last_delivered: bool,
+    release_on_drop: bool,
 }
 
 impl GnmiTargetSink {
@@ -227,10 +180,30 @@ impl GnmiTargetSink {
     /// same address with different settings; [`SondaError::Sink`] when the
     /// address cannot be bound.
     pub async fn new(cfg: &GnmiTargetConfig) -> Result<Self, SondaError> {
-        Ok(Self {
-            target: registry().acquire(cfg).await?,
+        Ok(Self::from_target(registry().acquire(cfg).await?))
+    }
+
+    /// Join the live target for `cfg.listen` without binding. Series this
+    /// sink publishes stay in the target after it is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Config`] when no live target listens on the address, or
+    /// it was bound with different settings.
+    pub(crate) fn join(cfg: &GnmiTargetConfig) -> Result<Self, SondaError> {
+        let mut sink = Self::from_target(registry().join(cfg)?);
+        sink.release_on_drop = false;
+        Ok(sink)
+    }
+
+    /// A sink publishing into `target`.
+    pub(crate) fn from_target(target: Arc<GnmiTarget>) -> Self {
+        Self {
+            target,
+            owned: HashMap::new(),
             last_delivered: false,
-        })
+            release_on_drop: true,
+        }
     }
 
     /// The target this sink publishes into.
@@ -255,7 +228,7 @@ impl Sink for GnmiTargetSink {
         Ok(())
     }
 
-    /// `true` when the target had at least one subscriber at the last write.
+    /// `true` once a write has upserted its event into the target.
     fn last_write_delivered(&self) -> bool {
         self.last_delivered
     }
@@ -264,16 +237,42 @@ impl Sink for GnmiTargetSink {
         true
     }
 
-    /// Publish `encoded` as the latest value of the event's series. Never awaits.
+    /// Publish `encoded` as the latest value of the event's series. Never
+    /// awaits.
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Sink`] when the target's listener task has exited, or
+    /// when the first event of a series is not a gnmi notification.
     async fn write_metric_event(
         &mut self,
         event: &MetricEvent,
         encoded: &[u8],
     ) -> Result<(), SondaError> {
+        self.target.check_serving()?;
         let key = (event.name.clone(), Arc::clone(&event.labels));
-        self.target.publish(&key, encoded);
-        self.last_delivered = self.target.subscriber_count() > 0;
+        match self.owned.get_mut(&key) {
+            Some((id, path)) => {
+                let (published, _) = self.target.publish(Some(*id), path, encoded);
+                *id = published;
+            }
+            None => {
+                let path = PathKey::decode(encoded)?;
+                let (id, _) = self.target.publish(None, &path, encoded);
+                self.owned.insert(key, (id, path));
+            }
+        }
+        self.last_delivered = true;
         Ok(())
+    }
+}
+
+impl Drop for GnmiTargetSink {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            let ids: Vec<SeriesId> = self.owned.values().map(|(id, _)| *id).collect();
+            self.target.remove(&ids);
+        }
     }
 }
 
@@ -306,6 +305,28 @@ mod tests {
 
     fn event(name: &str) -> MetricEvent {
         MetricEvent::new(name.to_string(), 1.0, Labels::default()).expect("valid event")
+    }
+
+    /// `event` encoded by a gnmi encoder rendering `/a/{name}`.
+    fn notification(event: &MetricEvent) -> Vec<u8> {
+        use crate::encoder::gnmi::GnmiEncoder;
+        use crate::encoder::Encoder;
+
+        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            ..Default::default()
+        })
+        .expect("valid encoder");
+        let mut buf = Vec::new();
+        encoder.encode_metric(event, &mut buf).expect("encodes");
+        buf
+    }
+
+    async fn publish(sink: &mut GnmiTargetSink, name: &str) {
+        let event = event(name);
+        sink.write_metric_event(&event, &notification(&event))
+            .await
+            .expect("the write succeeds");
     }
 
     /// Counts calls on the way through to the wrapped sink, delegating
@@ -386,19 +407,86 @@ mod tests {
         assert_eq!(sink.target().series_count(), 0);
     }
 
+    /// A write is delivered once its event is in the target's table,
+    /// whether or not anyone is subscribed.
     #[tokio::test]
-    async fn last_write_delivered_tracks_subscribers() {
+    async fn last_write_delivered_after_an_upsert() {
         let mut sink = sink().await;
-        sink.write_metric_event(&event("up"), b"a").await.unwrap();
-        assert!(!sink.last_write_delivered(), "nobody is subscribed");
+        assert!(!sink.last_write_delivered(), "nothing written yet");
+
+        publish(&mut sink, "up").await;
+        assert_eq!(sink.target().subscriber_count(), 0);
+        assert!(
+            sink.last_write_delivered(),
+            "upserted with nobody subscribed"
+        );
 
         let receiver = sink.target().subscribe();
-        sink.write_metric_event(&event("up"), b"b").await.unwrap();
-        assert!(sink.last_write_delivered(), "one subscriber");
-
+        publish(&mut sink, "up").await;
+        assert!(sink.last_write_delivered());
         drop(receiver);
-        sink.write_metric_event(&event("up"), b"c").await.unwrap();
-        assert!(!sink.last_write_delivered(), "the subscriber left");
+        assert_eq!(sink.target().series_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn first_event_that_is_not_a_notification_is_an_error() {
+        let mut sink = sink().await;
+        let err = sink
+            .write_metric_event(&event("up"), b"not protobuf")
+            .await
+            .expect_err("a series needs a path");
+        assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
+        assert!(!sink.last_write_delivered());
+        assert_eq!(sink.target().series_count(), 0);
+    }
+
+    /// Dropping a sink removes the series it published and leaves another
+    /// sink's series, on the same target, in place.
+    #[tokio::test]
+    async fn drop_removes_the_sinks_series() {
+        let mut first = sink().await;
+        let addr = first.target().local_addr().to_string();
+        let mut second = GnmiTargetSink::new(&GnmiTargetConfig::new(addr))
+            .await
+            .expect("join the live target");
+        let target = Arc::clone(first.target());
+        assert!(Arc::ptr_eq(&target, second.target()));
+
+        publish(&mut first, "in_octets").await;
+        publish(&mut first, "out_octets").await;
+        publish(&mut second, "in_errors").await;
+        assert_eq!(target.series_count(), 3);
+
+        drop(first);
+        assert_eq!(target.series_count(), 1, "the first sink's two series left");
+        let remaining: Vec<String> = target
+            .snapshot()
+            .into_iter()
+            .map(|s| s.path.to_string())
+            .collect();
+        assert_eq!(remaining, ["openconfig:/a/in-errors"]);
+
+        drop(second);
+        assert_eq!(target.series_count(), 0);
+    }
+
+    /// A path two sinks publish stays while either of them lives.
+    #[tokio::test]
+    async fn a_shared_series_outlives_one_of_its_sinks() {
+        let mut first = sink().await;
+        let addr = first.target().local_addr().to_string();
+        let mut second = GnmiTargetSink::new(&GnmiTargetConfig::new(addr))
+            .await
+            .expect("join the live target");
+        let target = Arc::clone(first.target());
+
+        publish(&mut first, "up").await;
+        publish(&mut second, "up").await;
+        assert_eq!(target.series_count(), 1, "one path, two claims");
+        drop(first);
+        assert_eq!(target.series_count(), 1, "the second sink still claims it");
+        drop(second);
+        assert_eq!(target.series_count(), 0);
     }
 
     #[tokio::test]

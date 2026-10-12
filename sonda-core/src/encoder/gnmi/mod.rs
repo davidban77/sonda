@@ -183,7 +183,7 @@ impl<'de> serde::Deserialize<'de> for EnumEntries {
             ) -> Result<Self::Value, A::Error> {
                 let mut out = BTreeMap::new();
                 while let Some(EnumCode(code)) = map.next_key()? {
-                    let EnumLabel(label) = map.next_value()?;
+                    let crate::config::scalar_text::ScalarText(label) = map.next_value()?;
                     if out.insert(code, label).is_some() {
                         return Err(serde::de::Error::custom(format!(
                             "enum code {code} is given more than once (keys such as 1 and \
@@ -195,44 +195,6 @@ impl<'de> serde::Deserialize<'de> for EnumEntries {
             }
         }
         deserializer.deserialize_map(EntriesVisitor)
-    }
-}
-
-/// One `enum:` label: a string, or a bool or number stored as its display
-/// text (`false` becomes `"false"`, `10` becomes `"10"`, `1.5` becomes
-/// `"1.5"`; a float with no fractional part, such as `1.0`, becomes `"1"`).
-#[cfg(feature = "config")]
-struct EnumLabel(String);
-
-#[cfg(feature = "config")]
-impl<'de> serde::Deserialize<'de> for EnumLabel {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct LabelVisitor;
-        impl serde::de::Visitor<'_> for LabelVisitor {
-            type Value = EnumLabel;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an enum label: a string, number or boolean")
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(EnumLabel(v.to_string()))
-            }
-            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
-                Ok(EnumLabel(v))
-            }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
-                Ok(EnumLabel(v.to_string()))
-            }
-            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                Ok(EnumLabel(v.to_string()))
-            }
-            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
-                Ok(EnumLabel(v.to_string()))
-            }
-            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
-                Ok(EnumLabel(v.to_string()))
-            }
-        }
-        deserializer.deserialize_any(LabelVisitor)
     }
 }
 
