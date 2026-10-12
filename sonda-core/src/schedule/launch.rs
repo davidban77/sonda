@@ -226,14 +226,14 @@ pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), S
 ///   `[name={ifName}]` matches only another `[name={ifName}]`, and keys
 ///   compare in wire order, whatever order the templates list them in. Its
 ///   target is the value of the encoder's `target_label` when that label is a
-///   static label of the entry; entries whose target label is dynamic, spiked
-///   or absent share one target per `target_label`.
+///   static label of the entry, or empty when the entry has no such label.
+///   When a dynamic or spike label supplies it, the target can be any value,
+///   so it is shared with every other entry's target.
 ///
 /// An entry whose encoder config does not build, or that has no template, is
 /// left to per-entry validation.
 #[cfg(feature = "gnmi")]
 fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
-    use std::collections::hash_map::Entry;
     use std::collections::HashMap;
 
     use crate::config::LabelSource;
@@ -291,7 +291,20 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         }
     }
 
-    let mut leaves: HashMap<(&str, Option<&str>, Path), &str> = HashMap::new();
+    /// The `Path.target` an entry's events carry: one known value, the empty
+    /// string when the target label is absent, or any of several values when
+    /// a dynamic or spike label supplies it.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Target<'a> {
+        Known(&'a str),
+        Varies,
+    }
+    let shared = |a: Target<'_>, b: Target<'_>| match (a, b) {
+        (Target::Known(a), Target::Known(b)) => a == b,
+        _ => true,
+    };
+
+    let mut leaves: HashMap<(&str, Path), Vec<(Target<'_>, &str)>> = HashMap::new();
     for (idx, config, cfg) in gnmi_metrics {
         let Ok(encoder) = GnmiEncoder::new(cfg) else {
             continue;
@@ -317,35 +330,44 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             .emitted_label_keys()
             .filter(|(key, _)| *key == cfg.target_label)
             .all(|(_, source)| source == LabelSource::Static);
-        let target = config
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(&cfg.target_label))
-            .filter(|_| target_is_static)
-            .map(String::as_str);
-        match leaves.entry((cfg.target_label.as_str(), target, leaf)) {
-            Entry::Occupied(seen) if *seen.get() != config.name => {
-                let on_target = match target {
-                    Some(value) => format!(" on target `{value}`"),
-                    None => String::new(),
-                };
-                return Err(invalid(
-                    idx,
-                    format!(
-                        "metrics `{}` and `{}` would both write the gnmi leaf `{}`{on_target}, \
-                         each overwriting the other; give each metric its own path, for \
-                         example with {{name}} in the template or its own paths: entry",
-                        seen.get(),
-                        config.name,
-                        seen.key().2
-                    ),
-                ));
-            }
-            Entry::Occupied(_) => {}
-            Entry::Vacant(slot) => {
-                slot.insert(config.name.as_str());
-            }
+        let target = if target_is_static {
+            Target::Known(
+                config
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(&cfg.target_label))
+                    .map_or("", String::as_str),
+            )
+        } else {
+            Target::Varies
+        };
+
+        let writers = leaves
+            .entry((cfg.target_label.as_str(), leaf.clone()))
+            .or_default();
+        if let Some((other_target, other)) = writers
+            .iter()
+            .find(|(other_target, other)| *other != config.name && shared(*other_target, target))
+        {
+            let on_target = match (*other_target, target) {
+                (Target::Known(""), Target::Known(_)) => " with no target".to_string(),
+                (Target::Known(value), Target::Known(_)) => format!(" on target `{value}`"),
+                _ => format!(
+                    " on a target both can carry (`{}` comes from a dynamic or spike label)",
+                    cfg.target_label
+                ),
+            };
+            return Err(invalid(
+                idx,
+                format!(
+                    "metrics `{other}` and `{}` would both write the gnmi leaf `{leaf}`{on_target}, \
+                     each overwriting the other; give each metric its own path, for example \
+                     with {{name}} in the template or its own paths: entry",
+                    config.name
+                ),
+            ));
         }
+        writers.push((target, config.name.as_str()));
     }
     Ok(())
 }
@@ -2418,21 +2440,11 @@ scenarios:
         assert!(msg.contains(&format!("gnmi leaf `{leaf}` on target `leaf-1`")), "{msg}");
     }
 
-    /// Two metrics sharing a template without `{name}`, each with its own
-    /// static `device` label: `leaf-1` for `in_octets`, `leaf-2` for
-    /// `out_octets`. With `dynamic_device`, each also has a dynamic `device`
-    /// label that replaces the static one on every event.
+    /// Two metrics sharing a template without `{name}`; `in_octets` and
+    /// `out_octets` take the given label blocks, which decide their `device`
+    /// target.
     #[cfg(all(feature = "gnmi", feature = "config"))]
-    fn two_devices(dynamic_device: bool) -> String {
-        let device = |value: &str| {
-            let mut block = format!("    labels:\n      device: {value}\n");
-            if dynamic_device {
-                block.push_str(&format!(
-                    "    dynamic_labels:\n      - key: device\n        values: [{value}, spare]\n"
-                ));
-            }
-            block
-        };
+    fn two_targets(in_octets: &str, out_octets: &str) -> String {
         format!(
             r#"
 version: 2
@@ -2449,71 +2461,72 @@ scenarios:
   - signal_type: metrics
     name: in_octets
     generator: {{type: constant, value: 1.0}}
-{}  - signal_type: metrics
+{in_octets}  - signal_type: metrics
     name: out_octets
     generator: {{type: constant, value: 1.0}}
-{}"#,
-            device("leaf-1"),
-            device("leaf-2"),
+{out_octets}"#
         )
     }
 
-    /// The same leaf on two devices whose `device` label is static is two
-    /// gNMI targets, so it is accepted.
     #[cfg(all(feature = "gnmi", feature = "config"))]
-    #[test]
-    fn gnmi_metrics_sharing_a_leaf_on_different_static_targets_are_accepted() {
-        let entries = compile_entries(&two_devices(false), &Default::default());
+    const STATIC_LEAF_1: &str = "    labels:\n      device: leaf-1\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_2: &str = "    labels:\n      device: leaf-2\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const DYNAMIC_LEAF_1_OR_2: &str =
+        "    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_9_REPLACED_BY_DYNAMIC: &str = "    labels:\n      device: leaf-9\n    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
+
+    /// Two metrics writing the same leaf collide only when their targets can
+    /// match. A static `device` is one target, a missing one is the empty
+    /// target, and a dynamic one can be any target, including a static one
+    /// it replaces. `None` means the file passes the whole-file check.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::different_static_targets(STATIC_LEAF_1, STATIC_LEAF_2, None)]
+    #[case::absent_and_static_targets("", STATIC_LEAF_1, None)]
+    #[case::both_targets_absent("", "", Some(" with no target"))]
+    #[case::static_and_dynamic_targets(STATIC_LEAF_1, DYNAMIC_LEAF_1_OR_2, Some(" on a target both can carry"))]
+    #[case::dynamic_replaces_a_different_static(STATIC_LEAF_1, STATIC_LEAF_9_REPLACED_BY_DYNAMIC, Some(" on a target both can carry"))]
+    #[case::both_targets_dynamic(DYNAMIC_LEAF_1_OR_2, DYNAMIC_LEAF_1_OR_2, Some(" on a target both can carry"))]
+    fn gnmi_metrics_sharing_a_leaf_collide_only_on_a_shared_target(
+        #[case] in_octets: &str,
+        #[case] out_octets: &str,
+        #[case] rejected_with: Option<&str>,
+    ) {
+        let entries = compile_entries(&two_targets(in_octets, out_octets), &Default::default());
         assert_eq!(entries.len(), 2, "the file must expand to two entries");
-        let devices: Vec<Option<&str>> = entries
-            .iter()
-            .map(|e| {
-                e.base()
-                    .labels
-                    .as_ref()
-                    .and_then(|l| l.get("device"))
-                    .map(String::as_str)
-            })
-            .collect();
-        assert_eq!(
-            devices,
-            [Some("leaf-1"), Some("leaf-2")],
-            "each entry must keep its own device"
-        );
+        for (entry, block) in entries.iter().zip([in_octets, out_octets]) {
+            let base = entry.base();
+            assert_eq!(
+                base.labels.as_ref().is_some_and(|l| l.contains_key("device")),
+                block.contains("    labels:"),
+                "{}: the static device label must be as the case describes",
+                base.name
+            );
+            assert_eq!(
+                base.dynamic_labels.iter().flatten().any(|dl| dl.key == "device"),
+                block.contains("dynamic_labels:"),
+                "{}: the dynamic device label must be as the case describes",
+                base.name
+            );
+        }
 
         let msg = prepare_error(entries);
-        assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}");
-    }
-
-    /// A target that comes from a dynamic label can be any of its values, so
-    /// entries whose target label is dynamic share a target, even when each
-    /// also has a different static value for it.
-    #[cfg(all(feature = "gnmi", feature = "config"))]
-    #[test]
-    fn gnmi_metrics_sharing_a_leaf_with_a_dynamic_target_are_rejected() {
-        let entries = compile_entries(&two_devices(true), &Default::default());
-        assert_eq!(entries.len(), 2, "the file must expand to two entries");
-        assert!(
-            entries.iter().all(|e| {
-                let base = e.base();
-                base.labels
-                    .as_ref()
-                    .is_some_and(|l| l.contains_key("device"))
-                    && base
-                        .dynamic_labels
-                        .iter()
-                        .flatten()
-                        .any(|dl| dl.key == "device")
-            }),
-            "each entry must have both a static and a dynamic device label"
-        );
-
-        let msg = prepare_error(entries);
-        assert!(
-            msg.contains("metrics `in_octets` and `out_octets`"),
-            "{msg}"
-        );
-        assert!(!msg.contains("on target"), "{msg}");
+        match rejected_with {
+            None => assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}"),
+            Some(clause) => {
+                assert!(msg.contains("metrics `in_octets` and `out_octets`"), "{msg}");
+                assert!(
+                    msg.contains(&format!(
+                        "gnmi leaf `openconfig:/interfaces/interface[name={{ifName}}]/state`{clause}"
+                    )),
+                    "{msg}"
+                );
+            }
+        }
     }
 
     /// A key must name a metric that its own encoder serves. `out_octets` has
