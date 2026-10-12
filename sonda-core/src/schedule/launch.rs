@@ -202,18 +202,26 @@ pub fn prepare_entries_grouped(
 ///   entry in the file, after pack and `csv_replay` expansion. Otherwise the
 ///   error names the key and, when one is within two edits, the closest
 ///   metric name.
-/// - Two metrics entries with different names, the same `origin` and
-///   `target_label`, and the same effective path template must not share a
-///   template without `{name}`: they would write the same leaf.
+/// - Two metrics entries with different names, the same `origin` and the same
+///   `target_label` must not write the same leaf. A metric's leaf is its
+///   effective template rendered the way the encoder renders it, with
+///   `{name}` as the metric's name and every label placeholder standing for
+///   itself: `[name={ifName}]` matches only another `[name={ifName}]`, and
+///   keys compare in wire order, whatever order the templates list them in.
 ///
 /// `entries` pairs each expanded entry with the index of the authored entry it
 /// came from; errors name that index. An entry whose encoder config does not
 /// build, or that has no template, is left to per-entry validation.
 #[cfg(feature = "gnmi")]
 fn validate_gnmi_file(entries: &[(usize, ScenarioEntry)]) -> Result<(), SondaError> {
-    use crate::encoder::gnmi::path::{PathTemplate, NAME_PLACEHOLDER};
+    use std::collections::hash_map::Entry;
+    use std::collections::HashMap;
+
+    use crate::encoder::gnmi::path::NAME_PLACEHOLDER;
+    use crate::encoder::gnmi::proto::Path;
     use crate::encoder::gnmi::GnmiEncoder;
     use crate::encoder::EncoderConfig;
+    use crate::model::metric::Labels;
 
     let invalid = |idx: usize, msg: String| {
         SondaError::Config(ConfigError::invalid(format!("scenario[{idx}]: {msg}")))
@@ -263,13 +271,7 @@ fn validate_gnmi_file(entries: &[(usize, ScenarioEntry)]) -> Result<(), SondaErr
         }
     }
 
-    struct Leaf<'a> {
-        origin: &'a str,
-        target_label: &'a str,
-        template: PathTemplate,
-        metric: &'a str,
-    }
-    let mut leaves: Vec<Leaf<'_>> = Vec::new();
+    let mut leaves: HashMap<(&str, &str, Path), &str> = HashMap::new();
     for (idx, config, cfg) in gnmi_metrics {
         let Ok(encoder) = GnmiEncoder::new(cfg) else {
             continue;
@@ -277,39 +279,36 @@ fn validate_gnmi_file(entries: &[(usize, ScenarioEntry)]) -> Result<(), SondaErr
         let Ok(template) = encoder.template_for(&config.name) else {
             continue;
         };
-        if template.placeholders().any(|p| p == NAME_PLACEHOLDER) {
+        let symbols: Vec<(&str, String)> = template
+            .placeholders()
+            .filter(|p| *p != NAME_PLACEHOLDER)
+            .map(|p| (p, format!("{{{p}}}")))
+            .collect();
+        let pairs: Vec<(&str, &str)> = symbols.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let Ok(labels) = Labels::from_pairs(&pairs) else {
             continue;
-        }
-        let shared = leaves.iter().find(|leaf| {
-            leaf.origin == cfg.origin
-                && leaf.target_label == cfg.target_label
-                && leaf.template == *template
-        });
-        match shared {
-            Some(leaf) if leaf.metric != config.name => {
-                // The text `template_for` parsed: the metric's `paths:` entry, else `path`.
-                let text = cfg
-                    .paths
-                    .get(&config.name)
-                    .or(cfg.path.as_ref())
-                    .map_or("", String::as_str);
+        };
+        let Ok(leaf) = template.render(&config.name, &labels) else {
+            continue;
+        };
+        match leaves.entry((cfg.origin.as_str(), cfg.target_label.as_str(), leaf)) {
+            Entry::Occupied(seen) if *seen.get() != config.name => {
                 return Err(invalid(
                     idx,
                     format!(
-                        "metrics `{}` and `{}` use the same gnmi path template {text:?}, which \
-                         has no {{name}}, so they would write the same leaf; add {{name}} to the \
-                         template or give each metric its own paths: entry",
-                        leaf.metric, config.name
+                        "metrics `{}` and `{}` would both write the gnmi leaf `{}`, each \
+                         overwriting the other; give each metric its own path, for example \
+                         with {{name}} in the template or its own paths: entry",
+                        seen.get(),
+                        config.name,
+                        seen.key().2
                     ),
                 ));
             }
-            Some(_) => {}
-            None => leaves.push(Leaf {
-                origin: &cfg.origin,
-                target_label: &cfg.target_label,
-                template: template.clone(),
-                metric: &config.name,
-            }),
+            Entry::Occupied(_) => {}
+            Entry::Vacant(slot) => {
+                slot.insert(config.name.as_str());
+            }
         }
     }
     Ok(())
@@ -2354,22 +2353,32 @@ scenarios:
         assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}");
     }
 
+    /// Two metrics whose paths render to the same leaf are rejected, whether
+    /// they share a template without `{name}`, one copies the other's
+    /// rendered `{name}` into its `paths:` entry, or they list the same keys
+    /// in a different order. The error names both metrics and the leaf.
     #[cfg(all(feature = "gnmi", feature = "config"))]
-    #[test]
-    fn gnmi_metrics_sharing_a_template_without_name_are_rejected() {
-        let yaml = two_counters("    path: \"/interfaces/interface[name={ifName}]/state\"");
-        let entries = compile_entries(&yaml, &Default::default());
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::shared_template_without_name(
+        "    path: \"/interfaces/interface[name={ifName}]/state\"",
+        "/interfaces/interface[name={ifName}]/state",
+    )]
+    #[case::override_copies_the_rendered_name(
+        "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    paths:\n      out_octets: \"/interfaces/interface[name={ifName}]/state/counters/in-octets\"",
+        "/interfaces/interface[name={ifName}]/state/counters/in-octets",
+    )]
+    #[case::same_keys_in_another_order(
+        "    path: \"/interfaces/interface[name={ifName}][type=eth]/state\"\n    paths:\n      out_octets: \"/interfaces/interface[type=eth][name={ifName}]/state\"",
+        "/interfaces/interface[name={ifName}][type=eth]/state",
+    )]
+    fn gnmi_metrics_writing_the_same_leaf_are_rejected(#[case] encoder: &str, #[case] leaf: &str) {
+        let entries = compile_entries(&two_counters(encoder), &Default::default());
         assert_eq!(entries.len(), 2, "the file must expand to two entries");
 
         let msg = prepare_error(entries);
-        assert!(
-            msg.contains("metrics `in_octets` and `out_octets`"),
-            "{msg}"
-        );
-        assert!(
-            msg.contains("\"/interfaces/interface[name={ifName}]/state\""),
-            "{msg}"
-        );
+        assert!(msg.contains("metrics `in_octets` and `out_octets`"), "{msg}");
+        assert!(msg.contains(&format!("gnmi leaf `{leaf}`")), "{msg}");
     }
 
     /// Metrics that share a template are accepted when `{name}` tells their

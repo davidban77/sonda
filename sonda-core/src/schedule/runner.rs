@@ -376,37 +376,74 @@ mod tests {
 
     /// The label keys the real runner puts on events are exactly the keys
     /// `emitted_label_keys` reports, for an entry with one label from each
-    /// source. A label source added to the runner but not to
-    /// `emitted_label_keys`, or the other way round, fails here.
+    /// source and every other `BaseScheduleConfig` field set. A label source
+    /// added to the runner but not to `emitted_label_keys`, or the other way
+    /// round, fails here.
     #[tokio::test]
     async fn emitted_label_keys_are_the_labels_the_runner_emits() {
         use crate::config::{
-            CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy, LabelSource,
-            SpikeStrategy,
+            BurstConfig, CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy,
+            GapWindowConfig, LabelSource, SpikeStrategy,
         };
         use std::collections::BTreeSet;
 
-        let mut config = make_config(100.0, "300ms", None);
-        config.base.labels = Some(std::collections::HashMap::from([(
-            "device".to_string(),
-            "leaf-1".to_string(),
-        )]));
-        config.base.dynamic_labels = Some(vec![DynamicLabelConfig {
-            key: "ifName".to_string(),
-            strategy: DynamicLabelStrategy::ValuesList {
-                values: vec!["eth0".to_string(), "eth1".to_string()],
-            },
-        }]);
-        // The whole run sits inside the spike window, so every event carries it.
-        config.base.cardinality_spikes = Some(vec![CardinalitySpikeConfig {
-            label: "pod".to_string(),
-            every: "10s".to_string(),
-            r#for: "9s".to_string(),
-            cardinality: 2,
-            strategy: SpikeStrategy::Counter,
-            prefix: None,
-            seed: None,
-        }]);
+        // Every field is set, so a field that starts putting a label on
+        // events shows up in the comparison below, and a field added to
+        // `BaseScheduleConfig` does not compile here until it is set.
+        let base = BaseScheduleConfig {
+            name: "up".to_string(),
+            rate: 100.0,
+            duration: Some("300ms".to_string()),
+            start_time: Some("-1h".to_string()),
+            // The recurring gap and the one-shot gap window fall after the run.
+            gaps: Some(GapConfig {
+                every: "10m".to_string(),
+                r#for: "1s".to_string(),
+            }),
+            gap_windows: Some(vec![GapWindowConfig {
+                at: "1h".to_string(),
+                r#for: "1s".to_string(),
+            }]),
+            bursts: Some(BurstConfig {
+                every: "10s".to_string(),
+                r#for: "1s".to_string(),
+                multiplier: 2.0,
+            }),
+            // The whole run sits inside the spike window, so every event carries it.
+            cardinality_spikes: Some(vec![CardinalitySpikeConfig {
+                label: "pod".to_string(),
+                every: "10s".to_string(),
+                r#for: "9s".to_string(),
+                cardinality: 2,
+                strategy: SpikeStrategy::Counter,
+                prefix: None,
+                seed: None,
+            }]),
+            dynamic_labels: Some(vec![DynamicLabelConfig {
+                key: "ifName".to_string(),
+                strategy: DynamicLabelStrategy::ValuesList {
+                    values: vec!["eth0".to_string(), "eth1".to_string()],
+                },
+            }]),
+            labels: Some(std::collections::HashMap::from([(
+                "device".to_string(),
+                "leaf-1".to_string(),
+            )])),
+            sink: SinkConfig::Stdout,
+            phase_offset: Some("0s".to_string()),
+            clock_group: Some("rack-a".to_string()),
+            clock_group_is_auto: Some(false),
+            jitter: Some(0.5),
+            jitter_seed: Some(7),
+            on_sink_error: crate::OnSinkError::Warn,
+        };
+        let config = ScenarioConfig {
+            base,
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
+        };
 
         for source in [
             LabelSource::Static,

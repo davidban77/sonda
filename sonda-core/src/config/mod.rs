@@ -438,9 +438,12 @@ impl BaseScheduleConfig {
     /// come in the map's iteration order, and a key may appear under more
     /// than one source.
     ///
-    /// The metric runner builds its labels from this and validation checks
-    /// labels against it, so the two agree on which labels an event can carry.
-    /// It covers the sources every entry kind shares; labels a runner derives
+    /// The metric runner builds its static labels from this and uses it to
+    /// decide whether a tick applies dynamic and spike labels, whose keys and
+    /// values it then takes from the parsed schedule. Validation checks label
+    /// keys against it.
+    ///
+    /// It covers the sources every entry kind shares. Labels a runner derives
     /// for one entry kind, such as a histogram's `le` or a summary's
     /// `quantile`, are not reported here and must be added by a check that
     /// covers that kind.
