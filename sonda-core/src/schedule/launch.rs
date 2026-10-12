@@ -157,6 +157,10 @@ pub fn prepare_entries_grouped(
         })
         .collect::<Result<Vec<_>, SondaError>>()?;
 
+    // Phase 1.75: checks that need every expanded entry of the file at once.
+    #[cfg(feature = "gnmi")]
+    validate_gnmi_file(&expanded)?;
+
     // Phase 2: validate all entries and resolve phase offsets, keeping each
     // authored entry's results in its own bucket.
     let mut prepared: Vec<Vec<PreparedEntry>> = Vec::with_capacity(group_count);
@@ -189,6 +193,156 @@ pub fn prepare_entries_grouped(
     }
 
     Ok(prepared)
+}
+
+/// Check every `gnmi` encoder in a file against the file's expanded metrics
+/// entries.
+///
+/// - Every key in an encoder's `values:` and `paths:` is the name of a metrics
+///   entry in the file, after pack and `csv_replay` expansion. Otherwise the
+///   error names the key and, when one is within two edits, the closest
+///   metric name.
+/// - Two metrics entries with different names, the same `origin` and
+///   `target_label`, and the same effective path template must not share a
+///   template without `{name}`: they would write the same leaf.
+///
+/// `entries` pairs each expanded entry with the index of the authored entry it
+/// came from; errors name that index. An entry whose encoder config does not
+/// build, or that has no template, is left to per-entry validation.
+#[cfg(feature = "gnmi")]
+fn validate_gnmi_file(entries: &[(usize, ScenarioEntry)]) -> Result<(), SondaError> {
+    use crate::encoder::gnmi::path::{PathTemplate, NAME_PLACEHOLDER};
+    use crate::encoder::gnmi::GnmiEncoder;
+    use crate::encoder::EncoderConfig;
+
+    let invalid = |idx: usize, msg: String| {
+        SondaError::Config(ConfigError::invalid(format!("scenario[{idx}]: {msg}")))
+    };
+
+    let mut metric_names: Vec<&str> = entries
+        .iter()
+        .filter_map(|(_, entry)| match entry {
+            ScenarioEntry::Metrics(config) => Some(config.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    metric_names.sort_unstable();
+    metric_names.dedup();
+
+    let gnmi_metrics = entries.iter().filter_map(|(idx, entry)| match entry {
+        ScenarioEntry::Metrics(config) => match &config.encoder {
+            EncoderConfig::Gnmi(cfg) => Some((*idx, config, cfg)),
+            _ => None,
+        },
+        _ => None,
+    });
+
+    for (idx, _, cfg) in gnmi_metrics.clone() {
+        for (field, mut keys) in [
+            ("values", cfg.values.keys().collect::<Vec<_>>()),
+            ("paths", cfg.paths.keys().collect::<Vec<_>>()),
+        ] {
+            keys.sort_unstable();
+            let Some(key) = keys
+                .into_iter()
+                .find(|key| metric_names.binary_search(&key.as_str()).is_err())
+            else {
+                continue;
+            };
+            let hint = match nearest_name(key, &metric_names) {
+                Some(near) => format!("; did you mean `{near}`?"),
+                None => String::new(),
+            };
+            return Err(invalid(
+                idx,
+                format!(
+                    "gnmi encoder {field}: key `{key}` is not the name of any metric in this \
+                     file{hint}"
+                ),
+            ));
+        }
+    }
+
+    struct Leaf<'a> {
+        origin: &'a str,
+        target_label: &'a str,
+        template: PathTemplate,
+        metric: &'a str,
+    }
+    let mut leaves: Vec<Leaf<'_>> = Vec::new();
+    for (idx, config, cfg) in gnmi_metrics {
+        let Ok(encoder) = GnmiEncoder::new(cfg) else {
+            continue;
+        };
+        let Ok(template) = encoder.template_for(&config.name) else {
+            continue;
+        };
+        if template.placeholders().any(|p| p == NAME_PLACEHOLDER) {
+            continue;
+        }
+        let shared = leaves.iter().find(|leaf| {
+            leaf.origin == cfg.origin
+                && leaf.target_label == cfg.target_label
+                && leaf.template == *template
+        });
+        match shared {
+            Some(leaf) if leaf.metric != config.name => {
+                // The text `template_for` parsed: the metric's `paths:` entry, else `path`.
+                let text = cfg
+                    .paths
+                    .get(&config.name)
+                    .or(cfg.path.as_ref())
+                    .map_or("", String::as_str);
+                return Err(invalid(
+                    idx,
+                    format!(
+                        "metrics `{}` and `{}` use the same gnmi path template {text:?}, which \
+                         has no {{name}}, so they would write the same leaf; add {{name}} to the \
+                         template or give each metric its own paths: entry",
+                        leaf.metric, config.name
+                    ),
+                ));
+            }
+            Some(_) => {}
+            None => leaves.push(Leaf {
+                origin: &cfg.origin,
+                target_label: &cfg.target_label,
+                template: template.clone(),
+                metric: &config.name,
+            }),
+        }
+    }
+    Ok(())
+}
+
+/// The name in `names` closest to `key` by [`edit_distance`], if one is within
+/// two edits. Ties go to the earliest name in `names`.
+#[cfg(feature = "gnmi")]
+fn nearest_name<'a>(key: &str, names: &[&'a str]) -> Option<&'a str> {
+    names
+        .iter()
+        .map(|name| (edit_distance(key, name), *name))
+        .filter(|(distance, _)| *distance <= 2)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name)
+}
+
+/// Levenshtein distance between `a` and `b`: the fewest single-character
+/// insertions, deletions and substitutions that turn one into the other.
+#[cfg(feature = "gnmi")]
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current: Vec<usize> = vec![0; b.len() + 1];
+    for (i, a_char) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, b_char) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(a_char != *b_char);
+            current[j + 1] = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
 }
 
 /// Launch a single scenario as a tokio task.
@@ -2049,5 +2203,211 @@ mod tests {
             exit_duration < Duration::from_millis(200),
             "cancel-to-exit must be under 200ms; took {exit_duration:?}"
         );
+    }
+
+    // ---- Whole-file gnmi checks ------------------------------------------------
+
+    /// The per-entry pairing rule rejects the gnmi encoder with every sink in
+    /// this build. A file that reaches it has passed the whole-file checks,
+    /// which run first.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const GNMI_PAIRING_ERROR: &str = "the gnmi encoder can only be used with the gnmi_target sink";
+
+    /// A file with two metrics entries, `in_octets` and `out_octets`, sharing
+    /// one gnmi encoder whose body (after `type: gnmi`) is `encoder`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn two_counters(encoder: &str) -> String {
+        format!(
+            r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  labels:
+    device: leaf-1
+    ifName: eth0
+  encoder:
+    type: gnmi
+{encoder}
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: {{type: constant, value: 1.0}}
+  - signal_type: metrics
+    name: out_octets
+    generator: {{type: constant, value: 1.0}}
+"#
+        )
+    }
+
+    /// Compile a v2 file into the entries `prepare_entries` receives.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn compile_entries(
+        yaml: &str,
+        resolver: &crate::compiler::expand::InMemoryPackResolver,
+    ) -> Vec<ScenarioEntry> {
+        crate::compile::compile_scenario_file(yaml, resolver).expect("fixture must compile")
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn prepare_error(entries: Vec<ScenarioEntry>) -> String {
+        prepare_entries(entries)
+            .expect_err("a gnmi file must not prepare in this build")
+            .to_string()
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_values_key_naming_no_metric_is_rejected() {
+        let yaml = two_counters(
+            "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    \
+             values:\n      in_octet: uint",
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("values: key `in_octet`"), "{msg}");
+        assert!(msg.contains("did you mean `in_octets`?"), "{msg}");
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_paths_key_naming_no_metric_is_rejected() {
+        let yaml = two_counters(
+            "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    \
+             paths:\n      out_octet: \"/interfaces/interface[name={ifName}]/state/out\"",
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("paths: key `out_octet`"), "{msg}");
+        assert!(msg.contains("did you mean `out_octets`?"), "{msg}");
+    }
+
+    /// A key more than two edits from every metric name gets no suggestion.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_values_key_far_from_every_metric_is_rejected_without_a_suggestion() {
+        let yaml = two_counters(
+            "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    \
+             values:\n      if_speed: uint",
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("values: key `if_speed`"), "{msg}");
+        assert!(!msg.contains("did you mean"), "{msg}");
+    }
+
+    /// Keys may name metrics that appear only once a pack has expanded.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_keys_naming_pack_expanded_metrics_are_accepted() {
+        let pack: crate::packs::MetricPackDef = serde_yaml_ng::from_str(
+            r#"
+name: interface_counters
+description: test
+category: network
+metrics:
+  - name: in_octets
+    generator: {type: constant, value: 1.0}
+  - name: out_octets
+    generator: {type: constant, value: 1.0}
+"#,
+        )
+        .expect("pack must parse");
+        let mut resolver = crate::compiler::expand::InMemoryPackResolver::new();
+        resolver.insert("interface_counters", pack);
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  labels:
+    device: leaf-1
+    ifName: eth0
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+    values:
+      in_octets: uint
+    paths:
+      out_octets: "/interfaces/interface[name={ifName}]/state/out-octets"
+scenarios:
+  - signal_type: metrics
+    pack: interface_counters
+"#;
+        let entries = compile_entries(yaml, &resolver);
+        let names: Vec<&str> = entries.iter().map(|e| e.base().name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["in_octets", "out_octets"],
+            "the pack entry must expand to the metrics the keys name"
+        );
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}");
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_metrics_sharing_a_template_without_name_are_rejected() {
+        let yaml = two_counters("    path: \"/interfaces/interface[name={ifName}]/state\"");
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(
+            msg.contains("metrics `in_octets` and `out_octets`"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("\"/interfaces/interface[name={ifName}]/state\""),
+            "{msg}"
+        );
+    }
+
+    /// Metrics that share a template are accepted when `{name}` tells their
+    /// paths apart, and metrics with their own `paths:` entries never share one.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::name_in_the_shared_template("    path: \"/interfaces/interface[name={ifName}]/state/{name}\"")]
+    #[case::own_paths_entries("    paths:\n      in_octets: \"/interfaces/interface[name={ifName}]/state/in-octets\"\n      out_octets: \"/interfaces/interface[name={ifName}]/state/out-octets\"")]
+    fn gnmi_metrics_with_distinct_paths_are_accepted(#[case] encoder: &str) {
+        let entries = compile_entries(&two_counters(encoder), &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::equal("in_octets", "in_octets", 0)]
+    #[case::one_insertion("in_octet", "in_octets", 1)]
+    #[case::two_edits("flaw", "lawn", 2)]
+    #[case::three_edits("kitten", "sitting", 3)]
+    #[case::from_empty("", "abc", 3)]
+    #[case::to_empty("abc", "", 3)]
+    fn edit_distance_counts_single_character_edits(#[case] a: &str, #[case] b: &str, #[case] expected: usize) {
+        assert_eq!(edit_distance(a, b), expected);
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::within_two_edits("in_octe", &["in_octets", "out_octets"], Some("in_octets"))]
+    #[case::three_edits_away("in_oct", &["in_octets", "out_octets"], None)]
+    #[case::tie_goes_to_the_first_name("aa", &["ab", "ba"], Some("ab"))]
+    #[case::no_names("in_octets", &[], None)]
+    fn nearest_name_suggests_only_within_two_edits(#[case] key: &str, #[case] names: &[&str], #[case] expected: Option<&str>) {
+        assert_eq!(nearest_name(key, names), expected);
     }
 }

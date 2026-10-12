@@ -120,3 +120,21 @@ fn dry_run_rejects_the_gnmi_encoder_without_a_gnmi_target_sink() {
         "{stderr}"
     );
 }
+
+/// A `values:` key that names no metric in the file fails the dry-run, naming
+/// the key and the metric it was probably meant to be.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_rejects_a_gnmi_values_key_naming_no_metric() {
+    let fixture = cli_fixtures_dir().join("gnmi-values-key-typo.v2.yaml");
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(&fixture)
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("values: key `in_octet`"), "{stderr}");
+    assert!(stderr.contains("did you mean `in_octets`?"), "{stderr}");
+}

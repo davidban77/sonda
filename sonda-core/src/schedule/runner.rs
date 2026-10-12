@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::config::ScenarioConfig;
+use crate::config::{LabelSource, ScenarioConfig};
 use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
@@ -55,18 +55,21 @@ pub async fn run_with_sink_gated(
         crate::generator::wrap_with_jitter(generator, config.base.jitter, config.base.jitter_seed);
     let encoder: Arc<dyn crate::encoder::Encoder> = Arc::from(create_encoder(&config.encoder)?);
 
-    let labels: Arc<Labels> = {
-        let inner = if let Some(ref label_map) = config.labels {
-            let pairs: Vec<(&str, &str)> = label_map
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            Labels::from_pairs(&pairs)?
-        } else {
-            Labels::from_pairs(&[])?
-        };
-        Arc::new(inner)
-    };
+    // The entry's label sources: static labels are built once here, dynamic
+    // and spike labels are applied per tick from the schedule.
+    let mut static_pairs: Vec<(&str, &str)> = Vec::new();
+    let mut per_tick_labels = false;
+    for (key, source) in config.base.emitted_label_keys() {
+        match source {
+            LabelSource::Static => {
+                if let Some(value) = config.labels.as_ref().and_then(|l| l.get(key)) {
+                    static_pairs.push((key, value.as_str()));
+                }
+            }
+            LabelSource::Dynamic | LabelSource::Spike => per_tick_labels = true,
+        }
+    }
+    let labels: Arc<Labels> = Arc::new(Labels::from_pairs(&static_pairs)?);
 
     let name = ValidatedMetricName::new(&config.name)?;
 
@@ -88,12 +91,11 @@ pub async fn run_with_sink_gated(
             bus.tick(value);
         }
 
-        let needs_dynamic = !ctx.dynamic_labels.is_empty();
-        let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
+        let tick_labels: Arc<Labels> = if !per_tick_labels {
             Arc::clone(&labels)
         } else {
             let mut mutated: Option<Labels> = None;
-            if needs_dynamic {
+            if !ctx.dynamic_labels.is_empty() {
                 let tl = mutated.get_or_insert_with(|| (*labels).clone());
                 for dl in ctx.dynamic_labels {
                     tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
@@ -370,6 +372,78 @@ mod tests {
                 "scenario labels must reach the sink"
             );
         }
+    }
+
+    /// The label keys the real runner puts on events are exactly the keys
+    /// `emitted_label_keys` reports, for an entry with one label from each
+    /// source. A label source added to the runner but not to
+    /// `emitted_label_keys`, or the other way round, fails here.
+    #[tokio::test]
+    async fn emitted_label_keys_are_the_labels_the_runner_emits() {
+        use crate::config::{
+            CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy, LabelSource,
+            SpikeStrategy,
+        };
+        use std::collections::BTreeSet;
+
+        let mut config = make_config(100.0, "300ms", None);
+        config.base.labels = Some(std::collections::HashMap::from([(
+            "device".to_string(),
+            "leaf-1".to_string(),
+        )]));
+        config.base.dynamic_labels = Some(vec![DynamicLabelConfig {
+            key: "ifName".to_string(),
+            strategy: DynamicLabelStrategy::ValuesList {
+                values: vec!["eth0".to_string(), "eth1".to_string()],
+            },
+        }]);
+        // The whole run sits inside the spike window, so every event carries it.
+        config.base.cardinality_spikes = Some(vec![CardinalitySpikeConfig {
+            label: "pod".to_string(),
+            every: "10s".to_string(),
+            r#for: "9s".to_string(),
+            cardinality: 2,
+            strategy: SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        }]);
+
+        for source in [
+            LabelSource::Static,
+            LabelSource::Dynamic,
+            LabelSource::Spike,
+        ] {
+            assert!(
+                config.base.emitted_label_keys().any(|(_, s)| s == source),
+                "the entry must exercise the {source:?} source"
+            );
+        }
+
+        let (mut sink, seen) = routing_probe(true);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("run must succeed");
+
+        let seen = seen.lock().expect("probe mutex poisoned");
+        assert!(
+            seen.events.len() >= 5,
+            "a 300ms run at 100/s must deliver events before their labels are compared; got {}",
+            seen.events.len()
+        );
+        let emitted: BTreeSet<&str> = seen
+            .events
+            .iter()
+            .flat_map(|event| event.labels.iter().map(|(key, _)| key.as_str()))
+            .collect();
+        let reported: BTreeSet<&str> = config
+            .base
+            .emitted_label_keys()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(
+            emitted, reported,
+            "label keys on delivered events must equal emitted_label_keys()"
+        );
     }
 
     /// A sink that does not opt in never reaches `write_metric_event`.
