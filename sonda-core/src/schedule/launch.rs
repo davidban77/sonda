@@ -228,7 +228,8 @@ pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), S
 ///   target is the value of the encoder's `target_label` when that label is a
 ///   static label of the entry, or empty when the entry has no such label.
 ///   When a dynamic or spike label supplies it, the target can be any value,
-///   so it is shared with every other entry's target.
+///   so it is shared with every other entry's target. Targets compare by
+///   value, whichever label each encoder takes its target from.
 ///
 /// An entry whose encoder config does not build, or that has no template, is
 /// left to per-entry validation.
@@ -304,7 +305,8 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         _ => true,
     };
 
-    let mut leaves: HashMap<(&str, Path), Vec<(Target<'_>, &str)>> = HashMap::new();
+    // Every writer of a leaf: its target, its metric and its target label.
+    let mut leaves: HashMap<Path, Vec<(Target<'_>, &str, &str)>> = HashMap::new();
     for (idx, config, cfg) in gnmi_metrics {
         let Ok(encoder) = GnmiEncoder::new(cfg) else {
             continue;
@@ -342,20 +344,33 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             Target::Varies
         };
 
-        let writers = leaves
-            .entry((cfg.target_label.as_str(), leaf.clone()))
-            .or_default();
-        if let Some((other_target, other)) = writers
+        let writers = leaves.entry(leaf.clone()).or_default();
+        if let Some((other_target, other, other_label)) = writers
             .iter()
-            .find(|(other_target, other)| *other != config.name && shared(*other_target, target))
+            .find(|(other_target, other, _)| *other != config.name && shared(*other_target, target))
         {
             let on_target = match (*other_target, target) {
                 (Target::Known(""), Target::Known(_)) => " with no target".to_string(),
                 (Target::Known(value), Target::Known(_)) => format!(" on target `{value}`"),
-                _ => format!(
-                    " on a target both can carry (`{}` comes from a dynamic or spike label)",
-                    cfg.target_label
-                ),
+                _ => {
+                    let varying: Vec<String> = [
+                        (*other_target, *other, *other_label),
+                        (target, config.name.as_str(), cfg.target_label.as_str()),
+                    ]
+                    .into_iter()
+                    .filter(|(target, _, _)| *target == Target::Varies)
+                    .map(|(_, metric, label)| format!("`{metric}` takes `{label}`"))
+                    .collect();
+                    let source = if varying.len() == 1 {
+                        "a dynamic or spike label"
+                    } else {
+                        "dynamic or spike labels"
+                    };
+                    format!(
+                        " on a target they may share: {} from {source}",
+                        varying.join(" and ")
+                    )
+                }
             };
             return Err(invalid(
                 idx,
@@ -367,7 +382,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
                 ),
             ));
         }
-        writers.push((target, config.name.as_str()));
+        writers.push((target, config.name.as_str(), cfg.target_label.as_str()));
     }
     Ok(())
 }
@@ -2441,8 +2456,8 @@ scenarios:
     }
 
     /// Two metrics sharing a template without `{name}`; `in_octets` and
-    /// `out_octets` take the given label blocks, which decide their `device`
-    /// target.
+    /// `out_octets` take the given blocks, which decide their target. A block
+    /// may also give its entry its own encoder, such as [`HOST_ENCODER`].
     #[cfg(all(feature = "gnmi", feature = "config"))]
     fn two_targets(in_octets: &str, out_octets: &str) -> String {
         format!(
@@ -2477,20 +2492,43 @@ scenarios:
         "    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const STATIC_LEAF_9_REPLACED_BY_DYNAMIC: &str = "    labels:\n      device: leaf-9\n    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
+    /// A spike over `device` renders `leaf-0` and `leaf-1` while it lasts.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_2_SPIKED: &str = "    labels:\n      device: leaf-2\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: 2\n        prefix: leaf-\n";
+    /// The same template, from an encoder that takes its target from `host`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const HOST_ENCODER: &str = "    encoder:\n      type: gnmi\n      target_label: host\n      path: \"/interfaces/interface[name={ifName}]/state\"\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const HOST_LEAF_1: &str = "    labels:\n      host: leaf-1\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const HOST_LEAF_2: &str = "    labels:\n      host: leaf-2\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const DYNAMIC_HOST_LEAF_1_OR_2: &str =
+        "    dynamic_labels:\n      - key: host\n        values: [leaf-1, leaf-2]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const OUT_OCTETS_TARGET_VARIES: &str =
+        " on a target they may share: `out_octets` takes `device` from a dynamic or spike label";
 
     /// Two metrics writing the same leaf collide only when their targets can
-    /// match. A static `device` is one target, a missing one is the empty
-    /// target, and a dynamic one can be any target, including a static one
-    /// it replaces. `None` means the file passes the whole-file check.
+    /// match, whichever label each encoder takes its target from. A static
+    /// target label is one target, a missing one is the empty target, and a
+    /// dynamic or spike one can be any target, including a static one it
+    /// replaces. `None` means the file passes the whole-file check; otherwise
+    /// the error names the leaf followed by the given clause.
     #[cfg(all(feature = "gnmi", feature = "config"))]
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::different_static_targets(STATIC_LEAF_1, STATIC_LEAF_2, None)]
     #[case::absent_and_static_targets("", STATIC_LEAF_1, None)]
     #[case::both_targets_absent("", "", Some(" with no target"))]
-    #[case::static_and_dynamic_targets(STATIC_LEAF_1, DYNAMIC_LEAF_1_OR_2, Some(" on a target both can carry"))]
-    #[case::dynamic_replaces_a_different_static(STATIC_LEAF_1, STATIC_LEAF_9_REPLACED_BY_DYNAMIC, Some(" on a target both can carry"))]
-    #[case::both_targets_dynamic(DYNAMIC_LEAF_1_OR_2, DYNAMIC_LEAF_1_OR_2, Some(" on a target both can carry"))]
+    #[case::static_and_dynamic_targets(STATIC_LEAF_1, DYNAMIC_LEAF_1_OR_2, Some(OUT_OCTETS_TARGET_VARIES))]
+    #[case::dynamic_replaces_a_different_static(STATIC_LEAF_1, STATIC_LEAF_9_REPLACED_BY_DYNAMIC, Some(OUT_OCTETS_TARGET_VARIES))]
+    #[case::static_and_spike_targets(STATIC_LEAF_1, STATIC_LEAF_2_SPIKED, Some(OUT_OCTETS_TARGET_VARIES))]
+    #[case::both_targets_dynamic(DYNAMIC_LEAF_1_OR_2, DYNAMIC_LEAF_1_OR_2, Some(" on a target they may share: `in_octets` takes `device` and `out_octets` takes `device` from dynamic or spike labels"))]
+    #[case::different_labels_with_different_values(STATIC_LEAF_1, &format!("{HOST_LEAF_2}{HOST_ENCODER}"), None)]
+    #[case::different_labels_with_the_same_value(STATIC_LEAF_1, &format!("{HOST_LEAF_1}{HOST_ENCODER}"), Some(" on target `leaf-1`"))]
+    #[case::different_labels_both_absent("", HOST_ENCODER, Some(" with no target"))]
+    #[case::dynamic_host_and_static_device(&format!("{DYNAMIC_HOST_LEAF_1_OR_2}{HOST_ENCODER}"), STATIC_LEAF_1, Some(" on a target they may share: `in_octets` takes `host` from a dynamic or spike label"))]
     fn gnmi_metrics_sharing_a_leaf_collide_only_on_a_shared_target(
         #[case] in_octets: &str,
         #[case] out_octets: &str,
@@ -2499,18 +2537,32 @@ scenarios:
         let entries = compile_entries(&two_targets(in_octets, out_octets), &Default::default());
         assert_eq!(entries.len(), 2, "the file must expand to two entries");
         for (entry, block) in entries.iter().zip([in_octets, out_octets]) {
-            let base = entry.base();
+            let ScenarioEntry::Metrics(config) = entry else {
+                panic!("both entries must be metrics entries");
+            };
+            let crate::encoder::EncoderConfig::Gnmi(gnmi) = &config.encoder else {
+                panic!("{}: the entry must use the gnmi encoder", config.name);
+            };
+            let target = gnmi.target_label.as_str();
+            let expected_target = if block.contains("target_label: host") { "host" } else { "device" };
+            assert_eq!(target, expected_target, "{}: the target label must be as the case describes", config.name);
             assert_eq!(
-                base.labels.as_ref().is_some_and(|l| l.contains_key("device")),
+                config.labels.as_ref().is_some_and(|l| l.contains_key(target)),
                 block.contains("    labels:"),
-                "{}: the static device label must be as the case describes",
-                base.name
+                "{}: the static target label must be as the case describes",
+                config.name
             );
             assert_eq!(
-                base.dynamic_labels.iter().flatten().any(|dl| dl.key == "device"),
+                config.dynamic_labels.iter().flatten().any(|dl| dl.key == target),
                 block.contains("dynamic_labels:"),
-                "{}: the dynamic device label must be as the case describes",
-                base.name
+                "{}: the dynamic target label must be as the case describes",
+                config.name
+            );
+            assert_eq!(
+                config.cardinality_spikes.iter().flatten().any(|spike| spike.label == target),
+                block.contains("cardinality_spikes:"),
+                "{}: the spike over the target label must be as the case describes",
+                config.name
             );
         }
 
@@ -2521,7 +2573,7 @@ scenarios:
                 assert!(msg.contains("metrics `in_octets` and `out_octets`"), "{msg}");
                 assert!(
                     msg.contains(&format!(
-                        "gnmi leaf `openconfig:/interfaces/interface[name={{ifName}}]/state`{clause}"
+                        "gnmi leaf `openconfig:/interfaces/interface[name={{ifName}}]/state`{clause}, "
                     )),
                     "{msg}"
                 );
