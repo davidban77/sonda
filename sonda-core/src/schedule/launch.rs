@@ -2505,6 +2505,12 @@ scenarios:
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const DYNAMIC_HOST_LEAF_1_OR_2: &str =
         "    dynamic_labels:\n      - key: host\n        values: [leaf-1, leaf-2]\n";
+    /// A static `device` with a dynamic label on another key, here a path
+    /// placeholder, which does not make the target vary.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_1_DYNAMIC_IFNAME: &str = "    labels:\n      device: leaf-1\n    dynamic_labels:\n      - key: ifName\n        values: [eth0, eth1]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_2_DYNAMIC_IFNAME: &str = "    labels:\n      device: leaf-2\n    dynamic_labels:\n      - key: ifName\n        values: [eth0, eth1]\n";
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const OUT_OCTETS_TARGET_VARIES: &str =
         " on a target they may share: `out_octets` takes `device` from a dynamic or spike label";
@@ -2529,6 +2535,7 @@ scenarios:
     #[case::different_labels_with_the_same_value(STATIC_LEAF_1, &format!("{HOST_LEAF_1}{HOST_ENCODER}"), Some(" on target `leaf-1`"))]
     #[case::different_labels_both_absent("", HOST_ENCODER, Some(" with no target"))]
     #[case::dynamic_host_and_static_device(&format!("{DYNAMIC_HOST_LEAF_1_OR_2}{HOST_ENCODER}"), STATIC_LEAF_1, Some(" on a target they may share: `in_octets` takes `host` from a dynamic or spike label"))]
+    #[case::different_static_targets_with_a_dynamic_placeholder(STATIC_LEAF_1_DYNAMIC_IFNAME, STATIC_LEAF_2_DYNAMIC_IFNAME, None)]
     fn gnmi_metrics_sharing_a_leaf_collide_only_on_a_shared_target(
         #[case] in_octets: &str,
         #[case] out_octets: &str,
@@ -2548,19 +2555,19 @@ scenarios:
             assert_eq!(target, expected_target, "{}: the target label must be as the case describes", config.name);
             assert_eq!(
                 config.labels.as_ref().is_some_and(|l| l.contains_key(target)),
-                block.contains("    labels:"),
+                block.contains(&format!("    labels:\n      {target}: ")),
                 "{}: the static target label must be as the case describes",
                 config.name
             );
             assert_eq!(
                 config.dynamic_labels.iter().flatten().any(|dl| dl.key == target),
-                block.contains("dynamic_labels:"),
+                block.contains(&format!("- key: {target}\n")),
                 "{}: the dynamic target label must be as the case describes",
                 config.name
             );
             assert_eq!(
                 config.cardinality_spikes.iter().flatten().any(|spike| spike.label == target),
-                block.contains("cardinality_spikes:"),
+                block.contains(&format!("- label: {target}\n")),
                 "{}: the spike over the target label must be as the case describes",
                 config.name
             );
