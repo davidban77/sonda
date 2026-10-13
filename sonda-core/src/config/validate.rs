@@ -541,6 +541,7 @@ fn reject_gnmi_encoder(
 /// Returns `Ok(())` for any other encoder.
 #[cfg(feature = "gnmi")]
 pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> {
+    use super::LabelSource;
     use crate::encoder::gnmi::path::{is_valid_element_name, NAME_PLACEHOLDER};
     use crate::encoder::gnmi::GnmiEncoder;
 
@@ -550,32 +551,26 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     let encoder = GnmiEncoder::new(cfg)?;
     let template = encoder.template_for(&config.name)?;
 
-    let static_label = |key: &str| {
-        config
-            .labels
-            .as_ref()
-            .is_some_and(|labels| labels.contains_key(key))
-    };
-    let dynamic_label = |key: &str| {
-        config
-            .dynamic_labels
-            .iter()
-            .flatten()
-            .any(|dl| dl.key == key)
-    };
-    let spike_label = |key: &str| {
-        config
-            .cardinality_spikes
-            .iter()
-            .flatten()
-            .any(|spike| spike.label == key)
-    };
+    // Static and dynamic labels are on every event, so a template may
+    // reference them; spike labels exist only inside their window.
+    let mut entry_labels: Vec<&str> = Vec::new();
+    let mut spike_labels: Vec<&str> = Vec::new();
+    for (key, source) in config.base.emitted_label_keys() {
+        match source {
+            LabelSource::Static | LabelSource::Dynamic => entry_labels.push(key),
+            LabelSource::Spike => spike_labels.push(key),
+        }
+    }
+    entry_labels.sort_unstable();
+    entry_labels.dedup();
+    spike_labels.sort_unstable();
+    spike_labels.dedup();
+    let entry_label = |key: &str| entry_labels.binary_search(&key).is_ok();
+    let spike_label = |key: &str| spike_labels.binary_search(&key).is_ok();
 
     if template.placeholders().any(|p| p == NAME_PLACEHOLDER)
         && !encoder.label_needs_no_reference(NAME_PLACEHOLDER)
-        && (static_label(NAME_PLACEHOLDER)
-            || dynamic_label(NAME_PLACEHOLDER)
-            || spike_label(NAME_PLACEHOLDER))
+        && (entry_label(NAME_PLACEHOLDER) || spike_label(NAME_PLACEHOLDER))
     {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for metric {:?} uses {{name}}, which always renders the \
@@ -585,9 +580,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         ))));
     }
 
-    let known = |placeholder: &str| {
-        placeholder == NAME_PLACEHOLDER || static_label(placeholder) || dynamic_label(placeholder)
-    };
+    let known = |placeholder: &str| placeholder == NAME_PLACEHOLDER || entry_label(placeholder);
     if let Some(spiked) = template
         .placeholders()
         .find(|p| !known(p) && spike_label(p))
@@ -670,22 +663,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         ))));
     }
 
-    let mut entry_labels: Vec<&str> = config
-        .labels
-        .iter()
-        .flatten()
-        .map(|(key, _)| key.as_str())
-        .chain(
-            config
-                .dynamic_labels
-                .iter()
-                .flatten()
-                .map(|dl| dl.key.as_str()),
-        )
-        .collect();
-    entry_labels.sort_unstable();
-    entry_labels.dedup();
-    if let Some(unreferenced) = encoder.uncovered_label(template, entry_labels.into_iter()) {
+    if let Some(unreferenced) = encoder.uncovered_label(template, entry_labels.iter().copied()) {
         // {name} always renders the metric name, so a `name` label cannot be
         // referenced by it.
         let advice = if unreferenced == NAME_PLACEHOLDER {
@@ -702,15 +680,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         ))));
     }
 
-    let mut spike_labels: Vec<&str> = config
-        .cardinality_spikes
-        .iter()
-        .flatten()
-        .map(|spike| spike.label.as_str())
-        .collect();
-    spike_labels.sort_unstable();
-    spike_labels.dedup();
-    if let Some(spiked) = encoder.uncovered_label(template, spike_labels.into_iter()) {
+    if let Some(spiked) = encoder.uncovered_label(template, spike_labels.iter().copied()) {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "metric {:?} has cardinality_spikes label `{spiked}`, which events carry while \
              the spike window is open but the gnmi path template cannot reference; list it \
