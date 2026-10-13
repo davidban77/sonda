@@ -231,6 +231,21 @@ pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), S
 ///   so it is shared with every other entry's target. Targets compare by
 ///   value, whichever label each encoder takes its target from.
 ///
+/// The leaf rule compares placeholders by name and treats a varying target as
+/// any target, so it is approximate in both directions:
+///
+/// - It misses two metrics that write the same leaf when their templates
+///   spell it differently: a literal key value in one and a placeholder that
+///   can render to it in the other (`[name=eth0]` against `[name={ifName}]`
+///   with `ifName: eth0`), or two different placeholders that can render to
+///   the same value (`{ifName}` and `{port}`, both `eth0`).
+/// - It rejects two metrics that never write the same leaf when the same
+///   placeholder can never take the same value in both (`ifName: eth0`
+///   against `ifName: eth1`, or against a dynamic `ifName` of `[eth1, eth2]`),
+///   or when a varying target can never equal the other target (a dynamic
+///   `device` of `[leaf-1, leaf-2]` against `device: leaf-3`, or against an
+///   entry with no target).
+///
 /// An entry whose encoder config does not build, or that has no template, is
 /// left to per-entry validation.
 #[cfg(feature = "gnmi")]
