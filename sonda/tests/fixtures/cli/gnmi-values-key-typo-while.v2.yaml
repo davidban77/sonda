@@ -1,0 +1,36 @@
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  duration: 5s
+
+scenarios:
+  - id: link_state
+    signal_type: metrics
+    name: link_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: in_octets
+    signal_type: metrics
+    name: in_octets
+    generator:
+      type: step
+      start: 0
+      step_size: 125000
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+    encoder:
+      type: gnmi
+      origin: openconfig-interfaces
+      path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+      values:
+        in_octet: uint
+    while:
+      ref: link_state
+      op: "<"
+      value: 1

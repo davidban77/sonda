@@ -120,3 +120,63 @@ fn dry_run_rejects_the_gnmi_encoder_without_a_gnmi_target_sink() {
         "{stderr}"
     );
 }
+
+/// Dry-run `fixture` and return its stderr, asserting it failed.
+#[cfg(feature = "gnmi")]
+fn failed_dry_run_stderr(fixture: &str) -> String {
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(cli_fixtures_dir().join(fixture))
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!output.status.success(), "{stderr}");
+    stderr
+}
+
+/// The same `values:` typo fails the dry-run when its entry is gated by
+/// `while:`, which takes the gated launch path, and when it is chained with
+/// `after:`, which does not.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_rejects_a_gnmi_values_key_typo_with_while_and_after() {
+    for (fixture, clause) in [
+        ("gnmi-values-key-typo-while.v2.yaml", "while:"),
+        ("gnmi-values-key-typo-after.v2.yaml", "after:"),
+    ] {
+        let source = std::fs::read_to_string(cli_fixtures_dir().join(fixture))
+            .expect("fixture must be readable");
+        assert!(source.contains(clause), "{fixture} must use {clause}");
+
+        let stderr = failed_dry_run_stderr(fixture);
+        assert!(
+            stderr.contains(
+                "scenario[1]: gnmi encoder values: key `in_octet` names no metric this encoder serves"
+            ),
+            "{fixture}: {stderr}"
+        );
+        assert!(
+            stderr.contains("did you mean `in_octets`?"),
+            "{fixture}: {stderr}"
+        );
+    }
+}
+
+/// A `values:` key that names no metric in the file fails the dry-run, naming
+/// the key and the metric it was probably meant to be.
+#[cfg(feature = "gnmi")]
+#[test]
+fn dry_run_rejects_a_gnmi_values_key_naming_no_metric() {
+    let fixture = cli_fixtures_dir().join("gnmi-values-key-typo.v2.yaml");
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(&fixture)
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("values: key `in_octet`"), "{stderr}");
+    assert!(stderr.contains("did you mean `in_octets`?"), "{stderr}");
+}

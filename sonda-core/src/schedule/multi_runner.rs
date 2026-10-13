@@ -25,7 +25,7 @@ use crate::schedule::gate_bus::{
     SubscriptionSpec, WhileSpec,
 };
 #[cfg(feature = "config")]
-use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
+use crate::schedule::launch::{launch_scenario_with_gates, validate_entry, validate_file};
 #[cfg(feature = "config")]
 use std::collections::HashMap;
 
@@ -62,14 +62,24 @@ pub async fn run_multi(
     }
 }
 
-/// Prepare one compiled entry for the **gated** launch path: translate, expand,
-/// desugar, validate.
+/// The fields of a compiled entry the gated launch needs and translation drops.
+#[cfg(feature = "config")]
+struct GatedFields {
+    id: Option<String>,
+    while_clause: Option<crate::compiler::WhileClause>,
+    delay_clause: Option<crate::compiler::DelayClause>,
+    phase_offset: Option<String>,
+}
+
+/// Prepare every entry of a compiled file for the **gated** launch path:
+/// translate, expand and desugar each one, run the whole-file checks
+/// ([`validate_file`]) over all of them, then validate each entry.
 ///
 /// This is the gated counterpart to [`prepare_entries`], and the single
 /// definition of what [`launch_multi_compiled`] will accept. It is not the same
 /// rulebook: multi-column `csv_replay` fan-out is legal in the ungated pipeline
 /// and refused here, because a gate needs one entry per gated signal and the
-/// fan-out produces several.
+/// fan-out produces several. The whole-file checks are the same ones.
 ///
 /// That difference is why this is a function rather than a loop body.
 /// [`validate_compiled_gated`] calls it so `sonda --dry-run run` asks the gated
@@ -77,9 +87,43 @@ pub async fn run_multi(
 /// validated against the wrong rulebook would bless a file `run` refuses, which
 /// is the defect the flag exists to catch.
 ///
+/// Each prepared entry is paired with the index of the authored entry it came
+/// from. An entry that expands to nothing is left out.
+#[cfg(feature = "config")]
+fn prepare_gated_file(
+    entries: Vec<crate::compiler::compile_after::CompiledEntry>,
+) -> Result<Vec<(usize, GatedFields, ScenarioEntry)>, SondaError> {
+    let mut prepared = Vec::with_capacity(entries.len());
+    for (index, compiled_entry) in entries.into_iter().enumerate() {
+        let gated = GatedFields {
+            id: compiled_entry.id.clone(),
+            while_clause: compiled_entry.while_clause.clone(),
+            delay_clause: compiled_entry.delay_clause.clone(),
+            phase_offset: compiled_entry.phase_offset.clone(),
+        };
+        if let Some(entry) = expand_gated_entry(compiled_entry)? {
+            prepared.push((index, gated, entry));
+        }
+    }
+
+    validate_file(
+        &prepared
+            .iter()
+            .map(|(index, _, entry)| (*index, entry))
+            .collect::<Vec<_>>(),
+    )?;
+
+    for (_, _, entry) in &prepared {
+        validate_entry(entry)?;
+    }
+    Ok(prepared)
+}
+
+/// Translate, expand and desugar one compiled entry for the gated launch path.
+///
 /// `Ok(None)` means the entry expanded to nothing and the caller should skip it.
 #[cfg(feature = "config")]
-fn prepare_gated_entry(
+fn expand_gated_entry(
     compiled_entry: crate::compiler::compile_after::CompiledEntry,
 ) -> Result<Option<ScenarioEntry>, SondaError> {
     let id = compiled_entry.id.clone();
@@ -104,15 +148,13 @@ fn prepare_gated_entry(
             ))));
         }
     };
-    let translated = desugar_entry(translated)?;
-    validate_entry(&translated)?;
-    Ok(Some(translated))
+    Ok(Some(desugar_entry(translated)?))
 }
 
 /// Validate a compiled file through the **gated** pipeline without launching it,
 /// returning the entries that would run.
 ///
-/// Runs the same per-entry preparation [`launch_multi_compiled`] runs.
+/// Runs the same preparation [`launch_multi_compiled`] runs.
 /// `sonda --dry-run run` calls this for any file carrying a `while:` clause, so
 /// the two verbs decide from one rulebook rather than two — and prints what
 /// comes back, so the view it shows is post-expansion rather than as-authored.
@@ -123,7 +165,8 @@ fn prepare_gated_entry(
 /// `after:`, `clock_group` — which do not survive translation.
 ///
 /// Scope, stated because a validator that looks broader than it is would be
-/// worse than none: this covers per-entry preparation only. Gate-bus wiring and
+/// worse than none: this covers entry preparation and the whole-file checks
+/// only. Gate-bus wiring and
 /// cross-POST resolution are not exercised, and do not need to be — a
 /// `while.scenario_name` on the CLI is refused at parse, and a `while.ref`
 /// naming an id that does not exist is refused at `compile_after`, so both
@@ -132,13 +175,10 @@ fn prepare_gated_entry(
 pub fn validate_compiled_gated(
     file: CompiledFile,
 ) -> Result<Vec<(usize, ScenarioEntry)>, SondaError> {
-    let mut out = Vec::with_capacity(file.entries.len());
-    for (index, compiled_entry) in file.entries.into_iter().enumerate() {
-        if let Some(entry) = prepare_gated_entry(compiled_entry)? {
-            out.push((index, entry));
-        }
-    }
-    Ok(out)
+    Ok(prepare_gated_file(file.entries)?
+        .into_iter()
+        .map(|(index, _, entry)| (index, entry))
+        .collect())
 }
 
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in.
@@ -168,6 +208,10 @@ pub async fn launch_multi_compiled(
         bus_ids.sort();
         bus_ids.dedup();
     }
+    // Every entry is prepared and the whole file checked before any bus is
+    // registered or any scenario launched.
+    let prepared = prepare_gated_file(entries)?;
+
     let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
     for id in bus_ids {
         buses.insert(id, Arc::new(GateBus::new()));
@@ -183,17 +227,14 @@ pub async fn launch_multi_compiled(
         }
     }
 
-    let mut launches: Vec<LaunchPlan> = Vec::with_capacity(entries.len());
-    for compiled_entry in entries.into_iter() {
-        let id = compiled_entry.id.clone();
-        let while_clause = compiled_entry.while_clause.clone();
-        let delay_clause = compiled_entry.delay_clause.clone();
-        let phase_offset = compiled_entry.phase_offset.clone();
-
-        let translated = match prepare_gated_entry(compiled_entry)? {
-            Some(entry) => entry,
-            None => continue,
-        };
+    let mut launches: Vec<LaunchPlan> = Vec::with_capacity(prepared.len());
+    for (_, gated, translated) in prepared {
+        let GatedFields {
+            id,
+            while_clause,
+            delay_clause,
+            phase_offset,
+        } = gated;
 
         let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
 
@@ -2038,5 +2079,57 @@ scenarios:
                 .join(Some(Duration::from_secs(1)))
                 .expect("join must succeed");
         }
+    }
+
+    /// `launch_multi_compiled`, the path `sonda run` takes for a file with a
+    /// `while:` clause, runs the whole-file checks before it launches
+    /// anything.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[tokio::test]
+    async fn launch_multi_compiled_runs_the_whole_file_checks() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+scenarios:
+  - id: link_state
+    signal_type: metrics
+    name: link_state
+    generator: {type: flap, up_duration: 60s, down_duration: 30s}
+  - id: in_octets
+    signal_type: metrics
+    name: in_octets
+    generator: {type: constant, value: 1.0}
+    labels: {device: leaf-1, ifName: eth0}
+    encoder:
+      type: gnmi
+      path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+      values:
+        in_octet: uint
+    while: {ref: link_state, op: "<", value: 1}
+"#;
+        let compiled = crate::compile::compile_scenario_file_compiled(
+            yaml,
+            &crate::compiler::expand::InMemoryPackResolver::new(),
+        )
+        .expect("fixture must compile");
+        assert!(
+            compiled.entries.iter().any(|e| e.while_clause.is_some()),
+            "the file must carry a while: clause"
+        );
+
+        let err = match launch_multi_compiled(compiled, None).await {
+            Ok(handles) => panic!(
+                "a values: typo must stop the launch; {} scenarios launched",
+                handles.len()
+            ),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("gnmi encoder values: key `in_octet` names no metric this encoder serves"),
+            "{err}"
+        );
     }
 }

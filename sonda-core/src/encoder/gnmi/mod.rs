@@ -309,7 +309,7 @@ impl From<GnmiValueType> for GnmiValueTypeWire {
 ///
 /// Unknown keys are rejected, so a misspelt field such as `vaules:` is an
 /// error rather than a silent fallback to the defaults.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
