@@ -6,7 +6,6 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -22,6 +21,7 @@ use tonic::transport::server::{Connected, TcpConnectInfo};
 use super::service::GnmiService;
 use super::TargetSettings;
 use crate::encoder::gnmi::proto;
+use crate::schedule::LaunchId;
 use crate::{ConfigError, SondaError};
 
 /// How long a connection still open when its target stops may stay open
@@ -151,15 +151,21 @@ pub(crate) struct SeriesSnapshot {
     pub(crate) latest: Bytes,
 }
 
-/// The publisher a series belongs to, handed out by [`GnmiTarget::owner`].
+/// The launch a series belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Owner(u64);
+
+impl From<LaunchId> for Owner {
+    fn from(launch: LaunchId) -> Self {
+        Self(launch.get())
+    }
+}
 
 /// One series in the table.
 struct Slot {
     path: PathKey,
     latest: Mutex<Bytes>,
-    /// The only publisher that may publish or remove the series.
+    /// The only launch whose sinks may publish or remove the series.
     owner: Owner,
 }
 
@@ -182,8 +188,9 @@ type ServeError = Arc<Mutex<Option<String>>>;
 /// cancels the target's root token: the listening socket closes at once,
 /// and connections still open after [`DRAIN_GRACE`] are closed.
 ///
-/// Each series belongs to the publisher that created it and leaves the
-/// table with that publisher, not when it stops being updated.
+/// Each series belongs to the launch whose sink created it and leaves the
+/// table when a sink of that launch removes it, not when it stops being
+/// updated.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
@@ -192,7 +199,6 @@ pub struct GnmiTarget {
     token: CancellationToken,
     state: watch::Receiver<TargetState>,
     error: ServeError,
-    next_owner: AtomicU64,
 }
 
 impl GnmiTarget {
@@ -233,7 +239,6 @@ impl GnmiTarget {
                 token,
                 state,
                 error,
-                next_owner: AtomicU64::new(0),
             }
         }))
     }
@@ -276,6 +281,10 @@ impl GnmiTarget {
 
     /// `Ok` while the listener task runs; otherwise [`SondaError::Sink`]
     /// naming the address and the error the task exited with.
+    ///
+    /// A sink whose listener stopped gets this error on every write, which
+    /// the scenario records and its `on_sink_error` policy handles (`fail`
+    /// ends it); nothing rebinds the address for that sink.
     pub(crate) fn check_serving(&self) -> Result<(), SondaError> {
         if self.is_serving() {
             return Ok(());
@@ -306,12 +315,6 @@ impl GnmiTarget {
         &self.settings
     }
 
-    /// A publisher identity no other caller has, for [`publish`](Self::publish)
-    /// and [`remove`](Self::remove).
-    pub(crate) fn owner(&self) -> Owner {
-        Owner(self.next_owner.fetch_add(1, Ordering::Relaxed))
-    }
-
     /// Upsert `encoded` as the latest notification of a series `owner`
     /// publishes. Returns the series' id and whether any receiver was
     /// subscribed.
@@ -329,7 +332,7 @@ impl GnmiTarget {
     /// # Errors
     ///
     /// [`SondaError::Config`] naming the path and the listen address when
-    /// another publisher owns the series for `path`.
+    /// another launch owns the series for `path`.
     pub(crate) fn publish(
         &self,
         owner: Owner,
@@ -353,7 +356,7 @@ impl GnmiTarget {
     }
 
     /// Remove each of `ids` that `owner` owns from the table. Ids that are
-    /// unknown or owned by another publisher are ignored, so removing an id
+    /// unknown or owned by another launch are ignored, so removing an id
     /// twice is harmless.
     pub(crate) fn remove(&self, owner: Owner, ids: &[SeriesId]) {
         if ids.is_empty() {
@@ -682,7 +685,7 @@ mod tests {
 
     use super::*;
 
-    /// The publisher in tests that use one, never handed out by `owner()`.
+    /// The owner in tests that use one; no launch in a test process reaches it.
     const OWNER: Owner = Owner(u64::MAX);
     use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
     use crate::encoder::Encoder;
@@ -860,13 +863,13 @@ mod tests {
     }
 
     /// Only a series' owner publishes it by path or removes it; another
-    /// publisher is refused, and the owner's own second publish of the path
+    /// launch is refused, and the owner's own second publish of the path
     /// is an upsert.
     #[tokio::test]
     async fn a_series_belongs_to_its_owner() {
         let target = bind(16).await;
-        let (owner, other) = (target.owner(), target.owner());
-        assert_ne!(owner, other, "each caller gets its own owner");
+        let (owner, other) = (Owner::from(LaunchId::next()), Owner::from(LaunchId::next()));
+        assert_ne!(owner, other, "each launch is its own owner");
         let shared = path("Gi0", "in-octets");
         let (id, _) = target
             .publish(owner, None, &shared, b"a")

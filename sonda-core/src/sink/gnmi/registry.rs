@@ -428,7 +428,7 @@ mod tests {
             .await
             .expect("the fresh target listens");
 
-        let mut sink = GnmiTargetSink::from_target(old);
+        let mut sink = GnmiTargetSink::from_target(old, crate::schedule::LaunchId::next());
         let event = crate::model::metric::MetricEvent::new(
             "up".to_string(),
             1.0,

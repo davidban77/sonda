@@ -21,7 +21,8 @@ use crate::schedule::log_runner::run_logs_with_sink_gated;
 use crate::schedule::runner::run_with_sink_gated;
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
-use crate::sink::create_sink;
+use crate::schedule::LaunchId;
+use crate::sink::create_sink_in;
 use crate::{ConfigError, SondaError};
 
 /// Extract the inner message from a [`SondaError`] for re-wrapping.
@@ -562,19 +563,70 @@ fn edit_distance(a: &str, b: &str) -> usize {
     previous[b.len()]
 }
 
-/// Launch a single scenario as a tokio task.
+/// Launch a single scenario as a tokio task, as a launch of its own.
 pub async fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
     cancel: CancellationToken,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
-    launch_scenario_with_gates(id, None, entry, cancel, start_delay, None, None, None).await
+    launch_scenario_in(LaunchId::next(), id, entry, cancel, start_delay).await
 }
 
-/// Launch a scenario with optional `while:` / `after:` gating wired in.
+/// [`launch_scenario`] as part of `launch`.
+pub(crate) async fn launch_scenario_in(
+    launch: LaunchId,
+    id: String,
+    entry: ScenarioEntry,
+    cancel: CancellationToken,
+    start_delay: Option<Duration>,
+) -> Result<ScenarioHandle, SondaError> {
+    launch_scenario_with_gates_in(
+        launch,
+        id,
+        None,
+        entry,
+        cancel,
+        start_delay,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Launch a scenario with optional `while:` / `after:` gating wired in, as a
+/// launch of its own.
 #[allow(clippy::too_many_arguments)]
 pub async fn launch_scenario_with_gates(
+    id: String,
+    scenario_name: Option<String>,
+    entry: ScenarioEntry,
+    cancel: CancellationToken,
+    start_delay: Option<Duration>,
+    upstream_bus: Option<Arc<GateBus>>,
+    gate_ctx: Option<GateContext>,
+    resolver: Option<Arc<dyn GateBusResolver>>,
+) -> Result<ScenarioHandle, SondaError> {
+    launch_scenario_with_gates_in(
+        LaunchId::next(),
+        id,
+        scenario_name,
+        entry,
+        cancel,
+        start_delay,
+        upstream_bus,
+        gate_ctx,
+        resolver,
+    )
+    .await
+}
+
+/// [`launch_scenario_with_gates`] as part of `launch`: the scenario's sink is
+/// created in that launch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn launch_scenario_with_gates_in(
+    launch: LaunchId,
     id: String,
     scenario_name: Option<String>,
     entry: ScenarioEntry,
@@ -659,7 +711,7 @@ pub async fn launch_scenario_with_gates(
             }
 
             let sink_labels = entry.base().labels.clone();
-            let mut sink = create_sink(&entry.base().sink, sink_labels.as_ref()).await?;
+            let mut sink = create_sink_in(&entry.base().sink, sink_labels.as_ref(), launch).await?;
 
             match entry {
                 ScenarioEntry::Metrics(config) => {

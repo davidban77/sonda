@@ -457,7 +457,8 @@ pub enum SinkConfig {
     GnmiTargetDisabled {},
 }
 
-/// Create a boxed [`Sink`] from the given [`SinkConfig`].
+/// Create a boxed [`Sink`] from the given [`SinkConfig`], as a launch of
+/// its own.
 ///
 /// `labels` populates Loki stream labels; pass `None` for every other sink.
 #[cfg(feature = "runtime")]
@@ -465,9 +466,21 @@ pub async fn create_sink(
     config: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<Box<dyn Sink>, SondaError> {
-    // `labels` is only consumed by the Loki arm (feature = "http"). Suppress
-    // the unused-variable warning when that feature is disabled.
-    let _ = &labels;
+    create_sink_in(config, labels, crate::schedule::LaunchId::next()).await
+}
+
+/// [`create_sink`] for a scenario of `launch`: a `gnmi_target` sink shares
+/// its gnmi paths with the other sinks of that launch only.
+#[cfg(feature = "runtime")]
+pub(crate) async fn create_sink_in(
+    config: &SinkConfig,
+    labels: Option<&HashMap<String, String>>,
+    launch: crate::schedule::LaunchId,
+) -> Result<Box<dyn Sink>, SondaError> {
+    // `labels` is only consumed by the Loki arm (feature = "http"), and
+    // `launch` by the gnmi arm. Suppress the unused-variable warnings when
+    // those features are disabled.
+    let _ = (&labels, launch);
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
         SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path)).await?)),
@@ -644,7 +657,9 @@ pub async fn create_sink(
             ))
         }
         #[cfg(feature = "gnmi")]
-        SinkConfig::GnmiTarget(cfg) => Ok(Box::new(gnmi::GnmiTargetSink::new(cfg).await?)),
+        SinkConfig::GnmiTarget(cfg) => {
+            Ok(Box::new(gnmi::GnmiTargetSink::new_in(cfg, launch).await?))
+        }
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(

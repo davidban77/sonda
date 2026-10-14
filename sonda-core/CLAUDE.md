@@ -89,7 +89,10 @@ src/
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_csv_replay.rs ← CSV-replay log generator (structured timestamp/severity/message + fields)
 ├── schedule/
-│   ├── mod.rs          ← GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
+│   ├── mod.rs          ← LaunchId (pub(crate): one per run_multi / launch_multi_compiled
+│   │                      call, and per launch_scenario(_with_gates) / create_sink call
+│   │                      for a launch of one; reaches sinks through create_sink_in),
+│   │                      GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
 │   │                      DynamicLabel (always-on rotating label, label_value_for_tick()),
 │   │                      ParsedSchedule (parses BaseScheduleConfig into resolved Duration values)
 │   ├── core_loop.rs    ← pub(crate) shared schedule loop (run_schedule_loop, TickFn, TickContext,
@@ -165,14 +168,16 @@ src/
 │   │   │                   synchronously from write_metric_event; write() is an error.
 │   │   │                   Keeps MetricKey → (SeriesId, PathKey): the first event of a
 │   │   │                   series decodes its path, later ones reuse the id. A write is
-│   │   │                   delivered once upserted. Each sink gets an Owner from the
-│   │   │                   target; another sink's path is a ConfigError at its first
-│   │   │                   write. Drop removes the sink's series.
+│   │   │                   delivered once upserted. A sink's Owner is its launch
+│   │   │                   (LaunchId): sinks of one launch share a path, another
+│   │   │                   launch's path is a ConfigError at the first write. Drop
+│   │   │                   removes what the sink published; a sibling's next write
+│   │   │                   re-creates a shared series by path.
 │   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
-│   │   │                   one Owner: only it publishes (an upsert) or removes the
-│   │   │                   series, which leaves with its owner, not when it goes idle;
+│   │   │                   one Owner, a launch: only its sinks publish (an upsert) or
+│   │   │                   remove the series, which leaves when removed, not when idle;
 │   │   │                   remove() is idempotent; overwrite() takes nothing. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
 │   │   │                   with no subscriber and twice with one, never awaits. Store

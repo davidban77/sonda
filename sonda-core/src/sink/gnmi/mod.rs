@@ -26,6 +26,7 @@ use crate::model::metric::{MetricEvent, MetricKey};
 use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
+use crate::schedule::LaunchId;
 pub use registry::{registry, GnmiTargetRegistry};
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
 use target::{Owner, PathKey};
@@ -209,10 +210,11 @@ impl TargetSettings {
 /// series identity, so it opts in through [`Sink::wants_metric_events`] and
 /// [`Sink::write`] is an error. The first event of each series decodes the
 /// series' path from the encoded notification; later events of that series
-/// reuse the id the target returned. The sink owns the series it creates:
-/// another sink's event for one of their paths is refused, and dropping the
-/// sink removes them from the target. Dropping the last sink on an address
-/// stops its listener.
+/// reuse the id the target returned. A series belongs to the launch whose
+/// sink created it: the sinks of that launch share it, a sink of another
+/// launch is refused it, and a sink dropping removes the series it published
+/// (a sibling that still publishes one re-creates it on its next write).
+/// Dropping the last sink on an address stops its listener.
 ///
 /// A sink made by joining a running target publishes no series of its own:
 /// it replaces the latest value of a series the target already serves, and
@@ -227,7 +229,7 @@ pub struct GnmiTargetSink {
 
 impl GnmiTargetSink {
     /// Join the target for `cfg.listen`, binding it if no live target has
-    /// that address.
+    /// that address, as a launch of its own.
     ///
     /// # Errors
     ///
@@ -235,7 +237,15 @@ impl GnmiTargetSink {
     /// same address with different settings; [`SondaError::Sink`] when the
     /// address cannot be bound.
     pub async fn new(cfg: &GnmiTargetConfig) -> Result<Self, SondaError> {
-        Ok(Self::from_target(registry().acquire(cfg).await?))
+        Self::new_in(cfg, LaunchId::next()).await
+    }
+
+    /// [`new`](Self::new) for a scenario of `launch`.
+    pub(crate) async fn new_in(
+        cfg: &GnmiTargetConfig,
+        launch: LaunchId,
+    ) -> Result<Self, SondaError> {
+        Ok(Self::from_target(registry().acquire(cfg).await?, launch))
     }
 
     /// Join the live target that serves `cfg.listen` without binding. The
@@ -247,15 +257,15 @@ impl GnmiTargetSink {
     /// [`SondaError::Config`] when no live target serves the address, or a
     /// setting `cfg` sets differs from the target's.
     pub(crate) fn join(cfg: &GnmiTargetConfig) -> Result<Self, SondaError> {
-        let mut sink = Self::from_target(registry().join(cfg)?);
+        let mut sink = Self::from_target(registry().join(cfg)?, LaunchId::next());
         sink.joined = true;
         Ok(sink)
     }
 
-    /// A sink publishing into `target`.
-    pub(crate) fn from_target(target: Arc<GnmiTarget>) -> Self {
+    /// A sink of `launch` publishing into `target`.
+    pub(crate) fn from_target(target: Arc<GnmiTarget>, launch: LaunchId) -> Self {
         Self {
-            owner: target.owner(),
+            owner: Owner::from(launch),
             target,
             owned: HashMap::new(),
             last_delivered: false,
@@ -618,6 +628,31 @@ mod tests {
         let target = Arc::clone(first.target());
         drop(first);
         assert_eq!(target.series_count(), 0, "the series leaves with its owner");
+    }
+
+    /// Two sinks of one launch share a path. When one drops and takes the
+    /// series with it, the other's next write puts it back.
+    #[tokio::test]
+    async fn a_sibling_keeps_publishing_after_a_sink_of_its_launch_drops() {
+        let launch = LaunchId::next();
+        let mut first = GnmiTargetSink::new_in(&GnmiTargetConfig::new("127.0.0.1:0"), launch)
+            .await
+            .expect("bind an ephemeral port");
+        let addr = first.target().local_addr().to_string();
+        let mut second = GnmiTargetSink::new_in(&GnmiTargetConfig::new(addr), launch)
+            .await
+            .expect("acquire the live target");
+        let target = Arc::clone(first.target());
+
+        publish(&mut first, "up").await;
+        publish(&mut second, "up").await;
+        assert_eq!(target.series_count(), 1, "one launch, one shared series");
+
+        drop(first);
+        assert_eq!(target.series_count(), 0, "the dropped sink removed it");
+        publish(&mut second, "up").await;
+        assert!(second.last_write_delivered());
+        assert_eq!(target.series_count(), 1, "the sibling's write put it back");
     }
 
     /// One sink whose series render one leaf, once a label is dropped,
