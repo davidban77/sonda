@@ -27,8 +27,8 @@ use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
 pub use registry::{registry, GnmiTargetRegistry};
-use target::PathKey;
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
+use target::{Owner, PathKey};
 
 /// `max_subscribers` when it is not set.
 pub const DEFAULT_MAX_SUBSCRIBERS: usize = 16;
@@ -38,7 +38,7 @@ pub const DEFAULT_SUBSCRIBER_BUFFER: usize = 1024;
 
 /// Largest accepted `subscriber_buffer`. The broadcast ring is allocated up
 /// front at this many slots.
-pub const MAX_SUBSCRIBER_BUFFER: usize = 1 << 20;
+pub const MAX_SUBSCRIBER_BUFFER: usize = 65_536;
 
 /// `sample_floor` when it is not set.
 pub const DEFAULT_SAMPLE_FLOOR: Duration = Duration::from_secs(1);
@@ -70,7 +70,7 @@ pub struct GnmiTargetConfig {
     /// 16. Every sink on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     pub max_subscribers: Option<usize>,
-    /// Broadcast capacity per target, 1 to 1048576. Default 1024. Every sink
+    /// Broadcast capacity per target, 1 to 65536. Default 1024. Every sink
     /// on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     pub subscriber_buffer: Option<usize>,
@@ -192,15 +192,17 @@ impl TargetSettings {
 /// series identity, so it opts in through [`Sink::wants_metric_events`] and
 /// [`Sink::write`] is an error. The first event of each series decodes the
 /// series' path from the encoded notification; later events of that series
-/// reuse the id the target returned. Dropping the sink removes its series
-/// from the target, unless another sink also publishes them; dropping the
-/// last sink on an address stops its listener.
+/// reuse the id the target returned. The sink owns the series it creates:
+/// another sink's event for one of their paths is refused, and dropping the
+/// sink removes them from the target. Dropping the last sink on an address
+/// stops its listener.
 ///
 /// A sink made by joining a running target publishes no series of its own:
 /// it replaces the latest value of a series the target already serves, and
 /// refuses an event for any other path.
 pub struct GnmiTargetSink {
     target: Arc<GnmiTarget>,
+    owner: Owner,
     owned: HashMap<MetricKey, (SeriesId, PathKey)>,
     last_delivered: bool,
     joined: bool,
@@ -221,7 +223,7 @@ impl GnmiTargetSink {
 
     /// Join the live target that serves `cfg.listen` without binding. The
     /// sink only replaces the latest value of series the target already
-    /// serves; it claims none.
+    /// serves; it owns none.
     ///
     /// # Errors
     ///
@@ -236,6 +238,7 @@ impl GnmiTargetSink {
     /// A sink publishing into `target`.
     pub(crate) fn from_target(target: Arc<GnmiTarget>) -> Self {
         Self {
+            owner: target.owner(),
             target,
             owned: HashMap::new(),
             last_delivered: false,
@@ -281,8 +284,8 @@ impl Sink for GnmiTargetSink {
     ///
     /// [`SondaError::Sink`] when the target's listener task has exited, or
     /// when the first event of a series is not a gnmi notification;
-    /// [`SondaError::Config`] when a joined sink's event names a path the
-    /// target does not serve.
+    /// [`SondaError::Config`] when the event's path belongs to another sink,
+    /// or a joined sink's event names a path the target does not serve.
     async fn write_metric_event(
         &mut self,
         event: &MetricEvent,
@@ -305,12 +308,12 @@ impl Sink for GnmiTargetSink {
         let key = (event.name.clone(), Arc::clone(&event.labels));
         match self.owned.get_mut(&key) {
             Some((id, path)) => {
-                let (published, _) = self.target.publish(Some(*id), path, encoded);
+                let (published, _) = self.target.publish(self.owner, Some(*id), path, encoded)?;
                 *id = published;
             }
             None => {
                 let path = PathKey::decode(encoded)?;
-                let (id, _) = self.target.publish(None, &path, encoded);
+                let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
                 self.owned.insert(key, (id, path));
             }
         }
@@ -322,7 +325,7 @@ impl Sink for GnmiTargetSink {
 impl Drop for GnmiTargetSink {
     fn drop(&mut self) {
         let ids: Vec<SeriesId> = self.owned.values().map(|(id, _)| *id).collect();
-        self.target.remove(&ids);
+        self.target.remove(self.owner, &ids);
     }
 }
 
@@ -549,22 +552,88 @@ mod tests {
         assert_eq!(target.series_count(), 0);
     }
 
-    /// A path two sinks publish stays while either of them lives.
-    #[tokio::test]
-    async fn a_shared_series_outlives_one_of_its_sinks() {
+    /// Two sinks on one target, the first of which has published `/a/up`,
+    /// and the error the second gets for its first write of the same path.
+    async fn second_sink_on_an_owned_path() -> (GnmiTargetSink, GnmiTargetSink, SondaError) {
         let mut first = sink().await;
         let addr = first.target().local_addr().to_string();
         let mut second = GnmiTargetSink::new(&GnmiTargetConfig::new(addr))
             .await
-            .expect("join the live target");
-        let target = Arc::clone(first.target());
-
+            .expect("acquire the live target");
         publish(&mut first, "up").await;
-        publish(&mut second, "up").await;
-        assert_eq!(target.series_count(), 1, "one path, two claims");
-        drop(first);
-        assert_eq!(target.series_count(), 1, "the second sink still claims it");
+        let event = event("up");
+        let err = second
+            .write_metric_event(&event, &notification(&event))
+            .await
+            .expect_err("the path belongs to the first sink");
+        (first, second, err)
+    }
+
+    /// A second sink's first write of a path another sink owns is a config
+    /// error naming the path and the address.
+    #[tokio::test]
+    async fn a_second_sink_on_an_owned_path_is_refused() {
+        let (first, second, err) = second_sink_on_an_owned_path().await;
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains(":/a/up`"), "names the path: {msg}");
+        let addr = first.target().local_addr().to_string();
+        assert!(msg.contains(&addr), "names the address: {msg}");
+        assert!(!second.last_write_delivered());
+    }
+
+    /// The owner of a path keeps publishing it after another sink was
+    /// refused.
+    #[tokio::test]
+    async fn the_owner_is_untouched_by_a_refused_sink() {
+        let (mut first, _second, _) = second_sink_on_an_owned_path().await;
+        publish(&mut first, "up").await;
+        assert!(first.last_write_delivered());
+        assert_eq!(first.target().series_count(), 1);
+    }
+
+    /// Dropping the refused sink leaves the owner's series in the table.
+    #[tokio::test]
+    async fn dropping_a_refused_sink_leaves_the_series() {
+        let (first, second, _) = second_sink_on_an_owned_path().await;
         drop(second);
+        assert_eq!(first.target().series_count(), 1);
+        let target = Arc::clone(first.target());
+        drop(first);
+        assert_eq!(target.series_count(), 0, "the series leaves with its owner");
+    }
+
+    /// One sink whose series render one leaf, once a label is dropped,
+    /// upserts that leaf.
+    #[tokio::test]
+    async fn one_sink_publishing_a_leaf_twice_upserts_it() {
+        use crate::encoder::gnmi::GnmiEncoder;
+        use crate::encoder::Encoder;
+
+        let mut sink = sink().await;
+        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            drop_labels: vec!["job".to_string()],
+            ..Default::default()
+        })
+        .expect("valid encoder");
+        for (job, value) in [("a", 1.0), ("b", 2.0)] {
+            let event = MetricEvent::new(
+                "up".to_string(),
+                value,
+                Labels::from_pairs(&[("job", job)]).expect("valid labels"),
+            )
+            .expect("valid event");
+            let mut buf = Vec::new();
+            encoder.encode_metric(&event, &mut buf).expect("encodes");
+            sink.write_metric_event(&event, &buf)
+                .await
+                .expect("the sink's own leaf");
+        }
+        assert_eq!(sink.owned.len(), 2, "two series keys");
+        assert_eq!(sink.target().series_count(), 1, "one leaf");
+        let target = Arc::clone(sink.target());
+        drop(sink);
         assert_eq!(target.series_count(), 0);
     }
 

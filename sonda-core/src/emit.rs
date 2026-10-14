@@ -390,7 +390,7 @@ mod tests {
     }
 
     /// `emit_metric` joins the running target and replaces the latest value
-    /// of a series it serves, through the metric hook, without claiming it.
+    /// of a series it serves, through the metric hook, without owning it.
     #[cfg(feature = "gnmi")]
     #[tokio::test]
     async fn emit_metric_reaches_a_gnmi_target_through_the_hook() {
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(
             target.series_count(),
             0,
-            "the series leaves with the scenario; emit_metric took no claim"
+            "the series leaves with the scenario; emit_metric owned nothing"
         );
     }
 

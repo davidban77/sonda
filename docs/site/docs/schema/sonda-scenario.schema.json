@@ -3417,7 +3417,7 @@
               "default": null
             },
             "subscriber_buffer": {
-              "description": "Broadcast capacity per target, 1 to 1048576. Default 1024. Every sink\non one address must use the same value.",
+              "description": "Broadcast capacity per target, 1 to 65536. Default 1024. Every sink\non one address must use the same value.",
               "type": [
                 "integer",
                 "null"

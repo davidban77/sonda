@@ -16,7 +16,7 @@ src/
 │                          that opts in), flush, drop. A gnmi_target sink JOINS the live
 │                          target on its address and never binds; no live target is a
 │                          ConfigError. A joined write only overwrites a path the target
-│                          already serves and takes no claim; an unserved path is a
+│                          already serves and owns nothing; an unserved path is a
 │                          ConfigError. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
@@ -162,11 +162,15 @@ src/
 │   │   │                   synchronously from write_metric_event; write() is an error.
 │   │   │                   Keeps MetricKey → (SeriesId, PathKey): the first event of a
 │   │   │                   series decodes its path, later ones reuse the id. A write is
-│   │   │                   delivered once upserted. Drop releases the sink's claims.
+│   │   │                   delivered once upserted. Each sink gets an Owner from the
+│   │   │                   target; another sink's path is a ConfigError at its first
+│   │   │                   write. Drop removes the sink's series.
 │   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
-│   │   │                   RENDERED PATH (PathKey: origin, target, elems), one claim per
-│   │   │                   publisher; a series leaves with its last claim. publish()
+│   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
+│   │   │                   one Owner: only it publishes (an upsert) or removes the
+│   │   │                   series, which leaves with its owner, not when it goes idle;
+│   │   │                   remove() is idempotent; overwrite() takes nothing. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
 │   │   │                   with no subscriber and twice with one, never awaits. Store
 │   │   │                   and broadcast happen under the series' lock, so subscribers

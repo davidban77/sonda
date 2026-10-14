@@ -499,8 +499,10 @@ Without `--catalog`, a body that references a pack by name is rejected with `400
 |--------|-----------|--------------|
 | **400 Bad Request** | Body is not UTF-8, not valid JSON/YAML, missing `version: 2`, or fails validation. | Parser or validation error; v1 bodies include the migration hint. |
 | **409 Conflict** | The posted body sets a top-level `scenario_name` that matches an active scenario already in the map. | Identifies the duplicate name and lists the conflicting scenarios. See [Duplicate scenario_name returns 409](#duplicate-scenario_name-returns-409). |
-| **422 Unprocessable Entity** | Body is valid YAML but fails runtime checks (`rate: 0`, zero `duration`, etc.), or — with `?validate=strict` — at least one cross-POST `while:` reference does not resolve at submission time. | Validation error identifying the failing entry, or `{error: "unresolved_refs", unresolved_refs: [...]}`. See [Cross-POST `while:` refs](#cross-post-while-refs). |
+| **422 Unprocessable Entity** | Body is valid YAML but fails runtime checks (`rate: 0`, zero `duration`, a `gnmi_target` address that a running scenario's target serves with other settings, etc.), or — with `?validate=strict` — at least one cross-POST `while:` reference does not resolve at submission time. | Validation error identifying the failing entry, or `{error: "unresolved_refs", unresolved_refs: [...]}`. See [Cross-POST `while:` refs](#cross-post-while-refs). |
 | **500 Internal Server Error** | Scenario could not be launched, or internal state error. | Short internal error; check server logs. |
+
+The `gnmi_target` check sees only the targets running when the request arrives: a target bound between admission and launch is refused when the scenario's sink starts, with the same error.
 
 #### Duplicate scenario_name returns 409
 
