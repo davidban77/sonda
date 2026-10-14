@@ -46,7 +46,8 @@ src/
 │                         Maps SondaError variants to HTTP status (Config→422,
 │                         Encoder(EventRejected)→422, Sink→502, others→500). A
 │                         gnmi_target sink joins a running scenario's target and
-│                         never binds; with none on the address the event is a 422.
+│                         never binds; with none on the address, or for a path that
+│                         target does not serve, the event is a 422.
 │   ├── sink_warnings.rs ← shared loopback pre-flight helpers (extract_host,
 │                          is_loopback_host, sink_loopback_warnings, collect_warnings_for_sink,
 │                          log_warnings) used by both /scenarios and /events.
@@ -67,6 +68,8 @@ src/
 │                         or post_multi_scenario(), list_scenarios(),
 │                         get_scenario(), get_scenario_stats(),
 │                         get_scenario_metrics(), delete_scenario().
+│                         Admission runs registry().check() on each gnmi_target
+│                         entry: an address a running target refuses is a 422.
 ├── locks.rs            ← RecoveringLock: the RwLock wrapper that owns the poison policy —
 │                         recovers the guard, counts the recovery per lock, and carries the
 │                         per-lock safety argument in its module docs

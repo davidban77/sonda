@@ -98,13 +98,7 @@ impl GnmiTargetRegistry {
             if let Some(target) = self.live(listen) {
                 return check_settings(target, &settings);
             }
-            if let Some(running) = self.contending(listen) {
-                return Err(SondaError::Config(ConfigError::invalid(format!(
-                    "gnmi_target {listen} cannot listen while the running target on {running} \
-                     serves port {}; use {running} for both",
-                    listen.port()
-                ))));
-            }
+            self.check_contending(listen)?;
             // A target may have stopped while this acquire waited for the lock.
             self.released(listen.port()).await;
         }
@@ -119,6 +113,27 @@ impl GnmiTargetRegistry {
             },
         );
         Ok(target)
+    }
+
+    /// Whether [`acquire`](Self::acquire) of `cfg` would be refused by the
+    /// targets running now, without binding anything: the config is invalid,
+    /// a live target on the address runs with different settings, or a live
+    /// target on another address contends for the port.
+    ///
+    /// # Errors
+    ///
+    /// The [`SondaError::Config`] that `acquire` would return for those
+    /// cases.
+    pub fn check(&self, cfg: &GnmiTargetConfig) -> Result<(), SondaError> {
+        let settings = cfg.settings()?;
+        let listen = settings.listen;
+        if listen.port() == 0 {
+            return Ok(());
+        }
+        if let Some(target) = self.live(listen) {
+            return check_settings(target, &settings).map(|_| ());
+        }
+        self.check_contending(listen)
     }
 
     /// The live target that serves `cfg.listen`, without ever binding: the
@@ -196,6 +211,19 @@ impl GnmiTargetRegistry {
                 .filter(|(wild, _)| wild.ip().is_unspecified() && listen_overlap(**wild, addr))
                 .find_map(|(_, entry)| entry.live())
         })
+    }
+
+    /// [`SondaError::Config`] when a live target on another address contends
+    /// with `listen` for its port.
+    fn check_contending(&self, listen: SocketAddr) -> Result<(), SondaError> {
+        match self.contending(listen) {
+            Some(running) => Err(SondaError::Config(ConfigError::invalid(format!(
+                "gnmi_target {listen} cannot listen while the running target on {running} \
+                 serves port {}; use {running} for both",
+                listen.port()
+            )))),
+            None => Ok(()),
+        }
     }
 
     /// The address of a live target on another address that contends with
@@ -500,6 +528,47 @@ mod tests {
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
         let msg = err.to_string();
         assert!(msg.contains(&format!("0.0.0.0:{port}")), "got {msg}");
+        let checked = registry
+            .check(&GnmiTargetConfig::new(format!("127.0.0.1:{port}")))
+            .expect_err("check refuses what acquire refuses");
+        assert_eq!(checked.to_string(), msg);
         assert_eq!(registry.len(), 1, "nothing else was bound");
+    }
+
+    /// `check` refuses exactly what `acquire` would against the running
+    /// targets, and binds nothing.
+    #[tokio::test]
+    async fn check_answers_like_acquire_without_binding() {
+        let registry = GnmiTargetRegistry::new();
+        let mut running = GnmiTargetConfig::new("127.0.0.1:0");
+        running.max_subscribers = Some(4);
+        let held = registry
+            .acquire(&running)
+            .await
+            .expect("bind an ephemeral port");
+        let addr = held.local_addr();
+
+        let mut same = GnmiTargetConfig::new(addr.to_string());
+        same.max_subscribers = Some(4);
+        registry.check(&same).expect("matching settings join");
+
+        let err = registry
+            .check(&GnmiTargetConfig::new(addr.to_string()))
+            .expect_err("the defaults differ from the running target");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let acquired = registry
+            .acquire(&GnmiTargetConfig::new(addr.to_string()))
+            .await
+            .err()
+            .expect("acquire refuses the same config");
+        assert_eq!(err.to_string(), acquired.to_string());
+
+        registry
+            .check(&GnmiTargetConfig::new("127.0.0.1:0"))
+            .expect("port 0 never conflicts");
+        assert!(registry
+            .check(&GnmiTargetConfig::new("not-an-address"))
+            .is_err());
+        assert_eq!(registry.len(), 1, "check bound nothing");
     }
 }

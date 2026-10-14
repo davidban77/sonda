@@ -190,7 +190,11 @@ impl GnmiTarget {
             ))
         })?;
         let local_addr = listener.local_addr().map_err(SondaError::Sink)?;
-        tracing::info!(addr = %local_addr, "gnmi_target listening");
+        if listen.port() == 0 {
+            tracing::warn!(addr = %local_addr, "gnmi_target listening on an ephemeral port");
+        } else {
+            tracing::info!(addr = %local_addr, "gnmi_target listening");
+        }
         let (tx, _) = broadcast::channel(settings.subscriber_buffer);
         let token = CancellationToken::new();
         let (state_tx, state) = watch::channel(TargetState::Listening);
@@ -295,7 +299,9 @@ impl GnmiTarget {
     /// series leaves the table with its last claim.
     ///
     /// Synchronous; `broadcast::Sender::send` never blocks. Copies `encoded`
-    /// once.
+    /// once. The update is broadcast while the series is still locked, so
+    /// concurrent publishers of one path reach subscribers in the order the
+    /// table stores them.
     pub(crate) fn publish(
         &self,
         id: Option<SeriesId>,
@@ -304,15 +310,26 @@ impl GnmiTarget {
     ) -> (SeriesId, bool) {
         let latest = Bytes::copy_from_slice(encoded);
         let receivers = self.tx.receiver_count() > 0;
-        // A clone shares the buffer but allocates its refcount on first use,
-        // so it is made only when someone will receive it.
-        let update = receivers.then(|| latest.clone());
-        let series_id = self.store(id, path, latest);
-        if let Some(bytes) = update {
-            // An error means every receiver has gone; there is nobody to tell.
-            let _ = self.tx.send(SeriesUpdate { series_id, bytes });
-        }
+        let series_id = self.store(id, path, latest, receivers);
         (series_id, receivers)
+    }
+
+    /// Replace the latest notification of the series already in the table
+    /// for `path`, without claiming it. Returns its id, or `None` when no
+    /// series has that path. Synchronous, and broadcast like
+    /// [`publish`](Self::publish).
+    pub(crate) fn overwrite(&self, path: &PathKey, encoded: &[u8]) -> Option<SeriesId> {
+        let receivers = self.tx.receiver_count() > 0;
+        let table = self.read();
+        let id = *table.ids.get(path)?;
+        let slot = table.slots.get(&id)?;
+        self.replace(
+            id,
+            &mut lock(&slot.latest),
+            Bytes::copy_from_slice(encoded),
+            receivers,
+        );
+        Some(id)
     }
 
     /// Release one claim on each of `ids`; a series whose last claim is
@@ -355,10 +372,17 @@ impl GnmiTarget {
             .collect()
     }
 
-    fn store(&self, id: Option<SeriesId>, path: &PathKey, latest: Bytes) -> SeriesId {
+    fn store(
+        &self,
+        id: Option<SeriesId>,
+        path: &PathKey,
+        latest: Bytes,
+        receivers: bool,
+    ) -> SeriesId {
         if let Some(id) = id {
-            if let Some(slot) = self.read().slots.get(&id) {
-                *lock(&slot.latest) = latest;
+            let table = self.read();
+            if let Some(slot) = table.slots.get(&id) {
+                self.replace(id, &mut lock(&slot.latest), latest, receivers);
                 return id;
             }
         }
@@ -382,11 +406,29 @@ impl GnmiTarget {
             claims: 0,
         });
         slot.claims += 1;
-        *slot
+        let current = slot
             .latest
             .get_mut()
-            .unwrap_or_else(PoisonError::into_inner) = latest;
+            .unwrap_or_else(PoisonError::into_inner);
+        self.replace(id, current, latest, receivers);
         id
+    }
+
+    /// Store `latest` in `current` and, when anyone is subscribed, broadcast
+    /// it. The caller holds the series' lock, so the store and the broadcast
+    /// are one step.
+    fn replace(&self, id: SeriesId, current: &mut Bytes, latest: Bytes, receivers: bool) {
+        // A clone shares the buffer but allocates its refcount on first use,
+        // so it is made only when someone will receive it.
+        let update = receivers.then(|| latest.clone());
+        *current = latest;
+        if let Some(bytes) = update {
+            // An error means every receiver has gone; there is nobody to tell.
+            let _ = self.tx.send(SeriesUpdate {
+                series_id: id,
+                bytes,
+            });
+        }
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SeriesTable> {
@@ -897,5 +939,91 @@ mod tests {
             "the stream ends once stopped"
         );
         assert!(incoming.listener.is_none(), "and drops its listener");
+    }
+
+    /// An overwrite replaces the latest value of a served path without
+    /// claiming it, and refuses a path nothing serves.
+    #[tokio::test]
+    async fn overwrite_replaces_only_a_served_path() {
+        let target = bind(16).await;
+        let served = path("Gi0", "in-octets");
+        let (id, _) = target.publish(None, &served, b"scenario");
+
+        assert_eq!(target.overwrite(&served, b"posted"), Some(id));
+        assert_eq!(target.snapshot()[0].latest, Bytes::from_static(b"posted"));
+        assert_eq!(target.overwrite(&path("Gi9", "in-octets"), b"posted"), None);
+        assert_eq!(target.series_count(), 1, "an unknown path is not added");
+
+        target.remove(&[id]);
+        assert_eq!(target.series_count(), 0, "the overwrite took no claim");
+    }
+
+    /// Concurrent publishers of one path: after every round of four
+    /// simultaneous publishes, the last update a subscriber received is the
+    /// value the table holds.
+    #[test]
+    fn concurrent_publishers_broadcast_in_table_order() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Barrier;
+
+        const WRITERS: usize = 4;
+        const ROUNDS: usize = 2_000;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let target = rt.block_on(bind(1 << 16));
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target.publish(None, &series, b"seed");
+        let barrier = Barrier::new(WRITERS);
+        let (checked, mismatches) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for writer in 0..WRITERS {
+                let (target, series, barrier) = (&target, &series, &barrier);
+                let (checked, mismatches) = (&checked, &mismatches);
+                scope.spawn(move || {
+                    let mut receiver = (writer == 0).then(|| target.subscribe());
+                    for round in 0..ROUNDS {
+                        barrier.wait();
+                        let value = format!("{round}-{writer}");
+                        target.publish(Some(id), series, value.as_bytes());
+                        barrier.wait();
+                        if let Some(receiver) = receiver.as_mut() {
+                            let mut last = None;
+                            while let Ok(update) = receiver.try_recv() {
+                                last = Some(update.bytes);
+                            }
+                            if last != Some(target.snapshot()[0].latest.clone()) {
+                                mismatches.fetch_add(1, Ordering::Relaxed);
+                            }
+                            checked.fetch_add(1, Ordering::Relaxed);
+                        }
+                        barrier.wait();
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            checked.load(Ordering::Relaxed),
+            ROUNDS,
+            "every round was checked"
+        );
+        assert_eq!(
+            mismatches.load(Ordering::Relaxed),
+            0,
+            "rounds whose last broadcast was not the stored value"
+        );
+    }
+
+    /// The bound address is logged at warn when port 0 was asked for, so a
+    /// caller at the default log level learns which port it got.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn an_ephemeral_port_is_logged_at_warn() {
+        let target = bind(16).await;
+        let addr = target.local_addr().to_string();
+        assert!(logs_contain("gnmi_target listening on an ephemeral port"));
+        assert!(logs_contain(&addr));
+        assert!(logs_contain("WARN"));
     }
 }

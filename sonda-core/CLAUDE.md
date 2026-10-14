@@ -15,6 +15,8 @@ src/
 │                          sink, encode one event, write (write_metric_event for a sink
 │                          that opts in), flush, drop. A gnmi_target sink JOINS the live
 │                          target on its address and never binds; no live target is a
+│                          ConfigError. A joined write only overwrites a path the target
+│                          already serves and takes no claim; an unserved path is a
 │                          ConfigError. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
@@ -158,11 +160,14 @@ src/
 │   │   │                   Keeps MetricKey → (SeriesId, PathKey): the first event of a
 │   │   │                   series decodes its path, later ones reuse the id. A write is
 │   │   │                   delivered once upserted. Drop releases the sink's claims.
+│   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems), one claim per
 │   │   │                   publisher; a series leaves with its last claim. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
-│   │   │                   with no subscriber and twice with one, never awaits. Accepted
+│   │   │                   with no subscriber and twice with one, never awaits. Store
+│   │   │                   and broadcast happen under the series' lock, so subscribers
+│   │   │                   see a series' updates in table order. Accepted
 │   │   │                   sockets get TCP_NODELAY; an accept error backs off 100 ms.
 │   │   │                   Teardown: dropping the last Arc cancels the
 │   │   │                   root token; the listening socket closes at once (Incoming
@@ -177,7 +182,8 @@ src/
 │   │   │                   settings, or a second listener contending for a port
 │   │   │                   (listen_overlap: same address, or a wildcard covering the
 │   │   │                   other's family), are a ConfigError; port 0 always binds a
-│   │   │                   new target.
+│   │   │                   new target. check() answers as acquire() would, binding
+│   │   │                   nothing (POST /scenarios admission).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service); every path
 │   │                       answers UNIMPLEMENTED.

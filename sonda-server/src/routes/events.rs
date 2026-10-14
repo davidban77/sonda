@@ -391,13 +391,13 @@ mod tests {
         use http_body_util::BodyExt;
         use hyper::Request;
         use sonda_core::sink::gnmi::{registry, GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
+        use sonda_core::sink::Sink;
         use tower::ServiceExt;
 
         use super::*;
+        use crate::routes::GNMI_REGISTRY as REGISTRY;
 
-        /// Serialises the tests here: each one can then say what the
-        /// process-wide registry holds.
-        static REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        const TEMPLATE: &str = "/interfaces/interface[name={ifName}]/{name}";
 
         /// POST a metrics event with the given encoder, on a gnmi_target
         /// sink listening on `listen`; returns the status and the body.
@@ -447,22 +447,70 @@ mod tests {
             json!({"type": "gnmi", "path": path})
         }
 
+        /// `in_octets` with `ifName` = `if_name` and `value`, as the gnmi
+        /// encoder for [`TEMPLATE`] encodes it.
+        fn notification(if_name: &str, value: f64) -> (MetricEvent, Vec<u8>) {
+            let encoder: EncoderConfig =
+                serde_json::from_value(template(TEMPLATE)).expect("a gnmi encoder");
+            let event = MetricEvent::new(
+                "in_octets".to_string(),
+                value,
+                Labels::from_pairs(&[("ifName", if_name)]).expect("labels"),
+            )
+            .expect("event");
+            let mut buf = Vec::new();
+            sonda_core::encoder::create_encoder(&encoder)
+                .expect("valid encoder")
+                .encode_metric(&event, &mut buf)
+                .expect("encodes");
+            (event, buf)
+        }
+
+        /// A target held by the test and serving `ifName` = `if_name`,
+        /// standing in for a running scenario.
+        async fn serving_target(if_name: &str) -> (GnmiTargetSink, Arc<GnmiTarget>) {
+            let (mut sink, target) = hold_target().await;
+            let (event, encoded) = notification(if_name, 1.0);
+            sink.write_metric_event(&event, &encoded)
+                .await
+                .expect("the scenario publishes its series");
+            (sink, target)
+        }
+
+        /// An event for a series the running target serves replaces its
+        /// latest value; the 200 is that replacement.
         #[tokio::test]
         async fn a_valid_event_reaches_the_target_with_200() {
             let _registry = REGISTRY.lock().await;
-            let (_held, target) = hold_target().await;
+            let (_held, target) = serving_target("Gi0").await;
             let listen = target.local_addr().to_string();
-            assert_eq!(target.series_count(), 0);
+            assert_eq!(target.series_count(), 1, "the scenario serves one series");
 
-            let (status, body) = post_metric(
-                json!({"ifName": "Gi0"}),
-                template("/interfaces/interface[name={ifName}]/{name}"),
-                &listen,
-            )
-            .await;
+            let (status, body) =
+                post_metric(json!({"ifName": "Gi0"}), template(TEMPLATE), &listen).await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
             assert_eq!(body["sent"], json!(true), "body: {body}");
-            assert_eq!(target.series_count(), 1, "the target holds the series");
+            assert_eq!(target.series_count(), 1, "the served series was replaced");
+        }
+
+        /// An event for a path the running target does not serve is a 422
+        /// naming the path and the address, and adds nothing.
+        #[tokio::test]
+        async fn an_event_for_a_path_nothing_serves_is_422() {
+            let _registry = REGISTRY.lock().await;
+            let (_held, target) = serving_target("Gi0").await;
+            let addr = target.local_addr().to_string();
+
+            let (status, body) =
+                post_metric(json!({"ifName": "Gi1"}), template(TEMPLATE), &addr).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            let text = body.to_string();
+            assert!(
+                text.contains("interface[name=Gi1]/in-octets"),
+                "body: {body}"
+            );
+            assert!(text.contains(&addr), "body: {body}");
+            assert_eq!(target.series_count(), 1, "nothing was added");
         }
 
         #[tokio::test]

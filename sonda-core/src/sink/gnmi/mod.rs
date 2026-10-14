@@ -181,11 +181,15 @@ impl TargetSettings {
 /// reuse the id the target returned. Dropping the sink removes its series
 /// from the target, unless another sink also publishes them; dropping the
 /// last sink on an address stops its listener.
+///
+/// A sink made by joining a running target publishes no series of its own:
+/// it replaces the latest value of a series the target already serves, and
+/// refuses an event for any other path.
 pub struct GnmiTargetSink {
     target: Arc<GnmiTarget>,
     owned: HashMap<MetricKey, (SeriesId, PathKey)>,
     last_delivered: bool,
-    release_on_drop: bool,
+    joined: bool,
 }
 
 impl GnmiTargetSink {
@@ -201,16 +205,17 @@ impl GnmiTargetSink {
         Ok(Self::from_target(registry().acquire(cfg).await?))
     }
 
-    /// Join the live target for `cfg.listen` without binding. Series this
-    /// sink publishes stay in the target after it is dropped.
+    /// Join the live target that serves `cfg.listen` without binding. The
+    /// sink only replaces the latest value of series the target already
+    /// serves; it claims none.
     ///
     /// # Errors
     ///
-    /// [`SondaError::Config`] when no live target listens on the address, or
-    /// it was bound with different settings.
+    /// [`SondaError::Config`] when no live target serves the address, or a
+    /// setting `cfg` sets differs from the target's.
     pub(crate) fn join(cfg: &GnmiTargetConfig) -> Result<Self, SondaError> {
         let mut sink = Self::from_target(registry().join(cfg)?);
-        sink.release_on_drop = false;
+        sink.joined = true;
         Ok(sink)
     }
 
@@ -220,7 +225,7 @@ impl GnmiTargetSink {
             target,
             owned: HashMap::new(),
             last_delivered: false,
-            release_on_drop: true,
+            joined: false,
         }
     }
 
@@ -261,7 +266,9 @@ impl Sink for GnmiTargetSink {
     /// # Errors
     ///
     /// [`SondaError::Sink`] when the target's listener task has exited, or
-    /// when the first event of a series is not a gnmi notification.
+    /// when the first event of a series is not a gnmi notification;
+    /// [`SondaError::Config`] when a joined sink's event names a path the
+    /// target does not serve.
     async fn write_metric_event(
         &mut self,
         event: &MetricEvent,
@@ -269,6 +276,18 @@ impl Sink for GnmiTargetSink {
     ) -> Result<(), SondaError> {
         self.last_delivered = false;
         self.target.check_serving()?;
+        if self.joined {
+            let path = PathKey::decode(encoded)?;
+            if self.target.overwrite(&path, encoded).is_none() {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "no running scenario serves the gnmi path `{}` on {}",
+                    path.path(),
+                    self.target.local_addr()
+                ))));
+            }
+            self.last_delivered = true;
+            return Ok(());
+        }
         let key = (event.name.clone(), Arc::clone(&event.labels));
         match self.owned.get_mut(&key) {
             Some((id, path)) => {
@@ -288,10 +307,8 @@ impl Sink for GnmiTargetSink {
 
 impl Drop for GnmiTargetSink {
     fn drop(&mut self) {
-        if self.release_on_drop {
-            let ids: Vec<SeriesId> = self.owned.values().map(|(id, _)| *id).collect();
-            self.target.remove(&ids);
-        }
+        let ids: Vec<SeriesId> = self.owned.values().map(|(id, _)| *id).collect();
+        self.target.remove(&ids);
     }
 }
 
