@@ -161,8 +161,10 @@ src/
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems), one claim per
 │   │   │                   publisher; a series leaves with its last claim. publish()
-│   │   │                   copies the encoded bytes once, takes the broadcast lock once,
-│   │   │                   never awaits. Teardown: dropping the last Arc cancels the
+│   │   │                   copies the encoded bytes once, takes the broadcast lock once
+│   │   │                   with no subscriber and twice with one, never awaits. Accepted
+│   │   │                   sockets get TCP_NODELAY; an accept error backs off 100 ms.
+│   │   │                   Teardown: dropping the last Arc cancels the
 │   │   │                   root token; the listening socket closes at once (Incoming
 │   │   │                   ends), connections still open after DRAIN_GRACE are closed
 │   │   │                   (Connection reads EOF), state Listening → Draining → Stopped.
@@ -170,8 +172,12 @@ src/
 │   │   │                   acquire() binds or joins; a target whose listener task exited
 │   │   │                   is not live; before binding it waits (≤ 2 s) for a stopped
 │   │   │                   target's socket on that port to close. join() never binds
-│   │   │                   (emit_metric). Differing settings are a ConfigError; port 0
-│   │   │                   always binds a new target.
+│   │   │                   (emit_metric) and compares only the settings it sets; it finds
+│   │   │                   a live wildcard target covering the address. Differing
+│   │   │                   settings, or a second listener contending for a port
+│   │   │                   (listen_overlap: same address, or a wildcard covering the
+│   │   │                   other's family), are a ConfigError; port 0 always binds a
+│   │   │                   new target.
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service); every path
 │   │                       answers UNIMPLEMENTED.

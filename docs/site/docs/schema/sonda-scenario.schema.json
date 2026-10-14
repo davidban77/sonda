@@ -3397,7 +3397,7 @@
               ]
             },
             "max_subscribers": {
-              "description": "Streams beyond this are refused with `RESOURCE_EXHAUSTED`. Default 16.",
+              "description": "Subscription stream limit stored with the target, at least 1. Default\n16. Every sink on one address must use the same value.",
               "type": [
                 "integer",
                 "null"
@@ -3407,7 +3407,7 @@
               "minimum": 0
             },
             "sample_floor": {
-              "description": "Smallest `sample_interval` honoured, e.g. `\"1s\"`. Default `\"1s\"`.",
+              "description": "Sample-interval floor stored with the target, a duration greater than\nzero such as `\"1s\"`. Default `\"1s\"`. Every sink on one address must\nuse the same value.",
               "type": [
                 "string",
                 "null",
@@ -3417,7 +3417,7 @@
               "default": null
             },
             "subscriber_buffer": {
-              "description": "Broadcast capacity per target, 1 to 1048576. Default 1024.",
+              "description": "Broadcast capacity per target, 1 to 1048576. Default 1024. Every sink\non one address must use the same value.",
               "type": [
                 "integer",
                 "null"

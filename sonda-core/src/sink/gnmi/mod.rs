@@ -30,7 +30,7 @@ pub use registry::{registry, GnmiTargetRegistry};
 use target::PathKey;
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
 
-/// Streams allowed per target when `max_subscribers` is not set.
+/// `max_subscribers` when it is not set.
 pub const DEFAULT_MAX_SUBSCRIBERS: usize = 16;
 
 /// Broadcast capacity per target when `subscriber_buffer` is not set.
@@ -40,7 +40,7 @@ pub const DEFAULT_SUBSCRIBER_BUFFER: usize = 1024;
 /// front at this many slots.
 pub const MAX_SUBSCRIBER_BUFFER: usize = 1 << 20;
 
-/// Smallest `sample_interval` honoured when `sample_floor` is not set.
+/// `sample_floor` when it is not set.
 pub const DEFAULT_SAMPLE_FLOOR: Duration = Duration::from_secs(1);
 
 /// Configuration for [`GnmiTargetSink`]; the body of
@@ -66,13 +66,17 @@ pub struct GnmiTargetConfig {
         serde(deserialize_with = "crate::config::scalar_text::required")
     )]
     pub listen: String,
-    /// Streams beyond this are refused with `RESOURCE_EXHAUSTED`. Default 16.
+    /// Subscription stream limit stored with the target, at least 1. Default
+    /// 16. Every sink on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     pub max_subscribers: Option<usize>,
-    /// Broadcast capacity per target, 1 to 1048576. Default 1024.
+    /// Broadcast capacity per target, 1 to 1048576. Default 1024. Every sink
+    /// on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     pub subscriber_buffer: Option<usize>,
-    /// Smallest `sample_interval` honoured, e.g. `"1s"`. Default `"1s"`.
+    /// Sample-interval floor stored with the target, a duration greater than
+    /// zero such as `"1s"`. Default `"1s"`. Every sink on one address must
+    /// use the same value.
     #[cfg_attr(
         feature = "config",
         serde(default, deserialize_with = "crate::config::scalar_text::optional")
@@ -142,6 +146,20 @@ pub(crate) struct TargetSettings {
     pub(crate) max_subscribers: usize,
     pub(crate) subscriber_buffer: usize,
     pub(crate) sample_floor: Duration,
+}
+
+/// Whether listeners on `a` and `b` would contend for one port: the same
+/// address, or the same port with one of them a wildcard that covers the
+/// other's family. An IPv4 wildcard covers IPv4 addresses; an IPv6 wildcard
+/// covers both families. Port 0 never contends.
+pub(crate) fn listen_overlap(a: SocketAddr, b: SocketAddr) -> bool {
+    if a.port() == 0 || a.port() != b.port() {
+        return false;
+    }
+    let covers = |wild: SocketAddr, other: SocketAddr| {
+        wild.ip().is_unspecified() && (wild.is_ipv6() || other.is_ipv4())
+    };
+    a == b || covers(a, b) || covers(b, a)
 }
 
 impl TargetSettings {
@@ -249,6 +267,7 @@ impl Sink for GnmiTargetSink {
         event: &MetricEvent,
         encoded: &[u8],
     ) -> Result<(), SondaError> {
+        self.last_delivered = false;
         self.target.check_serving()?;
         let key = (event.name.clone(), Arc::clone(&event.labels));
         match self.owned.get_mut(&key) {
@@ -296,6 +315,23 @@ mod tests {
     use crate::schedule::stats::ScenarioStats;
     use crate::sink::SinkConfig;
     use crate::OnSinkError;
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::same_address("127.0.0.1:57400", "127.0.0.1:57400", true)]
+    #[case::v4_wildcard_and_v4("0.0.0.0:57400", "127.0.0.1:57400", true)]
+    #[case::v6_wildcard_and_v4("[::]:57400", "127.0.0.1:57400", true)]
+    #[case::v6_wildcard_and_v4_wildcard("[::]:57400", "0.0.0.0:57400", true)]
+    #[case::v6_wildcard_and_v6("[::]:57400", "[::1]:57400", true)]
+    #[case::v4_wildcard_and_v6("0.0.0.0:57400", "[::1]:57400", false)]
+    #[case::two_specific_addresses("127.0.0.1:57400", "127.0.0.2:57400", false)]
+    #[case::different_ports("0.0.0.0:57400", "127.0.0.1:57401", false)]
+    #[case::port_zero("0.0.0.0:0", "127.0.0.1:0", false)]
+    fn listen_overlap_is_per_family(#[case] a: &str, #[case] b: &str, #[case] overlap: bool) {
+        let (a, b): (SocketAddr, SocketAddr) = (a.parse().unwrap(), b.parse().unwrap());
+        assert_eq!(listen_overlap(a, b), overlap, "{a} and {b}");
+        assert_eq!(listen_overlap(b, a), overlap, "{b} and {a}");
+    }
 
     async fn sink() -> GnmiTargetSink {
         GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
@@ -426,6 +462,18 @@ mod tests {
         assert!(sink.last_write_delivered());
         drop(receiver);
         assert_eq!(sink.target().series_count(), 1);
+    }
+
+    /// A failed write is not delivered, even right after one that was.
+    #[tokio::test]
+    async fn a_failed_write_clears_last_write_delivered() {
+        let mut sink = sink().await;
+        publish(&mut sink, "up").await;
+        assert!(sink.last_write_delivered());
+        sink.write_metric_event(&event("down"), b"not protobuf")
+            .await
+            .expect_err("a series needs a path");
+        assert!(!sink.last_write_delivered(), "the last write failed");
     }
 
     #[tokio::test]

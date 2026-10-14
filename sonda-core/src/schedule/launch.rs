@@ -223,8 +223,9 @@ pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), S
 ///
 /// Entries on one address share one target, so they must use the same
 /// `max_subscribers`, `subscriber_buffer` and `sample_floor`. A wildcard
-/// address such as `0.0.0.0:57400` and any other address on the same port
-/// cannot both listen. Port 0 always binds a target of its own and is never
+/// address such as `0.0.0.0:57400` and an address of a family it covers on
+/// the same port cannot both listen (an IPv6 wildcard covers both
+/// families). Port 0 always binds a target of its own and is never
 /// compared, and a sink whose config does not resolve is left to per-entry
 /// validation. Every failure is a [`SondaError::Config`] naming both entries.
 #[cfg(feature = "gnmi")]
@@ -263,8 +264,7 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
                         settings.sample_floor,
                     ))));
                 }
-            } else if earlier.listen.ip().is_unspecified() || settings.listen.ip().is_unspecified()
-            {
+            } else if crate::sink::gnmi::listen_overlap(earlier.listen, settings.listen) {
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "scenario[{other}] listens on gnmi_target {} and scenario[{index}] on {}; \
                      a wildcard address and another address cannot share port {}, so use one \
@@ -2862,6 +2862,12 @@ scenarios:
             gnmi_entry("b", "127.0.0.1:0", Some(8)),
         ])
         .expect("port 0 binds a target per entry, so nothing is shared");
+
+        prepare_entries(vec![
+            gnmi_entry("a", "0.0.0.0:57400", None),
+            gnmi_entry("b", "[::1]:57400", None),
+        ])
+        .expect("an IPv4 wildcard and an IPv6 address bind side by side");
     }
 
     /// A file whose entries share one gnmi encoder through `defaults:`.

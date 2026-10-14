@@ -28,6 +28,10 @@ use crate::SondaError;
 /// before the target closes it.
 pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
+/// How long the listener waits before accepting again after an accept
+/// error, such as running out of file descriptors.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
 /// Where a target's listener is in its lifecycle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TargetState {
@@ -164,8 +168,7 @@ struct Serving {
 /// Obtained from the [`registry`](super::registry::registry). The listener
 /// runs on its own task until the last `Arc<GnmiTarget>` is dropped, which
 /// cancels the target's root token: the listening socket closes at once,
-/// every task spawned on a child of that token ends, and connections still
-/// open after [`DRAIN_GRACE`] are closed.
+/// and connections still open after [`DRAIN_GRACE`] are closed.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
@@ -363,8 +366,12 @@ impl GnmiTarget {
         let id = match table.ids.get(path) {
             Some(id) => *id,
             None => {
-                let id = table.next_id;
-                table.next_id = table.next_id.wrapping_add(1);
+                // After a wrap, skip ids still held by live series.
+                let mut id = table.next_id;
+                while table.slots.contains_key(&id) {
+                    id = id.wrapping_add(1);
+                }
+                table.next_id = id.wrapping_add(1);
                 table.ids.insert(path.clone(), id);
                 id
             }
@@ -417,6 +424,7 @@ async fn serve(
         stop: Box::pin(token.cancelled_owned()),
         kill: kill.clone(),
         alive,
+        backoff: None,
     };
     // Returns once `incoming` ends, which drops the listening socket.
     let served = tonic::transport::Server::builder()
@@ -438,13 +446,15 @@ async fn serve(
     let _ = state.send(TargetState::Stopped);
 }
 
-/// The accepted connections of one listener. Ends, dropping the listener,
-/// as soon as `stop` resolves.
+/// The accepted connections of one listener, with `TCP_NODELAY` set. Ends,
+/// dropping the listener, as soon as `stop` resolves. After an accept error
+/// it accepts nothing for [`ACCEPT_BACKOFF`].
 struct Incoming {
     listener: Option<TcpListener>,
     stop: Pin<Box<WaitForCancellationFutureOwned>>,
     kill: CancellationToken,
     alive: mpsc::Sender<()>,
+    backoff: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl tokio_stream::Stream for Incoming {
@@ -459,17 +469,36 @@ impl tokio_stream::Stream for Incoming {
             this.listener = None;
             return Poll::Ready(None);
         }
+        if let Some(backoff) = this.backoff.as_mut() {
+            if backoff.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            this.backoff = None;
+        }
         let Some(listener) = this.listener.as_ref() else {
             return Poll::Ready(None);
         };
         match listener.poll_accept(cx) {
-            Poll::Ready(Ok((io, _))) => Poll::Ready(Some(Ok(Connection {
-                io,
-                kill: this.kill.clone(),
-                killed: Box::pin(this.kill.clone().cancelled_owned()),
-                _alive: this.alive.clone(),
-            }))),
-            Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(Ok((io, _))) => {
+                if let Err(e) = io.set_nodelay(true) {
+                    tracing::debug!(error = %e, "gnmi_target could not set TCP_NODELAY");
+                }
+                Poll::Ready(Some(Ok(Connection {
+                    io,
+                    kill: this.kill.clone(),
+                    killed: Box::pin(this.kill.clone().cancelled_owned()),
+                    _alive: this.alive.clone(),
+                })))
+            }
+            Poll::Ready(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    backoff = ?ACCEPT_BACKOFF,
+                    "gnmi_target could not accept a connection"
+                );
+                this.backoff = Some(Box::pin(tokio::time::sleep(ACCEPT_BACKOFF)));
+                Poll::Ready(Some(Err(e)))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -517,6 +546,22 @@ impl AsyncWrite for Connection {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
         Pin::new(&mut this.io).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        if this.is_killed(cx) {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        Pin::new(&mut this.io).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -782,5 +827,75 @@ mod tests {
             "teardown took {:?}",
             started.elapsed()
         );
+    }
+
+    /// Ids handed out after a wrap skip the ids of series still in the table.
+    #[tokio::test]
+    async fn ids_after_a_wrap_skip_live_series() {
+        let target = bind(16).await;
+        let (first, _) = target.publish(None, &path("Gi0", "in-octets"), b"a");
+        assert_eq!(first, 0);
+        target.write().next_id = SeriesId::MAX;
+        let (last, _) = target.publish(None, &path("Gi1", "in-octets"), b"b");
+        assert_eq!(last, SeriesId::MAX);
+        let (wrapped, _) = target.publish(None, &path("Gi2", "in-octets"), b"c");
+        assert_ne!(wrapped, first, "id 0 is still in use");
+        assert_eq!(wrapped, 1);
+        assert_eq!(target.series_count(), 3);
+        let latest: Vec<Bytes> = {
+            let mut snapshot = target.snapshot();
+            snapshot.sort_by_key(|s| s.series_id);
+            snapshot.into_iter().map(|s| s.latest).collect()
+        };
+        assert_eq!(
+            latest,
+            [
+                Bytes::from_static(b"a"),
+                Bytes::from_static(b"c"),
+                Bytes::from_static(b"b")
+            ]
+        );
+    }
+
+    /// Accepted connections have `TCP_NODELAY` set and keep vectored writes.
+    #[tokio::test]
+    async fn accepted_connections_are_nodelay_and_vectored() {
+        use tokio_stream::StreamExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("bound address");
+        let token = CancellationToken::new();
+        let (alive, _connections) = mpsc::channel::<()>(1);
+        let mut incoming = Incoming {
+            listener: Some(listener),
+            stop: Box::pin(token.clone().cancelled_owned()),
+            kill: CancellationToken::new(),
+            alive,
+            backoff: None,
+        };
+        let _client = TcpStream::connect(addr).await.expect("connect");
+        let connection = tokio::time::timeout(Duration::from_secs(1), incoming.next())
+            .await
+            .expect("a connection is accepted")
+            .expect("the stream has not ended")
+            .expect("the accept succeeded");
+        assert!(connection.io.nodelay().expect("read TCP_NODELAY"));
+        assert_eq!(
+            connection.is_write_vectored(),
+            connection.io.is_write_vectored()
+        );
+        assert!(
+            connection.is_write_vectored(),
+            "a TcpStream writes vectored"
+        );
+
+        token.cancel();
+        assert!(
+            incoming.next().await.is_none(),
+            "the stream ends once stopped"
+        );
+        assert!(incoming.listener.is_none(), "and drops its listener");
     }
 }

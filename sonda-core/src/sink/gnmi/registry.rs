@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use super::target::{GnmiTarget, TargetState};
-use super::{GnmiTargetConfig, TargetSettings};
+use super::{listen_overlap, GnmiTargetConfig, TargetSettings};
 use crate::{ConfigError, SondaError};
 
 /// Longest an acquire waits for a stopped target's listener on the same port
@@ -80,19 +80,33 @@ impl GnmiTargetRegistry {
     ///
     /// # Errors
     ///
-    /// [`SondaError::Config`] for an invalid config, or when a live target on
-    /// the address was bound with different settings; [`SondaError::Sink`]
-    /// when the address cannot be bound.
+    /// [`SondaError::Config`] for an invalid config, when a live target on
+    /// the address was bound with different settings, or when a live target
+    /// on another address contends for the same port (a wildcard address and
+    /// an address it covers); [`SondaError::Sink`] when the address cannot
+    /// be bound.
     pub async fn acquire(&self, cfg: &GnmiTargetConfig) -> Result<Arc<GnmiTarget>, SondaError> {
         let settings = cfg.settings()?;
+        let listen = settings.listen;
+        if listen.port() != 0 {
+            // Outside the bind lock, so acquires of other addresses do not
+            // queue behind this wait.
+            self.released(listen.port()).await;
+        }
         let _binding = self.binding.lock().await;
-        if settings.listen.port() != 0 {
-            if let Some(target) = self.live(settings.listen) {
+        if listen.port() != 0 {
+            if let Some(target) = self.live(listen) {
                 return check_settings(target, &settings);
             }
-        }
-        if settings.listen.port() != 0 {
-            self.released(settings.listen.port()).await;
+            if let Some(running) = self.contending(listen) {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "gnmi_target {listen} cannot listen while the running target on {running} \
+                     serves port {}; use {running} for both",
+                    listen.port()
+                ))));
+            }
+            // A target may have stopped while this acquire waited for the lock.
+            self.released(listen.port()).await;
         }
         let target = GnmiTarget::bind(settings).await?;
         let mut map = self.map();
@@ -107,25 +121,38 @@ impl GnmiTargetRegistry {
         Ok(target)
     }
 
-    /// The live target for `cfg.listen`, without ever binding.
+    /// The live target that serves `cfg.listen`, without ever binding: the
+    /// target on that address, or a wildcard target on the same port that
+    /// covers it. Only the settings `cfg` sets are compared with the
+    /// target's; the others are left to the running target.
     ///
     /// # Errors
     ///
     /// [`SondaError::Config`] for an invalid config, when no live target
-    /// listens on the address, or when the live target was bound with
-    /// different settings.
+    /// serves the address, or when a setting `cfg` sets differs from the
+    /// target's.
     pub fn join(&self, cfg: &GnmiTargetConfig) -> Result<Arc<GnmiTarget>, SondaError> {
         let settings = cfg.settings()?;
-        let target = self
-            .live(settings.listen)
-            .filter(|_| settings.listen.port() != 0)
+        let listen = settings.listen;
+        let target = (listen.port() != 0)
+            .then(|| self.serving(listen))
+            .flatten()
             .ok_or_else(|| {
                 SondaError::Config(ConfigError::invalid(format!(
-                    "no running scenario listens on {}",
-                    settings.listen
+                    "no running scenario listens on {listen}"
                 )))
             })?;
-        check_settings(target, &settings)
+        let mut wanted = target.settings().clone();
+        if cfg.max_subscribers.is_some() {
+            wanted.max_subscribers = settings.max_subscribers;
+        }
+        if cfg.subscriber_buffer.is_some() {
+            wanted.subscriber_buffer = settings.subscriber_buffer;
+        }
+        if cfg.sample_floor.is_some() {
+            wanted.sample_floor = settings.sample_floor;
+        }
+        check_settings(target, &wanted)
     }
 
     /// Wait, up to [`RELEASE_TIMEOUT`], until no target that is no longer
@@ -158,6 +185,29 @@ impl GnmiTargetRegistry {
 
     fn live(&self, addr: SocketAddr) -> Option<Arc<GnmiTarget>> {
         self.map().get(&addr).and_then(Entry::live)
+    }
+
+    /// The live target on `addr`, or else a live wildcard target on the same
+    /// port that covers `addr`.
+    fn serving(&self, addr: SocketAddr) -> Option<Arc<GnmiTarget>> {
+        self.live(addr).or_else(|| {
+            self.map()
+                .iter()
+                .filter(|(wild, _)| wild.ip().is_unspecified() && listen_overlap(**wild, addr))
+                .find_map(|(_, entry)| entry.live())
+        })
+    }
+
+    /// The address of a live target on another address that contends with
+    /// `addr` for its port.
+    fn contending(&self, addr: SocketAddr) -> Option<SocketAddr> {
+        self.map()
+            .iter()
+            .filter(|(other, entry)| {
+                **other != addr && listen_overlap(**other, addr) && entry.live().is_some()
+            })
+            .map(|(other, _)| *other)
+            .next()
     }
 
     fn map(&self) -> std::sync::MutexGuard<'_, HashMap<SocketAddr, Entry>> {
@@ -388,5 +438,68 @@ mod tests {
             .expect("port 0 names no running target");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
         assert!(registry.is_empty());
+    }
+
+    /// A join compares only the settings it sets: a request that names just
+    /// the address joins a target running with non-default settings.
+    #[tokio::test]
+    async fn join_compares_only_the_settings_it_sets() {
+        let registry = GnmiTargetRegistry::new();
+        let mut running = GnmiTargetConfig::new("127.0.0.1:0");
+        running.max_subscribers = Some(4);
+        let held = registry
+            .acquire(&running)
+            .await
+            .expect("bind an ephemeral port");
+        let addr = held.local_addr().to_string();
+
+        let joined = registry
+            .join(&GnmiTargetConfig::new(addr.clone()))
+            .expect("an unset field defers to the running target");
+        assert!(Arc::ptr_eq(&held, &joined));
+
+        let mut same = GnmiTargetConfig::new(addr.clone());
+        same.max_subscribers = Some(4);
+        registry.join(&same).expect("a matching field joins");
+
+        let mut other = GnmiTargetConfig::new(addr);
+        other.max_subscribers = Some(8);
+        let err = registry
+            .join(&other)
+            .err()
+            .expect("a differing field is refused");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(err.to_string().contains("max_subscribers 4"), "got {err}");
+    }
+
+    /// A live wildcard target serves a specific address on its port: a join
+    /// of that address finds it, and an acquire of it is a config conflict
+    /// naming the running target instead of a bind error.
+    #[tokio::test]
+    async fn a_wildcard_target_serves_the_addresses_it_covers() {
+        let registry = GnmiTargetRegistry::new();
+        // A wildcard listener is the subject of this test; its port is
+        // ephemeral and read back.
+        let wild = registry
+            .acquire(&GnmiTargetConfig::new("0.0.0.0:0"))
+            .await
+            .expect("bind an ephemeral wildcard port");
+        let port = wild.local_addr().port();
+        let specific = format!("127.0.0.1:{port}");
+
+        let joined = registry
+            .join(&GnmiTargetConfig::new(specific.clone()))
+            .expect("the wildcard target serves 127.0.0.1");
+        assert!(Arc::ptr_eq(&wild, &joined));
+
+        let err = registry
+            .acquire(&GnmiTargetConfig::new(specific))
+            .await
+            .err()
+            .expect("a second listener on the port is refused");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains(&format!("0.0.0.0:{port}")), "got {msg}");
+        assert_eq!(registry.len(), 1, "nothing else was bound");
     }
 }
