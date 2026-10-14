@@ -280,74 +280,95 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
     Ok(())
 }
 
-/// Check every `gnmi` encoder in a file against the metrics entries that use it.
+/// Check every `gnmi` encoder in a file against the entries that use it.
+///
+/// A metrics entry emits one series, named after the entry. A histogram
+/// emits `<name>_bucket` (with `le`), `<name>_sum` and `<name>_count`; a
+/// summary emits `<name>` (with `quantile`), `<name>_sum` and `<name>_count`.
 ///
 /// - Entries that use equal encoder configs share one encoder. Every key in
-///   that encoder's `values:` and `paths:` is the name of one of those
-///   entries. Otherwise the error names the key and, when one is within two
-///   edits, the closest of their names.
-/// - Two metrics entries with different names must not write the same leaf on
-///   the same target. A metric's leaf is its `origin` and its effective
-///   template rendered the way the encoder renders it, with `{name}` as the
-///   metric's name and every label placeholder standing for itself:
-///   `[name={ifName}]` matches only another `[name={ifName}]`, and keys
-///   compare in wire order, whatever order the templates list them in. Its
-///   target is the value of the encoder's `target_label` when that label is a
-///   static label of the entry, or empty when the entry has no such label.
-///   When a dynamic or spike label supplies it, the target can be any value,
-///   so it is shared with every other entry's target. Targets compare by
-///   value, whichever label each encoder takes its target from.
+///   that encoder's `values:` and `paths:` is exactly the name of one of
+///   those entries' series. Otherwise the error names the key and, when one
+///   is within two edits, the closest series name; a key that is a
+///   histogram's own name points at its `<name>_bucket` series.
+/// - Two series with different names must not write the same leaf on the
+///   same target of the same listen address. A series' leaf is its `origin`
+///   and its effective template rendered the way the encoder renders it,
+///   with `{name}` as the series' name and every label placeholder, `{le}`
+///   and `{quantile}` included, standing for itself: `[name={ifName}]`
+///   matches only another `[name={ifName}]`, and keys compare in wire order,
+///   whatever order the templates list them in. Its target is the value of
+///   the encoder's `target_label` when that label is a static label of the
+///   entry, or empty when the entry has no such label. When a dynamic or
+///   spike label supplies it, the target can be any value, so it is shared
+///   with every other entry's target. Targets compare by value, whichever
+///   label each encoder takes its target from. Its listen address is the
+///   `gnmi_target` sink's: entries on different addresses never share a
+///   leaf, an entry on port 0 binds a target of its own, and an entry whose
+///   `listen` does not parse is left to per-entry validation.
 ///
 /// The leaf rule compares placeholders by name and treats a varying target as
 /// any target, so it is approximate in both directions:
 ///
-/// - It misses two metrics that write the same leaf when their templates
+/// - It misses two series that write the same leaf when their templates
 ///   spell it differently: a literal key value in one and a placeholder that
 ///   can render to it in the other (`[name=eth0]` against `[name={ifName}]`
 ///   with `ifName: eth0`), or two different placeholders that can render to
 ///   the same value (`{ifName}` and `{port}`, both `eth0`).
-/// - It rejects two metrics that never write the same leaf when the same
+/// - It rejects two series that never write the same leaf when the same
 ///   placeholder can never take the same value in both (`ifName: eth0`
 ///   against `ifName: eth1`, or against a dynamic `ifName` of `[eth1, eth2]`),
 ///   or when a varying target can never equal the other target (a dynamic
 ///   `device` of `[leaf-1, leaf-2]` against `device: leaf-3`, or against an
 ///   entry with no target).
 ///
-/// An entry whose encoder config does not build, or that has no template, is
-/// left to per-entry validation.
+/// An entry whose encoder config does not build, or that has no template for
+/// a series, is left to per-entry validation.
 #[cfg(feature = "gnmi")]
 fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
     use std::collections::HashMap;
+    use std::net::SocketAddr;
 
+    use crate::config::validate::gnmi_series;
     use crate::config::LabelSource;
     use crate::encoder::gnmi::path::NAME_PLACEHOLDER;
     use crate::encoder::gnmi::proto::Path;
     use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
-    use crate::encoder::EncoderConfig;
     use crate::model::metric::Labels;
+    use crate::sink::SinkConfig;
 
     let invalid = |idx: usize, msg: String| {
         SondaError::Config(ConfigError::invalid(format!("scenario[{idx}]: {msg}")))
     };
 
-    let gnmi_metrics = entries.iter().filter_map(|(idx, entry)| match entry {
-        ScenarioEntry::Metrics(config) => match &config.encoder {
-            EncoderConfig::Gnmi(cfg) => Some((*idx, config, cfg)),
-            _ => None,
-        },
-        _ => None,
-    });
+    // Every gnmi entry: its position in `entries`, authored index, schedule
+    // config, encoder config and series.
+    let gnmi_entries: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(position, (idx, entry))| {
+            let (base, cfg, series) = gnmi_series(entry)?;
+            let histogram = matches!(entry, ScenarioEntry::Histogram(_)).then_some(&base.name);
+            Some((position, *idx, base, cfg, series, histogram))
+        })
+        .collect();
 
-    // One group per distinct encoder config: the index of its first entry and
-    // the names of the metrics that use it.
-    let mut encoders: Vec<(&GnmiEncoderConfig, usize, Vec<&str>)> = Vec::new();
-    for (idx, config, cfg) in gnmi_metrics.clone() {
-        match encoders.iter_mut().find(|(seen, _, _)| *seen == cfg) {
-            Some((_, _, names)) => names.push(&config.name),
-            None => encoders.push((cfg, idx, vec![config.name.as_str()])),
-        }
+    // One group per distinct encoder config: the index of its first entry,
+    // the names of the series it serves, and the names of its histograms.
+    let mut encoders: Vec<(&GnmiEncoderConfig, usize, Vec<&str>, Vec<&str>)> = Vec::new();
+    for (_, idx, _, cfg, series, histogram) in &gnmi_entries {
+        let group = match encoders.iter_mut().position(|(seen, ..)| *seen == *cfg) {
+            Some(group) => group,
+            None => {
+                encoders.push((*cfg, *idx, Vec::new(), Vec::new()));
+                encoders.len() - 1
+            }
+        };
+        let (_, _, names, histograms) = &mut encoders[group];
+        names.extend(series.iter().map(|s| s.name.as_str()));
+        histograms.extend(histogram.map(String::as_str));
     }
-    for (cfg, idx, mut names) in encoders {
+    for (cfg, idx, mut names, histograms) in encoders {
         names.sort_unstable();
         names.dedup();
         for (field, mut keys) in [
@@ -361,7 +382,10 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             else {
                 continue;
             };
-            let hint = match nearest_name(key, &names) {
+            let bucket = histograms
+                .contains(&key.as_str())
+                .then(|| format!("{key}_bucket"));
+            let hint = match bucket.as_deref().or_else(|| nearest_name(key, &names)) {
                 Some(near) => format!("; did you mean `{near}`?"),
                 None => String::new(),
             };
@@ -387,37 +411,38 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         _ => true,
     };
 
-    // Every writer of a leaf: its target, its metric and its target label.
-    let mut leaves: HashMap<Path, Vec<(Target<'_>, &str, &str)>> = HashMap::new();
-    for (idx, config, cfg) in gnmi_metrics {
+    /// The target a series is served from: a listen address, a port-0
+    /// target of the entry's own, or none when the sink is not a
+    /// `gnmi_target`.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Address {
+        Listen(SocketAddr),
+        Own(usize),
+        None,
+    }
+
+    /// Every writer of a leaf: its target, its series and its target label.
+    type Writers<'a> = Vec<(Target<'a>, &'a str, &'a str)>;
+    let mut leaves: HashMap<(Address, Path), Writers<'_>> = HashMap::new();
+    for (position, idx, base, cfg, series, _) in &gnmi_entries {
+        let address = match &base.sink {
+            SinkConfig::GnmiTarget(sink) => match sink.listen.parse::<SocketAddr>() {
+                Ok(addr) if addr.port() == 0 => Address::Own(*position),
+                Ok(addr) => Address::Listen(addr),
+                Err(_) => continue,
+            },
+            _ => Address::None,
+        };
         let Ok(encoder) = GnmiEncoder::new(cfg) else {
             continue;
         };
-        let Ok(template) = encoder.template_for(&config.name) else {
-            continue;
-        };
-        let symbols: Vec<(&str, String)> = template
-            .placeholders()
-            .filter(|p| *p != NAME_PLACEHOLDER)
-            .map(|p| (p, format!("{{{p}}}")))
-            .collect();
-        let pairs: Vec<(&str, &str)> = symbols.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let Ok(labels) = Labels::from_pairs(&pairs) else {
-            continue;
-        };
-        let Ok(mut leaf) = template.render(&config.name, &labels) else {
-            continue;
-        };
-        leaf.origin.clone_from(&cfg.origin);
-        let target_is_static = config
-            .base
+        let target_is_static = base
             .emitted_label_keys()
             .filter(|(key, _)| *key == cfg.target_label)
             .all(|(_, source)| source == LabelSource::Static);
         let target = if target_is_static {
             Target::Known(
-                config
-                    .labels
+                base.labels
                     .as_ref()
                     .and_then(|labels| labels.get(&cfg.target_label))
                     .map_or("", String::as_str),
@@ -426,45 +451,64 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             Target::Varies
         };
 
-        let writers = leaves.entry(leaf.clone()).or_default();
-        if let Some((other_target, other, other_label)) = writers
-            .iter()
-            .find(|(other_target, other, _)| *other != config.name && shared(*other_target, target))
-        {
-            let on_target = match (*other_target, target) {
-                (Target::Known(""), Target::Known(_)) => " with no target".to_string(),
-                (Target::Known(value), Target::Known(_)) => format!(" on target `{value}`"),
-                _ => {
-                    let varying: Vec<String> = [
-                        (*other_target, *other, *other_label),
-                        (target, config.name.as_str(), cfg.target_label.as_str()),
-                    ]
-                    .into_iter()
-                    .filter(|(target, _, _)| *target == Target::Varies)
-                    .map(|(_, metric, label)| format!("`{metric}` takes `{label}`"))
-                    .collect();
-                    let source = if varying.len() == 1 {
-                        "a dynamic or spike label"
-                    } else {
-                        "dynamic or spike labels"
-                    };
-                    format!(
-                        " on a target they may share: {} from {source}",
-                        varying.join(" and ")
-                    )
-                }
+        for one in series {
+            let name = one.name.as_str();
+            let Ok(template) = encoder.template_for(name) else {
+                continue;
             };
-            return Err(invalid(
-                idx,
-                format!(
-                    "metrics `{other}` and `{}` would both write the gnmi leaf `{leaf}`{on_target}, \
-                     each overwriting the other; give each metric its own path, for example \
-                     with {{name}} in the template or its own paths: entry",
-                    config.name
-                ),
-            ));
+            let symbols: Vec<(&str, String)> = template
+                .placeholders()
+                .filter(|p| *p != NAME_PLACEHOLDER)
+                .map(|p| (p, format!("{{{p}}}")))
+                .collect();
+            let pairs: Vec<(&str, &str)> = symbols.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let Ok(labels) = Labels::from_pairs(&pairs) else {
+                continue;
+            };
+            let Ok(mut leaf) = template.render(name, &labels) else {
+                continue;
+            };
+            leaf.origin.clone_from(&cfg.origin);
+
+            let writers = leaves.entry((address, leaf.clone())).or_default();
+            if let Some((other_target, other, other_label)) = writers
+                .iter()
+                .find(|(other_target, other, _)| *other != name && shared(*other_target, target))
+            {
+                let on_target = match (*other_target, target) {
+                    (Target::Known(""), Target::Known(_)) => " with no target".to_string(),
+                    (Target::Known(value), Target::Known(_)) => format!(" on target `{value}`"),
+                    _ => {
+                        let varying: Vec<String> = [
+                            (*other_target, *other, *other_label),
+                            (target, name, cfg.target_label.as_str()),
+                        ]
+                        .into_iter()
+                        .filter(|(target, _, _)| *target == Target::Varies)
+                        .map(|(_, metric, label)| format!("`{metric}` takes `{label}`"))
+                        .collect();
+                        let source = if varying.len() == 1 {
+                            "a dynamic or spike label"
+                        } else {
+                            "dynamic or spike labels"
+                        };
+                        format!(
+                            " on a target they may share: {} from {source}",
+                            varying.join(" and ")
+                        )
+                    }
+                };
+                return Err(invalid(
+                    *idx,
+                    format!(
+                        "metrics `{other}` and `{name}` would both write the gnmi leaf `{leaf}`{on_target}, \
+                         each overwriting the other; give each metric its own path, for example \
+                         with {{name}} in the template or its own paths: entry"
+                    ),
+                ));
+            }
+            writers.push((target, name, cfg.target_label.as_str()));
         }
-        writers.push((target, config.name.as_str(), cfg.target_label.as_str()));
     }
     Ok(())
 }
@@ -2818,5 +2862,91 @@ scenarios:
             gnmi_entry("b", "127.0.0.1:0", Some(8)),
         ])
         .expect("port 0 binds a target per entry, so nothing is shared");
+    }
+
+    /// A file whose entries share one gnmi encoder through `defaults:`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn shared_encoder_file(paths: &str, scenarios: &str) -> String {
+        format!(
+            "version: 2\nkind: runnable\ndefaults:\n  rate: 1\n  duration: 1s\n  encoder:\n    \
+             type: gnmi\n    paths:\n{paths}  sink:\n    type: gnmi_target\n    listen: \
+             127.0.0.1:57400\nscenarios:\n{scenarios}"
+        )
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const THREE_KINDS: &str = "  - signal_type: metrics\n    name: in_octets\n    generator: {type: constant, value: 1.0}\n  - signal_type: histogram\n    name: latency\n    distribution: {type: exponential, rate: 10.0}\n  - signal_type: summary\n    name: rpc\n    distribution: {type: exponential, rate: 10.0}\n";
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const THREE_KINDS_PATHS: &str = "      in_octets: \"/interfaces/{name}\"\n      latency_bucket: \"/latency[le={le}]/{name}\"\n      latency_sum: \"/latency/{name}\"\n      latency_count: \"/latency/{name}\"\n      rpc: \"/rpc[quantile={quantile}]/{name}\"\n      rpc_sum: \"/rpc/{name}\"\n      rpc_count: \"/rpc/{name}\"\n";
+
+    /// Histogram and summary series are series of the encoder they share
+    /// with a metrics entry, so `paths:` keys may name them.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_keys_may_name_histogram_and_summary_series() {
+        let yaml = shared_encoder_file(THREE_KINDS_PATHS, THREE_KINDS);
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 3, "metrics, histogram and summary");
+        prepare_entries(entries).expect("every key names a series this encoder serves");
+    }
+
+    /// A key names a series exactly: a histogram's own name is not one of
+    /// its series, and the hint names its bucket series.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_key_naming_a_histogram_points_at_its_bucket_series() {
+        let paths = THREE_KINDS_PATHS.replace("latency_bucket:", "latency:");
+        let yaml = shared_encoder_file(&paths, THREE_KINDS);
+        let msg = prepare_error(compile_entries(&yaml, &Default::default()));
+        assert!(
+            msg.contains("paths: key `latency` names no metric this encoder serves"),
+            "{msg}"
+        );
+        assert!(msg.contains("did you mean `latency_bucket`?"), "{msg}");
+    }
+
+    /// Two histograms whose bucket series render to one leaf collide, like
+    /// two metrics would.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_histogram_series_take_part_in_the_leaf_check() {
+        let paths = "      a_bucket: \"/latency[le={le}]/bucket\"\n      a_sum: \"/a/{name}\"\n      a_count: \"/a/{name}\"\n      b_bucket: \"/latency[le={le}]/bucket\"\n      b_sum: \"/b/{name}\"\n      b_count: \"/b/{name}\"\n";
+        let scenarios = "  - signal_type: histogram\n    name: a\n    distribution: {type: exponential, rate: 10.0}\n  - signal_type: histogram\n    name: b\n    distribution: {type: exponential, rate: 10.0}\n";
+        let yaml = shared_encoder_file(paths, scenarios);
+        let msg = prepare_error(compile_entries(&yaml, &Default::default()));
+        assert!(msg.contains("`a_bucket` and `b_bucket`"), "{msg}");
+        assert!(msg.contains("le={le}"), "{msg}");
+    }
+
+    /// Two metrics entries on one literal leaf collide only when they serve
+    /// it from the same listen address.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::same_address("127.0.0.1:57400", "127.0.0.1:57400", false)]
+    #[case::different_ports("127.0.0.1:57400", "127.0.0.1:57401", true)]
+    #[case::different_hosts("127.0.0.1:57400", "127.0.0.2:57400", true)]
+    #[case::each_on_port_zero("127.0.0.1:0", "127.0.0.1:0", true)]
+    fn gnmi_leaf_check_is_per_listen_address(
+        #[case] first: &str,
+        #[case] second: &str,
+        #[case] accepted: bool,
+    ) {
+        let entry = |name: &str, listen: &str| {
+            format!(
+                "  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    sink:\n      type: gnmi_target\n      listen: \"{listen}\"\n"
+            )
+        };
+        let paths = "      up: \"/system/state\"\n      down: \"/system/state\"\n";
+        let scenarios = format!("{}{}", entry("up", first), entry("down", second));
+        let yaml = shared_encoder_file(paths, &scenarios);
+        let entries = compile_entries(&yaml, &Default::default());
+        let result = prepare_entries(entries);
+        if accepted {
+            result.expect("different targets never share a leaf");
+        } else {
+            let msg = result.expect_err("one target, one leaf").to_string();
+            assert!(msg.contains("would both write the gnmi leaf"), "{msg}");
+        }
     }
 }

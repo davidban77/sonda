@@ -561,15 +561,59 @@ fn validate_gnmi_summary(config: &SummaryScenarioConfig) -> Result<(), SondaErro
 
 /// One series an entry emits, as the gnmi encoder sees it.
 #[cfg(feature = "gnmi")]
-struct GnmiSeries {
+pub(crate) struct GnmiSeries {
     /// The metric name on the series' events.
-    name: String,
+    pub(crate) name: String,
     /// A label the runner adds to every event of this series (`le` for a
     /// histogram bucket, `quantile` for a summary quantile). Each value is a
     /// series of its own, so the template must reference it.
-    injected: Option<&'static str>,
+    pub(crate) injected: Option<&'static str>,
     /// The injected label of the entry's other series, which this one lacks.
-    lacks: Option<&'static str>,
+    pub(crate) lacks: Option<&'static str>,
+}
+
+/// The schedule config, `gnmi` encoder config and series of a metrics,
+/// histogram or summary entry that uses the `gnmi` encoder: the entry's name
+/// for a metrics entry, `<name>_bucket`, `<name>_sum` and `<name>_count` for
+/// a histogram, `<name>`, `<name>_sum` and `<name>_count` for a summary.
+/// `None` for any other entry.
+#[cfg(feature = "gnmi")]
+pub(crate) fn gnmi_series(
+    entry: &super::ScenarioEntry,
+) -> Option<(
+    &super::BaseScheduleConfig,
+    &crate::encoder::gnmi::GnmiEncoderConfig,
+    Vec<GnmiSeries>,
+)> {
+    use super::ScenarioEntry;
+    use crate::encoder::EncoderConfig;
+
+    let (base, encoder, series) = match entry {
+        ScenarioEntry::Metrics(c) => (
+            &c.base,
+            &c.encoder,
+            vec![GnmiSeries {
+                name: c.name.clone(),
+                injected: None,
+                lacks: None,
+            }],
+        ),
+        ScenarioEntry::Histogram(c) => (
+            &c.base,
+            &c.encoder,
+            GnmiSeries::derived(&c.name, "_bucket", "le").into(),
+        ),
+        ScenarioEntry::Summary(c) => (
+            &c.base,
+            &c.encoder,
+            GnmiSeries::derived(&c.name, "", "quantile").into(),
+        ),
+        ScenarioEntry::Logs(_) => return None,
+    };
+    match encoder {
+        EncoderConfig::Gnmi(cfg) => Some((base, cfg, series)),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "gnmi")]
