@@ -95,6 +95,8 @@ src/
 │   ├── core_loop.rs    ← pub(crate) shared schedule loop (run_schedule_loop, TickFn, TickContext,
 │   │                      TickResult). Owns all rate control, gap/burst/spike window handling,
 │   │                      stats tracking, and shutdown. Signal runners provide a TickFn closure.
+│   │                      The tick and gap sleeps select on cancel; a cancel exits through
+│   │                      the loop's cancel check without emitting a tick.
 │   ├── stats.rs        ← ScenarioStats (live telemetry + current_values map: one entry per series for scrape endpoints)
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot;
 │   │                      recovers from poisoned stats lock instead of panicking)

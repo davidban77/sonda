@@ -525,7 +525,11 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             let gap_end = start + elapsed + sleep_for;
             let now = Instant::now();
             if gap_end > now {
-                tokio::time::sleep(gap_end - now).await;
+                // A cancel ends the sleep; the loop's cancel check exits.
+                tokio::select! {
+                    () = tokio::time::sleep(gap_end - now) => {}
+                    () = cancel.cancelled() => continue,
+                }
             }
             // WHERE THE WALK STARTS DECIDES WHETHER A LATE ROW IS EMITTED OR
             // DELETED, and under the ruling those are not interchangeable.
@@ -649,7 +653,12 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         // above was made about.
         let now = Instant::now();
         if now < emit_at {
-            tokio::time::sleep(emit_at - now).await;
+            // A cancel ends the sleep without emitting this tick; the loop's
+            // cancel check exits.
+            tokio::select! {
+                () = tokio::time::sleep(emit_at - now) => {}
+                () = cancel.cancelled() => continue,
+            }
         }
 
         // Invoke the signal-specific tick callback.
@@ -2492,6 +2501,57 @@ mod tests {
     // ---- Gap window: suppresses events during gap ---------------------------
 
     /// Events are suppressed during a gap window.
+    /// A slow scenario stops promptly on cancel, without emitting another
+    /// tick, whether it is sleeping to its next tick or through a gap.
+    #[rstest::rstest]
+    #[case::tick_sleep(None)]
+    // Gap from 5 s to 20 s: tick 1 (at 10 s) lands in it, so the loop sleeps
+    // through the gap from the first tick on.
+    #[case::gap_sleep(Some(GapWindow { every: Duration::from_secs(20), duration: Duration::from_secs(15) }))]
+    #[tokio::test]
+    async fn a_cancel_ends_a_slow_scenarios_sleep(#[case] gap_window: Option<GapWindow>) {
+        let schedule = ParsedSchedule {
+            gap_window,
+            ..minimal_schedule(None)
+        };
+        let mut ticks = 0u64;
+        let mut tick_fn = |_ctx: &TickContext<'_>,
+                           _output: &mut TickOutput,
+                           _events_buf: &mut Vec<MetricEvent>|
+         -> Result<TickResult, SondaError> {
+            ticks += 1;
+            Ok(TickResult {
+                bytes_written: 1,
+                delivered: true,
+            })
+        };
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                cancel.cancel();
+            })
+        };
+        let started = Instant::now();
+        let mut sink = null_sink();
+        run_schedule_loop(&schedule, 0.1, &cancel, None, &mut sink, &mut tick_fn)
+            .await
+            .expect("a cancelled run ends cleanly");
+        let took = started.elapsed();
+        canceller.await.expect("the canceller ran");
+
+        assert!(
+            took >= Duration::from_millis(100),
+            "returned before the cancel: {took:?}"
+        );
+        assert!(
+            took < Duration::from_millis(500),
+            "returned {took:?} after starting"
+        );
+        assert_eq!(ticks, 1, "only the first tick, none after the cancel");
+    }
+
     #[tokio::test]
     async fn loop_suppresses_events_during_gap() {
         let schedule = ParsedSchedule {
