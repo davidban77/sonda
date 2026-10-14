@@ -74,8 +74,8 @@ pub struct GnmiTargetConfig {
     /// on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     pub subscriber_buffer: Option<usize>,
-    /// Sample-interval floor stored with the target, a duration greater than
-    /// zero such as `"1s"`. Default `"1s"`. Every sink on one address must
+    /// Sample-interval floor stored with the target, a duration of at least
+    /// one microsecond such as `"1s"`. Default `"1s"`. Every sink on one address must
     /// use the same value.
     #[cfg_attr(
         feature = "config",
@@ -100,7 +100,7 @@ impl GnmiTargetConfig {
     /// This is the one place the fields are checked; validation and
     /// [`GnmiTargetSink::new`] both call it. Returns [`SondaError::Config`]
     /// when `listen` is not a socket address, `sample_floor` is not a
-    /// duration greater than zero, `max_subscribers` is 0, or
+    /// duration of at least one microsecond, `max_subscribers` is 0, or
     /// `subscriber_buffer` is outside 1 to [`MAX_SUBSCRIBER_BUFFER`].
     pub(crate) fn settings(&self) -> Result<TargetSettings, SondaError> {
         let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
@@ -123,11 +123,20 @@ impl GnmiTargetConfig {
                  got {subscriber_buffer}"
             )));
         }
-        // parse_duration refuses zero, so the floor is always positive.
         let sample_floor = match self.sample_floor.as_deref() {
             None => DEFAULT_SAMPLE_FLOOR,
-            Some(s) => parse_duration(s)
-                .map_err(|e| prepend_context("invalid gnmi_target sample_floor", s, e))?,
+            Some(s) => {
+                let floor = parse_duration(s)
+                    .map_err(|e| prepend_context("invalid gnmi_target sample_floor", s, e))?;
+                // parse_duration keeps whole microseconds, so a positive value
+                // below one parses as zero.
+                if floor.is_zero() {
+                    return Err(invalid(format!(
+                        "invalid gnmi_target sample_floor {s:?}: must be at least 1us"
+                    )));
+                }
+                floor
+            }
         };
         Ok(TargetSettings {
             listen,
@@ -152,6 +161,11 @@ pub(crate) struct TargetSettings {
 /// address, or the same port with one of them a wildcard that covers the
 /// other's family. An IPv4 wildcard covers IPv4 addresses; an IPv6 wildcard
 /// covers both families. Port 0 never contends.
+///
+/// Treating `[::]` as covering IPv4 assumes a dual-stack socket, the Linux
+/// default (`net.ipv6.bindv6only = 0`). Where it binds IPv6 only, an IPv4
+/// address on the same port is refused although it could bind, and a join
+/// of an IPv4 address finds the IPv6 target.
 pub(crate) fn listen_overlap(a: SocketAddr, b: SocketAddr) -> bool {
     if a.port() == 0 || a.port() != b.port() {
         return false;

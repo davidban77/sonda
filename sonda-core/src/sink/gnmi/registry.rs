@@ -74,9 +74,9 @@ impl GnmiTargetRegistry {
     /// The live target for `cfg.listen`, binding and starting one if there
     /// is none. A listen address with port 0 always binds a new target.
     /// A target whose listener task has exited is not live, even while
-    /// handles to it remain. Before binding, waits up to two seconds for the
-    /// listening socket of any target on the same port that is no longer
-    /// live to close.
+    /// handles to it remain. Before binding, waits up to two seconds in all
+    /// for the listening socket of any target that is no longer live, on an
+    /// address that overlaps this one, to close.
     ///
     /// # Errors
     ///
@@ -88,20 +88,28 @@ impl GnmiTargetRegistry {
     pub async fn acquire(&self, cfg: &GnmiTargetConfig) -> Result<Arc<GnmiTarget>, SondaError> {
         let settings = cfg.settings()?;
         let listen = settings.listen;
-        if listen.port() != 0 {
-            // Outside the bind lock, so acquires of other addresses do not
-            // queue behind this wait.
-            self.released(listen.port()).await;
-        }
-        let _binding = self.binding.lock().await;
-        if listen.port() != 0 {
+        let deadline = tokio::time::Instant::now() + RELEASE_TIMEOUT;
+        let _binding = loop {
+            if listen.port() != 0 {
+                // Outside the bind lock, so other acquires do not queue
+                // behind this wait.
+                self.released(listen, deadline).await;
+            }
+            let binding = self.binding.lock().await;
+            if listen.port() == 0 {
+                break binding;
+            }
             if let Some(target) = self.live(listen) {
                 return check_settings(target, &settings);
             }
             self.check_contending(listen)?;
-            // A target may have stopped while this acquire waited for the lock.
-            self.released(listen.port()).await;
-        }
+            // A target may have stopped while this acquire waited for the
+            // lock; wait for it again, after releasing the lock.
+            if self.releasing(listen) && tokio::time::Instant::now() < deadline {
+                continue;
+            }
+            break binding;
+        };
         let target = GnmiTarget::bind(settings).await?;
         let mut map = self.map();
         map.retain(|_, entry| entry.live().is_some() || entry.releasing());
@@ -170,19 +178,28 @@ impl GnmiTargetRegistry {
         check_settings(target, &wanted)
     }
 
-    /// Wait, up to [`RELEASE_TIMEOUT`], until no target that is no longer
-    /// live still listens on `port`.
-    async fn released(&self, port: u16) {
+    /// Wait, until `deadline` at the latest, for every target that is no
+    /// longer live but may still listen on an address overlapping `listen`
+    /// to close its socket.
+    async fn released(&self, listen: SocketAddr, deadline: tokio::time::Instant) {
         let releasing: Vec<watch::Receiver<TargetState>> = self
             .map()
             .iter()
-            .filter(|(addr, entry)| addr.port() == port && entry.releasing())
+            .filter(|(addr, entry)| listen_overlap(**addr, listen) && entry.releasing())
             .map(|(_, entry)| entry.state.clone())
             .collect();
         for mut state in releasing {
             let closed = state.wait_for(|s| *s != TargetState::Listening);
-            let _ = tokio::time::timeout(RELEASE_TIMEOUT, closed).await;
+            let _ = tokio::time::timeout_at(deadline, closed).await;
         }
+    }
+
+    /// Whether a target that is no longer live may still listen on an
+    /// address overlapping `listen`.
+    fn releasing(&self, listen: SocketAddr) -> bool {
+        self.map()
+            .iter()
+            .any(|(addr, entry)| listen_overlap(*addr, listen) && entry.releasing())
     }
 
     /// Live targets.
@@ -428,6 +445,60 @@ mod tests {
             .await
             .expect_err("a write through the stopped target fails");
         assert!(err.to_string().contains("no longer serving"), "got {err}");
+    }
+
+    /// A target whose listener task was dropped with its runtime is not
+    /// live, though a handle to it is still held: join refuses it, the next
+    /// acquire on another runtime binds the address afresh, and a write
+    /// through the old handle fails.
+    #[test]
+    fn a_target_whose_runtime_shut_down_is_not_live() {
+        let registry = GnmiTargetRegistry::new();
+        let first = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let old = first
+            .block_on(registry.acquire(&GnmiTargetConfig::new("127.0.0.1:0")))
+            .expect("bind an ephemeral port");
+        let addr = old.local_addr();
+        assert!(old.is_serving());
+        // A connection accepted by the listener task proves the task ran.
+        let client = first
+            .block_on(async {
+                let client = tokio::net::TcpStream::connect(addr).await?;
+                tokio::task::yield_now().await;
+                Ok::<_, std::io::Error>(client)
+            })
+            .expect("the target accepts");
+        drop(first);
+        drop(client);
+
+        assert!(!old.is_serving(), "the listener task went with its runtime");
+        assert_eq!(registry.len(), 0, "a target nobody serves is not live");
+        assert!(registry
+            .join(&GnmiTargetConfig::new(addr.to_string()))
+            .is_err());
+        let err = old.check_serving().expect_err("the old handle is dead");
+        assert!(err.to_string().contains("no longer serving"), "got {err}");
+
+        let second = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        second.block_on(async {
+            let fresh = tokio::time::timeout(
+                Duration::from_secs(1),
+                registry.acquire(&GnmiTargetConfig::new(addr.to_string())),
+            )
+            .await
+            .expect("the dead target's socket is already closed")
+            .expect("a fresh target binds the address");
+            assert!(!Arc::ptr_eq(&old, &fresh));
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("the fresh target listens");
+        });
     }
 
     #[tokio::test]

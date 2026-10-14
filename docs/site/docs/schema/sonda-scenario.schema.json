@@ -3407,7 +3407,7 @@
               "minimum": 0
             },
             "sample_floor": {
-              "description": "Sample-interval floor stored with the target, a duration greater than\nzero such as `\"1s\"`. Default `\"1s\"`. Every sink on one address must\nuse the same value.",
+              "description": "Sample-interval floor stored with the target, a duration of at least\none microsecond such as `\"1s\"`. Default `\"1s\"`. Every sink on one address must\nuse the same value.",
               "type": [
                 "string",
                 "null",

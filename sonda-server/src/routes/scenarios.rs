@@ -745,18 +745,10 @@ pub async fn admit_compiled(
         warn!(origin = %origin, error = %e, "{origin}: validation failed");
         AdmissionError::Unprocessable(e.to_string())
     })?;
-    // A gnmi_target address a running target already serves with other
-    // settings, or whose port another running target holds, is refused here
-    // rather than when the scenario's sink starts.
-    #[cfg(feature = "gnmi")]
-    for p in &prepared {
-        if let sonda_core::sink::SinkConfig::GnmiTarget(cfg) = &p.entry.base().sink {
-            sonda_core::sink::gnmi::registry().check(cfg).map_err(|e| {
-                warn!(origin = %origin, error = %e, "{origin}: gnmi_target address refused");
-                AdmissionError::Unprocessable(e.to_string())
-            })?;
-        }
-    }
+    sonda_core::check_running_sinks(prepared.iter().map(|p| &p.entry)).map_err(|e| {
+        warn!(origin = %origin, error = %e, "{origin}: refused by a running sink");
+        AdmissionError::Unprocessable(e.to_string())
+    })?;
     let warning_entries: Vec<ScenarioEntry> = prepared.into_iter().map(|p| p.entry).collect();
     let mut warnings = sink_loopback_warnings(&warning_entries);
     warnings.extend(loki_cardinality_warnings(&warning_entries));

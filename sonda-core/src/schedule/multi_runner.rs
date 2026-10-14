@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ScenarioEntry;
-use crate::schedule::launch::{launch_scenario, prepare_entries};
+use crate::schedule::launch::{check_running_sinks, launch_scenario, prepare_entries};
 use crate::{RuntimeError, SondaError};
 
 #[cfg(feature = "config")]
@@ -35,6 +35,7 @@ pub async fn run_multi(
     parent_cancel: CancellationToken,
 ) -> Result<(), SondaError> {
     let prepared = prepare_entries(entries)?;
+    check_running_sinks(prepared.iter().map(|p| &p.entry))?;
 
     let mut handles = Vec::with_capacity(prepared.len());
     let mut errors: Vec<String> = Vec::new();
@@ -211,6 +212,7 @@ pub async fn launch_multi_compiled(
     // Every entry is prepared and the whole file checked before any bus is
     // registered or any scenario launched.
     let prepared = prepare_gated_file(entries)?;
+    check_running_sinks(prepared.iter().map(|(_, _, entry)| entry))?;
 
     let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
     for id in bus_ids {
@@ -1305,6 +1307,70 @@ scenarios:
             vec!["upstream_a".to_string()],
             "only entries referenced by some while: clause must get a bus, got {ids:?}"
         );
+    }
+
+    /// A file whose gnmi_target address a running target refuses launches
+    /// nothing, on both multi-launch paths.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_running_target_that_refuses_the_address_launches_nothing() {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+        use crate::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+        let held = GnmiTargetSink::new(&GnmiTargetConfig {
+            max_subscribers: Some(4),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        })
+        .await
+        .expect("bind an ephemeral port");
+        let addr = held.target().local_addr();
+        let yaml = format!(
+            "\
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 10s
+  encoder:
+    type: gnmi
+    path: \"/a/{{name}}\"
+  sink:
+    type: gnmi_target
+    listen: \"{addr}\"
+scenarios:
+  - id: refused
+    signal_type: metrics
+    name: refused
+    generator:
+      type: constant
+      value: 1.0
+"
+        );
+        let compiled = compile_scenario_file_compiled(&yaml, &InMemoryPackResolver::new())
+            .expect("compile must succeed");
+
+        let err = launch_multi_compiled(compiled.clone(), None)
+            .await
+            .err()
+            .expect("the gated path refuses the address");
+        assert!(
+            matches!(err, crate::SondaError::Config(_)),
+            "refused before launch: {err:?}"
+        );
+        assert!(err.to_string().contains("already serving"), "got {err}");
+
+        let entries = crate::compiler::prepare::prepare(compiled).expect("prepare");
+        let err = run_multi(entries, CancellationToken::new())
+            .await
+            .expect_err("the ungated path refuses the address");
+        assert!(
+            matches!(err, crate::SondaError::Config(_)),
+            "refused before launch: {err:?}"
+        );
+        assert!(err.to_string().contains("already serving"), "got {err}");
+
+        assert_eq!(held.target().series_count(), 0, "nothing published");
     }
 
     #[cfg(feature = "config")]

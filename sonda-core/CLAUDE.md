@@ -104,6 +104,9 @@ src/
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
 │   │                      share a port, and every gnmi encoder agrees with its entries.
+│   │                      check_running_sinks() checks entries against sinks already
+│   │                      running in the process (gnmi_target via registry().check());
+│   │                      both multi-launch paths and POST /scenarios admission call it.
 │   ├── runner.rs           ← metric event loop: builds generator/encoder/labels, delegates to core_loop
 │   ├── log_runner.rs       ← log event loop: builds log generator/encoder/labels, delegates to core_loop
 │   ├── histogram_runner.rs ← histogram event loop: pre-built Arc<Labels> per bucket, delegates to core_loop
@@ -168,22 +171,27 @@ src/
 │   │   │                   with no subscriber and twice with one, never awaits. Store
 │   │   │                   and broadcast happen under the series' lock, so subscribers
 │   │   │                   see a series' updates in table order. Accepted
-│   │   │                   sockets get TCP_NODELAY; an accept error backs off 100 ms.
+│   │   │                   sockets get TCP_NODELAY; an accept error other than a
+│   │   │                   refused/aborted/reset connection backs off 100 ms. The
+│   │   │                   listener task owns a StoppedOnDrop guard, so the target
+│   │   │                   reads Stopped however the task ends (panic, runtime drop);
+│   │   │                   is_serving() is state == Listening.
 │   │   │                   Teardown: dropping the last Arc cancels the
 │   │   │                   root token; the listening socket closes at once (Incoming
 │   │   │                   ends), connections still open after DRAIN_GRACE are closed
 │   │   │                   (Connection reads EOF), state Listening → Draining → Stopped.
 │   │   ├── registry.rs ←   registry(): process-wide address → Weak<GnmiTarget> + state.
 │   │   │                   acquire() binds or joins; a target whose listener task exited
-│   │   │                   is not live; before binding it waits (≤ 2 s) for a stopped
-│   │   │                   target's socket on that port to close. join() never binds
+│   │   │                   is not live; before binding it waits (≤ 2 s in all, never
+│   │   │                   under the bind lock) for a stopped target's socket on an
+│   │   │                   overlapping address to close. join() never binds
 │   │   │                   (emit_metric) and compares only the settings it sets; it finds
 │   │   │                   a live wildcard target covering the address. Differing
 │   │   │                   settings, or a second listener contending for a port
 │   │   │                   (listen_overlap: same address, or a wildcard covering the
 │   │   │                   other's family), are a ConfigError; port 0 always binds a
 │   │   │                   new target. check() answers as acquire() would, binding
-│   │   │                   nothing (POST /scenarios admission).
+│   │   │                   nothing. listen_overlap assumes a dual-stack [::].
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service); every path
 │   │                       answers UNIMPLEMENTED.

@@ -105,6 +105,31 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
         .collect())
 }
 
+/// Check entries against the sinks already running in this process,
+/// starting nothing: a `gnmi_target` address that a running target serves
+/// with other settings, or whose port a running target on another address
+/// holds, is refused, as it would be when the entry's sink starts.
+///
+/// Only targets bound before the call are seen, so an entry that passes can
+/// still be refused when its sink starts, if another target binds first.
+///
+/// # Errors
+///
+/// [`SondaError::Config`] for the first entry refused.
+pub fn check_running_sinks<'a>(
+    entries: impl IntoIterator<Item = &'a ScenarioEntry>,
+) -> Result<(), SondaError> {
+    #[cfg(feature = "gnmi")]
+    for entry in entries {
+        if let crate::sink::SinkConfig::GnmiTarget(cfg) = &entry.base().sink {
+            crate::sink::gnmi::registry().check(cfg)?;
+        }
+    }
+    #[cfg(not(feature = "gnmi"))]
+    let _ = entries;
+    Ok(())
+}
+
 /// [`prepare_entries`], with each authored entry's results kept together.
 ///
 /// `result[i]` holds every entry that authored entry `i` expanded into, in

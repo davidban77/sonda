@@ -6,7 +6,6 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -29,8 +28,20 @@ use crate::SondaError;
 pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// How long the listener waits before accepting again after an accept
-/// error, such as running out of file descriptors.
+/// error that is not about one connection, such as running out of file
+/// descriptors.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Whether an accept error concerns only the connection being accepted, so
+/// the next accept can follow at once.
+fn is_connection_error(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+    )
+}
 
 /// Where a target's listener is in its lifecycle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,12 +165,8 @@ struct SeriesTable {
     next_id: SeriesId,
 }
 
-/// Whether the listener task has exited, and the error it exited with.
-#[derive(Default)]
-struct Serving {
-    stopped: AtomicBool,
-    error: Mutex<Option<String>>,
-}
+/// The error the listener task exited with, if any.
+type ServeError = Arc<Mutex<Option<String>>>;
 
 /// The latest value of every series published on one listen address, keyed
 /// by the series' path, the broadcast that carries new values to
@@ -176,7 +183,7 @@ pub struct GnmiTarget {
     tx: broadcast::Sender<SeriesUpdate>,
     token: CancellationToken,
     state: watch::Receiver<TargetState>,
-    serving: Arc<Serving>,
+    error: ServeError,
 }
 
 impl GnmiTarget {
@@ -198,7 +205,7 @@ impl GnmiTarget {
         let (tx, _) = broadcast::channel(settings.subscriber_buffer);
         let token = CancellationToken::new();
         let (state_tx, state) = watch::channel(TargetState::Listening);
-        let serving = Arc::new(Serving::default());
+        let error = ServeError::default();
 
         Ok(Arc::new_cyclic(|target| {
             let service = GnmiService::new(target.clone());
@@ -206,8 +213,8 @@ impl GnmiTarget {
                 service,
                 listener,
                 token.clone(),
-                state_tx,
-                Arc::clone(&serving),
+                StoppedOnDrop(state_tx),
+                Arc::clone(&error),
             ));
             GnmiTarget {
                 local_addr,
@@ -216,7 +223,7 @@ impl GnmiTarget {
                 tx,
                 token,
                 state,
-                serving,
+                error,
             }
         }))
     }
@@ -251,9 +258,10 @@ impl GnmiTarget {
         self.state.clone()
     }
 
-    /// Whether the listener task is still running.
+    /// Whether the listener task is still accepting connections. It is not
+    /// once it has returned, panicked, or been dropped with its runtime.
     pub(crate) fn is_serving(&self) -> bool {
-        !self.serving.stopped.load(Ordering::Acquire)
+        *self.state.borrow() == TargetState::Listening
     }
 
     /// `Ok` while the listener task runs; otherwise [`SondaError::Sink`]
@@ -263,7 +271,6 @@ impl GnmiTarget {
             return Ok(());
         }
         let error = self
-            .serving
             .error
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -308,10 +315,7 @@ impl GnmiTarget {
         path: &PathKey,
         encoded: &[u8],
     ) -> (SeriesId, bool) {
-        let latest = Bytes::copy_from_slice(encoded);
-        let receivers = self.tx.receiver_count() > 0;
-        let series_id = self.store(id, path, latest, receivers);
-        (series_id, receivers)
+        self.store(id, path, Bytes::copy_from_slice(encoded))
     }
 
     /// Replace the latest notification of the series already in the table
@@ -319,16 +323,10 @@ impl GnmiTarget {
     /// series has that path. Synchronous, and broadcast like
     /// [`publish`](Self::publish).
     pub(crate) fn overwrite(&self, path: &PathKey, encoded: &[u8]) -> Option<SeriesId> {
-        let receivers = self.tx.receiver_count() > 0;
         let table = self.read();
         let id = *table.ids.get(path)?;
         let slot = table.slots.get(&id)?;
-        self.replace(
-            id,
-            &mut lock(&slot.latest),
-            Bytes::copy_from_slice(encoded),
-            receivers,
-        );
+        self.replace(id, &mut lock(&slot.latest), Bytes::copy_from_slice(encoded));
         Some(id)
     }
 
@@ -352,7 +350,9 @@ impl GnmiTarget {
         }
     }
 
-    /// A receiver for every update published from now on.
+    /// A receiver for every update published from now on. Subscribe before
+    /// taking a [`snapshot`](Self::snapshot): every value the snapshot does
+    /// not hold then arrives on the receiver.
     #[allow(dead_code)]
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesUpdate> {
         self.tx.subscribe()
@@ -372,18 +372,12 @@ impl GnmiTarget {
             .collect()
     }
 
-    fn store(
-        &self,
-        id: Option<SeriesId>,
-        path: &PathKey,
-        latest: Bytes,
-        receivers: bool,
-    ) -> SeriesId {
+    fn store(&self, id: Option<SeriesId>, path: &PathKey, latest: Bytes) -> (SeriesId, bool) {
         if let Some(id) = id {
             let table = self.read();
             if let Some(slot) = table.slots.get(&id) {
-                self.replace(id, &mut lock(&slot.latest), latest, receivers);
-                return id;
+                let delivered = self.replace(id, &mut lock(&slot.latest), latest);
+                return (id, delivered);
             }
         }
         let mut table = self.write();
@@ -410,18 +404,21 @@ impl GnmiTarget {
             .latest
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        self.replace(id, current, latest, receivers);
-        id
+        let delivered = self.replace(id, current, latest);
+        (id, delivered)
     }
 
     /// Store `latest` in `current` and, when anyone is subscribed, broadcast
-    /// it. The caller holds the series' lock, so the store and the broadcast
-    /// are one step.
-    fn replace(&self, id: SeriesId, current: &mut Bytes, latest: Bytes, receivers: bool) {
+    /// it. The caller holds the series' lock, so the store, the check for
+    /// receivers and the broadcast are one step: a subscriber that takes a
+    /// snapshot after subscribing sees the stored value or receives it.
+    /// Returns whether any receiver was subscribed.
+    fn replace(&self, id: SeriesId, current: &mut Bytes, latest: Bytes) -> bool {
         // A clone shares the buffer but allocates its refcount on first use,
         // so it is made only when someone will receive it.
-        let update = receivers.then(|| latest.clone());
+        let update = (self.tx.receiver_count() > 0).then(|| latest.clone());
         *current = latest;
+        let receivers = update.is_some();
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
             let _ = self.tx.send(SeriesUpdate {
@@ -429,6 +426,7 @@ impl GnmiTarget {
                 bytes,
             });
         }
+        receivers
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SeriesTable> {
@@ -453,8 +451,8 @@ async fn serve(
     service: GnmiService,
     listener: TcpListener,
     token: CancellationToken,
-    state: watch::Sender<TargetState>,
-    serving: Arc<Serving>,
+    state: StoppedOnDrop,
+    error: ServeError,
 ) {
     let local_addr = listener.local_addr().ok();
     let kill = CancellationToken::new();
@@ -474,10 +472,9 @@ async fn serve(
         .await;
     if let Err(e) = served {
         tracing::warn!(error = %e, addr = ?local_addr, "gnmi_target server stopped with an error");
-        *serving.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+        *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
     }
-    serving.stopped.store(true, Ordering::Release);
-    let _ = state.send(TargetState::Draining);
+    state.0.send_replace(TargetState::Draining);
     if tokio::time::timeout(DRAIN_GRACE, connections.recv())
         .await
         .is_err()
@@ -485,12 +482,24 @@ async fn serve(
         kill.cancel();
         let _ = connections.recv().await;
     }
-    let _ = state.send(TargetState::Stopped);
+}
+
+/// The listener task's state sender. Reports [`TargetState::Stopped`] when
+/// dropped, so the target stops counting as serving however the task ends:
+/// by returning, by panicking, or by being dropped with its runtime, even
+/// before it first ran.
+struct StoppedOnDrop(watch::Sender<TargetState>);
+
+impl Drop for StoppedOnDrop {
+    fn drop(&mut self) {
+        self.0.send_replace(TargetState::Stopped);
+    }
 }
 
 /// The accepted connections of one listener, with `TCP_NODELAY` set. Ends,
 /// dropping the listener, as soon as `stop` resolves. After an accept error
-/// it accepts nothing for [`ACCEPT_BACKOFF`].
+/// that is not about one connection it accepts nothing for
+/// [`ACCEPT_BACKOFF`].
 struct Incoming {
     listener: Option<TcpListener>,
     stop: Pin<Box<WaitForCancellationFutureOwned>>,
@@ -531,6 +540,10 @@ impl tokio_stream::Stream for Incoming {
                     killed: Box::pin(this.kill.clone().cancelled_owned()),
                     _alive: this.alive.clone(),
                 })))
+            }
+            Poll::Ready(Err(e)) if is_connection_error(&e) => {
+                tracing::debug!(error = %e, "gnmi_target could not accept a connection");
+                Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(Err(e)) => {
                 tracing::warn!(
@@ -630,6 +643,7 @@ fn lock(latest: &Mutex<Bytes>) -> std::sync::MutexGuard<'_, Bytes> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -1013,6 +1027,84 @@ mod tests {
             0,
             "rounds whose last broadcast was not the stored value"
         );
+    }
+
+    /// A subscriber that subscribes and then takes a snapshot while a value
+    /// is being published either finds the value in the snapshot or receives
+    /// it.
+    #[test]
+    fn a_subscriber_never_misses_a_concurrent_publish() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Barrier;
+
+        const ROUNDS: usize = 5_000;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let target = rt.block_on(bind(16));
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target.publish(None, &series, b"seed");
+        let barrier = Barrier::new(2);
+        let missed = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let (target, series, barrier) = (&target, &series, &barrier);
+            scope.spawn(move || {
+                for round in 0..ROUNDS {
+                    barrier.wait();
+                    target.publish(Some(id), series, round.to_string().as_bytes());
+                    barrier.wait();
+                    barrier.wait();
+                }
+            });
+            for round in 0..ROUNDS {
+                barrier.wait();
+                let mut receiver = target.subscribe();
+                let mut seen = target.snapshot()[0].latest.clone();
+                barrier.wait();
+                while let Ok(update) = receiver.try_recv() {
+                    seen = update.bytes;
+                }
+                if seen != round.to_string().as_bytes() {
+                    missed.fetch_add(1, Ordering::Relaxed);
+                }
+                drop(receiver);
+                barrier.wait();
+            }
+        });
+        assert_eq!(target.subscriber_count(), 0, "every round's receiver left");
+        assert_eq!(
+            missed.load(Ordering::Relaxed),
+            0,
+            "rounds whose subscriber ended up without the published value"
+        );
+    }
+
+    /// Only an accept error that is not about one connection makes the
+    /// listener back off.
+    #[rstest::rstest]
+    #[case::refused(io::ErrorKind::ConnectionRefused, true)]
+    #[case::aborted(io::ErrorKind::ConnectionAborted, true)]
+    #[case::reset(io::ErrorKind::ConnectionReset, true)]
+    #[case::out_of_memory(io::ErrorKind::OutOfMemory, false)]
+    #[case::other(io::ErrorKind::Other, false)]
+    fn only_a_connection_error_skips_the_accept_backoff(
+        #[case] kind: io::ErrorKind,
+        #[case] per_connection: bool,
+    ) {
+        assert_eq!(is_connection_error(&io::Error::from(kind)), per_connection);
+    }
+
+    /// The descriptor limits are not per-connection errors, so the listener
+    /// backs off from them.
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    #[case::emfile(24)]
+    #[case::enfile(23)]
+    #[case::enobufs(105)]
+    #[case::enomem(12)]
+    fn resource_errors_take_the_accept_backoff(#[case] errno: i32) {
+        assert!(!is_connection_error(&io::Error::from_raw_os_error(errno)));
     }
 
     /// The bound address is logged at warn when port 0 was asked for, so a
