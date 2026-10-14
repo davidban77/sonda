@@ -754,6 +754,21 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     }
                 }
             }
+            // A sink that refuses an event for its configuration (a gnmi path
+            // another scenario owns) ends the scenario under either policy.
+            // It is counted and kept as the last sink error first, so the
+            // reason shows in the scenario's stats.
+            Err(SondaError::Config(e)) => {
+                if let Some(ref s) = stats {
+                    if let Ok(mut st) = s.write() {
+                        st.errors = st.errors.saturating_add(1);
+                        st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+                        st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+                        st.last_sink_error = Some(e.to_string());
+                    }
+                }
+                return Err(SondaError::Config(e));
+            }
             Err(other) => return Err(other),
         }
 
@@ -2838,6 +2853,55 @@ mod tests {
                 .unwrap()
                 .contains("fail-before-die"),
             "last_sink_error must carry the io error message"
+        );
+    }
+
+    /// A config error from the write ends the scenario under either policy,
+    /// counted and kept as the last sink error.
+    #[rstest::rstest]
+    #[case::warn(OnSinkError::Warn)]
+    #[case::fail(OnSinkError::Fail)]
+    #[tokio::test]
+    async fn a_config_error_from_the_sink_is_recorded_and_ends_the_scenario(
+        #[case] policy: OnSinkError,
+    ) {
+        let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
+        schedule.on_sink_error = policy;
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let mut tick_fn = |_ctx: &TickContext<'_>,
+                           _output: &mut TickOutput,
+                           _events_buf: &mut Vec<MetricEvent>|
+         -> Result<TickResult, SondaError> {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "the path is owned elsewhere",
+            )))
+        };
+
+        let mut sink = null_sink();
+        let result = run_schedule_loop(
+            &schedule,
+            10.0,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(SondaError::Config(_))),
+            "got {result:?}"
+        );
+        let st = stats.read().expect("stats lock");
+        assert_eq!(st.errors, 1);
+        assert_eq!(st.total_sink_failures, 1);
+        assert!(
+            st.last_sink_error
+                .as_deref()
+                .is_some_and(|e| e.contains("the path is owned elsewhere")),
+            "got {:?}",
+            st.last_sink_error
         );
     }
 

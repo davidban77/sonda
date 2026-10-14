@@ -277,16 +277,10 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
                 if !earlier.serves(&settings) {
                     return Err(SondaError::Config(ConfigError::invalid(format!(
                         "scenario[{other}] and scenario[{index}] both use gnmi_target {} \
-                         with different settings (max_subscribers {} and {}, \
-                         subscriber_buffer {} and {}, sample_floor {:?} and {:?}); entries \
-                         on one address must use the same settings",
+                         with different settings ({}); every sink on one address must use \
+                         the same settings",
                         settings.listen,
-                        earlier.max_subscribers,
-                        settings.max_subscribers,
-                        earlier.subscriber_buffer,
-                        settings.subscriber_buffer,
-                        earlier.sample_floor,
-                        settings.sample_floor,
+                        earlier.beside(&settings),
                     ))));
                 }
             } else if crate::sink::gnmi::listen_overlap(earlier.listen, settings.listen) {

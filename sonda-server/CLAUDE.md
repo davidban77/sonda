@@ -68,8 +68,9 @@ src/
 │                         or post_multi_scenario(), list_scenarios(),
 │                         get_scenario(), get_scenario_stats(),
 │                         get_scenario_metrics(), delete_scenario().
-│                         Admission runs sonda_core::check_running_sinks: an entry
-│                         a running sink refuses (a gnmi_target address) is a 422.
+│                         launch_multi_compiled runs check_running_sinks before
+│                         launching: an entry a running sink refuses (a
+│                         gnmi_target address) is a Config error, so a 422.
 ├── locks.rs            ← RecoveringLock: the RwLock wrapper that owns the poison policy —
 │                         recovers the guard, counts the recovery per lock, and carries the
 │                         per-lock safety argument in its module docs

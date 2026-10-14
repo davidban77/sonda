@@ -857,6 +857,73 @@ scenarios:
     sonda_core::compiler::parse::parse(YAML).expect("the parser accepts what the schema accepts");
 }
 
+/// A `gnmi_target` sink whose block carries `extra`, one line under `listen`.
+fn gnmi_target_document(extra: &str) -> String {
+    format!(
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    path: "/a/{{name}}"
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+    {extra}
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"#
+    )
+}
+
+/// The schema bounds the sink's numeric settings where validation does, so
+/// an editor flags the values `sonda` refuses, and accepts the bounds.
+#[rstest::rstest]
+#[case::max_subscribers_zero("max_subscribers: 0", Some(0), None, false)]
+#[case::max_subscribers_one("max_subscribers: 1", Some(1), None, true)]
+#[case::subscriber_buffer_zero("subscriber_buffer: 0", None, Some(0), false)]
+#[case::subscriber_buffer_at_the_cap("subscriber_buffer: 65536", None, Some(65_536), true)]
+#[case::subscriber_buffer_over_the_cap("subscriber_buffer: 65537", None, Some(65_537), false)]
+fn the_schema_bounds_gnmi_target_settings_like_validation(
+    #[case] extra: &str,
+    #[case] max_subscribers: Option<usize>,
+    #[case] subscriber_buffer: Option<usize>,
+    #[case] valid: bool,
+) {
+    use sonda_core::sink::gnmi::GnmiTargetConfig;
+    use sonda_core::sink::SinkConfig;
+
+    let cfg = GnmiTargetConfig {
+        max_subscribers,
+        subscriber_buffer,
+        ..GnmiTargetConfig::new("0.0.0.0:57400")
+    };
+    let validated =
+        sonda_core::config::validate::validate_sink_config(&SinkConfig::GnmiTarget(cfg));
+    assert_eq!(
+        validated.is_ok(),
+        valid,
+        "validation of `{extra}`: {validated:?}"
+    );
+
+    let yaml = gnmi_target_document(extra);
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        assert!(
+            validator().is_valid(&yaml_to_json(value)),
+            "the schema refuses `{extra}`"
+        );
+    } else {
+        assert_rejected(extra, &yaml);
+    }
+}
+
 /// The committed schema is a build output. This is the same comparison
 /// `task schema:check` makes, run inside `cargo test` so a contributor who
 /// never runs the task still learns before CI does.

@@ -269,16 +269,10 @@ fn check_settings(
         return Ok(target);
     }
     Err(SondaError::Config(ConfigError::invalid(format!(
-        "gnmi_target {} is already serving with max_subscribers {}, subscriber_buffer {} \
-         and sample_floor {:?}; every sink on one address must use the same settings, \
-         but this one asks for {}, {} and {:?}",
+        "gnmi_target {} is already serving with different settings ({}, the running \
+         target's first); every sink on one address must use the same settings",
         target.local_addr(),
-        running.max_subscribers,
-        running.subscriber_buffer,
-        running.sample_floor,
-        wanted.max_subscribers,
-        wanted.subscriber_buffer,
-        wanted.sample_floor,
+        running.beside(wanted),
     ))))
 }
 

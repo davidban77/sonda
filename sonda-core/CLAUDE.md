@@ -106,7 +106,8 @@ src/
 │   │                      share a port, and every gnmi encoder agrees with its entries.
 │   │                      check_running_sinks() checks entries against sinks already
 │   │                      running in the process (gnmi_target via registry().check());
-│   │                      both multi-launch paths and POST /scenarios admission call it.
+│   │                      both multi-launch paths call it (POST /scenarios through
+│   │                      launch_multi_compiled).
 │   ├── runner.rs           ← metric event loop: builds generator/encoder/labels, delegates to core_loop
 │   ├── log_runner.rs       ← log event loop: builds log generator/encoder/labels, delegates to core_loop
 │   ├── histogram_runner.rs ← histogram event loop: pre-built Arc<Labels> per bucket, delegates to core_loop

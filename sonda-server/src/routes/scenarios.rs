@@ -745,10 +745,6 @@ pub async fn admit_compiled(
         warn!(origin = %origin, error = %e, "{origin}: validation failed");
         AdmissionError::Unprocessable(e.to_string())
     })?;
-    sonda_core::check_running_sinks(prepared.iter().map(|p| &p.entry)).map_err(|e| {
-        warn!(origin = %origin, error = %e, "{origin}: refused by a running sink");
-        AdmissionError::Unprocessable(e.to_string())
-    })?;
     let warning_entries: Vec<ScenarioEntry> = prepared.into_iter().map(|p| p.entry).collect();
     let mut warnings = sink_loopback_warnings(&warning_entries);
     warnings.extend(loki_cardinality_warnings(&warning_entries));

@@ -6,10 +6,10 @@ use std::time::{Instant, SystemTime};
 
 use serde::Serialize;
 
-use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+use crate::model::metric::MetricEvent;
 
-/// Dedup key for the close-emit series set: a distinct `(name, labels)` pair.
-pub type CloseEmitKey = (ValidatedMetricName, Arc<Labels>);
+/// Dedup key for the close-emit series set: the series key, [`MetricKey`].
+pub type CloseEmitKey = MetricKey;
 
 /// Series identity for the [`ScenarioStats::current_values`] map.
 pub use crate::model::metric::MetricKey;
@@ -215,6 +215,7 @@ impl ScenarioStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::metric::{Labels, ValidatedMetricName};
 
     // ---- Default: all counters zero, all flags false -------------------------
 

@@ -69,14 +69,16 @@ pub struct GnmiTargetConfig {
     /// Subscription stream limit stored with the target, at least 1. Default
     /// 16. Every sink on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_subscribers: Option<usize>,
     /// Broadcast capacity per target, 1 to 65536. Default 1024. Every sink
     /// on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = MAX_SUBSCRIBER_BUFFER)))]
     pub subscriber_buffer: Option<usize>,
     /// Sample-interval floor stored with the target, a duration of at least
-    /// one microsecond such as `"1s"`. Default `"1s"`. Every sink on one address must
-    /// use the same value.
+    /// one microsecond such as `"1s"`. Default `"1s"`. Every sink on one
+    /// address must use the same value.
     #[cfg_attr(
         feature = "config",
         serde(default, deserialize_with = "crate::config::scalar_text::optional")
@@ -183,6 +185,21 @@ impl TargetSettings {
         self.max_subscribers == other.max_subscribers
             && self.subscriber_buffer == other.subscriber_buffer
             && self.sample_floor == other.sample_floor
+    }
+
+    /// `self`'s settings beside `other`'s, for an error saying they differ:
+    /// `max_subscribers 16 and 4, subscriber_buffer 1024 and 1024, sample_floor
+    /// 1s and 1s`. Both address-sharing checks word the conflict with it.
+    pub(crate) fn beside(&self, other: &TargetSettings) -> String {
+        format!(
+            "max_subscribers {} and {}, subscriber_buffer {} and {}, sample_floor {:?} and {:?}",
+            self.max_subscribers,
+            other.max_subscribers,
+            self.subscriber_buffer,
+            other.subscriber_buffer,
+            self.sample_floor,
+            other.sample_floor,
+        )
     }
 }
 
@@ -679,6 +696,47 @@ mod tests {
             "nothing fell back to write"
         );
         assert_eq!(target.series_count(), 1);
+    }
+
+    /// A scenario whose first write lands on a path another sink owns ends
+    /// with that error recorded in its stats, and the owner keeps the path.
+    #[tokio::test]
+    async fn a_scenario_refused_a_path_records_why_it_stopped() {
+        let mut owner = sink().await;
+        publish(&mut owner, "in_octets").await;
+        let addr = owner.target().local_addr().to_string();
+        let mut sink: Box<dyn Sink> = Box::new(
+            GnmiTargetSink::new(&GnmiTargetConfig::new(addr))
+                .await
+                .expect("acquire the live target"),
+        );
+        let config = ScenarioConfig {
+            base: base("in_octets", 100.0, "1s"),
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: encoder("/a/{name}", &[]),
+            metric_type: None,
+            help: None,
+        };
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let err = crate::schedule::runner::run_with_sink(
+            &config,
+            &mut sink,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+        )
+        .await
+        .expect_err("the path belongs to the owner");
+
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let st = stats.read().expect("stats lock");
+        assert_eq!(st.errors, 1, "the refusal is counted");
+        assert_eq!(st.total_events, 0);
+        let reason = st.last_sink_error.clone().unwrap_or_default();
+        assert!(reason.contains(":/a/in-octets`"), "got {reason:?}");
+        drop(st);
+        drop(sink);
+        assert_eq!(owner.target().series_count(), 1, "the owner keeps the path");
     }
 
     /// The `le` / `quantile` key of every bucket or quantile path, and the
