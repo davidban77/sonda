@@ -219,9 +219,8 @@ impl TargetSettings {
 /// series' path from the encoded notification; later events of that series
 /// reuse the id the target returned. A series belongs to the launch whose
 /// sink created it: the sinks of that launch share it, a sink of another
-/// launch is refused it, and a sink dropping removes the series it published
-/// (a sibling that still publishes one re-creates it on its next write).
-/// Dropping the last sink on an address stops its listener.
+/// launch is refused it, and it leaves the target when the launch's last
+/// sink drops. Dropping the last sink on an address stops its listener.
 ///
 /// A sink made by joining a running target publishes no series of its own:
 /// it replaces the latest value of a series the target already serves, and
@@ -264,15 +263,22 @@ impl GnmiTargetSink {
     /// [`SondaError::Config`] when no live target serves the address, or a
     /// setting `cfg` sets differs from the target's.
     pub(crate) fn join(cfg: &GnmiTargetConfig) -> Result<Self, SondaError> {
-        let mut sink = Self::from_target(registry().join(cfg)?, LaunchId::next());
-        sink.joined = true;
-        Ok(sink)
+        Ok(Self {
+            owner: Owner::from(LaunchId::next()),
+            target: registry().join(cfg)?,
+            owned: HashMap::new(),
+            last_delivered: false,
+            joined: true,
+        })
     }
 
-    /// A sink of `launch` publishing into `target`.
+    /// A sink of `launch` publishing into `target`, counted among the
+    /// launch's live sinks until it drops.
     pub(crate) fn from_target(target: Arc<GnmiTarget>, launch: LaunchId) -> Self {
+        let owner = Owner::from(launch);
+        target.open_sink(owner);
         Self {
-            owner: Owner::from(launch),
+            owner,
             target,
             owned: HashMap::new(),
             last_delivered: false,
@@ -358,8 +364,9 @@ impl Sink for GnmiTargetSink {
 
 impl Drop for GnmiTargetSink {
     fn drop(&mut self) {
-        let ids: Vec<SeriesId> = self.owned.values().map(|(id, _)| *id).collect();
-        self.target.remove(self.owner, &ids);
+        if !self.joined {
+            self.target.close_sink(self.owner);
+        }
     }
 }
 
@@ -654,16 +661,17 @@ mod tests {
         assert_eq!(target.series_count(), 0, "the series leaves with its owner");
     }
 
-    /// Two sinks of one launch share a path. When one drops and takes the
-    /// series with it, the other's next write puts it back.
+    /// Two sinks of one launch share a path. When one drops, the series
+    /// stays and another launch is still refused it; when the second drops,
+    /// the series leaves and the port closes within the teardown bound.
     #[tokio::test]
-    async fn a_sibling_keeps_publishing_after_a_sink_of_its_launch_drops() {
+    async fn a_launchs_series_leaves_with_its_last_sink() {
         let launch = LaunchId::next();
         let mut first = GnmiTargetSink::new_in(&GnmiTargetConfig::new("127.0.0.1:0"), launch)
             .await
             .expect("bind an ephemeral port");
-        let addr = first.target().local_addr().to_string();
-        let mut second = GnmiTargetSink::new_in(&GnmiTargetConfig::new(addr), launch)
+        let addr = first.target().local_addr();
+        let mut second = GnmiTargetSink::new_in(&GnmiTargetConfig::new(addr.to_string()), launch)
             .await
             .expect("acquire the live target");
         let target = Arc::clone(first.target());
@@ -673,10 +681,36 @@ mod tests {
         assert_eq!(target.series_count(), 1, "one launch, one shared series");
 
         drop(first);
-        assert_eq!(target.series_count(), 0, "the dropped sink removed it");
+        let paths: Vec<String> = target
+            .snapshot()
+            .iter()
+            .map(|series| format!("{:?}", series.path))
+            .collect();
+        assert_eq!(paths.len(), 1, "the series outlives one of its sinks");
+        assert!(paths[0].contains("\"up\""), "got {paths:?}");
+        let mut intruder = GnmiTargetSink::new(&GnmiTargetConfig::new(addr.to_string()))
+            .await
+            .expect("acquire the live target");
+        let event = event("up");
+        let err = intruder
+            .write_metric_event(&event, &notification(&event))
+            .await
+            .expect_err("the path still belongs to the launch");
+        assert!(err.to_string().contains("already published"), "got {err}");
+        drop(intruder);
         publish(&mut second, "up").await;
         assert!(second.last_write_delivered());
-        assert_eq!(target.series_count(), 1, "the sibling's write put it back");
+
+        drop(second);
+        assert_eq!(target.series_count(), 0, "the series left with the launch");
+        let stopped = target.wait();
+        drop(target);
+        tokio::time::timeout(std::time::Duration::from_secs(2), stopped)
+            .await
+            .expect("the listener stops within the teardown bound");
+        tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("the port is free again");
     }
 
     /// One sink whose series render one leaf, once a label is dropped,

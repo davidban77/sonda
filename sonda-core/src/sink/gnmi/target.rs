@@ -152,7 +152,7 @@ pub(crate) struct SeriesSnapshot {
 }
 
 /// The launch a series belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Owner(u64);
 
 impl From<LaunchId> for Owner {
@@ -174,6 +174,9 @@ struct SeriesTable {
     ids: HashMap<PathKey, SeriesId>,
     slots: HashMap<SeriesId, Slot>,
     next_id: SeriesId,
+    /// Live sinks per owner; an owner's series leave when its count reaches
+    /// zero.
+    sinks: HashMap<Owner, usize>,
 }
 
 /// The error the listener task exited with, if any.
@@ -189,8 +192,8 @@ type ServeError = Arc<Mutex<Option<String>>>;
 /// and connections still open after [`DRAIN_GRACE`] are closed.
 ///
 /// Each series belongs to the launch whose sink created it and leaves the
-/// table when a sink of that launch removes it, not when it stops being
-/// updated.
+/// table with that launch, when the launch's last sink closes, not when it
+/// stops being updated.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
@@ -322,7 +325,8 @@ impl GnmiTarget {
     /// With `id` naming a series `owner` holds, that series is updated under
     /// the read lock. Otherwise the series for `path` is found or created
     /// under the write lock, with a new id and `owner` as its owner. The
-    /// series leaves the table when its owner [`remove`](Self::remove)s it.
+    /// series leaves the table when the owner's last sink is
+    /// [closed](Self::close_sink).
     ///
     /// Synchronous; `broadcast::Sender::send` never blocks. Copies `encoded`
     /// once. The update is broadcast while the series is still locked, so
@@ -355,21 +359,33 @@ impl GnmiTarget {
         Some(id)
     }
 
-    /// Remove each of `ids` that `owner` owns from the table. Ids that are
-    /// unknown or owned by another launch are ignored, so removing an id
-    /// twice is harmless.
-    pub(crate) fn remove(&self, owner: Owner, ids: &[SeriesId]) {
-        if ids.is_empty() {
-            return;
-        }
+    /// Count one more live sink of `owner`.
+    pub(crate) fn open_sink(&self, owner: Owner) {
+        *self.write().sinks.entry(owner).or_default() += 1;
+    }
+
+    /// Count one live sink of `owner` fewer. When none is left, every series
+    /// `owner` owns leaves the table, in one scan. Closing more sinks than
+    /// were opened is harmless.
+    pub(crate) fn close_sink(&self, owner: Owner) {
         let mut table = self.write();
-        for id in ids {
-            if table.slots.get(id).is_some_and(|slot| slot.owner == owner) {
-                if let Some(slot) = table.slots.remove(id) {
-                    table.ids.remove(&slot.path);
-                }
+        let SeriesTable {
+            ids, slots, sinks, ..
+        } = &mut *table;
+        if let Some(open) = sinks.get_mut(&owner) {
+            *open = open.saturating_sub(1);
+            if *open > 0 {
+                return;
             }
+            sinks.remove(&owner);
         }
+        slots.retain(|_, slot| {
+            let keep = slot.owner != owner;
+            if !keep {
+                ids.remove(&slot.path);
+            }
+            keep
+        });
     }
 
     /// A receiver for every update published from now on. Subscribe before
@@ -878,7 +894,7 @@ mod tests {
         let (stale, _) = target
             .publish(OWNER, None, &old_path, b"old")
             .expect("one owner");
-        target.remove(OWNER, &[stale]);
+        target.close_sink(OWNER);
         target.write().next_id = stale;
         let (reused, _) = target
             .publish(OWNER, None, &new_path, b"new")
@@ -897,9 +913,9 @@ mod tests {
         );
     }
 
-    /// Only a series' owner publishes it by path or removes it; another
-    /// launch is refused, and the owner's own second publish of the path
-    /// is an upsert.
+    /// Only a series' owner publishes it, by path or by id; another launch is
+    /// refused, the owner's own second publish of the path is an upsert, and
+    /// an owner's series leave when its last sink closes.
     #[tokio::test]
     async fn a_series_belongs_to_its_owner() {
         let target = bind(16).await;
@@ -933,13 +949,25 @@ mod tests {
         let (own, _) = target
             .publish(other, None, &path("Gi1", "in-octets"), b"d")
             .expect("a free path");
+        assert_ne!(own, id);
         assert_eq!(target.series_count(), 2);
-        target.remove(other, &[id]);
-        assert_eq!(target.series_count(), 2, "only the owner removes a series");
-        target.remove(owner, &[id, id]);
-        assert_eq!(target.series_count(), 1, "removing an id twice is harmless");
-        target.remove(other, &[own]);
+
+        // Each owner's series leave with its last sink.
+        target.open_sink(owner);
+        target.open_sink(owner);
+        target.open_sink(other);
+        target.close_sink(other);
+        assert_eq!(
+            target.series_count(),
+            1,
+            "only the other owner's series left"
+        );
+        target.close_sink(owner);
+        assert_eq!(target.series_count(), 1, "the owner still has a sink");
+        target.close_sink(owner);
         assert_eq!(target.series_count(), 0);
+        target.close_sink(owner);
+        assert_eq!(target.series_count(), 0, "closing once more is harmless");
     }
 
     #[test]
@@ -1096,7 +1124,7 @@ mod tests {
         assert_eq!(target.overwrite(&path("Gi9", "in-octets"), b"posted"), None);
         assert_eq!(target.series_count(), 1, "an unknown path is not added");
 
-        target.remove(OWNER, &[id]);
+        target.close_sink(OWNER);
         assert_eq!(target.series_count(), 0, "the overwrite took no ownership");
     }
 

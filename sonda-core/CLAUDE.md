@@ -89,9 +89,10 @@ src/
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_csv_replay.rs ← CSV-replay log generator (structured timestamp/severity/message + fields)
 ├── schedule/
-│   ├── mod.rs          ← LaunchId (pub(crate): one per run_multi / launch_multi_compiled
-│   │                      call, and per launch_scenario(_with_gates) / create_sink call
-│   │                      for a launch of one; reaches sinks through create_sink_in),
+│   ├── mod.rs          ← LaunchId (pub(crate): one per launch_prepared (run_multi, the
+│   │                      CLI) / launch_multi_compiled call, and per launch_scenario
+│   │                      (_with_gates) / create_sink call for a launch of one; reaches
+│   │                      sinks through create_sink_in),
 │   │                      GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
 │   │                      DynamicLabel (always-on rotating label, label_value_for_tick()),
 │   │                      ParsedSchedule (parses BaseScheduleConfig into resolved Duration values)
@@ -105,6 +106,8 @@ src/
 │   │                      recovers from poisoned stats lock instead of panicking)
 │   ├── launch.rs       ← validate_entry + prepare_entries + launch_scenario (unified launch API,
 │   │                      PreparedEntry, shared expand→validate→phase_offset pipeline).
+│   │                      launch_prepared launches a file's entries as one launch, ids
+│   │                      `{prefix}-{i}`, failing fast (stops what it launched).
 │   │                      validate_file is the ONE home of cross-entry rules, run by
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
@@ -171,15 +174,16 @@ src/
 │   │   │                   series decodes its path, later ones reuse the id. A write is
 │   │   │                   delivered once upserted. A sink's Owner is its launch
 │   │   │                   (LaunchId): sinks of one launch share a path, another
-│   │   │                   launch's path is a ConfigError at the first write. Drop
-│   │   │                   removes what the sink published; a sibling's next write
-│   │   │                   re-creates a shared series by path.
+│   │   │                   launch's path is a ConfigError at the first write.
+│   │   │                   from_target opens a count on the target, Drop closes it
+│   │   │                   (joined sinks count nothing).
 │   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
-│   │   │                   one Owner, a launch: only its sinks publish (an upsert) or
-│   │   │                   remove the series, which leaves when removed, not when idle;
-│   │   │                   remove() is idempotent; overwrite() takes nothing. publish()
+│   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
+│   │   │                   open_sink/close_sink count each owner's live sinks; at zero
+│   │   │                   every series of that owner leaves in one scan (not when
+│   │   │                   idle); overwrite() takes nothing. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
 │   │   │                   with no subscriber and twice with one, never awaits. Store
 │   │   │                   and broadcast happen under the series' lock, so subscribers

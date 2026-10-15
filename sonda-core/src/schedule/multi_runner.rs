@@ -6,7 +6,8 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ScenarioEntry;
-use crate::schedule::launch::{check_running_sinks, launch_scenario_in, prepare_entries};
+use crate::schedule::launch::{check_running_sinks, launch_prepared, prepare_entries};
+#[cfg(feature = "config")]
 use crate::schedule::LaunchId;
 use crate::{RuntimeError, SondaError};
 
@@ -38,27 +39,8 @@ pub async fn run_multi(
     let prepared = prepare_entries(entries)?;
     check_running_sinks(prepared.iter().map(|p| &p.entry))?;
 
-    // Every entry of the file is one launch.
-    let launch = LaunchId::next();
-    let mut handles = Vec::with_capacity(prepared.len());
+    let handles = launch_prepared(prepared, "multi", &parent_cancel).await?;
     let mut errors: Vec<String> = Vec::new();
-    for (i, prepared_entry) in prepared.into_iter().enumerate() {
-        let id = format!("multi-{i}");
-        let child = parent_cancel.child_token();
-        match launch_scenario_in(
-            launch,
-            id,
-            prepared_entry.entry,
-            child,
-            prepared_entry.start_delay,
-        )
-        .await
-        {
-            Ok(handle) => handles.push(handle),
-            Err(e) => errors.push(e.to_string()),
-        }
-    }
-
     for mut handle in handles {
         if let Err(e) = handle.join_async(None).await {
             errors.push(e.to_string());

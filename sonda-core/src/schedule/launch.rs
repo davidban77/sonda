@@ -563,7 +563,48 @@ fn edit_distance(a: &str, b: &str) -> usize {
     previous[b.len()]
 }
 
-/// Launch a single scenario as a tokio task, as a launch of its own.
+/// Launch every entry as one launch, each as a tokio task with the id
+/// `{id_prefix}-{i}` and a child token of `cancel`. Their sinks share what a
+/// launch shares, such as a gnmi path two entries render.
+///
+/// Fails fast: when an entry cannot launch, the scenarios already launched
+/// are stopped and that entry's error is returned.
+///
+/// # Errors
+///
+/// The first entry's launch error.
+pub async fn launch_prepared(
+    entries: Vec<PreparedEntry>,
+    id_prefix: &str,
+    cancel: &CancellationToken,
+) -> Result<Vec<ScenarioHandle>, SondaError> {
+    let launch = LaunchId::next();
+    let mut handles = Vec::with_capacity(entries.len());
+    for (i, prepared) in entries.into_iter().enumerate() {
+        let launched = launch_scenario_in(
+            launch,
+            format!("{id_prefix}-{i}"),
+            prepared.entry,
+            cancel.child_token(),
+            prepared.start_delay,
+        )
+        .await;
+        match launched {
+            Ok(handle) => handles.push(handle),
+            Err(e) => {
+                for handle in &handles {
+                    handle.stop();
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(handles)
+}
+
+/// Launch a single scenario as a tokio task, as a launch of one: its sink
+/// shares nothing with any other scenario's. Use [`launch_prepared`] for the
+/// entries of one file.
 pub async fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
