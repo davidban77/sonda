@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use super::target::{GnmiTarget, TargetState};
-use super::{listen_overlap, GnmiTargetConfig, TargetSettings};
+use super::{covers, listen_overlap, GnmiTargetConfig, TargetSettings};
 use crate::{ConfigError, SondaError};
 
 /// Longest an acquire waits for a stopped target's listener on the same port
@@ -225,7 +225,7 @@ impl GnmiTargetRegistry {
         self.live(addr).or_else(|| {
             self.map()
                 .iter()
-                .filter(|(wild, _)| wild.ip().is_unspecified() && listen_overlap(**wild, addr))
+                .filter(|(wild, _)| covers(**wild, addr))
                 .find_map(|(_, entry)| entry.live())
         })
     }
@@ -584,6 +584,12 @@ mod tests {
             .join(&GnmiTargetConfig::new(specific.clone()))
             .expect("the wildcard target serves 127.0.0.1");
         assert!(Arc::ptr_eq(&wild, &joined));
+        assert!(
+            registry
+                .join(&GnmiTargetConfig::new(format!("[::]:{port}")))
+                .is_err(),
+            "an IPv4 wildcard does not serve the IPv6 wildcard"
+        );
 
         let err = registry
             .acquire(&GnmiTargetConfig::new(specific))

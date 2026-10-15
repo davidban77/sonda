@@ -173,10 +173,17 @@ pub(crate) fn listen_overlap(a: SocketAddr, b: SocketAddr) -> bool {
     if a.port() == 0 || a.port() != b.port() {
         return false;
     }
-    let covers = |wild: SocketAddr, other: SocketAddr| {
-        wild.ip().is_unspecified() && (wild.is_ipv6() || other.is_ipv4())
-    };
     a == b || covers(a, b) || covers(b, a)
+}
+
+/// Whether `wild` is a wildcard listening on `other`'s port that accepts
+/// `other`'s family, one way: `0.0.0.0` covers IPv4 addresses, `[::]` covers
+/// both families (see [`listen_overlap`] for the dual-stack assumption).
+pub(crate) fn covers(wild: SocketAddr, other: SocketAddr) -> bool {
+    wild.port() != 0
+        && wild.port() == other.port()
+        && wild.ip().is_unspecified()
+        && (wild.is_ipv6() || other.is_ipv4())
 }
 
 impl TargetSettings {
@@ -311,7 +318,7 @@ impl Sink for GnmiTargetSink {
     ///
     /// [`SondaError::Sink`] when the target's listener task has exited, or
     /// when the first event of a series is not a gnmi notification;
-    /// [`SondaError::Config`] when the event's path belongs to another sink,
+    /// [`SondaError::Config`] when the event's path belongs to another launch,
     /// or a joined sink's event names a path the target does not serve.
     async fn write_metric_event(
         &mut self,
@@ -392,6 +399,23 @@ mod tests {
         let (a, b): (SocketAddr, SocketAddr) = (a.parse().unwrap(), b.parse().unwrap());
         assert_eq!(listen_overlap(a, b), overlap, "{a} and {b}");
         assert_eq!(listen_overlap(b, a), overlap, "{b} and {a}");
+    }
+
+    /// `covers` is one way: a wildcard covers the addresses of the families
+    /// it accepts, never the other way round.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::v4_wildcard_covers_v4("0.0.0.0:57400", "127.0.0.1:57400", true)]
+    #[case::v6_wildcard_covers_v4("[::]:57400", "127.0.0.1:57400", true)]
+    #[case::v6_wildcard_covers_v4_wildcard("[::]:57400", "0.0.0.0:57400", true)]
+    #[case::v4_wildcard_not_v6_wildcard("0.0.0.0:57400", "[::]:57400", false)]
+    #[case::v4_wildcard_not_v6("0.0.0.0:57400", "[::1]:57400", false)]
+    #[case::specific_covers_nothing("127.0.0.1:57400", "127.0.0.1:57400", false)]
+    #[case::other_port("0.0.0.0:57400", "127.0.0.1:57401", false)]
+    #[case::port_zero("0.0.0.0:0", "127.0.0.1:0", false)]
+    fn covers_is_one_way(#[case] wild: &str, #[case] other: &str, #[case] covered: bool) {
+        let (wild, other): (SocketAddr, SocketAddr) = (wild.parse().unwrap(), other.parse().unwrap());
+        assert_eq!(covers(wild, other), covered, "{wild} covers {other}");
     }
 
     async fn sink() -> GnmiTargetSink {

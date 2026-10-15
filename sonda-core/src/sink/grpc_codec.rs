@@ -1,7 +1,8 @@
 //! A tonic codec that encodes and decodes messages with prost.
 //!
-//! tonic 0.14 no longer ships a prost codec, so the gRPC sinks and the gNMI
-//! target share this one. Requires the `otlp` or `gnmi` feature flag.
+//! tonic 0.14 no longer ships a prost codec; the OTLP gRPC sink uses this
+//! one. Compiled with the `otlp` or `gnmi` feature flag; nothing under
+//! `gnmi` alone constructs it yet.
 
 use std::marker::PhantomData;
 

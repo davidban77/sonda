@@ -446,9 +446,9 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
     let mut leaves: HashMap<(Address, Path), Writers<'_>> = HashMap::new();
     for (position, idx, base, cfg, series, _) in &gnmi_entries {
         let address = match &base.sink {
-            SinkConfig::GnmiTarget(sink) => match sink.listen.parse::<SocketAddr>() {
-                Ok(addr) if addr.port() == 0 => Address::Own(*position),
-                Ok(addr) => Address::Listen(addr),
+            SinkConfig::GnmiTarget(sink) => match sink.settings() {
+                Ok(settings) if settings.listen.port() == 0 => Address::Own(*position),
+                Ok(settings) => Address::Listen(settings.listen),
                 Err(_) => continue,
             },
             _ => Address::None,

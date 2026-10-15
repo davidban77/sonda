@@ -671,6 +671,8 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         };
         events_buf.clear();
         tick_output.clear();
+        // Whether an error came from the sink's write rather than the tick.
+        let mut from_sink = false;
         let tick_outcome = match tick_fn(&ctx, tick_output, &mut events_buf) {
             Ok(mut result) => match drain_writes(tick_output, sink).await {
                 Ok(Some(delivered)) => {
@@ -678,7 +680,10 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     Ok(result)
                 }
                 Ok(None) => Ok(result),
-                Err(e) => Err(e),
+                Err(e) => {
+                    from_sink = true;
+                    Err(e)
+                }
             },
             Err(e) => {
                 tick_output.clear();
@@ -764,16 +769,20 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                 }
             }
             // A sink that refuses an event for its configuration (a gnmi path
-            // another scenario owns) ends the scenario under either policy.
-            // It is counted and kept as the last sink error first, so the
-            // reason shows in the scenario's stats.
-            Err(SondaError::Config(e)) => {
+            // another launch owns) ends the scenario under either policy. It
+            // is counted and kept as the last sink error first, so the reason
+            // shows in the scenario's stats. A config error from the tick
+            // itself is not a sink failure and falls through.
+            Err(SondaError::Config(e)) if from_sink => {
                 if let Some(ref s) = stats {
                     if let Ok(mut st) = s.write() {
                         st.errors = st.errors.saturating_add(1);
                         st.total_sink_failures = st.total_sink_failures.saturating_add(1);
                         st.consecutive_failures = st.consecutive_failures.saturating_add(1);
                         st.last_sink_error = Some(e.to_string());
+                        st.in_gap = currently_in_gap;
+                        st.in_burst = currently_in_burst;
+                        st.in_cardinality_spike = currently_in_spike;
                     }
                 }
                 return Err(SondaError::Config(e));
@@ -2500,7 +2509,6 @@ mod tests {
 
     // ---- Gap window: suppresses events during gap ---------------------------
 
-    /// Events are suppressed during a gap window.
     /// A slow scenario stops promptly on cancel, without emitting another
     /// tick, whether it is sleeping to its next tick or through a gap.
     #[rstest::rstest]
@@ -2552,6 +2560,7 @@ mod tests {
         assert_eq!(ticks, 1, "only the first tick, none after the cancel");
     }
 
+    /// Events are suppressed during a gap window.
     #[tokio::test]
     async fn loop_suppresses_events_during_gap() {
         let schedule = ParsedSchedule {
@@ -2916,13 +2925,33 @@ mod tests {
         );
     }
 
-    /// A config error from the write ends the scenario under either policy,
-    /// counted and kept as the last sink error.
+    /// Refuses every write with a config error, as a gnmi sink does for a
+    /// path another launch owns.
+    struct RefusingSink;
+
+    #[async_trait]
+    impl Sink for RefusingSink {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "the path is owned elsewhere",
+            )))
+        }
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    /// A config error from the sink's write ends the scenario under either
+    /// policy, counted and kept as the last sink error. One from the tick
+    /// itself ends it too, but is not booked as a sink failure.
     #[rstest::rstest]
-    #[case::warn(OnSinkError::Warn)]
-    #[case::fail(OnSinkError::Fail)]
+    #[case::sink_warn(true, OnSinkError::Warn)]
+    #[case::sink_fail(true, OnSinkError::Fail)]
+    #[case::tick_warn(false, OnSinkError::Warn)]
+    #[case::tick_fail(false, OnSinkError::Fail)]
     #[tokio::test]
     async fn a_config_error_from_the_sink_is_recorded_and_ends_the_scenario(
+        #[case] from_sink: bool,
         #[case] policy: OnSinkError,
     ) {
         let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
@@ -2930,15 +2959,22 @@ mod tests {
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
         let mut tick_fn = |_ctx: &TickContext<'_>,
-                           _output: &mut TickOutput,
+                           output: &mut TickOutput,
                            _events_buf: &mut Vec<MetricEvent>|
          -> Result<TickResult, SondaError> {
-            Err(SondaError::Config(crate::ConfigError::invalid(
-                "the path is owned elsewhere",
-            )))
+            if !from_sink {
+                return Err(SondaError::Config(crate::ConfigError::invalid(
+                    "the tick refused",
+                )));
+            }
+            output.writes.push(WriteCommand::Bytes(b"event".to_vec()));
+            Ok(TickResult {
+                bytes_written: 5,
+                delivered: true,
+            })
         };
 
-        let mut sink = null_sink();
+        let mut sink: Box<dyn Sink> = Box::new(RefusingSink);
         let result = run_schedule_loop(
             &schedule,
             10.0,
@@ -2954,15 +2990,23 @@ mod tests {
             "got {result:?}"
         );
         let st = stats.read().expect("stats lock");
-        assert_eq!(st.errors, 1);
-        assert_eq!(st.total_sink_failures, 1);
-        assert!(
-            st.last_sink_error
-                .as_deref()
-                .is_some_and(|e| e.contains("the path is owned elsewhere")),
-            "got {:?}",
-            st.last_sink_error
-        );
+        if from_sink {
+            assert_eq!(st.errors, 1);
+            assert_eq!(st.total_sink_failures, 1);
+            assert!(
+                st.last_sink_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("the path is owned elsewhere")),
+                "got {:?}",
+                st.last_sink_error
+            );
+        } else {
+            assert_eq!(
+                st.total_sink_failures, 0,
+                "a tick error is not a sink failure"
+            );
+            assert_eq!(st.last_sink_error, None);
+        }
     }
 
     #[tokio::test]

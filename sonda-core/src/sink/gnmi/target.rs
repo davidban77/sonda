@@ -121,7 +121,7 @@ impl PathKey {
 
 impl PartialEq for PathKey {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
     }
 }
 
@@ -403,7 +403,13 @@ impl GnmiTarget {
     ) -> Result<(SeriesId, bool), SondaError> {
         if let Some(id) = id {
             let table = self.read();
-            if let Some(slot) = table.slots.get(&id).filter(|slot| slot.owner == owner) {
+            // A cached id names this path's series unless the id was freed
+            // and handed to another path since.
+            if let Some(slot) = table
+                .slots
+                .get(&id)
+                .filter(|slot| slot.owner == owner && slot.path == *path)
+            {
                 let delivered = self.replace(id, &mut lock(&slot.latest), latest);
                 return Ok((id, delivered));
             }
@@ -860,6 +866,35 @@ mod tests {
             )
             .expect("one owner");
         assert_eq!(target.series_count(), 2);
+    }
+
+    /// A cached id that was freed and handed to another path does not
+    /// write into that path's series: the publish is resolved by its own
+    /// path instead.
+    #[tokio::test]
+    async fn a_reused_id_does_not_write_into_another_path() {
+        let target = bind(16).await;
+        let (old_path, new_path) = (path("Gi0", "in-octets"), path("Gi1", "in-octets"));
+        let (stale, _) = target
+            .publish(OWNER, None, &old_path, b"old")
+            .expect("one owner");
+        target.remove(OWNER, &[stale]);
+        target.write().next_id = stale;
+        let (reused, _) = target
+            .publish(OWNER, None, &new_path, b"new")
+            .expect("one owner");
+        assert_eq!(reused, stale, "the premise: the id was handed out again");
+
+        let (resolved, _) = target
+            .publish(OWNER, Some(stale), &old_path, b"old again")
+            .expect("one owner");
+        assert_ne!(resolved, stale);
+        let mut latest: Vec<Bytes> = target.snapshot().into_iter().map(|s| s.latest).collect();
+        latest.sort();
+        assert_eq!(
+            latest,
+            [Bytes::from_static(b"new"), Bytes::from_static(b"old again")]
+        );
     }
 
     /// Only a series' owner publishes it by path or removes it; another

@@ -159,8 +159,9 @@ src/
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
-│   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages, shared by
-│   │                      otlp_grpc and gnmi (feature = "otlp" or "gnmi")
+│   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages, used by
+│   │                      otlp_grpc; compiled with "otlp" or "gnmi" (unused under gnmi
+│   │                      alone)
 │   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
 │   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
 │   │   │                   field check validation and the sink both call),
