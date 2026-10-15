@@ -117,6 +117,12 @@ impl PathKey {
     pub(crate) fn path(&self) -> &proto::Path {
         &self.0
     }
+
+    /// Whether `self` and `other` are one key, not just equal ones.
+    #[cfg(test)]
+    pub(crate) fn is_same_key(&self, other: &PathKey) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl PartialEq for PathKey {
@@ -359,26 +365,33 @@ impl GnmiTarget {
         Some(id)
     }
 
+    /// The key the table holds for series `id`, which a publisher caches so
+    /// later publishes compare it by pointer.
+    pub(crate) fn path_of(&self, id: SeriesId) -> Option<PathKey> {
+        self.read().slots.get(&id).map(|slot| slot.path.clone())
+    }
+
     /// Count one more live sink of `owner`.
     pub(crate) fn open_sink(&self, owner: Owner) {
         *self.write().sinks.entry(owner).or_default() += 1;
     }
 
     /// Count one live sink of `owner` fewer. When none is left, every series
-    /// `owner` owns leaves the table, in one scan. Closing more sinks than
-    /// were opened is harmless.
+    /// `owner` owns leaves the table, in one scan. A close with no open
+    /// left to match it does nothing.
     pub(crate) fn close_sink(&self, owner: Owner) {
         let mut table = self.write();
         let SeriesTable {
             ids, slots, sinks, ..
         } = &mut *table;
-        if let Some(open) = sinks.get_mut(&owner) {
-            *open = open.saturating_sub(1);
-            if *open > 0 {
-                return;
-            }
-            sinks.remove(&owner);
+        let Some(open) = sinks.get_mut(&owner) else {
+            return;
+        };
+        *open -= 1;
+        if *open > 0 {
+            return;
         }
+        sinks.remove(&owner);
         slots.retain(|_, slot| {
             let keep = slot.owner != owner;
             if !keep {
@@ -890,6 +903,7 @@ mod tests {
     #[tokio::test]
     async fn a_reused_id_does_not_write_into_another_path() {
         let target = bind(16).await;
+        target.open_sink(OWNER);
         let (old_path, new_path) = (path("Gi0", "in-octets"), path("Gi1", "in-octets"));
         let (stale, _) = target
             .publish(OWNER, None, &old_path, b"old")
@@ -952,6 +966,13 @@ mod tests {
         assert_ne!(own, id);
         assert_eq!(target.series_count(), 2);
 
+        target.close_sink(owner);
+        assert_eq!(
+            target.series_count(),
+            2,
+            "a close with no open does nothing"
+        );
+
         // Each owner's series leave with its last sink.
         target.open_sink(owner);
         target.open_sink(owner);
@@ -967,7 +988,20 @@ mod tests {
         target.close_sink(owner);
         assert_eq!(target.series_count(), 0);
         target.close_sink(owner);
-        assert_eq!(target.series_count(), 0, "closing once more is harmless");
+        assert_eq!(target.series_count(), 0, "an unmatched close does nothing");
+        let (again, _) = target
+            .publish(other, None, &shared, b"e")
+            .expect("the path is free once its owner left");
+        target.open_sink(other);
+        target.open_sink(other);
+        target.close_sink(other);
+        target.close_sink(owner);
+        assert!(
+            target.path_of(again).is_some(),
+            "another owner's close removes nothing"
+        );
+        target.close_sink(other);
+        assert_eq!(target.series_count(), 0);
     }
 
     #[test]
@@ -1114,6 +1148,7 @@ mod tests {
     #[tokio::test]
     async fn overwrite_replaces_only_a_served_path() {
         let target = bind(16).await;
+        target.open_sink(OWNER);
         let served = path("Gi0", "in-octets");
         let (id, _) = target
             .publish(OWNER, None, &served, b"scenario")
@@ -1246,6 +1281,7 @@ mod tests {
 
     /// Only an accept error that is not about one connection makes the
     /// listener back off.
+    #[rustfmt::skip]
     #[rstest::rstest]
     #[case::refused(io::ErrorKind::ConnectionRefused, true)]
     #[case::aborted(io::ErrorKind::ConnectionAborted, true)]

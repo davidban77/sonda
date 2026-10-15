@@ -529,11 +529,7 @@ pub fn validate_gnmi_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     validate_gnmi_series_set(
         &config.encoder,
         &config.base,
-        &[GnmiSeries {
-            name: config.name.clone(),
-            injected: None,
-            lacks: None,
-        }],
+        &GnmiSeries::metric(&config.name),
     )
 }
 
@@ -544,7 +540,7 @@ fn validate_gnmi_histogram(config: &HistogramScenarioConfig) -> Result<(), Sonda
     validate_gnmi_series_set(
         &config.encoder,
         &config.base,
-        &GnmiSeries::derived(&config.name, "_bucket", "le"),
+        &GnmiSeries::histogram(&config.name),
     )
 }
 
@@ -555,7 +551,7 @@ fn validate_gnmi_summary(config: &SummaryScenarioConfig) -> Result<(), SondaErro
     validate_gnmi_series_set(
         &config.encoder,
         &config.base,
-        &GnmiSeries::derived(&config.name, "", "quantile"),
+        &GnmiSeries::summary(&config.name),
     )
 }
 
@@ -589,25 +585,9 @@ pub(crate) fn gnmi_series(
     use crate::encoder::EncoderConfig;
 
     let (base, encoder, series) = match entry {
-        ScenarioEntry::Metrics(c) => (
-            &c.base,
-            &c.encoder,
-            vec![GnmiSeries {
-                name: c.name.clone(),
-                injected: None,
-                lacks: None,
-            }],
-        ),
-        ScenarioEntry::Histogram(c) => (
-            &c.base,
-            &c.encoder,
-            GnmiSeries::derived(&c.name, "_bucket", "le").into(),
-        ),
-        ScenarioEntry::Summary(c) => (
-            &c.base,
-            &c.encoder,
-            GnmiSeries::derived(&c.name, "", "quantile").into(),
-        ),
+        ScenarioEntry::Metrics(c) => (&c.base, &c.encoder, GnmiSeries::metric(&c.name)),
+        ScenarioEntry::Histogram(c) => (&c.base, &c.encoder, GnmiSeries::histogram(&c.name)),
+        ScenarioEntry::Summary(c) => (&c.base, &c.encoder, GnmiSeries::summary(&c.name)),
         ScenarioEntry::Logs(_) => return None,
     };
     match encoder {
@@ -618,10 +598,32 @@ pub(crate) fn gnmi_series(
 
 #[cfg(feature = "gnmi")]
 impl GnmiSeries {
+    /// A metrics entry's one series, named after the entry. The one
+    /// definition the per-entry validation and [`gnmi_series`] share.
+    fn metric(name: &str) -> Vec<GnmiSeries> {
+        vec![GnmiSeries {
+            name: name.to_string(),
+            injected: None,
+            lacks: None,
+        }]
+    }
+
+    /// A histogram entry's series: `<name>_bucket` with `le`, `<name>_sum`
+    /// and `<name>_count` without it.
+    fn histogram(name: &str) -> Vec<GnmiSeries> {
+        Self::derived(name, "_bucket", "le")
+    }
+
+    /// A summary entry's series: `<name>` with `quantile`, `<name>_sum` and
+    /// `<name>_count` without it.
+    fn summary(name: &str) -> Vec<GnmiSeries> {
+        Self::derived(name, "", "quantile")
+    }
+
     /// A histogram's or summary's series: `<name><suffix>` carrying `key`,
     /// then `<name>_sum` and `<name>_count` without it.
-    fn derived(name: &str, suffix: &str, key: &'static str) -> [GnmiSeries; 3] {
-        [
+    fn derived(name: &str, suffix: &str, key: &'static str) -> Vec<GnmiSeries> {
+        vec![
             GnmiSeries {
                 name: format!("{name}{suffix}"),
                 injected: Some(key),

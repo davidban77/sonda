@@ -170,16 +170,24 @@ pub(crate) struct TargetSettings {
 /// address on the same port is refused although it could bind, and a join
 /// of an IPv4 address finds the IPv6 target.
 pub(crate) fn listen_overlap(a: SocketAddr, b: SocketAddr) -> bool {
+    let (a, b) = (canonical(a), canonical(b));
     if a.port() == 0 || a.port() != b.port() {
         return false;
     }
     a == b || covers(a, b) || covers(b, a)
 }
 
+/// `addr` with an IPv4-mapped IPv6 address (`[::ffff:127.0.0.1]`) read as
+/// the IPv4 address it maps, which is the socket it binds.
+fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
+}
+
 /// Whether `wild` is a wildcard listening on `other`'s port that accepts
 /// `other`'s family, one way: `0.0.0.0` covers IPv4 addresses, `[::]` covers
 /// both families (see [`listen_overlap`] for the dual-stack assumption).
 pub(crate) fn covers(wild: SocketAddr, other: SocketAddr) -> bool {
+    let (wild, other) = (canonical(wild), canonical(other));
     wild.port() != 0
         && wild.port() == other.port()
         && wild.ip().is_unspecified()
@@ -354,6 +362,9 @@ impl Sink for GnmiTargetSink {
             None => {
                 let path = PathKey::decode(encoded)?;
                 let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
+                // Cache the table's own key, which a sibling may have made,
+                // so later publishes match it by pointer.
+                let path = self.target.path_of(id).unwrap_or(path);
                 self.owned.insert(key, (id, path));
             }
         }
@@ -402,6 +413,8 @@ mod tests {
     #[case::two_specific_addresses("127.0.0.1:57400", "127.0.0.2:57400", false)]
     #[case::different_ports("0.0.0.0:57400", "127.0.0.1:57401", false)]
     #[case::port_zero("0.0.0.0:0", "127.0.0.1:0", false)]
+    #[case::v4_mapped_and_v4("[::ffff:127.0.0.1]:57400", "127.0.0.1:57400", true)]
+    #[case::v4_mapped_and_v4_wildcard("[::ffff:127.0.0.1]:57400", "0.0.0.0:57400", true)]
     fn listen_overlap_is_per_family(#[case] a: &str, #[case] b: &str, #[case] overlap: bool) {
         let (a, b): (SocketAddr, SocketAddr) = (a.parse().unwrap(), b.parse().unwrap());
         assert_eq!(listen_overlap(a, b), overlap, "{a} and {b}");
@@ -679,6 +692,13 @@ mod tests {
         publish(&mut first, "up").await;
         publish(&mut second, "up").await;
         assert_eq!(target.series_count(), 1, "one launch, one shared series");
+        let cached = |sink: &GnmiTargetSink| sink.owned.values().next().cloned().expect("cached");
+        let ((id, first_key), (_, second_key)) = (cached(&first), cached(&second));
+        let held = target.path_of(id).expect("the series is served");
+        assert!(
+            first_key.is_same_key(&held) && second_key.is_same_key(&held),
+            "both sinks cache the table's key"
+        );
 
         drop(first);
         let paths: Vec<String> = target

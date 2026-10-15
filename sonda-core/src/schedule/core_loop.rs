@@ -736,10 +736,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     sink_warn_limiter.observe(&schedule.name, &io_err);
                     if let Some(ref s) = stats {
                         if let Ok(mut st) = s.write() {
-                            st.errors = st.errors.saturating_add(1);
-                            st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                            st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                            st.last_sink_error = Some(io_err.to_string());
+                            record_sink_failure(&mut st, &io_err);
                             st.in_gap = currently_in_gap;
                             st.in_burst = currently_in_burst;
                             st.in_cardinality_spike = currently_in_spike;
@@ -749,10 +746,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                 OnSinkError::Fail => {
                     if let Some(ref s) = stats {
                         if let Ok(mut st) = s.write() {
-                            st.errors = st.errors.saturating_add(1);
-                            st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                            st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                            st.last_sink_error = Some(io_err.to_string());
+                            record_sink_failure(&mut st, &io_err);
                         }
                     }
                     return Err(SondaError::Sink(io_err));
@@ -776,10 +770,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             Err(SondaError::Config(e)) if from_sink => {
                 if let Some(ref s) = stats {
                     if let Ok(mut st) = s.write() {
-                        st.errors = st.errors.saturating_add(1);
-                        st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                        st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                        st.last_sink_error = Some(e.to_string());
+                        record_sink_failure(&mut st, &e);
                         st.in_gap = currently_in_gap;
                         st.in_burst = currently_in_burst;
                         st.in_cardinality_spike = currently_in_spike;
@@ -832,6 +823,15 @@ async fn drain_writes(
     Ok(delivered)
 }
 
+/// Count one failed sink call in `st` and keep `error` as the last sink
+/// error.
+fn record_sink_failure(st: &mut ScenarioStats, error: &dyn std::fmt::Display) {
+    st.errors = st.errors.saturating_add(1);
+    st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+    st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+    st.last_sink_error = Some(error.to_string());
+}
+
 /// Apply the scenario's sink-error policy to a flush call made at scenario
 /// shutdown.
 ///
@@ -853,10 +853,7 @@ pub(crate) fn apply_flush_policy(
                 );
                 if let Some(s) = stats {
                     if let Ok(mut st) = s.write() {
-                        st.errors = st.errors.saturating_add(1);
-                        st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                        st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                        st.last_sink_error = Some(io_err.to_string());
+                        record_sink_failure(&mut st, &io_err);
                     }
                 }
                 Ok(())
@@ -2511,6 +2508,7 @@ mod tests {
 
     /// A slow scenario stops promptly on cancel, without emitting another
     /// tick, whether it is sleeping to its next tick or through a gap.
+    #[rustfmt::skip]
     #[rstest::rstest]
     #[case::tick_sleep(None)]
     // Gap from 5 s to 20 s: tick 1 (at 10 s) lands in it, so the loop sleeps
@@ -2944,6 +2942,7 @@ mod tests {
     /// A config error from the sink's write ends the scenario under either
     /// policy, counted and kept as the last sink error. One from the tick
     /// itself ends it too, but is not booked as a sink failure.
+    #[rustfmt::skip]
     #[rstest::rstest]
     #[case::sink_warn(true, OnSinkError::Warn)]
     #[case::sink_fail(true, OnSinkError::Fail)]

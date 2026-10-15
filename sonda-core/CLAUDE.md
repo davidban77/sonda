@@ -183,7 +183,9 @@ src/
 │   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
 │   │   │                   open_sink/close_sink count each owner's live sinks; at zero
 │   │   │                   every series of that owner leaves in one scan (not when
-│   │   │                   idle); overwrite() takes nothing. publish()
+│   │   │                   idle); an unmatched close does nothing. A sink caches the
+│   │   │                   table's PathKey (path_of) so siblings compare by pointer.
+│   │   │                   overwrite() takes nothing. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
 │   │   │                   with no subscriber and twice with one, never awaits. Store
 │   │   │                   and broadcast happen under the series' lock, so subscribers
@@ -206,7 +208,8 @@ src/
 │   │   │                   a live wildcard target covering the address. Differing
 │   │   │                   settings, or a second listener contending for a port
 │   │   │                   (listen_overlap: same address, or a wildcard covering the
-│   │   │                   other's family), are a ConfigError; port 0 always binds a
+│   │   │                   other's family; IPv4-mapped addresses compare as IPv4),
+│   │   │                   are a ConfigError; port 0 always binds a
 │   │   │                   new target. check() answers as acquire() would, binding
 │   │   │                   nothing. listen_overlap assumes a dual-stack [::].
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
@@ -469,7 +472,10 @@ For test families that share a shape and differ only by input/expected output, u
 
 - Start every file with `mod common;` to pull in shared helpers from `tests/common/mod.rs`:
   `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`,
-  `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`.
+  `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`. `common` is compiled only
+  with `config`; `tests/common/alloc.rs` (the per-thread `CountingAlloc` an allocation-budget
+  test installs as its `#[global_allocator]`, with `count_allocations`) is included with
+  `#[path = "common/alloc.rs"] mod counting;` so it builds without `config` too.
 - Add new helpers to `tests/common/mod.rs` — do not duplicate across test files.
 
 ### Golden-file snapshots — use `insta`

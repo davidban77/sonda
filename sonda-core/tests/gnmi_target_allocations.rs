@@ -15,9 +15,10 @@
 #![cfg(all(feature = "gnmi", feature = "config"))]
 
 mod common;
+// `common` is compiled only with `config`; the counter is needed without it.
+#[path = "common/alloc.rs"]
+mod counting;
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -33,43 +34,10 @@ use sonda_core::sink::gnmi::{GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
 use sonda_core::sink::{Sink, SinkConfig};
 use sonda_core::{OnSinkError, SondaError};
 
-thread_local! {
-    // `const` initialisers: reading these never allocates, so the allocator
-    // below can touch them.
-    static COUNTING: Cell<bool> = const { Cell::new(false) };
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct CountingAlloc;
-
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // `try_with` fails only while a thread's locals are being torn down,
-        // which is never inside a counted window.
-        let _ = COUNTING.try_with(|counting| {
-            if counting.get() {
-                let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
-            }
-        });
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: CountingAlloc = CountingAlloc;
+static ALLOCATOR: counting::CountingAlloc = counting::CountingAlloc;
 
-/// Run `body` with allocation counting on for this thread and return the
-/// allocations it made on this thread.
-fn count_allocations<T>(body: impl FnOnce() -> T) -> (T, usize) {
-    ALLOCS.with(|n| n.set(0));
-    COUNTING.with(|c| c.set(true));
-    let out = body();
-    COUNTING.with(|c| c.set(false));
-    (out, ALLOCS.with(Cell::get))
-}
+use counting::count_allocations;
 
 /// Sink that does not opt in, so it keeps the plain byte path.
 struct PlainSink {

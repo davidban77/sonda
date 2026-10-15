@@ -568,7 +568,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// launch shares, such as a gnmi path two entries render.
 ///
 /// Fails fast: when an entry cannot launch, the scenarios already launched
-/// are stopped and that entry's error is returned.
+/// are stopped and joined (up to a second each, as `launch_multi_compiled`
+/// does), and that entry's error is returned.
 ///
 /// # Errors
 ///
@@ -594,6 +595,9 @@ pub async fn launch_prepared(
             Err(e) => {
                 for handle in &handles {
                     handle.stop();
+                }
+                for mut handle in handles {
+                    let _ = handle.join_async(Some(Duration::from_secs(1))).await;
                 }
                 return Err(e);
             }
