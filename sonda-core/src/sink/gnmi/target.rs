@@ -171,8 +171,11 @@ impl From<LaunchId> for Owner {
 struct Slot {
     path: PathKey,
     latest: Mutex<Bytes>,
-    /// The only launch whose sinks may publish or remove the series.
+    /// The only launch whose sinks may publish the series.
     owner: Owner,
+    /// Sinks of `owner` that have published the series; it leaves the table
+    /// when the last of them is released.
+    publishers: usize,
 }
 
 #[derive(Default)]
@@ -180,9 +183,6 @@ struct SeriesTable {
     ids: HashMap<PathKey, SeriesId>,
     slots: HashMap<SeriesId, Slot>,
     next_id: SeriesId,
-    /// Live sinks per owner; an owner's series leave when its count reaches
-    /// zero.
-    sinks: HashMap<Owner, usize>,
 }
 
 /// The error the listener task exited with, if any.
@@ -197,9 +197,11 @@ type ServeError = Arc<Mutex<Option<String>>>;
 /// cancels the target's root token: the listening socket closes at once,
 /// and connections still open after [`DRAIN_GRACE`] are closed.
 ///
-/// Each series belongs to the launch whose sink created it and leaves the
-/// table with that launch, when the launch's last sink closes, not when it
-/// stops being updated.
+/// A series is owned by one launch and held while any sink of that launch
+/// has published it; it leaves when the last of those sinks drops, not when
+/// it stops being updated. A path with no live publisher is free: another
+/// launch may take it, and a scenario of the first launch refused it in that
+/// window shows why in its stats.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
@@ -329,10 +331,10 @@ impl GnmiTarget {
     /// subscribed.
     ///
     /// With `id` naming a series `owner` holds, that series is updated under
-    /// the read lock. Otherwise the series for `path` is found or created
-    /// under the write lock, with a new id and `owner` as its owner. The
-    /// series leaves the table when the owner's last sink is
-    /// [closed](Self::close_sink).
+    /// the read lock. With no `id`, this is a sink's first publish of `path`:
+    /// the series is found or created under the write lock, with a new id and
+    /// `owner` as its owner, and counts one more publisher. Each publisher is
+    /// [released](Self::release) once; the series leaves with the last.
     ///
     /// Synchronous; `broadcast::Sender::send` never blocks. Copies `encoded`
     /// once. The update is broadcast while the series is still locked, so
@@ -371,34 +373,23 @@ impl GnmiTarget {
         self.read().slots.get(&id).map(|slot| slot.path.clone())
     }
 
-    /// Count one more live sink of `owner`.
-    pub(crate) fn open_sink(&self, owner: Owner) {
-        *self.write().sinks.entry(owner).or_default() += 1;
-    }
-
-    /// Count one live sink of `owner` fewer. When none is left, every series
-    /// `owner` owns leaves the table, in one scan. A close with no open
-    /// left to match it does nothing.
-    pub(crate) fn close_sink(&self, owner: Owner) {
+    /// Release one publisher of each of `ids` that `owner` owns; a series
+    /// whose last publisher is released leaves the table. Ids that are unknown
+    /// or owned by another launch are ignored. A sink releases each id it
+    /// published once, when it drops.
+    pub(crate) fn release(&self, owner: Owner, ids: impl IntoIterator<Item = SeriesId>) {
         let mut table = self.write();
-        let SeriesTable {
-            ids, slots, sinks, ..
-        } = &mut *table;
-        let Some(open) = sinks.get_mut(&owner) else {
-            return;
-        };
-        *open -= 1;
-        if *open > 0 {
-            return;
-        }
-        sinks.remove(&owner);
-        slots.retain(|_, slot| {
-            let keep = slot.owner != owner;
-            if !keep {
-                ids.remove(&slot.path);
+        for id in ids {
+            let Some(slot) = table.slots.get_mut(&id).filter(|slot| slot.owner == owner) else {
+                continue;
+            };
+            slot.publishers = slot.publishers.saturating_sub(1);
+            if slot.publishers == 0 {
+                if let Some(slot) = table.slots.remove(&id) {
+                    table.ids.remove(&slot.path);
+                }
             }
-            keep
-        });
+        }
     }
 
     /// A receiver for every update published from now on. Subscribe before
@@ -430,6 +421,7 @@ impl GnmiTarget {
         path: &PathKey,
         latest: Bytes,
     ) -> Result<(SeriesId, bool), SondaError> {
+        let requested = id;
         if let Some(id) = id {
             let table = self.read();
             // A cached id names this path's series unless the id was freed
@@ -471,7 +463,12 @@ impl GnmiTarget {
             path: path.clone(),
             latest: Mutex::new(Bytes::new()),
             owner,
+            publishers: 0,
         });
+        // A publish with no id is the publisher's first of this path.
+        if requested.is_none() {
+            slot.publishers += 1;
+        }
         let current = slot
             .latest
             .get_mut()
@@ -903,12 +900,11 @@ mod tests {
     #[tokio::test]
     async fn a_reused_id_does_not_write_into_another_path() {
         let target = bind(16).await;
-        target.open_sink(OWNER);
         let (old_path, new_path) = (path("Gi0", "in-octets"), path("Gi1", "in-octets"));
         let (stale, _) = target
             .publish(OWNER, None, &old_path, b"old")
             .expect("one owner");
-        target.close_sink(OWNER);
+        target.release(OWNER, [stale]);
         target.write().next_id = stale;
         let (reused, _) = target
             .publish(OWNER, None, &new_path, b"new")
@@ -928,8 +924,9 @@ mod tests {
     }
 
     /// Only a series' owner publishes it, by path or by id; another launch is
-    /// refused, the owner's own second publish of the path is an upsert, and
-    /// an owner's series leave when its last sink closes.
+    /// refused, the owner's own second first-publish of the path is an upsert
+    /// that counts a second publisher, and the series leaves when the last
+    /// of its publishers is released.
     #[tokio::test]
     async fn a_series_belongs_to_its_owner() {
         let target = bind(16).await;
@@ -966,41 +963,22 @@ mod tests {
         assert_ne!(own, id);
         assert_eq!(target.series_count(), 2);
 
-        target.close_sink(owner);
+        target.release(other, [id]);
         assert_eq!(
             target.series_count(),
             2,
-            "a close with no open does nothing"
+            "another owner's release removes nothing"
         );
-
-        // Each owner's series leave with its last sink.
-        target.open_sink(owner);
-        target.open_sink(owner);
-        target.open_sink(other);
-        target.close_sink(other);
-        assert_eq!(
-            target.series_count(),
-            1,
-            "only the other owner's series left"
-        );
-        target.close_sink(owner);
-        assert_eq!(target.series_count(), 1, "the owner still has a sink");
-        target.close_sink(owner);
-        assert_eq!(target.series_count(), 0);
-        target.close_sink(owner);
-        assert_eq!(target.series_count(), 0, "an unmatched close does nothing");
+        target.release(owner, [id]);
+        assert_eq!(target.series_count(), 2, "one publisher of it is left");
+        target.release(owner, [id]);
+        assert_eq!(target.series_count(), 1, "the last publisher took it");
+        target.release(owner, [id]);
+        assert_eq!(target.series_count(), 1, "an unknown id is ignored");
         let (again, _) = target
             .publish(other, None, &shared, b"e")
-            .expect("the path is free once its owner left");
-        target.open_sink(other);
-        target.open_sink(other);
-        target.close_sink(other);
-        target.close_sink(owner);
-        assert!(
-            target.path_of(again).is_some(),
-            "another owner's close removes nothing"
-        );
-        target.close_sink(other);
+            .expect("the path is free once its publishers left");
+        target.release(other, [own, again]);
         assert_eq!(target.series_count(), 0);
     }
 
@@ -1148,7 +1126,6 @@ mod tests {
     #[tokio::test]
     async fn overwrite_replaces_only_a_served_path() {
         let target = bind(16).await;
-        target.open_sink(OWNER);
         let served = path("Gi0", "in-octets");
         let (id, _) = target
             .publish(OWNER, None, &served, b"scenario")
@@ -1159,7 +1136,7 @@ mod tests {
         assert_eq!(target.overwrite(&path("Gi9", "in-octets"), b"posted"), None);
         assert_eq!(target.series_count(), 1, "an unknown path is not added");
 
-        target.close_sink(OWNER);
+        target.release(OWNER, [id]);
         assert_eq!(target.series_count(), 0, "the overwrite took no ownership");
     }
 

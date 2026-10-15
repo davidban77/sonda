@@ -225,10 +225,13 @@ impl TargetSettings {
 /// series identity, so it opts in through [`Sink::wants_metric_events`] and
 /// [`Sink::write`] is an error. The first event of each series decodes the
 /// series' path from the encoded notification; later events of that series
-/// reuse the id the target returned. A series belongs to the launch whose
-/// sink created it: the sinks of that launch share it, a sink of another
-/// launch is refused it, and it leaves the target when the launch's last
-/// sink drops. Dropping the last sink on an address stops its listener.
+/// reuse the id the target returned. A series is owned by the launch whose
+/// sink created it and held while any sink of that launch has published it:
+/// the sinks of that launch share it, a sink of another launch is refused
+/// it, and it leaves the target when the last of its publishers drops. A
+/// path with no live publisher is free; a scenario refused it in that window
+/// shows why in its stats. Dropping the last sink on an address stops its
+/// listener.
 ///
 /// A sink made by joining a running target publishes no series of its own:
 /// it replaces the latest value of a series the target already serves, and
@@ -237,6 +240,9 @@ pub struct GnmiTargetSink {
     target: Arc<GnmiTarget>,
     owner: Owner,
     owned: HashMap<MetricKey, (SeriesId, PathKey)>,
+    /// Every path this sink has published, once each: a second series key
+    /// rendering one of them reuses its id rather than counting again.
+    paths: HashMap<PathKey, SeriesId>,
     last_delivered: bool,
     joined: bool,
 }
@@ -275,20 +281,19 @@ impl GnmiTargetSink {
             owner: Owner::from(LaunchId::next()),
             target: registry().join(cfg)?,
             owned: HashMap::new(),
+            paths: HashMap::new(),
             last_delivered: false,
             joined: true,
         })
     }
 
-    /// A sink of `launch` publishing into `target`, counted among the
-    /// launch's live sinks until it drops.
+    /// A sink of `launch` publishing into `target`.
     pub(crate) fn from_target(target: Arc<GnmiTarget>, launch: LaunchId) -> Self {
-        let owner = Owner::from(launch);
-        target.open_sink(owner);
         Self {
-            owner,
+            owner: Owner::from(launch),
             target,
             owned: HashMap::new(),
+            paths: HashMap::new(),
             last_delivered: false,
             joined: false,
         }
@@ -361,10 +366,21 @@ impl Sink for GnmiTargetSink {
             }
             None => {
                 let path = PathKey::decode(encoded)?;
-                let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
-                // Cache the table's own key, which a sibling may have made,
-                // so later publishes match it by pointer.
-                let path = self.target.path_of(id).unwrap_or(path);
+                let (id, path) = match self.paths.get_key_value(&path) {
+                    // Another of this sink's series renders the same path.
+                    Some((known, id)) => {
+                        let (id, _) = self.target.publish(self.owner, Some(*id), known, encoded)?;
+                        (id, known.clone())
+                    }
+                    None => {
+                        let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
+                        // Cache the table's own key, which a sibling may have
+                        // made, so later publishes match it by pointer.
+                        let path = self.target.path_of(id).unwrap_or(path);
+                        self.paths.insert(path.clone(), id);
+                        (id, path)
+                    }
+                };
                 self.owned.insert(key, (id, path));
             }
         }
@@ -374,9 +390,11 @@ impl Sink for GnmiTargetSink {
 }
 
 impl Drop for GnmiTargetSink {
+    /// Release this sink's claim on each path it published, once per path.
     fn drop(&mut self) {
-        if !self.joined {
-            self.target.close_sink(self.owner);
+        if !self.paths.is_empty() {
+            self.target
+                .release(self.owner, self.paths.values().copied());
         }
     }
 }
@@ -678,7 +696,7 @@ mod tests {
     /// stays and another launch is still refused it; when the second drops,
     /// the series leaves and the port closes within the teardown bound.
     #[tokio::test]
-    async fn a_launchs_series_leaves_with_its_last_sink() {
+    async fn a_shared_leaf_leaves_with_its_last_publisher() {
         let launch = LaunchId::next();
         let mut first = GnmiTargetSink::new_in(&GnmiTargetConfig::new("127.0.0.1:0"), launch)
             .await
@@ -731,6 +749,47 @@ mod tests {
         tokio::net::TcpListener::bind(addr)
             .await
             .expect("the port is free again");
+    }
+
+    /// Two sinks of one launch on different leaves: when one drops, its own
+    /// leaf leaves while the other's is still served, and a new launch may
+    /// then publish the freed leaf.
+    #[tokio::test]
+    async fn a_sinks_own_leaf_leaves_with_it() {
+        let launch = LaunchId::next();
+        let mut first = GnmiTargetSink::new_in(&GnmiTargetConfig::new("127.0.0.1:0"), launch)
+            .await
+            .expect("bind an ephemeral port");
+        let addr = first.target().local_addr().to_string();
+        let mut second = GnmiTargetSink::new_in(&GnmiTargetConfig::new(addr.clone()), launch)
+            .await
+            .expect("acquire the live target");
+        let target = Arc::clone(first.target());
+        publish(&mut first, "only_a").await;
+        publish(&mut second, "only_b").await;
+        assert_eq!(target.series_count(), 2);
+
+        drop(first);
+        let served: Vec<String> = target
+            .snapshot()
+            .iter()
+            .map(|series| format!("{:?}", series.path))
+            .collect();
+        assert_eq!(served.len(), 1, "the dropped sink's leaf left with it");
+        assert!(
+            served[0].contains("only-b"),
+            "the other leaf is served: {served:?}"
+        );
+
+        let mut reposted = GnmiTargetSink::new(&GnmiTargetConfig::new(addr))
+            .await
+            .expect("acquire the live target");
+        publish(&mut reposted, "only_a").await;
+        assert!(
+            reposted.last_write_delivered(),
+            "a new launch takes the freed leaf"
+        );
+        assert_eq!(target.series_count(), 2);
     }
 
     /// One sink whose series render one leaf, once a label is dropped,

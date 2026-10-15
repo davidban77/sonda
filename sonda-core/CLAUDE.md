@@ -174,17 +174,20 @@ src/
 │   │   │                   series decodes its path, later ones reuse the id. A write is
 │   │   │                   delivered once upserted. A sink's Owner is its launch
 │   │   │                   (LaunchId): sinks of one launch share a path, another
-│   │   │                   launch's path is a ConfigError at the first write.
-│   │   │                   from_target opens a count on the target, Drop closes it
-│   │   │                   (joined sinks count nothing).
+│   │   │                   launch's path is a ConfigError at the first write. The
+│   │   │                   sink's `paths` map holds each path it published once; a
+│   │   │                   second key on a known path reuses its id. Drop releases
+│   │   │                   each of those ids once (joined sinks publish none).
 │   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
 │   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
-│   │   │                   open_sink/close_sink count each owner's live sinks; at zero
-│   │   │                   every series of that owner leaves in one scan (not when
-│   │   │                   idle); an unmatched close does nothing. A sink caches the
-│   │   │                   table's PathKey (path_of) so siblings compare by pointer.
+│   │   │                   Each slot counts its publishers: publish with no id is a
+│   │   │                   sink's first publish of the path (+1, under the write lock),
+│   │   │                   release() is −1 at drop; the series leaves at zero, not when
+│   │   │                   idle. A path with no live publisher is free to any launch.
+│   │   │                   A sink caches the table's PathKey (path_of) so siblings
+│   │   │                   compare by pointer.
 │   │   │                   overwrite() takes nothing. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
 │   │   │                   with no subscriber and twice with one, never awaits. Store
