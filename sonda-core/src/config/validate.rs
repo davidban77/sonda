@@ -711,7 +711,7 @@ fn validate_gnmi_series(
     config: &super::BaseScheduleConfig,
     series: &GnmiSeries,
 ) -> Result<(), SondaError> {
-    use super::LabelSource;
+    use super::{LabelSource, LabelValueSet};
     use crate::encoder::gnmi::path::{is_valid_element_name, NAME_PLACEHOLDER};
 
     let template = encoder.template_for(&series.name)?;
@@ -793,12 +793,10 @@ fn validate_gnmi_series(
         ))));
     }
 
-    // Every value an element-name placeholder can render to is known here. A
-    // dynamic label replaces a static label of the same key on every event and
-    // a spike label replaces either while its window is open. Counter and
-    // spike values are an explicit prefix plus digits or hex digits, so the
-    // prefix alone decides whether they are valid; the default prefix is the
-    // label key and an underscore, which always is.
+    // Every value an element-name placeholder can render to is in its label's
+    // value set. Counter and spike values are a prefix plus digits or hex
+    // digits, so the prefix alone decides whether they are valid. Values are
+    // checked in config order: the static or dynamic value, then each spike.
     let value_clause =
         |value: &str| format!("its value {value:?} is empty or contains '/', '[' or ']'");
     let element_values = |label: &str| -> Vec<(String, String)> {
@@ -808,35 +806,32 @@ fn validate_gnmi_series(
                 format!("values from its prefix {prefix:?} contain '/', '[' or ']'"),
             )
         };
-        let mut values = Vec::new();
-        let dynamics: Vec<&DynamicLabelConfig> = config
-            .dynamic_labels
-            .iter()
-            .flatten()
-            .filter(|dl| dl.key == label)
-            .collect();
-        if dynamics.is_empty() {
-            if let Some(value) = config.labels.as_ref().and_then(|l| l.get(label)) {
-                values.push((value.clone(), value_clause(value)));
-            }
-        }
-        for dl in dynamics {
-            match &dl.strategy {
-                DynamicLabelStrategy::ValuesList { values: list } => values.extend(
-                    list.iter()
-                        .map(|value| (value.clone(), value_clause(value))),
-                ),
-                DynamicLabelStrategy::Counter { prefix, .. } => {
-                    values.extend(prefix.as_deref().map(prefixed))
+        let mut layers = Vec::new();
+        let mut next = config.label_value_set(label);
+        while let Some(set) = next {
+            let (layer, outside) = match set {
+                LabelValueSet::Static(value) => {
+                    let clause = value_clause(&value);
+                    (vec![(value, clause)], None)
                 }
-            }
+                LabelValueSet::Values(list) => (
+                    list.iter()
+                        .map(|value| (value.clone(), value_clause(value)))
+                        .collect(),
+                    None,
+                ),
+                LabelValueSet::Counter { prefix, .. } => (vec![prefixed(&prefix)], None),
+                LabelValueSet::SpikeCounter {
+                    prefix, outside, ..
+                }
+                | LabelValueSet::RandomShape { prefix, outside } => {
+                    (vec![prefixed(&prefix)], outside.map(|set| *set))
+                }
+            };
+            layers.push(layer);
+            next = outside;
         }
-        for spike in config.cardinality_spikes.iter().flatten() {
-            if spike.label == label {
-                values.extend(spike.prefix.as_deref().map(prefixed));
-            }
-        }
-        values
+        layers.into_iter().rev().flatten().collect()
     };
     let bad_element = template
         .element_name_placeholders()

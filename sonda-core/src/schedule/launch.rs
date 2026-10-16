@@ -313,44 +313,43 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
 ///   histogram's own name points at its `<name>_bucket` series.
 /// - Two series with different names must not write the same leaf on the
 ///   same target of the same listen address. A series' leaf is its `origin`
-///   and its effective template rendered the way the encoder renders it,
-///   with `{name}` as the series' name and every label placeholder, `{le}`
-///   and `{quantile}` included, standing for itself: `[name={ifName}]`
-///   matches only another `[name={ifName}]`, and keys compare in wire order,
-///   whatever order the templates list them in. Its target is the value of
-///   the encoder's `target_label` when that label is a static label of the
-///   entry, or empty when the entry has no such label. When a dynamic or
-///   spike label supplies it, the target can be any value, so it is shared
-///   with every other entry's target. Targets compare by value, whichever
-///   label each encoder takes its target from. Its listen address is the
-///   `gnmi_target` sink's: entries on different addresses never share a
-///   leaf, an entry on port 0 binds a target of its own, and an entry whose
-///   `listen` does not parse is left to per-entry validation.
+///   and its effective template with `{name}` rendered as the series' name;
+///   every other element name and key value is a literal or a label
+///   placeholder. Two leaves meet when they have the same origin, the same
+///   number of elements and the same key names in each, and every element
+///   name and key value can be equal: two literals when they are the same
+///   text, a literal and a placeholder when the label can take that value,
+///   and two placeholders when their labels can take a common value
+///   ([`label_value_set`](crate::config::BaseScheduleConfig::label_value_set),
+///   [`overlaps`](crate::config::LabelValueSet::overlaps)). A series' target
+///   is the value of the encoder's `target_label`, or empty on events that do
+///   not carry it, and two targets meet when their value sets overlap,
+///   whichever label each encoder takes its target from. Its listen address
+///   is the `gnmi_target` sink's: entries on different addresses never share
+///   a leaf, an entry on port 0 binds a target of its own, and an entry whose
+///   `listen` does not parse is left to per-entry validation. Series on one
+///   address are compared pairwise.
 ///
-/// The leaf rule compares placeholders by name and treats a varying target as
-/// any target, so it is approximate in both directions:
+/// Three comparisons are approximate:
 ///
-/// - It misses two series that write the same leaf when their templates
-///   spell it differently: a literal key value in one and a placeholder that
-///   can render to it in the other (`[name=eth0]` against `[name={ifName}]`
-///   with `ifName: eth0`), or two different placeholders that can render to
-///   the same value (`{ifName}` and `{port}`, both `eth0`).
-/// - It rejects two series that never write the same leaf when the same
-///   placeholder can never take the same value in both (`ifName: eth0`
-///   against `ifName: eth1`, or against a dynamic `ifName` of `[eth1, eth2]`),
-///   or when a varying target can never equal the other target (a dynamic
-///   `device` of `[leaf-1, leaf-2]` against `device: leaf-3`, or against an
-///   entry with no target).
+/// - The values of a `random` cardinality spike are known only by their
+///   shape, its prefix followed by 16 lowercase hex digits, so it meets any
+///   value of that shape, and the error says the two metrics may collide.
+/// - Each element name, key value and target is compared on its own, so a
+///   label used in two places is matched in each place separately. This can
+///   reject two series that never write the same leaf, and never misses one.
+/// - A histogram's `{le}` and a summary's `{quantile}` are compared by name:
+///   each meets only the same placeholder, so a literal or another label
+///   holding one of their values is missed.
 ///
 /// An entry whose encoder config does not build, or that has no template for
 /// a series, is left to per-entry validation.
 #[cfg(feature = "gnmi")]
 fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
-    use std::collections::HashMap;
     use std::net::SocketAddr;
 
     use crate::config::validate::gnmi_series;
-    use crate::config::LabelSource;
+    use crate::config::{LabelValueSet, Overlap};
     use crate::encoder::gnmi::path::NAME_PLACEHOLDER;
     use crate::encoder::gnmi::proto::Path;
     use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
@@ -418,32 +417,211 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         }
     }
 
-    /// The `Path.target` an entry's events carry: one known value, the empty
-    /// string when the target label is absent, or any of several values when
-    /// a dynamic or spike label supplies it.
-    #[derive(Clone, Copy, PartialEq)]
-    enum Target<'a> {
-        Known(&'a str),
-        Varies,
-    }
-    let shared = |a: Target<'_>, b: Target<'_>| match (a, b) {
-        (Target::Known(a), Target::Known(b)) => a == b,
-        _ => true,
-    };
-
     /// The target a series is served from: a listen address, a port-0
     /// target of the entry's own, or none when the sink is not a
     /// `gnmi_target`.
-    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Clone, Copy, PartialEq)]
     enum Address {
         Listen(SocketAddr),
         Own(usize),
         None,
     }
 
-    /// Every writer of a leaf: its target, its series and its target label.
-    type Writers<'a> = Vec<(Target<'a>, &'a str, &'a str)>;
-    let mut leaves: HashMap<(Address, Path), Writers<'_>> = HashMap::new();
+    /// A series that writes one gnmi leaf.
+    struct Writer<'a> {
+        address: Address,
+        name: &'a str,
+        /// The leaf with `{name}` rendered and every other placeholder `p`
+        /// rendered as `{p}`.
+        leaf: Path,
+        target_label: &'a str,
+        /// The values of `Path.target`: the target label's values, and the
+        /// empty target wherever an event does not carry it.
+        target: LabelValueSet,
+        /// Each label placeholder of the leaf, with its label's values.
+        labels: Vec<(String, Option<LabelValueSet>)>,
+        /// The label the runner adds to this series, compared by name.
+        injected: Option<&'static str>,
+    }
+
+    /// One element name or key value of a leaf.
+    enum Term<'a> {
+        Literal(&'a str),
+        Injected(&'a str),
+        Label(&'a str, Option<&'a LabelValueSet>),
+    }
+
+    fn term<'a>(writer: &'a Writer<'_>, rendered: &'a str) -> Term<'a> {
+        match rendered.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
+            None => Term::Literal(rendered),
+            Some(label) if Some(label) == writer.injected => Term::Injected(label),
+            Some(label) => match writer.labels.iter().find(|(known, _)| known == label) {
+                Some((known, set)) => Term::Label(known, set.as_ref()),
+                None => Term::Label(label, None),
+            },
+        }
+    }
+
+    /// Whether a set has a `random` spike's values.
+    fn from_random_spike(set: &LabelValueSet) -> bool {
+        match set {
+            LabelValueSet::RandomShape { .. } => true,
+            LabelValueSet::SpikeCounter { outside, .. } => {
+                outside.as_deref().is_some_and(from_random_spike)
+            }
+            LabelValueSet::Static(_) | LabelValueSet::Values(_) | LabelValueSet::Counter { .. } => {
+                false
+            }
+        }
+    }
+
+    /// The label's values with the empty target wherever it is absent.
+    fn empty_where_absent(set: Option<LabelValueSet>) -> LabelValueSet {
+        let outside = |set: Option<Box<LabelValueSet>>| {
+            Some(Box::new(empty_where_absent(set.map(|set| *set))))
+        };
+        match set {
+            None => LabelValueSet::Static(String::new()),
+            Some(LabelValueSet::SpikeCounter {
+                prefix,
+                cardinality,
+                outside: closed,
+            }) => LabelValueSet::SpikeCounter {
+                prefix,
+                cardinality,
+                outside: outside(closed),
+            },
+            Some(LabelValueSet::RandomShape {
+                prefix,
+                outside: closed,
+            }) => LabelValueSet::RandomShape {
+                prefix,
+                outside: outside(closed),
+            },
+            Some(set) => set,
+        }
+    }
+
+    /// Whether element name or key value `x` of `a` can equal `y` of `b`.
+    /// A meeting by a random spike's shape records the labels whose values
+    /// are a random spike's in `shaped`.
+    fn terms_meet<'a>(
+        a: &'a Writer<'_>,
+        x: &'a str,
+        b: &'a Writer<'_>,
+        y: &'a str,
+        shaped: &mut Vec<(&'a str, &'a str)>,
+    ) -> bool {
+        let (left, right) = (term(a, x), term(b, y));
+        let overlap = match (&left, &right) {
+            (Term::Literal(x), Term::Literal(y)) | (Term::Injected(x), Term::Injected(y))
+                if x == y =>
+            {
+                Overlap::Certain
+            }
+            (Term::Literal(value), Term::Label(_, Some(set)))
+            | (Term::Label(_, Some(set)), Term::Literal(value)) => set.meets_value(value),
+            (Term::Label(_, Some(set)), Term::Label(_, Some(other))) => set.meets(other),
+            _ => Overlap::Disjoint,
+        };
+        if overlap == Overlap::ByShape {
+            for (writer, side) in [(a, &left), (b, &right)] {
+                if let Term::Label(label, Some(set)) = side {
+                    if from_random_spike(set) {
+                        shaped.push((writer.name, label));
+                    }
+                }
+            }
+        }
+        overlap != Overlap::Disjoint
+    }
+
+    /// The error for two series that can write the same leaf on the same
+    /// target, or `None` when they cannot.
+    fn collision(other: &Writer<'_>, writer: &Writer<'_>) -> Option<String> {
+        let mut shaped = Vec::new();
+        let leaves_meet = other.leaf.origin == writer.leaf.origin
+            && other.leaf.elem.len() == writer.leaf.elem.len()
+            && other.leaf.elem.iter().zip(&writer.leaf.elem).all(|(x, y)| {
+                x.key.len() == y.key.len()
+                    && terms_meet(other, &x.name, writer, &y.name, &mut shaped)
+                    && x.key.iter().all(|(key, value)| {
+                        y.key.get(key).is_some_and(|theirs| {
+                            terms_meet(other, value, writer, theirs, &mut shaped)
+                        })
+                    })
+            });
+        if !leaves_meet {
+            return None;
+        }
+        match other.target.meets(&writer.target) {
+            Overlap::Disjoint => return None,
+            Overlap::ByShape => {
+                for side in [other, writer] {
+                    if from_random_spike(&side.target) {
+                        shaped.push((side.name, side.target_label));
+                    }
+                }
+            }
+            Overlap::Certain => {}
+        }
+
+        let spelled = if other.leaf == writer.leaf {
+            String::new()
+        } else {
+            format!(" (`{}` writes it as `{}`)", writer.name, writer.leaf)
+        };
+        let on_target = match (&other.target, &writer.target) {
+            (LabelValueSet::Static(value), LabelValueSet::Static(_)) if value.is_empty() => {
+                " with no target".to_string()
+            }
+            (LabelValueSet::Static(value), LabelValueSet::Static(_)) => {
+                format!(" on target `{value}`")
+            }
+            _ => {
+                let varying: Vec<String> = [other, writer]
+                    .into_iter()
+                    .filter(|side| !matches!(side.target, LabelValueSet::Static(_)))
+                    .map(|side| format!("`{}` takes `{}`", side.name, side.target_label))
+                    .collect();
+                let source = if varying.len() == 1 {
+                    "a dynamic or spike label"
+                } else {
+                    "dynamic or spike labels"
+                };
+                format!(
+                    " on a target they may share: {} from {source}",
+                    varying.join(" and ")
+                )
+            }
+        };
+        let advice = "give each metric its own path, for example with {name} in the template \
+                      or its own paths: entry";
+        if shaped.is_empty() {
+            return Some(format!(
+                "metrics `{}` and `{}` would both write the gnmi leaf `{}`{spelled}{on_target}, \
+                 each overwriting the other; {advice}",
+                other.name, writer.name, other.leaf
+            ));
+        }
+        shaped.sort_unstable();
+        shaped.dedup();
+        let random_labels: Vec<String> = shaped
+            .iter()
+            .map(|(metric, label)| format!("`{label}` of `{metric}`"))
+            .collect();
+        Some(format!(
+            "metrics `{}` and `{}` may collide on the gnmi leaf `{}`{spelled}{on_target}: the \
+             values of {} come from a random cardinality spike and are compared by their prefix \
+             and 16 hex digits only; {advice}",
+            other.name,
+            writer.name,
+            other.leaf,
+            random_labels.join(" and ")
+        ))
+    }
+
+    let mut writers: Vec<Writer<'_>> = Vec::new();
     for (position, idx, base, cfg, series, _) in &gnmi_entries {
         let address = match &base.sink {
             SinkConfig::GnmiTarget(sink) => match sink.settings() {
@@ -456,20 +634,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         let Ok(encoder) = GnmiEncoder::new(cfg) else {
             continue;
         };
-        let target_is_static = base
-            .emitted_label_keys()
-            .filter(|(key, _)| *key == cfg.target_label)
-            .all(|(_, source)| source == LabelSource::Static);
-        let target = if target_is_static {
-            Target::Known(
-                base.labels
-                    .as_ref()
-                    .and_then(|labels| labels.get(&cfg.target_label))
-                    .map_or("", String::as_str),
-            )
-        } else {
-            Target::Varies
-        };
+        let target = empty_where_absent(base.label_value_set(&cfg.target_label));
 
         for one in series {
             let name = one.name.as_str();
@@ -489,45 +654,30 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
                 continue;
             };
             leaf.origin.clone_from(&cfg.origin);
-
-            let writers = leaves.entry((address, leaf.clone())).or_default();
-            if let Some((other_target, other, other_label)) = writers
-                .iter()
-                .find(|(other_target, other, _)| *other != name && shared(*other_target, target))
-            {
-                let on_target = match (*other_target, target) {
-                    (Target::Known(""), Target::Known(_)) => " with no target".to_string(),
-                    (Target::Known(value), Target::Known(_)) => format!(" on target `{value}`"),
-                    _ => {
-                        let varying: Vec<String> = [
-                            (*other_target, *other, *other_label),
-                            (target, name, cfg.target_label.as_str()),
-                        ]
-                        .into_iter()
-                        .filter(|(target, _, _)| *target == Target::Varies)
-                        .map(|(_, metric, label)| format!("`{metric}` takes `{label}`"))
-                        .collect();
-                        let source = if varying.len() == 1 {
-                            "a dynamic or spike label"
-                        } else {
-                            "dynamic or spike labels"
-                        };
-                        format!(
-                            " on a target they may share: {} from {source}",
-                            varying.join(" and ")
-                        )
-                    }
-                };
-                return Err(invalid(
-                    *idx,
-                    format!(
-                        "metrics `{other}` and `{name}` would both write the gnmi leaf `{leaf}`{on_target}, \
-                         each overwriting the other; give each metric its own path, for example \
-                         with {{name}} in the template or its own paths: entry"
-                    ),
-                ));
+            let mut values: Vec<(String, Option<LabelValueSet>)> = Vec::new();
+            for (label, _) in &symbols {
+                if Some(*label) != one.injected && !values.iter().any(|(known, _)| known == label) {
+                    values.push((label.to_string(), base.label_value_set(label)));
+                }
             }
-            writers.push((target, name, cfg.target_label.as_str()));
+
+            let writer = Writer {
+                address,
+                name,
+                leaf,
+                target_label: cfg.target_label.as_str(),
+                target: target.clone(),
+                labels: values,
+                injected: one.injected,
+            };
+            if let Some(message) = writers
+                .iter()
+                .filter(|other| other.address == writer.address && other.name != name)
+                .find_map(|other| collision(other, &writer))
+            {
+                return Err(invalid(*idx, message));
+            }
+            writers.push(writer);
         }
     }
     Ok(())
@@ -3037,6 +3187,112 @@ scenarios:
         } else {
             let msg = result.expect_err("one target, one leaf").to_string();
             assert!(msg.contains("would both write the gnmi leaf"), "{msg}");
+        }
+    }
+
+    /// Two metrics on one gnmi_target address, sharing a template without
+    /// `{name}` unless a block gives its entry its own encoder;
+    /// `in_octets` and `out_octets` take the given blocks.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn one_address(in_octets: &str, out_octets: &str) -> String {
+        format!(
+            r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={{ifName}}]/state"
+  sink:
+    type: gnmi_target
+    listen: 127.0.0.1:57400
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: {{type: constant, value: 1.0}}
+{in_octets}  - signal_type: metrics
+    name: out_octets
+    generator: {{type: constant, value: 1.0}}
+{out_octets}"#
+        )
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_ETH0: &str = "    labels:\n      device: leaf-1\n      ifName: eth0\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_LITERAL_ETH0: &str = "    labels:\n      device: leaf-1\n    encoder:\n      type: gnmi\n      path: \"/interfaces/interface[name=eth0]/state\"\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_PORT_ETH0: &str = "    labels:\n      device: leaf-1\n      port: eth0\n    encoder:\n      type: gnmi\n      path: \"/interfaces/interface[name={port}]/state\"\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_ETH1: &str = "    labels:\n      device: leaf-1\n      ifName: eth1\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_DYNAMIC_ETH1_ETH2: &str = "    labels:\n      device: leaf-1\n    dynamic_labels:\n      - key: ifName\n        values: [eth1, eth2]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_DYNAMIC_ETH0_ETH1: &str = "    labels:\n      device: leaf-1\n    dynamic_labels:\n      - key: ifName\n        values: [eth0, eth1]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_3_ETH0: &str = "    labels:\n      device: leaf-3\n      ifName: eth0\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const DYNAMIC_LEAF_1_LEAF_2_ETH0: &str = "    labels:\n      ifName: eth0\n    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const NO_TARGET_ETH0: &str = "    labels:\n      ifName: eth0\n";
+    /// A counter spike over `device` with the default prefix: `device_0`
+    /// and `device_1` while it is open, `leaf-2` otherwise.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_2_DEFAULT_SPIKE_ETH0: &str = "    labels:\n      device: leaf-2\n      ifName: eth0\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: 2\n";
+    /// A random spike over `device`: `pod-` and 16 hex digits while it is
+    /// open, `leaf-2` otherwise.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_2_RANDOM_SPIKE_ETH0: &str = "    labels:\n      device: leaf-2\n      ifName: eth0\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: 2\n        strategy: random\n        prefix: pod-\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const POD_SHAPED_ETH0: &str =
+        "    labels:\n      device: pod-0123456789abcdef\n      ifName: eth0\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const POD_3_ETH0: &str = "    labels:\n      device: pod-3\n      ifName: eth0\n";
+    /// A random spike over `ifName`: `eth` and 16 hex digits while it is
+    /// open, `eth1` otherwise.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_RANDOM_IFNAME: &str = "    labels:\n      device: leaf-1\n      ifName: eth1\n    cardinality_spikes:\n      - label: ifName\n        every: 10s\n        for: 5s\n        cardinality: 2\n        strategy: random\n        prefix: eth\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const LEAF_1_ETH_SHAPED: &str =
+        "    labels:\n      device: leaf-1\n      ifName: eth0123456789abcdef\n";
+
+    /// Leaves and targets meet when the values their labels can take meet.
+    /// `None` means the file prepares; otherwise the error contains the
+    /// given text.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::literal_and_placeholder_with_its_value(LEAF_1_ETH0, LEAF_1_LITERAL_ETH0, Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` (`out_octets` writes it as `openconfig:/interfaces/interface[name=eth0]/state`) on target `leaf-1`, each overwriting the other"))]
+    #[case::two_placeholders_with_one_value(LEAF_1_ETH0, LEAF_1_PORT_ETH0, Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` (`out_octets` writes it as `openconfig:/interfaces/interface[name={port}]/state`) on target `leaf-1`, each overwriting the other"))]
+    #[case::one_template_eth0_and_eth1(LEAF_1_ETH0, LEAF_1_ETH1, None)]
+    #[case::static_eth0_and_dynamic_eth1_eth2(LEAF_1_ETH0, LEAF_1_DYNAMIC_ETH1_ETH2, None)]
+    #[case::static_leaf_3_and_dynamic_leaf_1_leaf_2(LEAF_3_ETH0, DYNAMIC_LEAF_1_LEAF_2_ETH0, None)]
+    #[case::static_eth0_and_dynamic_eth0_eth1(LEAF_1_ETH0, LEAF_1_DYNAMIC_ETH0_ETH1, Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`, each overwriting the other"))]
+    #[case::static_leaf_1_and_default_spike_over_leaf_2(LEAF_1_ETH0, LEAF_2_DEFAULT_SPIKE_ETH0, None)]
+    #[case::no_target_and_dynamic_leaf_1_leaf_2(NO_TARGET_ETH0, DYNAMIC_LEAF_1_LEAF_2_ETH0, None)]
+    #[case::random_spike_target_and_a_value_of_its_shape(POD_SHAPED_ETH0, LEAF_2_RANDOM_SPIKE_ETH0, Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label: the values of `device` of `out_octets` come from a random cardinality spike"))]
+    #[case::random_spike_target_and_a_value_of_another_shape(POD_3_ETH0, LEAF_2_RANDOM_SPIKE_ETH0, None)]
+    #[case::random_spike_placeholder_and_a_value_of_its_shape(LEAF_1_ETH_SHAPED, LEAF_1_RANDOM_IFNAME, Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`: the values of `ifName` of `out_octets` come from a random cardinality spike"))]
+    fn gnmi_leaves_and_targets_meet_by_label_values(
+        #[case] in_octets: &str,
+        #[case] out_octets: &str,
+        #[case] rejected_with: Option<&str>,
+    ) {
+        let entries = compile_entries(&one_address(in_octets, out_octets), &Default::default());
+        let names: Vec<&str> = entries.iter().map(|e| e.base().name.as_str()).collect();
+        assert_eq!(names, ["in_octets", "out_octets"], "the file must compile to both metrics");
+        match rejected_with {
+            None => {
+                prepare_entries(entries).expect("the two metrics never write one leaf on one target");
+            }
+            Some(text) => {
+                let msg = prepare_entries(entries)
+                    .expect_err("the two metrics can write one leaf on one target")
+                    .to_string();
+                assert!(msg.contains(text), "{msg}");
+            }
         }
     }
 }
