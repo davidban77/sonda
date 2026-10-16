@@ -10,6 +10,7 @@
 //!
 //! Requires the `gnmi` feature flag.
 
+pub mod matcher;
 pub mod registry;
 pub mod service;
 pub mod target;
@@ -67,8 +68,9 @@ pub struct GnmiTargetConfig {
         serde(deserialize_with = "crate::config::scalar_text::required")
     )]
     pub listen: String,
-    /// Subscription stream limit stored with the target, at least 1. Default
-    /// 16. Every sink on one address must use the same value.
+    /// Subscriptions the target serves at once, at least 1; one more is
+    /// refused with `RESOURCE_EXHAUSTED`. Default 16. Every sink on one
+    /// address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_subscribers: Option<usize>,
@@ -77,9 +79,10 @@ pub struct GnmiTargetConfig {
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = MAX_SUBSCRIBER_BUFFER)))]
     pub subscriber_buffer: Option<usize>,
-    /// Sample-interval floor stored with the target, a duration of at least
-    /// one microsecond such as `"1s"`. Default `"1s"`. Every sink on one
-    /// address must use the same value.
+    /// Shortest sample interval the target serves, a duration of at least
+    /// one microsecond such as `"1s"`: a SAMPLE subscription asking for less,
+    /// or for 0, is sampled at this interval. Default `"1s"`. Every sink on
+    /// one address must use the same value.
     #[cfg_attr(
         feature = "config",
         serde(default, deserialize_with = "crate::config::scalar_text::optional")

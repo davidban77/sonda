@@ -162,9 +162,10 @@ src/
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
-│   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages, used by
-│   │                      otlp_grpc; compiled with "otlp" or "gnmi" (unused under gnmi
-│   │                      alone)
+│   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages (otlp_grpc,
+│   │                      gnmi Capabilities); compiled with "otlp" or "gnmi".
+│   │                      PreEncoded(Bytes) + PreEncodedCodec<U> ("gnmi" only): sends
+│   │                      already-encoded responses verbatim (gnmi Subscribe).
 │   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
 │   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
 │   │   │                   field check validation and the sink both call; it returns
@@ -217,9 +218,34 @@ src/
 │   │   │                   are a ConfigError; port 0 always binds a
 │   │   │                   new target. check() answers as acquire() would, binding
 │   │   │                   nothing. listen_overlap assumes a dual-stack [::].
+│   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's paths joined to
+│   │   │                   its prefix; matches() is a prefix match on elements, a key
+│   │   │                   of "*" or an absent key matching any value, an empty origin
+│   │   │                   or target matching any. new() refuses (UNIMPLEMENTED, named)
+│   │   │                   POLL, ON_CHANGE in a STREAM list, non-PROTO encodings and
+│   │   │                   element wildcards; INVALID_ARGUMENT for an empty list,
+│   │   │                   empty element name or unknown enum number.
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
-│   │                       serve_with_incoming (never add_service); every path
-│   │                       answers UNIMPLEMENTED.
+│   │                       serve_with_incoming (never add_service). Holds the target
+│   │                       WEAKLY (so does every handler and subscription task):
+│   │                       nothing a client does keeps a target alive; a request
+│   │                       after it is gone is UNAVAILABLE. Capabilities: 0.10.0,
+│   │                       [PROTO], no models. Subscribe: first message must be a
+│   │                       SubscriptionList; max_subscribers checked and the
+│   │                       subscriber counted (target.subscribe(), the broadcast
+│   │                       receiver count) under one admission lock. One task drains
+│   │                       the inbound stream (never polled in a select!) and fires a
+│   │                       oneshot; a producer task sends the initial sync (matching
+│   │                       snapshot, then sync_response) and, for STREAM, re-reads the
+│   │                       table per sample group (period = max(sample_interval,
+│   │                       sample_floor), one group per distinct period), framing each
+│   │                       stored Notification as SubscribeResponse.update bytes. Its
+│   │                       select! arms: listener left Listening (state()), inbound
+│   │                       end (STREAM only), tx.closed(), tx.reserve() (mpsc of 64:
+│   │                       a client that stops reading parks only its own task), the
+│   │                       next sample. ONCE ends with OK after the sync marker. The
+│   │                       broadcast receiver is drained at each sample, never
+│   │                       awaited, so publishes wake no subscriber task.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/

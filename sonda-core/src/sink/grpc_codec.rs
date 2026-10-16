@@ -1,12 +1,16 @@
-//! A tonic codec that encodes and decodes messages with prost.
+//! tonic codecs that encode and decode messages with prost.
 //!
-//! tonic 0.14 no longer ships a prost codec; the OTLP gRPC sink uses this
-//! one. Compiled with the `otlp` or `gnmi` feature flag; nothing under
-//! `gnmi` alone constructs it yet.
+//! tonic 0.14 no longer ships a prost codec. [`ProstCodec`] serves the OTLP
+//! gRPC sink and the gNMI `Capabilities` RPC; [`PreEncodedCodec`] serves the
+//! gNMI `Subscribe` RPC, whose responses are already encoded. Compiled with
+//! the `otlp` or `gnmi` feature flag; [`PreEncoded`] and its codec with
+//! `gnmi` only.
 
 use std::marker::PhantomData;
 
 use bytes::Buf;
+#[cfg(feature = "gnmi")]
+use bytes::{BufMut, Bytes};
 use prost::Message;
 use tonic::codec::{Codec, Decoder, Encoder as TonicEncoder};
 use tonic::Status;
@@ -79,6 +83,64 @@ impl<T: Message + Default + 'static> Decoder for ProstDecoder<T> {
         T::decode(buf)
             .map(Some)
             .map_err(|e| Status::internal(format!("protobuf decode error: {e}")))
+    }
+}
+
+/// A response payload already encoded as protobuf bytes; the tonic encoder
+/// copies it verbatim.
+#[cfg(feature = "gnmi")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreEncoded(pub Bytes);
+
+/// A gRPC codec that sends [`PreEncoded`] messages as they are and decodes
+/// the messages it receives as `U` with prost.
+#[cfg(feature = "gnmi")]
+#[derive(Debug, Clone)]
+pub(crate) struct PreEncodedCodec<U>(PhantomData<U>);
+
+#[cfg(feature = "gnmi")]
+impl<U> Default for PreEncodedCodec<U> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+#[cfg(feature = "gnmi")]
+impl<U> Codec for PreEncodedCodec<U>
+where
+    U: Message + Default + 'static,
+{
+    type Encode = PreEncoded;
+    type Decode = U;
+    type Encoder = PreEncodedEncoder;
+    type Decoder = ProstDecoder<U>;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        PreEncodedEncoder
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        ProstDecoder(PhantomData)
+    }
+}
+
+/// Writes the bytes of a [`PreEncoded`] message unchanged.
+#[cfg(feature = "gnmi")]
+#[derive(Debug)]
+pub(crate) struct PreEncodedEncoder;
+
+#[cfg(feature = "gnmi")]
+impl TonicEncoder for PreEncodedEncoder {
+    type Item = PreEncoded;
+    type Error = Status;
+
+    fn encode(
+        &mut self,
+        item: Self::Item,
+        dst: &mut tonic::codec::EncodeBuf<'_>,
+    ) -> Result<(), Self::Error> {
+        dst.put_slice(&item.0);
+        Ok(())
     }
 }
 
