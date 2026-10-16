@@ -457,6 +457,64 @@ pub enum SinkConfig {
     GnmiTargetDisabled {},
 }
 
+impl SinkConfig {
+    /// Every sink `type:` name, in declaration order.
+    ///
+    /// Includes the names of sinks whose Cargo feature is off in this build:
+    /// their `*Disabled` variants accept the same `type:` name.
+    pub const KINDS: &'static [&'static str] = &[
+        "stdout",
+        "file",
+        "tcp",
+        "udp",
+        "memory",
+        "http_push",
+        "remote_write",
+        "kafka",
+        "loki",
+        "otlp_grpc",
+        "gnmi_target",
+    ];
+
+    /// The `type:` name this sink has in a scenario file, such as `"stdout"` or
+    /// `"gnmi_target"`.
+    ///
+    /// A `*Disabled` variant returns the name of the sink it stands in for.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            SinkConfig::Stdout => "stdout",
+            SinkConfig::File { .. } => "file",
+            SinkConfig::Tcp { .. } => "tcp",
+            SinkConfig::Udp { .. } => "udp",
+            SinkConfig::Memory { .. } => "memory",
+            #[cfg(feature = "http")]
+            SinkConfig::HttpPush { .. } => "http_push",
+            #[cfg(not(feature = "http"))]
+            SinkConfig::HttpPushDisabled {} => "http_push",
+            #[cfg(feature = "remote-write")]
+            SinkConfig::RemoteWrite { .. } => "remote_write",
+            #[cfg(not(feature = "remote-write"))]
+            SinkConfig::RemoteWriteDisabled {} => "remote_write",
+            #[cfg(feature = "kafka")]
+            SinkConfig::Kafka { .. } => "kafka",
+            #[cfg(not(feature = "kafka"))]
+            SinkConfig::KafkaDisabled {} => "kafka",
+            #[cfg(feature = "http")]
+            SinkConfig::Loki { .. } => "loki",
+            #[cfg(not(feature = "http"))]
+            SinkConfig::LokiDisabled {} => "loki",
+            #[cfg(feature = "otlp")]
+            SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
+            #[cfg(not(feature = "otlp"))]
+            SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc",
+            #[cfg(feature = "gnmi")]
+            SinkConfig::GnmiTarget(_) => "gnmi_target",
+            #[cfg(not(feature = "gnmi"))]
+            SinkConfig::GnmiTargetDisabled {} => "gnmi_target",
+        }
+    }
+}
+
 /// Create a boxed [`Sink`] from the given [`SinkConfig`], as a launch of
 /// its own.
 ///
@@ -1693,5 +1751,128 @@ retry:
             msg.contains("cargo build -F otlp"),
             "error must tell the user how to enable the feature, got: {msg}"
         );
+    }
+
+    /// One value of every `SinkConfig` variant compiled into this build.
+    #[cfg(feature = "config")]
+    fn every_sink_variant() -> Vec<SinkConfig> {
+        vec![
+            SinkConfig::Stdout,
+            SinkConfig::File {
+                path: "/tmp/out".to_string(),
+            },
+            SinkConfig::Tcp {
+                address: "127.0.0.1:1".to_string(),
+                retry: None,
+            },
+            SinkConfig::Udp {
+                address: "127.0.0.1:1".to_string(),
+            },
+            SinkConfig::Memory {
+                capture: false,
+                max_events: None,
+                capture_handle: None,
+            },
+            #[cfg(feature = "http")]
+            SinkConfig::HttpPush {
+                url: "http://127.0.0.1:1".to_string(),
+                content_type: None,
+                batch_size: None,
+                max_buffer_age: None,
+                headers: None,
+                retry: None,
+            },
+            #[cfg(not(feature = "http"))]
+            SinkConfig::HttpPushDisabled {},
+            #[cfg(feature = "remote-write")]
+            SinkConfig::RemoteWrite {
+                url: "http://127.0.0.1:1".to_string(),
+                batch_size: None,
+                max_buffer_age: None,
+                retry: None,
+            },
+            #[cfg(not(feature = "remote-write"))]
+            SinkConfig::RemoteWriteDisabled {},
+            #[cfg(feature = "kafka")]
+            SinkConfig::Kafka {
+                brokers: "127.0.0.1:1".to_string(),
+                topic: "t".to_string(),
+                max_buffer_age: None,
+                retry: None,
+                tls: None,
+                sasl: None,
+            },
+            #[cfg(not(feature = "kafka"))]
+            SinkConfig::KafkaDisabled {},
+            #[cfg(feature = "http")]
+            SinkConfig::Loki {
+                url: "http://127.0.0.1:1".to_string(),
+                batch_size: None,
+                max_streams_per_push: None,
+                max_buffer_age: None,
+                retry: None,
+            },
+            #[cfg(not(feature = "http"))]
+            SinkConfig::LokiDisabled {},
+            #[cfg(feature = "otlp")]
+            SinkConfig::OtlpGrpc {
+                endpoint: "http://127.0.0.1:1".to_string(),
+                signal_type: otlp_grpc::OtlpSignalType::Metrics,
+                batch_size: None,
+                max_buffer_age: None,
+                retry: None,
+            },
+            #[cfg(not(feature = "otlp"))]
+            SinkConfig::OtlpGrpcDisabled {},
+            #[cfg(feature = "gnmi")]
+            SinkConfig::GnmiTarget(gnmi::GnmiTargetConfig::new("127.0.0.1:0")),
+            #[cfg(not(feature = "gnmi"))]
+            SinkConfig::GnmiTargetDisabled {},
+        ]
+    }
+
+    /// `kind()` is the `type:` tag serde writes for every variant, and the tag
+    /// reads back as a sink of the same kind.
+    #[cfg(feature = "config")]
+    #[test]
+    fn kind_is_the_yaml_type_tag_of_every_variant() {
+        let sinks = every_sink_variant();
+        assert_eq!(sinks.len(), SinkConfig::KINDS.len());
+        for sink in &sinks {
+            let yaml = serde_yaml_ng::to_string(sink).expect("sink serializes");
+            let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("yaml parses");
+            let tag = value
+                .get("type")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_else(|| panic!("no type tag in {yaml}"));
+            assert_eq!(sink.kind(), tag, "{sink:?}");
+            let back: SinkConfig = serde_yaml_ng::from_str(&yaml).expect("sink round-trips");
+            assert_eq!(back.kind(), tag, "{yaml}");
+        }
+    }
+
+    /// `KINDS` is exactly the set of `type:` names the deserializer accepts,
+    /// read from serde's own "expected one of" list, and each name is the
+    /// `kind()` of one variant.
+    #[cfg(feature = "config")]
+    #[test]
+    fn kinds_are_exactly_the_accepted_type_names() {
+        let err = serde_yaml_ng::from_str::<SinkConfig>("type: no_such_sink")
+            .expect_err("an unknown type is rejected");
+        let msg = err.to_string();
+        let (_, list) = msg
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("serde names the variants: {msg}"));
+        // "`stdout`, `file`, … `gnmi_target` at line 1 column 7": the names are
+        // the backtick-quoted runs.
+        let accepted: Vec<&str> = list.split('`').skip(1).step_by(2).collect();
+        assert!(!accepted.is_empty(), "{msg}");
+        assert_eq!(accepted, SinkConfig::KINDS, "{msg}");
+
+        let mut kinds: Vec<&str> = every_sink_variant().iter().map(SinkConfig::kind).collect();
+        kinds.sort_unstable();
+        let mut expected = SinkConfig::KINDS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(kinds, expected);
     }
 }

@@ -273,26 +273,22 @@ fn log_generator_display(gen: &sonda_core::generator::LogGeneratorConfig) -> Str
 
 fn encoder_display(enc: &sonda_core::encoder::EncoderConfig) -> String {
     use sonda_core::encoder::EncoderConfig;
-    match enc {
-        EncoderConfig::PrometheusText { .. } => "prometheus_text".to_string(),
-        EncoderConfig::InfluxLineProtocol { .. } => "influx_lp".to_string(),
-        EncoderConfig::JsonLines { .. } => "json_lines".to_string(),
-        EncoderConfig::Syslog { .. } => "syslog".to_string(),
-        #[cfg(feature = "remote-write")]
-        EncoderConfig::RemoteWrite => "remote_write".to_string(),
-        #[cfg(not(feature = "remote-write"))]
-        EncoderConfig::RemoteWriteDisabled {} => "remote_write (disabled)".to_string(),
-        #[cfg(feature = "otlp")]
-        EncoderConfig::Otlp => "otlp".to_string(),
-        #[cfg(not(feature = "otlp"))]
-        EncoderConfig::OtlpDisabled {} => "otlp (disabled)".to_string(),
+    let detail = match enc {
         #[cfg(feature = "gnmi")]
-        EncoderConfig::Gnmi(cfg) => format!("gnmi ({})", cfg.origin),
+        EncoderConfig::Gnmi(cfg) => Some(cfg.origin.as_str()),
+        #[cfg(not(feature = "remote-write"))]
+        EncoderConfig::RemoteWriteDisabled {} => Some("disabled"),
+        #[cfg(not(feature = "otlp"))]
+        EncoderConfig::OtlpDisabled {} => Some("disabled"),
         #[cfg(not(feature = "gnmi"))]
-        EncoderConfig::GnmiDisabled {} => "gnmi (disabled)".to_string(),
+        EncoderConfig::GnmiDisabled {} => Some("disabled"),
         // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
-        // fall back to the Debug form so a future variant still renders.
-        other => format!("unknown ({other:?})"),
+        // every other variant renders as its bare name.
+        _ => None,
+    };
+    match detail {
+        Some(detail) => format!("{} ({detail})", enc.kind()),
+        None => enc.kind().to_string(),
     }
 }
 

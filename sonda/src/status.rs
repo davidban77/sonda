@@ -850,32 +850,28 @@ fn log_generator_display(gen: &LogGeneratorConfig) -> String {
 
 /// Format an encoder config as a human-readable display string.
 ///
-/// Includes the precision suffix when set (e.g. `"prometheus_text (precision: 2)"`).
+/// The name is [`EncoderConfig::kind`], followed by the precision when set
+/// (e.g. `"prometheus_text (precision: 2)"`), the origin for `gnmi`, or
+/// `(feature disabled)` for an encoder whose Cargo feature is off.
 fn encoder_display(encoder: &EncoderConfig) -> String {
-    let (name, precision) = match encoder {
-        EncoderConfig::PrometheusText { precision } => ("prometheus_text", *precision),
-        EncoderConfig::InfluxLineProtocol { precision, .. } => ("influx_lp", *precision),
-        EncoderConfig::JsonLines { precision } => ("json_lines", *precision),
-        EncoderConfig::Syslog { .. } => ("syslog", None),
-        #[cfg(feature = "remote-write")]
-        EncoderConfig::RemoteWrite => ("remote_write", None),
-        #[cfg(feature = "otlp")]
-        EncoderConfig::Otlp => ("otlp", None),
-        #[cfg(not(feature = "remote-write"))]
-        EncoderConfig::RemoteWriteDisabled { .. } => ("remote_write (feature disabled)", None),
-        #[cfg(not(feature = "otlp"))]
-        EncoderConfig::OtlpDisabled { .. } => ("otlp (feature disabled)", None),
+    let name = encoder.kind();
+    match encoder {
+        EncoderConfig::PrometheusText { precision: Some(p) }
+        | EncoderConfig::InfluxLineProtocol {
+            precision: Some(p), ..
+        }
+        | EncoderConfig::JsonLines { precision: Some(p) } => format!("{name} (precision: {p})"),
         #[cfg(feature = "gnmi")]
-        EncoderConfig::Gnmi(cfg) => return format!("gnmi ({})", cfg.origin),
+        EncoderConfig::Gnmi(cfg) => format!("{name} ({})", cfg.origin),
+        #[cfg(not(feature = "remote-write"))]
+        EncoderConfig::RemoteWriteDisabled {} => format!("{name} (feature disabled)"),
+        #[cfg(not(feature = "otlp"))]
+        EncoderConfig::OtlpDisabled {} => format!("{name} (feature disabled)"),
         #[cfg(not(feature = "gnmi"))]
-        EncoderConfig::GnmiDisabled { .. } => ("gnmi (feature disabled)", None),
+        EncoderConfig::GnmiDisabled {} => format!("{name} (feature disabled)"),
         // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
-        // fall back to a generic marker so a future variant still renders.
-        _ => ("unknown", None),
-    };
-    match precision {
-        Some(p) => format!("{name} (precision: {p})"),
-        None => name.to_string(),
+        // every other variant renders as its bare name.
+        _ => name.to_string(),
     }
 }
 
