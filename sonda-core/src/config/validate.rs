@@ -540,7 +540,7 @@ fn validate_gnmi_histogram(config: &HistogramScenarioConfig) -> Result<(), Sonda
     validate_gnmi_series_set(
         &config.encoder,
         &config.base,
-        &GnmiSeries::histogram(&config.name),
+        &GnmiSeries::histogram(config),
     )
 }
 
@@ -548,11 +548,7 @@ fn validate_gnmi_histogram(config: &HistogramScenarioConfig) -> Result<(), Sonda
 /// (with `quantile`), `<name>_sum` and `<name>_count` (without).
 #[cfg(feature = "gnmi")]
 fn validate_gnmi_summary(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
-    validate_gnmi_series_set(
-        &config.encoder,
-        &config.base,
-        &GnmiSeries::summary(&config.name),
-    )
+    validate_gnmi_series_set(&config.encoder, &config.base, &GnmiSeries::summary(config))
 }
 
 /// One series an entry emits, as the gnmi encoder sees it.
@@ -561,9 +557,10 @@ pub(crate) struct GnmiSeries {
     /// The metric name on the series' events.
     pub(crate) name: String,
     /// A label the runner adds to every event of this series (`le` for a
-    /// histogram bucket, `quantile` for a summary quantile). Each value is a
-    /// series of its own, so the template must reference it.
-    pub(crate) injected: Option<&'static str>,
+    /// histogram bucket, `quantile` for a summary quantile), with the values
+    /// it takes. Each value is a series of its own, so the template must
+    /// reference it.
+    pub(crate) injected: Option<(&'static str, super::LabelValueSet)>,
     /// The injected label of the entry's other series, which this one lacks.
     pub(crate) lacks: Option<&'static str>,
 }
@@ -586,8 +583,8 @@ pub(crate) fn gnmi_series(
 
     let (base, encoder, series) = match entry {
         ScenarioEntry::Metrics(c) => (&c.base, &c.encoder, GnmiSeries::metric(&c.name)),
-        ScenarioEntry::Histogram(c) => (&c.base, &c.encoder, GnmiSeries::histogram(&c.name)),
-        ScenarioEntry::Summary(c) => (&c.base, &c.encoder, GnmiSeries::summary(&c.name)),
+        ScenarioEntry::Histogram(c) => (&c.base, &c.encoder, GnmiSeries::histogram(c)),
+        ScenarioEntry::Summary(c) => (&c.base, &c.encoder, GnmiSeries::summary(c)),
         ScenarioEntry::Logs(_) => return None,
     };
     match encoder {
@@ -608,25 +605,35 @@ impl GnmiSeries {
         }]
     }
 
-    /// A histogram entry's series: `<name>_bucket` with `le`, `<name>_sum`
-    /// and `<name>_count` without it.
-    fn histogram(name: &str) -> Vec<GnmiSeries> {
-        Self::derived(name, "_bucket", "le")
-    }
-
-    /// A summary entry's series: `<name>` with `quantile`, `<name>_sum` and
-    /// `<name>_count` without it.
-    fn summary(name: &str) -> Vec<GnmiSeries> {
-        Self::derived(name, "", "quantile")
-    }
-
-    /// A histogram's or summary's series: `<name><suffix>` carrying `key`,
+    /// A histogram entry's series: `<name>_bucket` with `le`, taking the
+    /// values of [`HistogramGenerator::le_values`](crate::generator::histogram::HistogramGenerator::le_values),
     /// then `<name>_sum` and `<name>_count` without it.
-    fn derived(name: &str, suffix: &str, key: &'static str) -> Vec<GnmiSeries> {
+    fn histogram(config: &HistogramScenarioConfig) -> Vec<GnmiSeries> {
+        let le = crate::generator::histogram::HistogramGenerator::from_config(config).le_values();
+        Self::derived(&config.name, "_bucket", "le", le)
+    }
+
+    /// A summary entry's series: `<name>` with `quantile`, taking the values
+    /// of [`SummaryGenerator::quantile_values`](crate::generator::summary::SummaryGenerator::quantile_values),
+    /// then `<name>_sum` and `<name>_count` without it.
+    fn summary(config: &SummaryScenarioConfig) -> Vec<GnmiSeries> {
+        let quantile =
+            crate::generator::summary::SummaryGenerator::from_config(config).quantile_values();
+        Self::derived(&config.name, "", "quantile", quantile)
+    }
+
+    /// A histogram's or summary's series: `<name><suffix>` carrying `key`
+    /// with `values`, then `<name>_sum` and `<name>_count` without it.
+    fn derived(
+        name: &str,
+        suffix: &str,
+        key: &'static str,
+        values: Vec<String>,
+    ) -> Vec<GnmiSeries> {
         vec![
             GnmiSeries {
                 name: format!("{name}{suffix}"),
-                injected: Some(key),
+                injected: Some((key, super::LabelValueSet::Values(values))),
                 lacks: None,
             },
             GnmiSeries {
@@ -719,7 +726,7 @@ fn validate_gnmi_series(
     // Static and dynamic labels are on every event, as is the label the
     // runner adds to this series, so a template may reference them; spike
     // labels exist only inside their window.
-    let mut entry_labels: Vec<&str> = series.injected.into_iter().collect();
+    let mut entry_labels: Vec<&str> = series.injected.iter().map(|(key, _)| *key).collect();
     let mut spike_labels: Vec<&str> = Vec::new();
     for (key, source) in config.emitted_label_keys() {
         match source {
@@ -755,7 +762,7 @@ fn validate_gnmi_series(
             ))));
         }
     }
-    if let Some(key) = series.injected {
+    if let Some(&(key, _)) = series.injected.as_ref() {
         if !template.placeholders().any(|p| p == key) {
             return Err(SondaError::Config(ConfigError::invalid(format!(
                 "gnmi path template for series {:?} does not reference {{{key}}}; every \
@@ -824,9 +831,9 @@ fn validate_gnmi_series(
                 LabelValueSet::SpikeCounter {
                     prefix, outside, ..
                 }
-                | LabelValueSet::RandomShape { prefix, outside } => {
-                    (vec![prefixed(&prefix)], outside.map(|set| *set))
-                }
+                | LabelValueSet::RandomShape {
+                    prefix, outside, ..
+                } => (vec![prefixed(&prefix)], outside.map(|set| *set)),
             };
             layers.push(layer);
             next = outside;

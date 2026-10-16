@@ -27,6 +27,18 @@ pub(crate) fn splitmix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// The number behind the value at `index` of a `random` cardinality spike:
+/// `splitmix64(seed ^ index)`.
+pub(crate) fn random_spike_hash(seed: u64, index: u64) -> u64 {
+    splitmix64(seed ^ index)
+}
+
+/// The value at `index` of a `random` cardinality spike: `prefix` followed by
+/// [`random_spike_hash`] as 16 lowercase hexadecimal digits.
+pub(crate) fn random_spike_value(prefix: &str, seed: u64, index: u64) -> String {
+    format!("{prefix}{:016x}", random_spike_hash(seed, index))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +84,30 @@ mod tests {
             result, 16294208416658607535,
             "splitmix64(0) must match the canonical SplitMix64 output"
         );
+    }
+
+    #[test]
+    fn random_spike_hash_mixes_seed_and_index() {
+        assert_eq!(random_spike_hash(42, 0), splitmix64(42));
+        assert_eq!(random_spike_hash(42, 1), splitmix64(43));
+        assert_eq!(random_spike_hash(0, 7), random_spike_hash(7, 0));
+    }
+
+    #[test]
+    fn random_spike_value_is_prefix_and_sixteen_hex_digits() {
+        assert_eq!(random_spike_value("err-", 42, 0), "err-bdd732262feb6e95");
+        assert_eq!(random_spike_value("err-", 42, 1), "err-ba69ec90eb4fef88");
+        assert_eq!(random_spike_value("", 0, 0), "e220a8397b1dcdaf");
+    }
+
+    #[test]
+    fn random_spike_value_pads_to_sixteen_digits() {
+        let index = (0..u64::MAX)
+            .find(|&i| random_spike_hash(0, i) >> 60 == 0)
+            .expect("some index in range hashes below 2^60");
+        let value = random_spike_value("p", 0, index);
+        assert_eq!(value.len(), 17, "{value}");
+        assert!(value.starts_with("p0"), "{value}");
     }
 
     #[test]

@@ -321,26 +321,27 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
 ///   text, a literal and a placeholder when the label can take that value,
 ///   and two placeholders when their labels can take a common value
 ///   ([`label_value_set`](crate::config::BaseScheduleConfig::label_value_set),
-///   [`overlaps`](crate::config::LabelValueSet::overlaps)). A series' target
-///   is the value of the encoder's `target_label`, or empty on events that do
-///   not carry it, and two targets meet when their value sets overlap,
+///   [`overlaps`](crate::config::LabelValueSet::overlaps)). A histogram's
+///   `le` takes each bucket bound as the runner formats it and `+Inf`, and a
+///   summary's `quantile` each quantile as the runner formats it. A series'
+///   target is the value of the encoder's `target_label`, or empty on events
+///   that do not carry it, and two targets meet when their value sets overlap,
 ///   whichever label each encoder takes its target from. Its listen address
 ///   is the `gnmi_target` sink's: entries on different addresses never share
 ///   a leaf, an entry on port 0 binds a target of its own, and an entry whose
 ///   `listen` does not parse is left to per-entry validation. Series on one
 ///   address are compared pairwise.
 ///
-/// Three comparisons are approximate:
+/// Two comparisons are approximate:
 ///
-/// - The values of a `random` cardinality spike are known only by their
-///   shape, its prefix followed by 16 lowercase hex digits, so it meets any
-///   value of that shape, and the error says the two metrics may collide.
 /// - Each element name, key value and target is compared on its own, so a
 ///   label used in two places is matched in each place separately. This can
 ///   reject two series that never write the same leaf, and never misses one.
-/// - A histogram's `{le}` and a summary's `{quantile}` are compared by name:
-///   each meets only the same placeholder, so a literal or another label
-///   holding one of their values is missed.
+/// - A `random` cardinality spike's values are compared one by one up to
+///   [`MAX_ENUMERATED_SPIKE`](crate::config::MAX_ENUMERATED_SPIKE) values. A
+///   larger spike's values are compared by their shape only, its prefix
+///   followed by 16 lowercase hex digits, so it meets any value of that
+///   shape, and the error says the two metrics may collide.
 ///
 /// An entry whose encoder config does not build, or that has no template for
 /// a series, is left to per-entry validation.
@@ -349,7 +350,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
     use std::net::SocketAddr;
 
     use crate::config::validate::gnmi_series;
-    use crate::config::{LabelValueSet, Overlap};
+    use crate::config::{LabelValueSet, Overlap, MAX_ENUMERATED_SPIKE};
     use crate::encoder::gnmi::path::NAME_PLACEHOLDER;
     use crate::encoder::gnmi::proto::Path;
     use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
@@ -438,40 +439,24 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         /// The values of `Path.target`: the target label's values, and the
         /// empty target wherever an event does not carry it.
         target: LabelValueSet,
-        /// Each label placeholder of the leaf, with its label's values.
+        /// Each label placeholder of the leaf, with its label's values; the
+        /// label the runner adds to this series takes the values it gives it.
         labels: Vec<(String, Option<LabelValueSet>)>,
-        /// The label the runner adds to this series, compared by name.
-        injected: Option<&'static str>,
     }
 
     /// One element name or key value of a leaf.
     enum Term<'a> {
         Literal(&'a str),
-        Injected(&'a str),
         Label(&'a str, Option<&'a LabelValueSet>),
     }
 
     fn term<'a>(writer: &'a Writer<'_>, rendered: &'a str) -> Term<'a> {
         match rendered.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
             None => Term::Literal(rendered),
-            Some(label) if Some(label) == writer.injected => Term::Injected(label),
             Some(label) => match writer.labels.iter().find(|(known, _)| known == label) {
                 Some((known, set)) => Term::Label(known, set.as_ref()),
                 None => Term::Label(label, None),
             },
-        }
-    }
-
-    /// Whether a set has a `random` spike's values.
-    fn from_random_spike(set: &LabelValueSet) -> bool {
-        match set {
-            LabelValueSet::RandomShape { .. } => true,
-            LabelValueSet::SpikeCounter { outside, .. } => {
-                outside.as_deref().is_some_and(from_random_spike)
-            }
-            LabelValueSet::Static(_) | LabelValueSet::Values(_) | LabelValueSet::Counter { .. } => {
-                false
-            }
         }
     }
 
@@ -493,9 +478,13 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             },
             Some(LabelValueSet::RandomShape {
                 prefix,
+                seed,
+                cardinality,
                 outside: closed,
             }) => LabelValueSet::RandomShape {
                 prefix,
+                seed,
+                cardinality,
                 outside: outside(closed),
             },
             Some(set) => set,
@@ -504,7 +493,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
 
     /// Whether element name or key value `x` of `a` can equal `y` of `b`.
     /// A meeting by a random spike's shape records the labels whose values
-    /// are a random spike's in `shaped`.
+    /// are compared by shape in `shaped`.
     fn terms_meet<'a>(
         a: &'a Writer<'_>,
         x: &'a str,
@@ -514,11 +503,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
     ) -> bool {
         let (left, right) = (term(a, x), term(b, y));
         let overlap = match (&left, &right) {
-            (Term::Literal(x), Term::Literal(y)) | (Term::Injected(x), Term::Injected(y))
-                if x == y =>
-            {
-                Overlap::Certain
-            }
+            (Term::Literal(x), Term::Literal(y)) if x == y => Overlap::Certain,
             (Term::Literal(value), Term::Label(_, Some(set)))
             | (Term::Label(_, Some(set)), Term::Literal(value)) => set.meets_value(value),
             (Term::Label(_, Some(set)), Term::Label(_, Some(other))) => set.meets(other),
@@ -527,7 +512,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         if overlap == Overlap::ByShape {
             for (writer, side) in [(a, &left), (b, &right)] {
                 if let Term::Label(label, Some(set)) = side {
-                    if from_random_spike(set) {
+                    if set.compared_by_shape() {
                         shaped.push((writer.name, label));
                     }
                 }
@@ -558,7 +543,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             Overlap::Disjoint => return None,
             Overlap::ByShape => {
                 for side in [other, writer] {
-                    if from_random_spike(&side.target) {
+                    if side.target.compared_by_shape() {
                         shaped.push((side.name, side.target_label));
                     }
                 }
@@ -612,12 +597,13 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             .collect();
         Some(format!(
             "metrics `{}` and `{}` may collide on the gnmi leaf `{}`{spelled}{on_target}: the \
-             values of {} come from a random cardinality spike and are compared by their prefix \
-             and 16 hex digits only; {advice}",
+             values of {} come from a random cardinality spike of more than {} values and are \
+             compared by their prefix and 16 hex digits only; {advice}",
             other.name,
             writer.name,
             other.leaf,
-            random_labels.join(" and ")
+            random_labels.join(" and "),
+            MAX_ENUMERATED_SPIKE
         ))
     }
 
@@ -656,9 +642,14 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             leaf.origin.clone_from(&cfg.origin);
             let mut values: Vec<(String, Option<LabelValueSet>)> = Vec::new();
             for (label, _) in &symbols {
-                if Some(*label) != one.injected && !values.iter().any(|(known, _)| known == label) {
-                    values.push((label.to_string(), base.label_value_set(label)));
+                if values.iter().any(|(known, _)| known == label) {
+                    continue;
                 }
+                let set = match &one.injected {
+                    Some((key, injected)) if key == label => Some(injected.clone()),
+                    _ => base.label_value_set(label),
+                };
+                values.push((label.to_string(), set));
             }
 
             let writer = Writer {
@@ -668,7 +659,6 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
                 target_label: cfg.target_label.as_str(),
                 target: target.clone(),
                 labels: values,
-                injected: one.injected,
             };
             if let Some(message) = writers
                 .iter()
@@ -1064,6 +1054,8 @@ mod tests {
     use crate::encoder::EncoderConfig;
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use crate::sink::SinkConfig;
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    use crate::{config::MAX_ENUMERATED_SPIKE, util::random_spike_value};
 
     // ---- Helpers ------------------------------------------------------------
 
@@ -3241,19 +3233,35 @@ scenarios:
     /// and `device_1` while it is open, `leaf-2` otherwise.
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const LEAF_2_DEFAULT_SPIKE_ETH0: &str = "    labels:\n      device: leaf-2\n      ifName: eth0\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: 2\n";
-    /// A random spike over `device`: `pod-` and 16 hex digits while it is
-    /// open, `leaf-2` otherwise.
     #[cfg(all(feature = "gnmi", feature = "config"))]
-    const LEAF_2_RANDOM_SPIKE_ETH0: &str = "    labels:\n      device: leaf-2\n      ifName: eth0\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: 2\n        strategy: random\n        prefix: pod-\n";
+    const LEAF_2_ETH0: &str = "    labels:\n      device: leaf-2\n      ifName: eth0\n";
+    /// A random spike of `cardinality` values over `device`: `pod-` and 16
+    /// hex digits while it is open, `leaf-2` otherwise.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn leaf_2_random_spike_eth0(cardinality: u64) -> String {
+        format!("    labels:\n      device: leaf-2\n      ifName: eth0\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: {cardinality}\n        strategy: random\n        prefix: pod-\n")
+    }
+    /// `device` set to `device`, `ifName` to `eth0`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn device_eth0(device: &str) -> String {
+        format!("    labels:\n      device: {device}\n      ifName: eth0\n")
+    }
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const POD_SHAPED_ETH0: &str =
         "    labels:\n      device: pod-0123456789abcdef\n      ifName: eth0\n";
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const POD_3_ETH0: &str = "    labels:\n      device: pod-3\n      ifName: eth0\n";
-    /// A random spike over `ifName`: `eth` and 16 hex digits while it is
-    /// open, `eth1` otherwise.
+    /// A random spike of `cardinality` values over `ifName`: `eth` and 16
+    /// hex digits while it is open, `eth1` otherwise.
     #[cfg(all(feature = "gnmi", feature = "config"))]
-    const LEAF_1_RANDOM_IFNAME: &str = "    labels:\n      device: leaf-1\n      ifName: eth1\n    cardinality_spikes:\n      - label: ifName\n        every: 10s\n        for: 5s\n        cardinality: 2\n        strategy: random\n        prefix: eth\n";
+    fn leaf_1_random_ifname(cardinality: u64) -> String {
+        format!("    labels:\n      device: leaf-1\n      ifName: eth1\n    cardinality_spikes:\n      - label: ifName\n        every: 10s\n        for: 5s\n        cardinality: {cardinality}\n        strategy: random\n        prefix: eth\n")
+    }
+    /// `device` set to `leaf-1`, `ifName` to `if_name`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn leaf_1_ifname(if_name: &str) -> String {
+        format!("    labels:\n      device: leaf-1\n      ifName: {if_name}\n")
+    }
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const LEAF_1_ETH_SHAPED: &str =
         "    labels:\n      device: leaf-1\n      ifName: eth0123456789abcdef\n";
@@ -3272,14 +3280,20 @@ scenarios:
     #[case::static_eth0_and_dynamic_eth0_eth1(LEAF_1_ETH0, LEAF_1_DYNAMIC_ETH0_ETH1, Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`, each overwriting the other"))]
     #[case::static_leaf_1_and_default_spike_over_leaf_2(LEAF_1_ETH0, LEAF_2_DEFAULT_SPIKE_ETH0, None)]
     #[case::no_target_and_dynamic_leaf_1_leaf_2(NO_TARGET_ETH0, DYNAMIC_LEAF_1_LEAF_2_ETH0, None)]
-    #[case::random_spike_target_and_a_value_of_its_shape(POD_SHAPED_ETH0, LEAF_2_RANDOM_SPIKE_ETH0, Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label: the values of `device` of `out_octets` come from a random cardinality spike"))]
-    #[case::random_spike_target_and_a_value_of_another_shape(POD_3_ETH0, LEAF_2_RANDOM_SPIKE_ETH0, None)]
-    #[case::random_spike_placeholder_and_a_value_of_its_shape(LEAF_1_ETH_SHAPED, LEAF_1_RANDOM_IFNAME, Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`: the values of `ifName` of `out_octets` come from a random cardinality spike"))]
+    #[case::random_spike_target_and_its_first_value(&device_eth0(&random_spike_value("pod-", 0, 0)), &leaf_2_random_spike_eth0(2), Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label, each overwriting the other"))]
+    #[case::random_spike_target_and_an_unlisted_value_of_its_shape(POD_SHAPED_ETH0, &leaf_2_random_spike_eth0(2), None)]
+    #[case::random_spike_target_past_the_cap(POD_SHAPED_ETH0, &leaf_2_random_spike_eth0(MAX_ENUMERATED_SPIKE + 1), Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label: the values of `device` of `out_octets` come from a random cardinality spike of more than 65536 values"))]
+    #[case::random_spike_target_past_the_cap_and_a_value_of_another_shape(POD_3_ETH0, &leaf_2_random_spike_eth0(MAX_ENUMERATED_SPIKE + 1), None)]
+    #[case::random_spike_placeholder_and_its_second_value(&leaf_1_ifname(&random_spike_value("eth", 0, 1)), &leaf_1_random_ifname(2), Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`, each overwriting the other"))]
+    #[case::random_spike_placeholder_and_an_unlisted_value_of_its_shape(LEAF_1_ETH_SHAPED, &leaf_1_random_ifname(2), None)]
+    #[case::random_spike_placeholder_past_the_cap(LEAF_1_ETH_SHAPED, &leaf_1_random_ifname(MAX_ENUMERATED_SPIKE + 1), Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`: the values of `ifName` of `out_octets` come from a random cardinality spike of more than 65536 values"))]
+    #[case::static_leaf_2_and_a_spike_over_leaf_2(LEAF_2_ETH0, LEAF_2_DEFAULT_SPIKE_ETH0, Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label, each overwriting the other"))]
     fn gnmi_leaves_and_targets_meet_by_label_values(
         #[case] in_octets: &str,
         #[case] out_octets: &str,
         #[case] rejected_with: Option<&str>,
     ) {
+
         let entries = compile_entries(&one_address(in_octets, out_octets), &Default::default());
         let names: Vec<&str> = entries.iter().map(|e| e.base().name.as_str()).collect();
         assert_eq!(names, ["in_octets", "out_octets"], "the file must compile to both metrics");
@@ -3290,6 +3304,100 @@ scenarios:
             Some(text) => {
                 let msg = prepare_entries(entries)
                     .expect_err("the two metrics can write one leaf on one target")
+                    .to_string();
+                assert!(msg.contains(text), "{msg}");
+            }
+        }
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn metric_yaml(name: &str) -> String {
+        format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n")
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn histogram_yaml(name: &str, buckets: &str) -> String {
+        format!("  - signal_type: histogram\n    name: {name}\n    buckets: {buckets}\n    distribution: {{type: exponential, rate: 10.0}}\n")
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn summary_yaml(name: &str, quantiles: &str) -> String {
+        format!("  - signal_type: summary\n    name: {name}\n    quantiles: {quantiles}\n    distribution: {{type: exponential, rate: 10.0}}\n")
+    }
+
+    /// `paths:` entries giving `series` the template `leaf` and each of
+    /// `derived`'s `_sum` and `_count` series a leaf of its own.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn leaf_paths(series: &[(&str, &str)], derived: &[&str]) -> String {
+        let mut paths: String = series
+            .iter()
+            .map(|(name, leaf)| format!("      {name}: \"{leaf}\"\n"))
+            .collect();
+        for name in derived {
+            paths.push_str(&format!("      {name}_sum: \"/{name}/{{name}}\"\n      {name}_count: \"/{name}/{{name}}\"\n"));
+        }
+        paths
+    }
+
+    /// A histogram's `le` and a summary's `quantile` take the values their
+    /// runners give them: each meets a literal or another label holding one
+    /// of those values, `le` and `quantile` meet where a bound and a
+    /// quantile format alike, and two histograms always share `+Inf`.
+    /// `None` means the file prepares; otherwise the error contains the
+    /// given text.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::literal_le_and_a_bucket_of_that_bound(
+        leaf_paths(&[("m", "/latency[le=0.5]/bucket"), ("h_bucket", "/latency[le={le}]/bucket")], &["h"]),
+        metric_yaml("m") + &histogram_yaml("h", "[0.5, 2.0]"),
+        Some("metrics `m` and `h_bucket` would both write the gnmi leaf `openconfig:/latency[le=0.5]/bucket` (`h_bucket` writes it as `openconfig:/latency[le={le}]/bucket`) with no target"),
+    )]
+    #[case::literal_le_and_no_bucket_of_that_bound(
+        leaf_paths(&[("m", "/latency[le=0.5]/bucket"), ("h_bucket", "/latency[le={le}]/bucket")], &["h"]),
+        metric_yaml("m") + &histogram_yaml("h", "[0.25, 1]"),
+        None,
+    )]
+    #[case::literal_quantile_and_a_quantile_of_that_value(
+        leaf_paths(&[("m", "/rpc[quantile=0.5]/q"), ("s", "/rpc[quantile={quantile}]/q")], &["s"]),
+        metric_yaml("m") + &summary_yaml("s", "[0.5, 0.9]"),
+        Some("metrics `m` and `s` would both write the gnmi leaf `openconfig:/rpc[quantile=0.5]/q` (`s` writes it as `openconfig:/rpc[quantile={quantile}]/q`) with no target"),
+    )]
+    #[case::literal_quantile_and_no_quantile_of_that_value(
+        leaf_paths(&[("m", "/rpc[quantile=0.5]/q"), ("s", "/rpc[quantile={quantile}]/q")], &["s"]),
+        metric_yaml("m") + &summary_yaml("s", "[0.25, 0.75]"),
+        None,
+    )]
+    #[case::le_and_quantile_formatting_alike(
+        leaf_paths(&[("h_bucket", "/stats[v={le}]/x"), ("s", "/stats[v={quantile}]/x")], &["h", "s"]),
+        histogram_yaml("h", "[0.5, 2.0]") + &summary_yaml("s", "[0.5, 0.9]"),
+        Some("metrics `h_bucket` and `s` would both write the gnmi leaf `openconfig:/stats[v={le}]/x` (`s` writes it as `openconfig:/stats[v={quantile}]/x`) with no target"),
+    )]
+    #[case::le_and_quantile_formatting_apart(
+        leaf_paths(&[("h_bucket", "/stats[v={le}]/x"), ("s", "/stats[v={quantile}]/x")], &["h", "s"]),
+        histogram_yaml("h", "[0.25, 2.0]") + &summary_yaml("s", "[0.5, 0.9]"),
+        None,
+    )]
+    #[case::two_histograms_with_no_finite_bound_in_common(
+        leaf_paths(&[("a_bucket", "/latency[le={le}]/bucket"), ("b_bucket", "/latency[le={le}]/bucket")], &["a", "b"]),
+        histogram_yaml("a", "[0.25]") + &histogram_yaml("b", "[0.5]"),
+        Some("metrics `a_bucket` and `b_bucket` would both write the gnmi leaf `openconfig:/latency[le={le}]/bucket` with no target"),
+    )]
+    fn gnmi_le_and_quantile_meet_by_their_values(
+        #[case] paths: String,
+        #[case] scenarios: String,
+        #[case] rejected_with: Option<&str>,
+    ) {
+        let entries = compile_entries(&shared_encoder_file(&paths, &scenarios), &Default::default());
+        let names: Vec<&str> = entries.iter().map(|e| e.base().name.as_str()).collect();
+        assert_eq!(names.len(), 2, "the file must compile to both entries: {names:?}");
+        match rejected_with {
+            None => {
+                prepare_entries(entries).expect("the two entries never write one leaf");
+            }
+            Some(text) => {
+                let msg = prepare_entries(entries)
+                    .expect_err("the two entries can write one leaf")
                     .to_string();
                 assert!(msg.contains(text), "{msg}");
             }

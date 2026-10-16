@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::HistogramScenarioConfig;
 use crate::encoder::create_encoder;
-use crate::generator::histogram::HistogramGenerator;
+use crate::generator::histogram::{format_le_value, HistogramGenerator, INF_BUCKET};
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use crate::schedule::core_loop::{self, GateContext, TickContext, TickOutput, TickResult};
 use crate::schedule::is_in_spike;
@@ -87,7 +87,7 @@ pub async fn run_with_sink_gated(
         .collect();
     let prebuilt_inf_labels: Arc<Labels> = {
         let mut bl = (*labels).clone();
-        bl.insert("le".to_string(), "+Inf".to_string());
+        bl.insert("le".to_string(), INF_BUCKET.to_string());
         Arc::new(bl)
     };
     // _count and _sum share the base labels (no `le`).
@@ -237,19 +237,6 @@ pub async fn run_with_sink_gated(
     }
 }
 
-/// Format a bucket boundary as the `le` label value.
-///
-/// Uses Prometheus conventions: integer values render without decimal point,
-/// otherwise uses the default f64 formatting.
-fn format_le_value(bound: f64) -> String {
-    if bound == bound.trunc() && !bound.is_infinite() {
-        // Integer value — format without unnecessary decimal places.
-        format!("{}", bound as i64)
-    } else {
-        format!("{}", bound)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -379,6 +366,51 @@ mod tests {
         );
     }
 
+    /// The leaf check's `le` values for a histogram are exactly the `le`
+    /// labels this runner emits for the same config.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn leaf_check_le_values_are_the_le_labels_the_runner_emits() {
+        use std::collections::BTreeSet;
+
+        use crate::config::validate::gnmi_series;
+        use crate::config::{LabelValueSet, ScenarioEntry};
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+
+        let config = make_config(50.0, "200ms", Some(vec![0.5, 2.0]));
+        let (mut sink, seen) = routing_probe(true);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("histogram run must succeed");
+        let emitted: BTreeSet<String> = seen
+            .lock()
+            .expect("probe mutex poisoned")
+            .events
+            .iter()
+            .filter(|e| e.name == "http_request_duration_seconds_bucket")
+            .filter_map(|e| e.label("le").map(str::to_string))
+            .collect();
+        assert_eq!(emitted.len(), 3, "two finite bounds plus +Inf: {emitted:?}");
+
+        let mut gnmi = config.clone();
+        gnmi.encoder = EncoderConfig::Gnmi(Default::default());
+        let (_, _, series) =
+            gnmi_series(&ScenarioEntry::Histogram(gnmi)).expect("a gnmi histogram has series");
+        let bucket = series
+            .iter()
+            .find(|s| s.name == "http_request_duration_seconds_bucket")
+            .expect("the bucket series is checked");
+        let Some((key, LabelValueSet::Values(values))) = &bucket.injected else {
+            panic!(
+                "the bucket series carries its le values: {:?}",
+                bucket.injected
+            );
+        };
+        assert_eq!(*key, "le");
+        let checked: BTreeSet<String> = values.iter().cloned().collect();
+        assert_eq!(checked, emitted);
+    }
+
     /// A histogram never hands the event to a sink that did not opt in.
     #[tokio::test]
     async fn sink_that_does_not_opt_in_receives_only_plain_writes() {
@@ -505,21 +537,6 @@ mod tests {
             output.contains("le=\"+Inf\""),
             "expected le=\"+Inf\" in output"
         );
-    }
-
-    // ---- format_le_value ----------------------------------------------------
-
-    #[test]
-    fn format_le_integer_value() {
-        assert_eq!(super::format_le_value(1.0), "1");
-        assert_eq!(super::format_le_value(10.0), "10");
-    }
-
-    #[test]
-    fn format_le_fractional_value() {
-        assert_eq!(super::format_le_value(0.005), "0.005");
-        assert_eq!(super::format_le_value(0.025), "0.025");
-        assert_eq!(super::format_le_value(2.5), "2.5");
     }
 
     // ---- Labels from config are included ------------------------------------
