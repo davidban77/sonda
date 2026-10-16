@@ -43,7 +43,11 @@ src/
 │   ├── events.rs       ← POST /events: synchronous single-event emission. Tagged-enum
 │                         request body, dispatches on signal_type, builds LogEvent/MetricEvent,
 │                         awaits sonda_core::emit::{emit_log, emit_metric} directly.
-│                         Maps SondaError variants to HTTP status (Config→422, Sink→502, others→500).
+│                         Maps SondaError variants to HTTP status (Config→422,
+│                         Encoder(EventRejected)→422, Sink→502, others→500). A
+│                         gnmi_target sink joins a running scenario's target and
+│                         never binds; with none on the address, or for a path that
+│                         target does not serve, the event is a 422.
 │   ├── sink_warnings.rs ← shared loopback pre-flight helpers (extract_host,
 │                          is_loopback_host, sink_loopback_warnings, collect_warnings_for_sink,
 │                          log_warnings) used by both /scenarios and /events.
@@ -64,6 +68,9 @@ src/
 │                         or post_multi_scenario(), list_scenarios(),
 │                         get_scenario(), get_scenario_stats(),
 │                         get_scenario_metrics(), delete_scenario().
+│                         launch_multi_compiled runs check_running_sinks before
+│                         launching: an entry a running sink refuses (a
+│                         gnmi_target address) is a Config error, so a 422.
 ├── locks.rs            ← RecoveringLock: the RwLock wrapper that owns the poison policy —
 │                         recovers the guard, counts the recovery per lock, and carries the
 │                         per-lock safety argument in its module docs

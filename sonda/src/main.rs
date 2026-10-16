@@ -506,27 +506,21 @@ fn launch_and_join_prepared(
 ) -> anyhow::Result<()> {
     let run_start = Instant::now();
     let scenario_count = prepared.len();
-    let mut handles = Vec::with_capacity(scenario_count);
     let mut clock_groups: Vec<(Option<String>, Option<bool>)> = Vec::with_capacity(scenario_count);
 
-    for (i, p) in prepared.into_iter().enumerate() {
+    for (i, p) in prepared.iter().enumerate() {
         let position = Some((i + 1, scenario_count));
         status::print_start(&p.entry, verbosity, position);
         clock_groups.push((
             p.entry.clock_group().map(|s| s.to_string()),
             p.entry.clock_group_is_auto(),
         ));
-        let id = format!("{id_prefix}-{i}");
-        let handle = rt
-            .block_on(sonda_core::launch_scenario(
-                id,
-                p.entry,
-                cancel.child_token(),
-                p.start_delay,
-            ))
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        handles.push(handle);
     }
+    // The entries of one file are one launch, so their sinks share what a
+    // launch shares (a gnmi path two entries render).
+    let handles = rt
+        .block_on(sonda_core::launch_prepared(prepared, id_prefix, cancel))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let progress = maybe_start_progress_multi(&handles, verbosity);
 

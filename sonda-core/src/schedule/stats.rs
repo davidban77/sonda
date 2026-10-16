@@ -6,13 +6,13 @@ use std::time::{Instant, SystemTime};
 
 use serde::Serialize;
 
-use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+use crate::model::metric::MetricEvent;
 
-/// Dedup key for the close-emit series set: a distinct `(name, labels)` pair.
-pub type CloseEmitKey = (ValidatedMetricName, Arc<Labels>);
+/// Dedup key for the close-emit series set: the series key, [`MetricKey`].
+pub type CloseEmitKey = MetricKey;
 
 /// Series identity for the [`ScenarioStats::current_values`] map.
-pub type MetricKey = (ValidatedMetricName, Arc<Labels>);
+pub use crate::model::metric::MetricKey;
 
 /// How long since the last successful delivery before a failing scenario is
 /// considered degraded, in nanoseconds (30 seconds).
@@ -215,6 +215,7 @@ impl ScenarioStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::metric::{Labels, ValidatedMetricName};
 
     // ---- Default: all counters zero, all flags false -------------------------
 

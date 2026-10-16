@@ -349,3 +349,93 @@ fn assert_verdicts_agree(run: &std::process::Output, dry: &std::process::Output)
         );
     }
 }
+
+/// Two entries of one file, without `while:`, that render one gnmi leaf: the
+/// second starts later and outlives the first. `{addr}` is the listen address.
+#[cfg(feature = "gnmi")]
+const SHARED_LEAF_FILE: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 20
+  duration: 600ms
+  encoder:
+    type: gnmi
+    origin: openconfig
+    path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+  sink:
+    type: gnmi_target
+    listen: "{addr}"
+  labels:
+    device: r1
+    ifName: eth0
+scenarios:
+  - id: first
+    signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+  - id: second
+    signal_type: metrics
+    name: in_octets
+    phase_offset: 300ms
+    generator:
+      type: constant
+      value: 2.0
+"#;
+
+/// A loopback address with a port nothing listens on, read back from an
+/// ephemeral bind.
+#[cfg(feature = "gnmi")]
+fn free_loopback_addr() -> std::net::SocketAddr {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("bind an ephemeral port")
+}
+
+/// The entries of one ungated file are one launch, so two of them may share
+/// a gnmi leaf: `sonda run` runs both to completion and exits 0, and the
+/// same file runs to completion through `run_multi`.
+#[cfg(feature = "gnmi")]
+#[test]
+fn run_shares_a_gnmi_leaf_between_entries_of_one_file() {
+    let addr = free_loopback_addr();
+    let yaml = SHARED_LEAF_FILE.replace("{addr}", &addr.to_string());
+    let dir = tempfile::tempdir().expect("temp dir");
+    let file = dir.path().join("shared-leaf.yaml");
+    std::fs::write(&file, &yaml).expect("write the scenario");
+
+    let output = Command::new(sonda_bin())
+        .args(["--quiet", "run"])
+        .arg(&file)
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "sonda run failed: {:?}\nstderr:\n{stderr}",
+        output.status.code(),
+    );
+    assert!(
+        !stderr.contains("already published"),
+        "an entry was refused the shared leaf:\n{stderr}"
+    );
+
+    let compiled = sonda_core::compile_scenario_file_compiled(
+        &yaml,
+        &sonda_core::compiler::expand::InMemoryPackResolver::new(),
+    )
+    .expect("compile");
+    let entries = sonda_core::compiler::prepare::prepare(compiled).expect("prepare");
+    assert_eq!(entries.len(), 2);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(sonda_core::schedule::multi_runner::run_multi(
+            entries,
+            sonda_core::CancellationToken::new(),
+        ))
+        .expect("run_multi runs both entries to completion");
+}
