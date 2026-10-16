@@ -25,13 +25,16 @@ impl SubscriptionMatcher {
     ///   a `STREAM` list a subscription's mode, is a number gNMI does not
     ///   define. A `ONCE` list's subscription modes are not read.
     /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list, an
-    ///   `ON_CHANGE` subscription in a `STREAM` list, an encoding other than
-    ///   `PROTO`, or a path element named `*` or `...`.
+    ///   `ON_CHANGE` subscription in a `STREAM` list, a `BYTES`, `ASCII` or
+    ///   `JSON_IETF` encoding, or a path element named `*` or `...`.
+    ///
+    /// `PROTO` and `JSON` are accepted and both served as `PROTO`: `JSON` is
+    /// encoding 0, which is also what a list that sets no encoding carries.
     pub fn new(list: &proto::SubscriptionList) -> Result<Self, Status> {
         let encoding = Encoding::try_from(list.encoding).map_err(|_| {
             Status::invalid_argument(format!("unknown gnmi encoding {}", list.encoding))
         })?;
-        if encoding != Encoding::Proto {
+        if !matches!(encoding, Encoding::Proto | Encoding::Json) {
             return Err(Status::unimplemented(format!(
                 "encoding {} is not supported; this target encodes PROTO only",
                 encoding_name(encoding)
@@ -270,8 +273,6 @@ mod tests {
     #[rstest::rstest]
     #[case::poll_list(subscription_list::Mode::Poll as i32, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "POLL")]
     #[case::on_change(subscription_list::Mode::Stream as i32, SubscriptionMode::OnChange as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "ON_CHANGE")]
-    #[case::json_encoding(subscription_list::Mode::Stream as i32, SubscriptionMode::Sample as i32, Encoding::Json as i32, tonic::Code::Unimplemented, "JSON")]
-    #[case::json_ietf_encoding(subscription_list::Mode::Stream as i32, SubscriptionMode::Sample as i32, Encoding::JsonIetf as i32, tonic::Code::Unimplemented, "JSON_IETF")]
     #[case::unknown_list_mode(9, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_mode(subscription_list::Mode::Stream as i32, 9, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_encoding(subscription_list::Mode::Stream as i32, SubscriptionMode::Sample as i32, 9, tonic::Code::InvalidArgument, "encoding 9")]
@@ -289,6 +290,37 @@ mod tests {
         let status = SubscriptionMatcher::new(&list).expect_err("refused");
         assert_eq!(status.code(), code, "{}", status.message());
         assert!(status.message().contains(named), "{}", status.message());
+    }
+
+    /// An encoding this target does not serve is refused, naming it and
+    /// the one served.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bytes(Encoding::Bytes, "BYTES")]
+    #[case::ascii(Encoding::Ascii, "ASCII")]
+    #[case::json_ietf(Encoding::JsonIetf, "JSON_IETF")]
+    fn refused_encodings_name_the_request_and_proto(
+        #[case] encoding: Encoding,
+        #[case] named: &str,
+    ) {
+        let mut list = list(&["/interfaces"]);
+        list.encoding = encoding as i32;
+        let status = SubscriptionMatcher::new(&list).expect_err("refused");
+        assert_eq!(status.code(), tonic::Code::Unimplemented, "{}", status.message());
+        assert!(status.message().contains(named), "{}", status.message());
+        assert!(status.message().contains("PROTO"), "{}", status.message());
+    }
+
+    /// PROTO is accepted, and so is JSON: encoding 0, which a list that sets
+    /// no encoding also carries.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::proto(Encoding::Proto)]
+    #[case::json_or_unset(Encoding::Json)]
+    fn served_encodings_are_accepted(#[case] encoding: Encoding) {
+        let mut list = list(&["/interfaces"]);
+        list.encoding = encoding as i32;
+        assert!(SubscriptionMatcher::new(&list).is_ok());
     }
 
     /// The modes this target serves are accepted, and in a ONCE list the

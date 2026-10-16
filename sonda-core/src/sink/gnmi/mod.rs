@@ -74,8 +74,9 @@ pub struct GnmiTargetConfig {
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_subscribers: Option<usize>,
-    /// Broadcast capacity per target, 1 to 65536. Default 1024. Every sink
-    /// on one address must use the same value.
+    /// Broadcast capacity per target, 1 to 65536; it takes effect with
+    /// ON_CHANGE subscriptions. Default 1024. Every sink on one address must
+    /// use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = MAX_SUBSCRIBER_BUFFER)))]
     pub subscriber_buffer: Option<usize>,
@@ -152,6 +153,8 @@ impl GnmiTargetConfig {
             max_subscribers,
             subscriber_buffer,
             sample_floor,
+            keepalive_interval: target::KEEPALIVE_INTERVAL,
+            keepalive_timeout: target::KEEPALIVE_TIMEOUT,
         })
     }
 }
@@ -164,6 +167,13 @@ pub(crate) struct TargetSettings {
     pub(crate) max_subscribers: usize,
     pub(crate) subscriber_buffer: usize,
     pub(crate) sample_floor: Duration,
+    /// How long an HTTP/2 connection may be silent before the server pings
+    /// it. [`target::KEEPALIVE_INTERVAL`] except in tests; not configurable.
+    pub(crate) keepalive_interval: Duration,
+    /// How long the server waits for a ping's answer before it closes the
+    /// connection. [`target::KEEPALIVE_TIMEOUT`] except in tests; not
+    /// configurable.
+    pub(crate) keepalive_timeout: Duration,
 }
 
 /// Whether listeners on `a` and `b` would contend for one port: the same
@@ -661,7 +671,7 @@ mod tests {
         let remaining: Vec<String> = target
             .snapshot()
             .into_iter()
-            .map(|s| s.path.to_string())
+            .map(|s| s.path.path().to_string())
             .collect();
         assert_eq!(remaining, ["openconfig:/a/in-errors"]);
 
@@ -946,8 +956,8 @@ mod tests {
         let mut keyed = Vec::new();
         let mut plain = Vec::new();
         for series in target.snapshot() {
-            let last = series.path.elem.last().expect("a path has elements");
-            match series.path.elem.iter().find_map(|e| e.key.get(key)) {
+            let last = series.path.path().elem.last().expect("a path has elements");
+            match series.path.path().elem.iter().find_map(|e| e.key.get(key)) {
                 Some(value) => keyed.push(value.clone()),
                 None => plain.push(last.name.clone()),
             }

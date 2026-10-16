@@ -10,13 +10,12 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::Weak;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use tokio::sync::broadcast::error::TryRecvError;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tonic::codec::Streaming;
@@ -25,7 +24,7 @@ use tonic::Status;
 use tower::Service;
 
 use super::matcher::SubscriptionMatcher;
-use super::target::{GnmiTarget, SeriesUpdate, TargetState};
+use super::target::{GnmiTarget, TargetState};
 use crate::encoder::gnmi::proto::{self, subscribe_request, subscription_list};
 use crate::sink::grpc_codec::{PreEncoded, PreEncodedCodec, ProstCodec};
 
@@ -62,18 +61,12 @@ type BoxFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 #[derive(Clone)]
 pub struct GnmiService {
     target: Weak<GnmiTarget>,
-    /// Held while a subscription is checked against `max_subscribers` and
-    /// counted, so concurrent subscriptions cannot both take the last place.
-    admission: Arc<Mutex<()>>,
 }
 
 impl GnmiService {
     /// A service for `target`.
     pub(crate) fn new(target: Weak<GnmiTarget>) -> Self {
-        Self {
-            target,
-            admission: Arc::new(Mutex::new(())),
-        }
+        Self { target }
     }
 }
 
@@ -93,7 +86,6 @@ impl Service<http::Request<tonic::body::Body>> for GnmiService {
 
     fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
         let target = self.target.clone();
-        let admission = Arc::clone(&self.admission);
         Box::pin(async move {
             if target.strong_count() == 0 {
                 return Ok(target_stopped().into_http());
@@ -109,7 +101,7 @@ impl Service<http::Request<tonic::body::Body>> for GnmiService {
                 }
                 SUBSCRIBE_PATH => {
                     Grpc::new(PreEncodedCodec::<proto::SubscribeRequest>::default())
-                        .streaming(SubscribeHandler { target, admission }, req)
+                        .streaming(SubscribeHandler { target }, req)
                         .await
                 }
                 path => {
@@ -183,7 +175,6 @@ impl tokio_stream::Stream for Responses {
 #[derive(Clone)]
 struct SubscribeHandler {
     target: Weak<GnmiTarget>,
-    admission: Arc<Mutex<()>>,
 }
 
 impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHandler {
@@ -196,11 +187,7 @@ impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHa
     }
 
     fn call(&mut self, req: tonic::Request<Streaming<proto::SubscribeRequest>>) -> Self::Future {
-        Box::pin(subscribe(
-            self.target.clone(),
-            Arc::clone(&self.admission),
-            req.into_inner(),
-        ))
+        Box::pin(subscribe(self.target.clone(), req.into_inner()))
     }
 }
 
@@ -209,12 +196,11 @@ impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHa
 /// Reads the first request, which must carry a `SubscriptionList`; refuses
 /// the list as [`SubscriptionMatcher::new`] does, and with
 /// `RESOURCE_EXHAUSTED` when the target already serves `max_subscribers`
-/// subscribers. Otherwise subscribes to the target's broadcast, which counts
-/// the subscriber, spawns a task draining the rest of `inbound` and a
-/// producer task, and returns the producer's response stream.
+/// subscribers. Otherwise takes one of the target's subscriber places,
+/// spawns a task reading the rest of `inbound` and a producer task holding
+/// the place, and returns the producer's response stream.
 async fn subscribe(
     target: Weak<GnmiTarget>,
-    admission: Arc<Mutex<()>>,
     mut inbound: Streaming<proto::SubscribeRequest>,
 ) -> Result<tonic::Response<SubscribeStream>, Status> {
     let list = match inbound.message().await? {
@@ -242,39 +228,32 @@ async fn subscribe(
     } else {
         sample_groups(&list, settings.sample_floor)?
     };
-    let updates = {
-        let _admitted = admission.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.subscriber_count() >= settings.max_subscribers {
-            return Err(Status::resource_exhausted(format!(
-                "gnmi_target {} already serves its max_subscribers ({}) subscribers",
-                held.local_addr(),
-                settings.max_subscribers
-            )));
-        }
-        held.subscribe()
-    };
+    let place = held.admit().ok_or_else(|| {
+        Status::resource_exhausted(format!(
+            "gnmi_target {} already serves its max_subscribers ({}) subscribers",
+            held.local_addr(),
+            settings.max_subscribers
+        ))
+    })?;
     let state = held.state();
     drop(held);
 
     let (tx, rx) = mpsc::channel(OUTBOUND_CAPACITY);
     let (ending, ended) = oneshot::channel();
-    let (inbound_done, done) = oneshot::channel();
-    // `inbound` is read outside any `select!`; the producer waits on `done`.
-    let draining = tokio::spawn(async move {
-        while let Ok(Some(_)) = inbound.message().await {}
-        let _ = inbound_done.send(());
-    });
+    // Further requests are read and ignored, outside any `select!`. The
+    // request stream ending does not end the subscription.
+    let draining = tokio::spawn(async move { while let Ok(Some(_)) = inbound.message().await {} });
     let producer = Producer {
         target,
         matcher,
         once,
         updates_only: list.updates_only,
         samples,
-        updates,
+        _place: place,
         tx,
         ending,
     };
-    tokio::spawn(producer.run(done, draining, state));
+    tokio::spawn(producer.run(draining, state));
     Ok(tonic::Response::new(Responses {
         rx,
         ended: Some(ended),
@@ -343,7 +322,7 @@ async fn listener_stopped(mut state: watch::Receiver<TargetState>) {
 
 /// What one turn of [`Producer::run`] did.
 enum Step {
-    /// The client has gone, or (STREAM) its request stream ended.
+    /// The client has gone.
     ClientDone,
     /// The target's listener stopped.
     TargetStopped,
@@ -361,10 +340,9 @@ struct Producer {
     /// The initial sync sends only the sync marker.
     updates_only: bool,
     samples: Vec<SampleGroup>,
-    /// Held so the subscription counts in the target's subscriber count.
-    /// Drained at each sample; a lag is ignored, since every sample re-reads
-    /// the table.
-    updates: broadcast::Receiver<SeriesUpdate>,
+    /// The subscriber place the subscription holds until the producer
+    /// returns.
+    _place: OwnedSemaphorePermit,
     tx: mpsc::Sender<Result<PreEncoded, Status>>,
     /// Takes the status the subscription ends with when the target stopped.
     ending: oneshot::Sender<Status>,
@@ -376,18 +354,12 @@ impl Producer {
     /// list, every matching series again each time a sample group is due.
     ///
     /// Returns when the client stops receiving, after the sync marker for a
-    /// ONCE list, for a STREAM list when the client's request stream has
-    /// ended (`done`) and every queued response is sent, and when the
-    /// target's listener stops or the target is gone, in which case the
-    /// stream ends with `UNAVAILABLE` after the responses already sent.
-    /// Returning drops the broadcast receiver, which uncounts the
-    /// subscriber, ends the response stream and aborts `draining`.
-    async fn run(
-        mut self,
-        mut done: oneshot::Receiver<()>,
-        draining: JoinHandle<()>,
-        state: watch::Receiver<TargetState>,
-    ) {
+    /// ONCE list, and when the target's listener stops or the target is
+    /// gone, in which case the stream ends with `UNAVAILABLE` after the
+    /// responses already sent. The client's request stream ending does not
+    /// end a subscription. Returning gives the subscriber place back, ends
+    /// the response stream and aborts `draining`.
+    async fn run(mut self, draining: JoinHandle<()>, state: watch::Receiver<TargetState>) {
         let stopped = listener_stopped(state);
         tokio::pin!(stopped);
         let ending = match self.initial_sync() {
@@ -399,7 +371,6 @@ impl Producer {
                 let next_sample = self.samples.iter().map(|g| g.next).min();
                 let step = tokio::select! {
                     _ = &mut stopped => Step::TargetStopped,
-                    _ = &mut done, if !self.once && pending.is_empty() => Step::ClientDone,
                     _ = self.tx.closed() => Step::ClientDone,
                     permit = self.tx.reserve(), if !pending.is_empty() => match permit {
                         Ok(permit) => {
@@ -441,7 +412,7 @@ impl Producer {
             target
                 .snapshot()
                 .iter()
-                .filter(|series| self.matcher.matches(&series.path))
+                .filter(|series| self.matcher.matches(series.path.path()))
                 .map(|series| update_response(&series.latest))
                 .collect()
         };
@@ -454,13 +425,6 @@ impl Producer {
     /// each due group moved to its next period. `None` once the target is
     /// gone.
     fn sample(&mut self) -> Option<VecDeque<PreEncoded>> {
-        loop {
-            match self.updates.try_recv() {
-                Ok(_) | Err(TryRecvError::Lagged(_)) => {}
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Closed) => return None,
-            }
-        }
         let now = Instant::now();
         let due: Vec<&SubscriptionMatcher> = self
             .samples
@@ -472,7 +436,7 @@ impl Producer {
         let responses = target
             .snapshot()
             .iter()
-            .filter(|series| due.iter().any(|m| m.matches(&series.path)))
+            .filter(|series| due.iter().any(|m| m.matches(series.path.path())))
             .map(|series| update_response(&series.latest))
             .collect();
         drop(target);
@@ -498,9 +462,12 @@ fn next_due(due: Instant, period: Duration, now: Instant) -> Instant {
 mod tests {
     use std::collections::HashMap;
     use std::net::SocketAddr;
-    use std::sync::RwLock;
+    use std::sync::{Arc, Mutex, RwLock};
 
     use prost::Message;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+    use tokio::net::{TcpListener, TcpStream};
     use tokio_stream::wrappers::ReceiverStream;
     use tokio_util::sync::CancellationToken;
     use tonic::transport::Channel;
@@ -514,7 +481,8 @@ mod tests {
     use crate::generator::GeneratorConfig;
     use crate::model::metric::{Labels, MetricEvent};
     use crate::schedule::stats::ScenarioStats;
-    use crate::sink::gnmi::target::DRAIN_GRACE;
+    use crate::schedule::LaunchId;
+    use crate::sink::gnmi::target::{Owner, PathKey, DRAIN_GRACE};
     use crate::sink::gnmi::{registry, GnmiTargetConfig, GnmiTargetSink};
     use crate::sink::{create_sink, Sink, SinkConfig};
     use crate::{OnSinkError, SondaError};
@@ -543,8 +511,8 @@ mod tests {
             .expect("bind an ephemeral port")
     }
 
-    /// Publish `name` for interface `if_name` through `sink`.
-    async fn publish(sink: &mut GnmiTargetSink, name: &str, if_name: &str, value: f64) {
+    /// The event `name{ifName=if_name}` and its encoded notification.
+    fn encoded(name: &str, if_name: &str, value: f64) -> (MetricEvent, Vec<u8>) {
         let encoder = GnmiEncoder::new(&encoder_config()).expect("valid encoder");
         let event = MetricEvent::new(
             name.to_string(),
@@ -554,9 +522,26 @@ mod tests {
         .expect("valid event");
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encodes");
+        (event, buf)
+    }
+
+    /// Publish `name` for interface `if_name` through `sink`.
+    async fn publish(sink: &mut GnmiTargetSink, name: &str, if_name: &str, value: f64) {
+        let (event, buf) = encoded(name, if_name, value);
         sink.write_metric_event(&event, &buf)
             .await
             .expect("published");
+    }
+
+    /// Publish `name` for interface `if_name` straight into `target`, as a
+    /// launch of its own. Returns whether any broadcast receiver existed.
+    fn publish_into(target: &GnmiTarget, name: &str, if_name: &str) -> bool {
+        let (_, buf) = encoded(name, if_name, 1.0);
+        let key = PathKey::decode(&buf).expect("a notification");
+        let (_, receivers) = target
+            .publish(Owner::from(LaunchId::next()), None, &key, &buf)
+            .expect("a free path");
+        receivers
     }
 
     /// A STREAM list of one SAMPLE subscription to `path`, every
@@ -709,8 +694,14 @@ mod tests {
 
     /// Wait until `done` holds, polling; false if it never does within
     /// [`PATIENCE`].
-    async fn eventually(mut done: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + PATIENCE;
+    async fn eventually(done: impl FnMut() -> bool) -> bool {
+        within(PATIENCE, done).await
+    }
+
+    /// Wait until `done` holds, polling; false if it never does within
+    /// `limit`.
+    async fn within(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + limit;
         while Instant::now() < deadline {
             if done() {
                 return true;
@@ -1101,7 +1092,7 @@ mod tests {
         publish(&mut sink, "in_octets", "eth0", 1.0).await;
         let addr = sink.target().local_addr();
         let list = || stream("/interfaces", Duration::ZERO);
-        let _first = open(addr, list()).await.expect("first subscriber");
+        let first = open(addr, list()).await.expect("first subscriber");
         let _second = open(addr, list()).await.expect("second subscriber");
         assert_eq!(sink.target().subscriber_count(), 2);
 
@@ -1111,6 +1102,14 @@ mod tests {
         };
         assert_eq!(status.code(), tonic::Code::ResourceExhausted, "{status}");
         assert!(status.message().contains("max_subscribers"), "{status}");
+        assert_eq!(sink.target().subscriber_count(), 2);
+
+        drop(first);
+        let target = Arc::clone(sink.target());
+        assert!(eventually(|| target.subscriber_count() == 1).await);
+        let _third = open(addr, list())
+            .await
+            .expect("the place the first gave back is taken");
         assert_eq!(sink.target().subscriber_count(), 2);
     }
 
@@ -1284,28 +1283,204 @@ mod tests {
     }
 
     /// A client that half-closes its request stream right after the list
-    /// still receives every matching series, then the sync marker.
+    /// receives every matching series and the sync marker, then samples:
+    /// the request stream ending does not end the subscription. Dropping
+    /// the client does.
     #[tokio::test]
-    async fn a_half_closed_request_stream_still_receives_the_full_sync() {
+    async fn a_half_closed_request_stream_keeps_its_subscription() {
         const SERIES: usize = 20;
-        let mut sink = sink(None, Some("10s")).await;
+        let mut sink = sink(None, Some("100ms")).await;
         for i in 0..SERIES {
             publish(&mut sink, "in_octets", &format!("eth{i}"), 1.0).await;
         }
         assert_eq!(sink.target().series_count(), SERIES);
-        let addr = sink.target().local_addr();
-        for _ in 0..5 {
-            let mut client = open_half_closed(addr, stream("/interfaces", Duration::ZERO))
-                .await
-                .expect("subscribed");
+        let mut client = open_half_closed(
+            sink.target().local_addr(),
+            stream("/interfaces", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        for i in 0..SERIES {
+            assert!(
+                matches!(next(&mut client).await, Received::Update(_)),
+                "sync update {i} of {SERIES}"
+            );
+        }
+        assert_eq!(next(&mut client).await, Received::Sync);
+        for batch in 1..=2 {
             for i in 0..SERIES {
                 assert!(
                     matches!(next(&mut client).await, Received::Update(_)),
-                    "update {i} of {SERIES}"
+                    "sample {batch}, update {i} of {SERIES}"
                 );
             }
-            assert_eq!(next(&mut client).await, Received::Sync);
         }
+        assert_eq!(sink.target().subscriber_count(), 1);
+
+        drop(client);
+        let target = Arc::clone(sink.target());
+        assert!(
+            eventually(|| target.subscriber_count() == 0).await,
+            "still {} subscribers",
+            target.subscriber_count()
+        );
+    }
+
+    /// A list that sets no encoding carries encoding 0 (JSON) and is served
+    /// in PROTO.
+    #[tokio::test]
+    async fn an_unset_encoding_is_served_in_proto() {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        publish(&mut sink, "in_octets", "eth1", 2.0).await;
+        assert_eq!(sink.target().series_count(), 2);
+        let list = proto::SubscriptionList {
+            mode: subscription_list::Mode::Once as i32,
+            ..stream("/interfaces", Duration::ZERO)
+        };
+        let list = proto::SubscriptionList {
+            encoding: proto::SubscriptionList::default().encoding,
+            ..list
+        };
+        assert_eq!(list.encoding, proto::Encoding::Json as i32);
+
+        let mut client = open(sink.target().local_addr(), list)
+            .await
+            .expect("subscribed");
+        let mut updates = vec![next(&mut client).await, next(&mut client).await];
+        updates.sort_by_key(|r| format!("{r:?}"));
+        assert_eq!(
+            updates,
+            [
+                Received::Update(counter("eth0", "in-octets")),
+                Received::Update(counter("eth1", "in-octets")),
+            ]
+        );
+        assert_eq!(next(&mut client).await, Received::Sync);
+        assert_eq!(next(&mut client).await, Received::End);
+    }
+
+    /// A SAMPLE subscription takes a subscriber place, not a broadcast
+    /// receiver: it counts in `subscriber_count()`, and a publish finds
+    /// nobody on the broadcast.
+    #[tokio::test]
+    async fn sample_subscribers_take_a_place_not_a_broadcast_receiver() {
+        let mut sink = sink(None, Some("10s")).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let mut client = open(
+            sink.target().local_addr(),
+            stream("/interfaces", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(
+            next(&mut client).await,
+            Received::Update(counter("eth0", "in-octets"))
+        );
+        assert_eq!(sink.target().subscriber_count(), 1);
+        assert!(
+            !publish_into(sink.target(), "out_octets", "eth0"),
+            "a publish found a broadcast receiver"
+        );
+    }
+
+    /// A target on an ephemeral port that pings a connection silent for
+    /// `keepalive` and closes it when the ping goes unanswered as long.
+    async fn target_with_keepalive(keepalive: Duration, max_subscribers: usize) -> Arc<GnmiTarget> {
+        let mut cfg = GnmiTargetConfig::new("127.0.0.1:0");
+        cfg.max_subscribers = Some(max_subscribers);
+        let mut settings = cfg.settings().expect("valid settings");
+        settings.keepalive_interval = keepalive;
+        settings.keepalive_timeout = keepalive;
+        GnmiTarget::bind(settings)
+            .await
+            .expect("bind an ephemeral port")
+    }
+
+    /// A proxy on an ephemeral port forwarding one connection to `target`
+    /// in both directions until `cut` turns true; from then on it forwards
+    /// nothing and keeps both sockets open.
+    async fn proxy(target: SocketAddr, cut: watch::Receiver<bool>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("bound");
+        tokio::spawn(async move {
+            let (client, _) = listener.accept().await.expect("a client");
+            let server = TcpStream::connect(target).await.expect("the target");
+            let (client_read, client_write) = client.into_split();
+            let (server_read, server_write) = server.into_split();
+            tokio::join!(
+                pipe(client_read, server_write, cut.clone()),
+                pipe(server_read, client_write, cut)
+            );
+        });
+        addr
+    }
+
+    /// Copy `from` to `to` until `cut` turns true, then hold both open.
+    async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, mut cut: watch::Receiver<bool>) {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            let n = tokio::select! {
+                read = from.read(&mut buf) => match read {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                },
+                _ = cut.wait_for(|cut| *cut) => break,
+            };
+            if *cut.borrow() || to.write_all(&buf[..n]).await.is_err() {
+                break;
+            }
+        }
+        std::future::pending::<()>().await;
+    }
+
+    /// A client whose connection goes silent, answering no ping, is closed
+    /// after the keepalive timeout: its subscription ends and its place is
+    /// given back for a new subscriber.
+    #[tokio::test]
+    async fn a_silent_connection_loses_its_subscription_to_keepalive() {
+        let target = target_with_keepalive(Duration::from_millis(200), 1).await;
+        publish_into(&target, "in_octets", "eth0");
+        let (cut, uncut) = watch::channel(false);
+        let via = proxy(target.local_addr(), uncut).await;
+        let mut client = open(via, stream("/interfaces", Duration::ZERO))
+            .await
+            .expect("subscribed through the proxy");
+        assert_eq!(
+            next(&mut client).await,
+            Received::Update(counter("eth0", "in-octets"))
+        );
+        assert_eq!(next(&mut client).await, Received::Sync);
+        assert_eq!(target.subscriber_count(), 1);
+
+        cut.send_replace(true);
+        assert!(
+            within(Duration::from_secs(2), || target.subscriber_count() == 0).await,
+            "the silent client still holds its place"
+        );
+        let _again = open(target.local_addr(), stream("/interfaces", Duration::ZERO))
+            .await
+            .expect("the place was given back");
+        assert_eq!(target.subscriber_count(), 1);
+        drop(client);
+    }
+
+    /// A client that answers pings keeps its subscription across the same
+    /// keepalive interval and timeout.
+    #[tokio::test]
+    async fn a_client_answering_pings_keeps_its_subscription() {
+        let target = target_with_keepalive(Duration::from_millis(200), 1).await;
+        publish_into(&target, "in_octets", "eth0");
+        let mut client = open(target.local_addr(), stream("/interfaces", Duration::ZERO))
+            .await
+            .expect("subscribed");
+        let expected = Received::Update(counter("eth0", "in-octets"));
+        assert_eq!(next(&mut client).await, expected);
+        assert_eq!(next(&mut client).await, Received::Sync);
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(target.subscriber_count(), 1, "still subscribed");
+        assert_eq!(next(&mut client).await, expected, "and still sampled");
     }
 
     /// With `updates_only` the initial sync is the sync marker alone: a

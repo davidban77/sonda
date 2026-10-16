@@ -193,9 +193,17 @@ src/
 │   │   │                   compare by pointer.
 │   │   │                   overwrite() takes nothing. publish()
 │   │   │                   copies the encoded bytes once, takes the broadcast lock once
-│   │   │                   with no subscriber and twice with one, never awaits. Store
-│   │   │                   and broadcast happen under the series' lock, so subscribers
-│   │   │                   see a series' updates in table order. Accepted
+│   │   │                   with no broadcast receiver and twice with one, never awaits.
+│   │   │                   Store and broadcast happen under the series' lock, so
+│   │   │                   receivers see a series' updates in table order. SAMPLE and
+│   │   │                   ONCE subscriptions hold no receiver (subscribe() is for
+│   │   │                   ON_CHANGE): they hold a permit of the target's
+│   │   │                   max_subscribers Semaphore (admit()); subscriber_count() is
+│   │   │                   permits taken. snapshot() shares each slot's PathKey and
+│   │   │                   Bytes, copying no path. The server pings an HTTP/2
+│   │   │                   connection silent for KEEPALIVE_INTERVAL (30 s) and closes it
+│   │   │                   after KEEPALIVE_TIMEOUT (20 s) unanswered; TargetSettings
+│   │   │                   carries both so tests can shorten them (no config). Accepted
 │   │   │                   sockets get TCP_NODELAY; an accept error other than a
 │   │   │                   refused/aborted/reset connection backs off 100 ms. The
 │   │   │                   listener task owns a StoppedOnDrop guard, so the target
@@ -222,36 +230,37 @@ src/
 │   │   │                   its prefix; matches() is a prefix match on elements, a key
 │   │   │                   of "*" or an absent key matching any value, an empty origin
 │   │   │                   or target matching any. new() refuses (UNIMPLEMENTED, named)
-│   │   │                   POLL, ON_CHANGE in a STREAM list, non-PROTO encodings and
-│   │   │                   element wildcards; INVALID_ARGUMENT for an empty list,
+│   │   │                   POLL, ON_CHANGE in a STREAM list, BYTES, ASCII and JSON_IETF
+│   │   │                   encodings and element wildcards; INVALID_ARGUMENT for an empty list,
 │   │   │                   empty element name, or an unknown list encoding or mode
-│   │   │                   or (STREAM lists only) subscription mode. pub(crate).
+│   │   │                   or (STREAM lists only) subscription mode. JSON (encoding 0,
+│   │   │                   also an unset encoding) is accepted and served as PROTO.
+│   │   │                   pub(crate).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service). Holds the target
 │   │                       WEAKLY (so does every handler and subscription task):
 │   │                       nothing a client does keeps a target alive; a request
 │   │                       after it is gone is UNAVAILABLE. Capabilities: 0.10.0,
 │   │                       [PROTO], no models. Subscribe: first message must be a
-│   │                       SubscriptionList; max_subscribers checked and the
-│   │                       subscriber counted (target.subscribe(), the broadcast
-│   │                       receiver count) under one admission lock. One task drains
-│   │                       the inbound stream (never polled in a select!) and fires a
-│   │                       oneshot; a producer task sends the initial sync (matching
-│   │                       snapshot, none with updates_only, then sync_response) and,
+│   │                       SubscriptionList; a place is taken with target.admit() or
+│   │                       the request is RESOURCE_EXHAUSTED, and the producer holds
+│   │                       it until it returns. One task reads and ignores the rest of
+│   │                       the inbound stream (never polled in a select!); its end does
+│   │                       not end the subscription. A producer task sends the initial
+│   │                       sync (matching snapshot, none with updates_only, then
+│   │                       sync_response) and,
 │   │                       for STREAM, re-reads the table per sample group (period =
 │   │                       max(sample_interval, sample_floor), one group per distinct
 │   │                       period; next_due skips missed periods in one step), framing
 │   │                       each stored Notification as SubscribeResponse.update bytes.
-│   │                       Its select! arms: listener left Listening (state()), inbound
-│   │                       end (STREAM only, and only once nothing is queued, so a
-│   │                       half-close never cuts a sync short), tx.closed(),
-│   │                       tx.reserve() (mpsc of 64: a client that stops reading parks
-│   │                       only its own task), the next sample. ONCE ends with OK after
-│   │                       the sync marker. A subscription ended by the target stopping
+│   │                       Its select! arms: listener left Listening (state()),
+│   │                       tx.closed(), tx.reserve() (mpsc of 64: a client that stops
+│   │                       reading parks only its own task), the next sample. STREAM
+│   │                       runs until the client goes or the target stops; ONCE ends
+│   │                       with OK after the sync marker. A subscription ended by the target stopping
 │   │                       or going away ends UNAVAILABLE: the producer sends the status
 │   │                       on a oneshot, and Responses yields it after the queue drains.
-│   │                       The broadcast receiver is drained at each sample, never
-│   │                       awaited, so publishes wake no subscriber task.
+│   │                       Publishes wake no subscriber task.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
