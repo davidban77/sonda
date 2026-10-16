@@ -467,6 +467,369 @@ impl BaseScheduleConfig {
             .map(|spike| (spike.label.as_str(), LabelSource::Spike));
         statics.chain(dynamics).chain(spikes)
     }
+
+    /// The values `key` can take on the events of an entry built from this
+    /// config, or `None` when no event carries it.
+    ///
+    /// The runner applies `labels`, then each `dynamic_labels` entry in order,
+    /// then each `cardinality_spikes` entry whose window is open, in order, and
+    /// a later one replaces an earlier one of the same key. So the last
+    /// dynamic label of `key` replaces its static label on every event, and
+    /// each spike of `key` wraps what comes before it as its `outside` set. A
+    /// counter's values are its prefix, `{key}_` when none is set, followed by
+    /// `0` to `cardinality - 1`, as the runner's `label_value_for_tick`
+    /// produces them over a cycle of `cardinality` ticks. Which of a spike's
+    /// values an event carries depends on when its window is open.
+    pub fn label_value_set(&self, key: &str) -> Option<LabelValueSet> {
+        let default_prefix = || format!("{key}_");
+        let dynamic = self
+            .dynamic_labels
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .rfind(|dl| dl.key == key);
+        let mut set = match dynamic {
+            Some(dl) => Some(match &dl.strategy {
+                DynamicLabelStrategy::ValuesList { values } => {
+                    LabelValueSet::Values(values.clone())
+                }
+                DynamicLabelStrategy::Counter {
+                    prefix,
+                    cardinality,
+                } => LabelValueSet::Counter {
+                    prefix: prefix.clone().unwrap_or_else(default_prefix),
+                    cardinality: *cardinality,
+                },
+            }),
+            None => self
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get(key))
+                .map(|value| LabelValueSet::Static(value.clone())),
+        };
+        for spike in self.cardinality_spikes.iter().flatten() {
+            if spike.label != key {
+                continue;
+            }
+            let prefix = spike.prefix.clone().unwrap_or_else(default_prefix);
+            let outside = set.take().map(Box::new);
+            set = Some(match spike.strategy {
+                SpikeStrategy::Counter => LabelValueSet::SpikeCounter {
+                    prefix,
+                    cardinality: spike.cardinality,
+                    outside,
+                },
+                SpikeStrategy::Random => LabelValueSet::RandomShape { prefix, outside },
+            });
+        }
+        set
+    }
+}
+
+/// The values a label key can take on an entry's events, from
+/// [`BaseScheduleConfig::label_value_set`].
+///
+/// A spike variant holds the values the key has while the spike window is
+/// open and, in `outside`, the set it has while the window is closed; `None`
+/// there means events outside the window do not carry the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LabelValueSet {
+    /// A `labels` value.
+    Static(String),
+    /// A `values` dynamic label: each value in the list.
+    Values(Vec<String>),
+    /// A `counter` dynamic label: `prefix` followed by each of `0` to
+    /// `cardinality - 1` in decimal.
+    Counter {
+        /// The text before the number.
+        prefix: String,
+        /// How many values there are.
+        cardinality: u64,
+    },
+    /// A `counter` cardinality spike: while its window is open, `prefix`
+    /// followed by each of `0` to `cardinality - 1` in decimal.
+    SpikeCounter {
+        /// The text before the number.
+        prefix: String,
+        /// How many values the window produces.
+        cardinality: u64,
+        /// The values while the window is closed.
+        outside: Option<Box<LabelValueSet>>,
+    },
+    /// A `random` cardinality spike: while its window is open, `prefix`
+    /// followed by 16 lowercase hexadecimal digits. Only this shape of its
+    /// values is known.
+    RandomShape {
+        /// The text before the hexadecimal digits.
+        prefix: String,
+        /// The values while the window is closed.
+        outside: Option<Box<LabelValueSet>>,
+    },
+}
+
+/// How two [`LabelValueSet`]s, or a set and one value, meet.
+///
+/// Ordered from no meeting to a certain one, so the best of several is their
+/// maximum and the weakest of several is their minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Overlap {
+    /// No value is in both.
+    Disjoint,
+    /// A value of the other has the shape of a [`LabelValueSet::RandomShape`]
+    /// value: the two may meet.
+    ByShape,
+    /// A value is in both.
+    Certain,
+}
+
+/// One part of a [`LabelValueSet`]; a set is the union of its parts.
+#[derive(Clone, Copy)]
+enum ValuePart<'a> {
+    /// These values.
+    Listed(&'a [String]),
+    /// `prefix` followed by `0` to `cardinality - 1` in decimal.
+    Counter { prefix: &'a str, cardinality: u64 },
+    /// `prefix` followed by 16 lowercase hexadecimal digits.
+    Shape { prefix: &'a str },
+}
+
+impl LabelValueSet {
+    /// Whether an event can carry `value` for this key. A
+    /// [`LabelValueSet::RandomShape`] contains every value of its shape.
+    pub fn contains(&self, value: &str) -> bool {
+        self.meets_value(value) != Overlap::Disjoint
+    }
+
+    /// Whether some value is in both sets: finite sets by intersection, and a
+    /// [`LabelValueSet::RandomShape`] with any set holding a value of its
+    /// shape.
+    pub fn overlaps(&self, other: &LabelValueSet) -> bool {
+        self.meets(other) != Overlap::Disjoint
+    }
+
+    /// How this set meets one value.
+    pub(crate) fn meets_value(&self, value: &str) -> Overlap {
+        self.parts()
+            .into_iter()
+            .map(|part| part.meets_value(value))
+            .max()
+            .unwrap_or(Overlap::Disjoint)
+    }
+
+    /// How this set meets another.
+    pub(crate) fn meets(&self, other: &LabelValueSet) -> Overlap {
+        let theirs = other.parts();
+        self.parts()
+            .into_iter()
+            .flat_map(|mine| theirs.iter().map(move |part| mine.meets(*part)))
+            .max()
+            .unwrap_or(Overlap::Disjoint)
+    }
+
+    /// The parts of this set, following `outside` through every spike.
+    fn parts(&self) -> Vec<ValuePart<'_>> {
+        let mut parts = Vec::new();
+        let mut next = Some(self);
+        while let Some(set) = next {
+            next = match set {
+                LabelValueSet::Static(value) => {
+                    parts.push(ValuePart::Listed(std::slice::from_ref(value)));
+                    None
+                }
+                LabelValueSet::Values(values) => {
+                    parts.push(ValuePart::Listed(values));
+                    None
+                }
+                LabelValueSet::Counter {
+                    prefix,
+                    cardinality,
+                } => {
+                    parts.push(ValuePart::Counter {
+                        prefix,
+                        cardinality: *cardinality,
+                    });
+                    None
+                }
+                LabelValueSet::SpikeCounter {
+                    prefix,
+                    cardinality,
+                    outside,
+                } => {
+                    parts.push(ValuePart::Counter {
+                        prefix,
+                        cardinality: *cardinality,
+                    });
+                    outside.as_deref()
+                }
+                LabelValueSet::RandomShape { prefix, outside } => {
+                    parts.push(ValuePart::Shape { prefix });
+                    outside.as_deref()
+                }
+            };
+        }
+        parts
+    }
+}
+
+impl ValuePart<'_> {
+    fn meets_value(self, value: &str) -> Overlap {
+        let found = match self {
+            ValuePart::Listed(values) => values.iter().any(|v| v == value),
+            ValuePart::Counter {
+                prefix,
+                cardinality,
+            } => counter_index(prefix, value).is_some_and(|i| i < u128::from(cardinality)),
+            ValuePart::Shape { prefix } => {
+                return if has_shape(prefix, value) {
+                    Overlap::ByShape
+                } else {
+                    Overlap::Disjoint
+                };
+            }
+        };
+        if found {
+            Overlap::Certain
+        } else {
+            Overlap::Disjoint
+        }
+    }
+
+    fn meets(self, other: ValuePart<'_>) -> Overlap {
+        let certain = |meet: bool| {
+            if meet {
+                Overlap::Certain
+            } else {
+                Overlap::Disjoint
+            }
+        };
+        let shaped = |meet: bool| {
+            if meet {
+                Overlap::ByShape
+            } else {
+                Overlap::Disjoint
+            }
+        };
+        match (self, other) {
+            (ValuePart::Listed(values), part) | (part, ValuePart::Listed(values)) => values
+                .iter()
+                .map(|value| part.meets_value(value))
+                .max()
+                .unwrap_or(Overlap::Disjoint),
+            (
+                ValuePart::Counter {
+                    prefix: a,
+                    cardinality: n,
+                },
+                ValuePart::Counter {
+                    prefix: b,
+                    cardinality: m,
+                },
+            ) => certain(counters_meet((a, n), (b, m))),
+            (
+                ValuePart::Counter {
+                    prefix,
+                    cardinality,
+                },
+                ValuePart::Shape { prefix: shape },
+            )
+            | (
+                ValuePart::Shape { prefix: shape },
+                ValuePart::Counter {
+                    prefix,
+                    cardinality,
+                },
+            ) => shaped(counter_meets_shape(prefix, cardinality, shape)),
+            (ValuePart::Shape { prefix: a }, ValuePart::Shape { prefix: b }) => shaped(a == b),
+        }
+    }
+}
+
+/// The number `value` is in a counter with `prefix`: the rest of `value`
+/// must be a decimal number written without leading zeros.
+fn counter_index(prefix: &str, value: &str) -> Option<u128> {
+    let digits = value.strip_prefix(prefix)?;
+    let decimal = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'));
+    if decimal {
+        digits.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether `value` is `prefix` followed by 16 lowercase hexadecimal digits.
+fn has_shape(prefix: &str, value: &str) -> bool {
+    value
+        .strip_prefix(prefix)
+        .is_some_and(|rest| rest.len() == 16 && is_lower_hex(rest))
+}
+
+fn is_lower_hex(s: &str) -> bool {
+    s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Whether two counters share a value. With `short` the shorter prefix, a
+/// shared value needs `long` to be `short` followed by decimal digits `d`;
+/// the counter on `short` then holds it at the number `d` followed by the
+/// other counter's number, smallest at `d0`.
+fn counters_meet(a: (&str, u64), b: (&str, u64)) -> bool {
+    let ((short, short_count), (long, long_count)) = if a.0.len() <= b.0.len() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    if short_count == 0 || long_count == 0 {
+        return false;
+    }
+    let Some(digits) = long.strip_prefix(short) else {
+        return false;
+    };
+    if digits.is_empty() {
+        return true;
+    }
+    if !digits.bytes().all(|b| b.is_ascii_digit()) || digits.starts_with('0') {
+        return false;
+    }
+    digits
+        .parse::<u128>()
+        .ok()
+        .and_then(|lead| lead.checked_mul(10))
+        .is_some_and(|smallest| smallest < u128::from(short_count))
+}
+
+/// Whether a counter holds a value of the shape `shape` followed by 16
+/// lowercase hexadecimal digits. Such a value has `shape.len() + 16`
+/// characters, so the counter's number has a fixed count of digits; when
+/// `shape` is longer than the counter's prefix, it also fixes the number's
+/// leading digits.
+fn counter_meets_shape(prefix: &str, cardinality: u64, shape: &str) -> bool {
+    let length = shape.len() + 16;
+    if prefix.len() >= length {
+        return false;
+    }
+    let digits = length - prefix.len();
+    let smallest = if let Some(tail) = prefix.strip_prefix(shape) {
+        if !is_lower_hex(tail) {
+            return false;
+        }
+        if digits == 1 {
+            Some(0)
+        } else {
+            10u128.checked_pow(digits as u32 - 1)
+        }
+    } else if let Some(lead) = shape.strip_prefix(prefix) {
+        if !lead.bytes().all(|b| b.is_ascii_digit()) || lead.starts_with('0') {
+            return false;
+        }
+        lead.parse::<u128>()
+            .ok()
+            .and_then(|lead| lead.checked_mul(10u128.pow(16)))
+    } else {
+        return false;
+    };
+    smallest.is_some_and(|smallest| smallest < u128::from(cardinality))
 }
 
 /// Full configuration for a single metric scenario run.
@@ -5294,5 +5657,245 @@ generator:
         let tmp = write_temp_timing_csv("Time,cpu,mem,disk,net", 200);
         validate_csv_timestamps_monotonic(&tmp.path().to_string_lossy(), 0)
             .expect("importer-emitted CSV must pass");
+    }
+}
+
+#[cfg(test)]
+mod label_value_tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::sink::SinkConfig;
+
+    /// A schedule config with these static labels, dynamic labels and spikes.
+    fn base(
+        labels: &[(&str, &str)],
+        dynamic_labels: Vec<DynamicLabelConfig>,
+        cardinality_spikes: Vec<CardinalitySpikeConfig>,
+    ) -> BaseScheduleConfig {
+        BaseScheduleConfig {
+            name: "up".to_string(),
+            rate: 1.0,
+            duration: None,
+            start_time: None,
+            gaps: None,
+            gap_windows: None,
+            bursts: None,
+            cardinality_spikes: (!cardinality_spikes.is_empty()).then_some(cardinality_spikes),
+            dynamic_labels: (!dynamic_labels.is_empty()).then_some(dynamic_labels),
+            labels: (!labels.is_empty()).then(|| {
+                labels
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            }),
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+            clock_group_is_auto: None,
+            jitter: None,
+            jitter_seed: None,
+            on_sink_error: OnSinkError::Warn,
+        }
+    }
+
+    fn listed(key: &str, values: &[&str]) -> DynamicLabelConfig {
+        DynamicLabelConfig {
+            key: key.to_string(),
+            strategy: DynamicLabelStrategy::ValuesList {
+                values: values.iter().map(|v| v.to_string()).collect(),
+            },
+        }
+    }
+
+    fn counter(key: &str, prefix: Option<&str>, cardinality: u64) -> DynamicLabelConfig {
+        DynamicLabelConfig {
+            key: key.to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: prefix.map(str::to_string),
+                cardinality,
+            },
+        }
+    }
+
+    fn spike(
+        label: &str,
+        strategy: SpikeStrategy,
+        prefix: Option<&str>,
+        cardinality: u64,
+    ) -> CardinalitySpikeConfig {
+        CardinalitySpikeConfig {
+            label: label.to_string(),
+            every: "10s".to_string(),
+            r#for: "5s".to_string(),
+            cardinality,
+            strategy,
+            prefix: prefix.map(str::to_string),
+            seed: Some(7),
+        }
+    }
+
+    fn values(list: &[&str]) -> LabelValueSet {
+        LabelValueSet::Values(list.iter().map(|v| v.to_string()).collect())
+    }
+
+    fn fixed(value: &str) -> LabelValueSet {
+        LabelValueSet::Static(value.to_string())
+    }
+
+    fn count(prefix: &str, cardinality: u64) -> LabelValueSet {
+        LabelValueSet::Counter {
+            prefix: prefix.to_string(),
+            cardinality,
+        }
+    }
+
+    fn shape(prefix: &str, outside: Option<LabelValueSet>) -> LabelValueSet {
+        LabelValueSet::RandomShape {
+            prefix: prefix.to_string(),
+            outside: outside.map(Box::new),
+        }
+    }
+
+    fn spike_count(
+        prefix: &str,
+        cardinality: u64,
+        outside: Option<LabelValueSet>,
+    ) -> LabelValueSet {
+        LabelValueSet::SpikeCounter {
+            prefix: prefix.to_string(),
+            cardinality,
+            outside: outside.map(Box::new),
+        }
+    }
+
+    /// Over a full cycle of `cardinality` ticks, the runner's
+    /// `label_value_for_tick` produces exactly the values the label's set
+    /// declares: each produced value is in the set, and the set declares as
+    /// many values as the cycle produces. For a random spike, each produced
+    /// value has the declared shape.
+    #[cfg(feature = "runtime")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::values_list(base(&[], vec![listed("ifName", &["eth0", "eth1", "eth2"])], vec![]), "ifName", 3)]
+    #[case::counter_with_prefix(base(&[], vec![counter("host", Some("host-"), 4)], vec![]), "host", 4)]
+    #[case::counter_default_prefix(base(&[], vec![counter("host", None, 4)], vec![]), "host", 4)]
+    #[case::spike_counter_with_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Counter, Some("pod-"), 5)]), "pod", 5)]
+    #[case::spike_counter_default_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Counter, None, 5)]), "pod", 5)]
+    #[case::spike_random_with_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Random, Some("pod-"), 5)]), "pod", 5)]
+    #[case::spike_random_default_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Random, None, 5)]), "pod", 5)]
+    fn label_value_set_matches_label_value_for_tick(
+        #[case] config: BaseScheduleConfig,
+        #[case] key: &str,
+        #[case] cardinality: u64,
+    ) {
+        let schedule = crate::schedule::ParsedSchedule::from_base_config(&config)
+            .expect("the schedule must parse");
+        let produced: BTreeSet<String> = match (
+            schedule.dynamic_labels.as_slice(),
+            schedule.spike_windows.as_slice(),
+        ) {
+            ([dl], []) => (0..dl.cardinality).map(|tick| dl.label_value_for_tick(tick)).collect(),
+            ([], [sw]) => (0..sw.cardinality).map(|tick| sw.label_value_for_tick(tick)).collect(),
+            _ => panic!("each case configures exactly one dynamic label or one spike"),
+        };
+        assert_eq!(produced.len() as u64, cardinality, "a full cycle yields {cardinality} values: {produced:?}");
+
+        let set = config.label_value_set(key).expect("the key is on events");
+        for value in &produced {
+            assert!(set.contains(value), "{value:?} is produced but not in {set:?}");
+        }
+        let declared = match &set {
+            LabelValueSet::Values(list) => list.len() as u64,
+            LabelValueSet::Counter { cardinality, .. }
+            | LabelValueSet::SpikeCounter { cardinality, outside: None, .. } => *cardinality,
+            LabelValueSet::RandomShape { outside: None, .. } => return,
+            other => panic!("unexpected set for one source: {other:?}"),
+        };
+        assert_eq!(declared, cardinality, "{set:?} declares {declared} values");
+    }
+
+    /// A later source of a key replaces an earlier one on the events it
+    /// reaches: the last dynamic label replaces the static label, and each
+    /// spike wraps what comes before it.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::static_only(base(&[("k", "a")], vec![], vec![]), Some(fixed("a")))]
+    #[case::absent(base(&[("other", "a")], vec![], vec![]), None)]
+    #[case::dynamic_replaces_static(base(&[("k", "a")], vec![listed("k", &["b", "c"])], vec![]), Some(values(&["b", "c"])))]
+    #[case::last_dynamic_wins(base(&[], vec![counter("k", None, 2), listed("k", &["x"])], vec![]), Some(values(&["x"])))]
+    #[case::counter_default_prefix(base(&[], vec![counter("k", None, 2)], vec![]), Some(count("k_", 2)))]
+    #[case::spike_over_static(base(&[("k", "a")], vec![], vec![spike("k", SpikeStrategy::Counter, Some("p-"), 3)]), Some(spike_count("p-", 3, Some(fixed("a")))))]
+    #[case::spike_on_absent_key(base(&[], vec![], vec![spike("k", SpikeStrategy::Random, None, 3)]), Some(shape("k_", None)))]
+    #[case::spikes_over_dynamic(
+        base(&[("k", "a")], vec![listed("k", &["v"])], vec![spike("k", SpikeStrategy::Counter, None, 2), spike("other", SpikeStrategy::Counter, None, 2), spike("k", SpikeStrategy::Random, Some("r-"), 2)]),
+        Some(shape("r-", Some(spike_count("k_", 2, Some(values(&["v"]))))))
+    )]
+    fn label_value_set_layers_sources_in_runner_order(
+        #[case] config: BaseScheduleConfig,
+        #[case] expected: Option<LabelValueSet>,
+    ) {
+        assert_eq!(config.label_value_set("k"), expected);
+    }
+
+    /// A key has a value set exactly when `emitted_label_keys` reports it.
+    #[test]
+    fn label_value_set_is_some_exactly_for_emitted_keys() {
+        let config = base(
+            &[("static", "a"), ("both", "b")],
+            vec![listed("dynamic", &["c"]), counter("both", None, 2)],
+            vec![spike("spiked", SpikeStrategy::Counter, None, 2)],
+        );
+        let emitted: BTreeSet<&str> = config.emitted_label_keys().map(|(key, _)| key).collect();
+        assert_eq!(emitted.len(), 4, "every source is exercised: {emitted:?}");
+        for key in &emitted {
+            assert!(config.label_value_set(key).is_some(), "{key} is emitted");
+        }
+        assert_eq!(config.label_value_set("missing"), None);
+    }
+
+    /// How two sets meet, in both orders. A counter holds its prefix followed
+    /// by a decimal number with no leading zeros below its cardinality; a
+    /// random spike meets a value only by its shape.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::equal_statics(fixed("eth0"), fixed("eth0"), Overlap::Certain)]
+    #[case::different_statics(fixed("eth0"), fixed("eth1"), Overlap::Disjoint)]
+    #[case::static_in_list(fixed("eth0"), values(&["eth1", "eth0"]), Overlap::Certain)]
+    #[case::disjoint_lists(values(&["eth0"]), values(&["eth1", "eth2"]), Overlap::Disjoint)]
+    #[case::static_in_counter(fixed("host-3"), count("host-", 4), Overlap::Certain)]
+    #[case::static_past_counter(fixed("host-4"), count("host-", 4), Overlap::Disjoint)]
+    #[case::static_with_leading_zero(fixed("host-03"), count("host-", 4), Overlap::Disjoint)]
+    #[case::counters_on_one_prefix(count("a-", 2), count("a-", 5), Overlap::Certain)]
+    #[case::prefix_reaching_into_digits(count("a-", 20), count("a-1", 1), Overlap::Certain)]
+    #[case::prefix_reaching_past_cardinality(count("a-", 10), count("a-1", 1), Overlap::Disjoint)]
+    #[case::prefix_with_leading_zero_digit(count("a-", 100), count("a-0", 5), Overlap::Disjoint)]
+    #[case::unrelated_counters(count("a-", 5), count("b-", 5), Overlap::Disjoint)]
+    #[case::static_of_the_shape(shape("pod-", None), fixed("pod-0123456789abcdef"), Overlap::ByShape)]
+    #[case::static_too_short(shape("pod-", None), fixed("pod-0123"), Overlap::Disjoint)]
+    #[case::static_uppercase_hex(shape("pod-", None), fixed("pod-0123456789ABCDEF"), Overlap::Disjoint)]
+    #[case::shape_outside_value(shape("pod-", Some(fixed("leaf-1"))), fixed("leaf-1"), Overlap::Certain)]
+    #[case::spike_counter_outside_value(spike_count("device_", 2, Some(fixed("leaf-2"))), fixed("leaf-1"), Overlap::Disjoint)]
+    #[case::shapes_on_one_prefix(shape("pod-", None), shape("pod-", None), Overlap::ByShape)]
+    #[case::shapes_on_two_prefixes(shape("pod-", None), shape("pods-", None), Overlap::Disjoint)]
+    #[case::counter_too_short_for_shape(count("pod-", 1000), shape("pod-", None), Overlap::Disjoint)]
+    #[case::counter_reaching_sixteen_digits(count("pod-", 10u64.pow(16)), shape("pod-", None), Overlap::ByShape)]
+    #[case::counter_prefix_covering_hex(count("pod-abcdef0123456", 1000), shape("pod-", None), Overlap::ByShape)]
+    #[case::counter_prefix_covering_hex_short(count("pod-abcdef0123456", 100), shape("pod-", None), Overlap::Disjoint)]
+    #[case::shape_reaching_into_counter_digits(count("pod", u64::MAX), shape("pod1", None), Overlap::ByShape)]
+    #[case::shape_reaching_past_cardinality(count("pod", 10u64.pow(16)), shape("pod1", None), Overlap::Disjoint)]
+    #[case::shape_reaching_into_a_non_digit(count("pod", u64::MAX), shape("pod-", None), Overlap::Disjoint)]
+    fn label_value_sets_meet(
+        #[case] a: LabelValueSet,
+        #[case] b: LabelValueSet,
+        #[case] expected: Overlap,
+    ) {
+        assert_eq!(a.meets(&b), expected, "{a:?} meets {b:?}");
+        assert_eq!(b.meets(&a), expected, "{b:?} meets {a:?}");
+        assert_eq!(a.overlaps(&b), expected != Overlap::Disjoint);
+        if let LabelValueSet::Static(value) = &b {
+            assert_eq!(a.meets_value(value), expected, "{a:?} holds {value:?}");
+            assert_eq!(a.contains(value), expected != Overlap::Disjoint);
+        }
     }
 }
