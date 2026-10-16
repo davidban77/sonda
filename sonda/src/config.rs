@@ -126,9 +126,24 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
                 bail!("--encoder otlp requires the otlp feature: cargo build -F otlp")
             }
         }
+        "gnmi" => {
+            #[cfg(feature = "gnmi")]
+            {
+                bail!(
+                    "--encoder gnmi cannot be set from the command line: the gnmi encoder \
+                     needs a path template, so it is configured under encoder: in the \
+                     scenario file"
+                )
+            }
+            #[cfg(not(feature = "gnmi"))]
+            {
+                bail!("--encoder gnmi requires the gnmi feature: cargo build -F gnmi")
+            }
+        }
         other => bail!(
-            "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines, syslog, remote_write, otlp",
-            other
+            "unknown encoder {:?}: expected one of {}",
+            other,
+            EncoderConfig::KINDS.join(", ")
         ),
     }
 }
@@ -137,23 +152,22 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
     match name {
         "stdout" => Ok(SinkConfig::Stdout),
         "file" => {
-            let path = endpoint
-                .ok_or_else(|| anyhow!("--sink file requires --endpoint <path>"))?;
+            let path = endpoint.ok_or_else(|| anyhow!("--sink file requires --endpoint <path>"))?;
             Ok(SinkConfig::File {
                 path: path.to_string(),
             })
         }
         "tcp" => {
-            let addr = endpoint
-                .ok_or_else(|| anyhow!("--sink tcp requires --endpoint <address>"))?;
+            let addr =
+                endpoint.ok_or_else(|| anyhow!("--sink tcp requires --endpoint <address>"))?;
             Ok(SinkConfig::Tcp {
                 address: addr.to_string(),
                 retry: None,
             })
         }
         "udp" => {
-            let addr = endpoint
-                .ok_or_else(|| anyhow!("--sink udp requires --endpoint <address>"))?;
+            let addr =
+                endpoint.ok_or_else(|| anyhow!("--sink udp requires --endpoint <address>"))?;
             Ok(SinkConfig::Udp {
                 address: addr.to_string(),
             })
@@ -181,8 +195,8 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
         "loki" => {
             #[cfg(feature = "http")]
             {
-                let url = endpoint
-                    .ok_or_else(|| anyhow!("--sink loki requires --endpoint <url>"))?;
+                let url =
+                    endpoint.ok_or_else(|| anyhow!("--sink loki requires --endpoint <url>"))?;
                 Ok(SinkConfig::Loki {
                     url: url.to_string(),
                     batch_size: None,
@@ -234,9 +248,32 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 bail!("--sink otlp_grpc requires the otlp feature: cargo build -F otlp")
             }
         }
+        "gnmi_target" => {
+            #[cfg(feature = "gnmi")]
+            {
+                let listen = endpoint.ok_or_else(|| {
+                    anyhow!("--sink gnmi_target requires --endpoint <listen address>")
+                })?;
+                Ok(SinkConfig::GnmiTarget(
+                    sonda_core::sink::gnmi::GnmiTargetConfig::new(listen),
+                ))
+            }
+            #[cfg(not(feature = "gnmi"))]
+            {
+                let _ = endpoint;
+                bail!("--sink gnmi_target requires the gnmi feature: cargo build -F gnmi")
+            }
+        }
+        // Sinks with no flag form; a kind added to `SinkConfig` without an
+        // arm above reaches "unknown sink" instead.
+        kind @ ("memory" | "kafka") => bail!(
+            "--sink {kind} cannot be set from the command line; configure it under sink: in \
+             the scenario file"
+        ),
         other => bail!(
-            "unknown sink {:?}; expected one of: stdout, file, tcp, udp, http_push, loki, remote_write, otlp_grpc",
-            other
+            "unknown sink {:?}; expected one of: {}",
+            other,
+            SinkConfig::KINDS.join(", ")
         ),
     }
 }
@@ -298,5 +335,102 @@ mod tests {
     fn parse_encoder_unknown_returns_error() {
         let err = parse_encoder_config("xml").expect_err("must error");
         assert!(format!("{err}").contains("unknown encoder"));
+    }
+
+    #[test]
+    fn unknown_encoder_error_names_every_kind() {
+        let msg = format!("{}", parse_encoder_config("xml").expect_err("must error"));
+        assert!(msg.contains("gnmi"), "got: {msg}");
+        for kind in EncoderConfig::KINDS {
+            assert!(msg.contains(kind), "missing {kind}: {msg}");
+        }
+    }
+
+    #[test]
+    fn unknown_sink_error_names_every_kind() {
+        let msg = format!(
+            "{}",
+            parse_sink_override("xml", None).expect_err("must error")
+        );
+        assert!(msg.contains("unknown sink"), "got: {msg}");
+        assert!(msg.contains("gnmi_target"), "got: {msg}");
+        for kind in SinkConfig::KINDS {
+            assert!(msg.contains(kind), "missing {kind}: {msg}");
+        }
+    }
+
+    #[test]
+    fn every_sink_kind_is_recognized() {
+        for kind in SinkConfig::KINDS {
+            if let Err(err) = parse_sink_override(kind, Some("127.0.0.1:1")) {
+                let msg = format!("{err}");
+                assert!(!msg.contains("unknown sink"), "{kind}: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_encoder_kind_is_recognized() {
+        for kind in EncoderConfig::KINDS {
+            if let Err(err) = parse_encoder_config(kind) {
+                let msg = format!("{err}");
+                assert!(!msg.contains("unknown encoder"), "{kind}: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_sink_without_a_flag_form_points_at_the_scenario_file() {
+        let err = parse_sink_override("memory", None).expect_err("memory has no flag form");
+        let msg = format!("{err}");
+        assert!(msg.contains("--sink memory"), "got: {msg}");
+        assert!(msg.contains("scenario file"), "got: {msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn parse_sink_gnmi_target_listens_on_endpoint() {
+        let s = parse_sink_override("gnmi_target", Some("127.0.0.1:57400")).expect("parses");
+        match s {
+            SinkConfig::GnmiTarget(cfg) => assert_eq!(cfg.listen, "127.0.0.1:57400"),
+            other => panic!("expected a gnmi_target sink, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn parse_sink_gnmi_target_requires_endpoint() {
+        let err = parse_sink_override("gnmi_target", None).expect_err("needs endpoint");
+        assert!(format!("{err}").contains("--endpoint"), "got: {err}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn parse_encoder_gnmi_points_at_the_scenario_file() {
+        let err = parse_encoder_config("gnmi").expect_err("gnmi needs a path template");
+        let msg = format!("{err}");
+        assert!(msg.contains("path template"), "got: {msg}");
+        assert!(msg.contains("scenario file"), "got: {msg}");
+    }
+
+    #[cfg(not(feature = "gnmi"))]
+    #[test]
+    fn parse_sink_gnmi_target_without_feature_names_the_feature() {
+        let err = parse_sink_override("gnmi_target", Some("127.0.0.1:57400"))
+            .expect_err("needs the gnmi feature");
+        assert!(
+            format!("{err}").contains("cargo build -F gnmi"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(not(feature = "gnmi"))]
+    #[test]
+    fn parse_encoder_gnmi_without_feature_names_the_feature() {
+        let err = parse_encoder_config("gnmi").expect_err("needs the gnmi feature");
+        assert!(
+            format!("{err}").contains("cargo build -F gnmi"),
+            "got: {err}"
+        );
     }
 }

@@ -21,7 +21,7 @@ use sonda_core::sink::SinkConfig;
 
 /// Format a [`SinkConfig`] as a one-line human-readable label.
 ///
-/// The output uses the spec §5 form:
+/// The name is [`SinkConfig::kind`]. The output uses the spec §5 form:
 ///
 /// - Sinks without configurable detail render as just their name
 ///   (`stdout`).
@@ -33,55 +33,49 @@ use sonda_core::sink::SinkConfig;
 ///   variants render as `name (disabled)` so users can see the
 ///   configuration was accepted but cannot run.
 ///
-/// `SinkConfig` is `#[non_exhaustive]`, so a match on it from this crate
-/// needs a wildcard arm and is not checked for exhaustiveness: a variant
-/// added in `sonda-core` compiles here and renders through the fallback as
-/// `unknown (<Debug>)` until an arm is added below.
+/// `SinkConfig` is `#[non_exhaustive]`, so the detail match needs a
+/// wildcard arm; a variant with no arm below renders as its bare name.
 pub fn sink_display(sink: &SinkConfig) -> String {
-    match sink {
-        SinkConfig::Stdout => "stdout".to_string(),
-        SinkConfig::File { path } => format!("file ({path})"),
-        SinkConfig::Tcp { address, .. } => format!("tcp ({address})"),
-        SinkConfig::Udp { address } => format!("udp ({address})"),
+    let detail = match sink {
+        SinkConfig::File { path } => Some(path.clone()),
+        SinkConfig::Tcp { address, .. } => Some(address.clone()),
+        SinkConfig::Udp { address } => Some(address.clone()),
         SinkConfig::Memory {
-            capture,
+            capture: true,
             max_events,
             ..
-        } => {
-            if *capture {
-                let cap = max_events.unwrap_or(1_000_000);
-                format!("memory (capture, max_events={cap})")
-            } else {
-                "memory".to_string()
-            }
-        }
+        } => Some(format!(
+            "capture, max_events={}",
+            max_events.unwrap_or(1_000_000)
+        )),
         #[cfg(feature = "http")]
-        SinkConfig::HttpPush { url, .. } => format!("http_push ({url})"),
-        #[cfg(not(feature = "http"))]
-        SinkConfig::HttpPushDisabled {} => "http_push (disabled)".to_string(),
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { url, .. } => format!("loki ({url})"),
-        #[cfg(not(feature = "http"))]
-        SinkConfig::LokiDisabled {} => "loki (disabled)".to_string(),
+        SinkConfig::HttpPush { url, .. } | SinkConfig::Loki { url, .. } => Some(url.clone()),
         #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { url, .. } => format!("remote_write ({url})"),
-        #[cfg(not(feature = "remote-write"))]
-        SinkConfig::RemoteWriteDisabled {} => "remote_write (disabled)".to_string(),
+        SinkConfig::RemoteWrite { url, .. } => Some(url.clone()),
         #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { brokers, topic, .. } => format!("kafka ({brokers} / {topic})"),
-        #[cfg(not(feature = "kafka"))]
-        SinkConfig::KafkaDisabled {} => "kafka (disabled)".to_string(),
+        SinkConfig::Kafka { brokers, topic, .. } => Some(format!("{brokers} / {topic}")),
         #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc ({endpoint})"),
-        #[cfg(not(feature = "otlp"))]
-        SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc (disabled)".to_string(),
+        SinkConfig::OtlpGrpc { endpoint, .. } => Some(endpoint.clone()),
         #[cfg(feature = "gnmi")]
-        SinkConfig::GnmiTarget(cfg) => format!("gnmi_target ({})", cfg.listen),
+        SinkConfig::GnmiTarget(cfg) => Some(cfg.listen.clone()),
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled {} | SinkConfig::LokiDisabled {} => {
+            Some("disabled".to_string())
+        }
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled {} => Some("disabled".to_string()),
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled {} => Some("disabled".to_string()),
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled {} => Some("disabled".to_string()),
         #[cfg(not(feature = "gnmi"))]
-        SinkConfig::GnmiTargetDisabled {} => "gnmi_target (disabled)".to_string(),
-        // Required by `#[non_exhaustive]`; reached only by a variant with no
-        // arm above.
-        other => format!("unknown ({other:?})"),
+        SinkConfig::GnmiTargetDisabled {} => Some("disabled".to_string()),
+        // `stdout`, `memory` without capture, and any variant with no arm.
+        _ => None,
+    };
+    match detail {
+        Some(detail) => format!("{} ({detail})", sink.kind()),
+        None => sink.kind().to_string(),
     }
 }
 

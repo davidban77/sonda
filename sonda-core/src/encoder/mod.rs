@@ -168,6 +168,47 @@ pub enum EncoderConfig {
     GnmiDisabled {},
 }
 
+impl EncoderConfig {
+    /// Every encoder `type:` name, in declaration order.
+    ///
+    /// Includes the names of encoders whose Cargo feature is off in this
+    /// build: their `*Disabled` variants accept the same `type:` name.
+    pub const KINDS: &'static [&'static str] = &[
+        "prometheus_text",
+        "influx_lp",
+        "json_lines",
+        "syslog",
+        "remote_write",
+        "otlp",
+        "gnmi",
+    ];
+
+    /// The `type:` name this encoder has in a scenario file, such as
+    /// `"prometheus_text"` or `"gnmi"`.
+    ///
+    /// A `*Disabled` variant returns the name of the encoder it stands in for.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            EncoderConfig::PrometheusText { .. } => "prometheus_text",
+            EncoderConfig::InfluxLineProtocol { .. } => "influx_lp",
+            EncoderConfig::JsonLines { .. } => "json_lines",
+            EncoderConfig::Syslog { .. } => "syslog",
+            #[cfg(feature = "remote-write")]
+            EncoderConfig::RemoteWrite => "remote_write",
+            #[cfg(not(feature = "remote-write"))]
+            EncoderConfig::RemoteWriteDisabled {} => "remote_write",
+            #[cfg(feature = "otlp")]
+            EncoderConfig::Otlp => "otlp",
+            #[cfg(not(feature = "otlp"))]
+            EncoderConfig::OtlpDisabled {} => "otlp",
+            #[cfg(feature = "gnmi")]
+            EncoderConfig::Gnmi(_) => "gnmi",
+            #[cfg(not(feature = "gnmi"))]
+            EncoderConfig::GnmiDisabled {} => "gnmi",
+        }
+    }
+}
+
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
 ///
 /// Returns `Err` if the config refers to a feature-gated encoder whose Cargo
@@ -1215,5 +1256,82 @@ sink:
             msg.contains("cargo build -F otlp"),
             "error must tell the user how to enable the feature, got: {msg}"
         );
+    }
+
+    /// One value of every `EncoderConfig` variant compiled into this build.
+    #[cfg(feature = "config")]
+    fn every_encoder_variant() -> Vec<EncoderConfig> {
+        vec![
+            EncoderConfig::PrometheusText { precision: None },
+            EncoderConfig::InfluxLineProtocol {
+                field_key: None,
+                precision: None,
+            },
+            EncoderConfig::JsonLines { precision: None },
+            EncoderConfig::Syslog {
+                hostname: None,
+                app_name: None,
+            },
+            #[cfg(feature = "remote-write")]
+            EncoderConfig::RemoteWrite,
+            #[cfg(not(feature = "remote-write"))]
+            EncoderConfig::RemoteWriteDisabled {},
+            #[cfg(feature = "otlp")]
+            EncoderConfig::Otlp,
+            #[cfg(not(feature = "otlp"))]
+            EncoderConfig::OtlpDisabled {},
+            #[cfg(feature = "gnmi")]
+            EncoderConfig::Gnmi(gnmi::GnmiEncoderConfig::default()),
+            #[cfg(not(feature = "gnmi"))]
+            EncoderConfig::GnmiDisabled {},
+        ]
+    }
+
+    /// `kind()` is the `type:` tag serde writes for every variant, and the tag
+    /// reads back as an encoder of the same kind.
+    #[cfg(feature = "config")]
+    #[test]
+    fn kind_is_the_yaml_type_tag_of_every_variant() {
+        let encoders = every_encoder_variant();
+        assert_eq!(encoders.len(), EncoderConfig::KINDS.len());
+        for encoder in &encoders {
+            let yaml = serde_yaml_ng::to_string(encoder).expect("encoder serializes");
+            let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("yaml parses");
+            let tag = value
+                .get("type")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_else(|| panic!("no type tag in {yaml}"));
+            assert_eq!(encoder.kind(), tag, "{encoder:?}");
+            let back: EncoderConfig = serde_yaml_ng::from_str(&yaml).expect("encoder round-trips");
+            assert_eq!(back.kind(), tag, "{yaml}");
+        }
+    }
+
+    /// `KINDS` is exactly the set of `type:` names the deserializer accepts,
+    /// read from serde's own "expected one of" list, and each name is the
+    /// `kind()` of one variant.
+    #[cfg(feature = "config")]
+    #[test]
+    fn kinds_are_exactly_the_accepted_type_names() {
+        let err = serde_yaml_ng::from_str::<EncoderConfig>("type: no_such_encoder")
+            .expect_err("an unknown type is rejected");
+        let msg = err.to_string();
+        let (_, list) = msg
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("serde names the variants: {msg}"));
+        // "`prometheus_text`, … `gnmi` at line 1 column 7": the names are the
+        // backtick-quoted runs.
+        let accepted: Vec<&str> = list.split('`').skip(1).step_by(2).collect();
+        assert!(!accepted.is_empty(), "{msg}");
+        assert_eq!(accepted, EncoderConfig::KINDS, "{msg}");
+
+        let mut kinds: Vec<&str> = every_encoder_variant()
+            .iter()
+            .map(EncoderConfig::kind)
+            .collect();
+        kinds.sort_unstable();
+        let mut expected = EncoderConfig::KINDS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(kinds, expected);
     }
 }
