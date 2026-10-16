@@ -21,8 +21,9 @@ impl SubscriptionMatcher {
     /// # Errors
     ///
     /// - `INVALID_ARGUMENT` when the list has no subscriptions, a path has
-    ///   an element with an empty name, or a mode or encoding is a number
-    ///   gNMI does not define.
+    ///   an element with an empty name, or the list's encoding or mode, or in
+    ///   a `STREAM` list a subscription's mode, is a number gNMI does not
+    ///   define. A `ONCE` list's subscription modes are not read.
     /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list, an
     ///   `ON_CHANGE` subscription in a `STREAM` list, an encoding other than
     ///   `PROTO`, or a path element named `*` or `...`.

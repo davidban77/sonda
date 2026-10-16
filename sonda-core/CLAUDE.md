@@ -224,7 +224,8 @@ src/
 │   │   │                   or target matching any. new() refuses (UNIMPLEMENTED, named)
 │   │   │                   POLL, ON_CHANGE in a STREAM list, non-PROTO encodings and
 │   │   │                   element wildcards; INVALID_ARGUMENT for an empty list,
-│   │   │                   empty element name or unknown enum number.
+│   │   │                   empty element name, or an unknown list encoding or mode
+│   │   │                   or (STREAM lists only) subscription mode. pub(crate).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service). Holds the target
 │   │                       WEAKLY (so does every handler and subscription task):
@@ -236,15 +237,20 @@ src/
 │   │                       receiver count) under one admission lock. One task drains
 │   │                       the inbound stream (never polled in a select!) and fires a
 │   │                       oneshot; a producer task sends the initial sync (matching
-│   │                       snapshot, then sync_response) and, for STREAM, re-reads the
-│   │                       table per sample group (period = max(sample_interval,
-│   │                       sample_floor), one group per distinct period), framing each
-│   │                       stored Notification as SubscribeResponse.update bytes. Its
-│   │                       select! arms: listener left Listening (state()), inbound
-│   │                       end (STREAM only), tx.closed(), tx.reserve() (mpsc of 64:
-│   │                       a client that stops reading parks only its own task), the
-│   │                       next sample. ONCE ends with OK after the sync marker. The
-│   │                       broadcast receiver is drained at each sample, never
+│   │                       snapshot, none with updates_only, then sync_response) and,
+│   │                       for STREAM, re-reads the table per sample group (period =
+│   │                       max(sample_interval, sample_floor), one group per distinct
+│   │                       period; next_due skips missed periods in one step), framing
+│   │                       each stored Notification as SubscribeResponse.update bytes.
+│   │                       Its select! arms: listener left Listening (state()), inbound
+│   │                       end (STREAM only, and only once nothing is queued, so a
+│   │                       half-close never cuts a sync short), tx.closed(),
+│   │                       tx.reserve() (mpsc of 64: a client that stops reading parks
+│   │                       only its own task), the next sample. ONCE ends with OK after
+│   │                       the sync marker. A subscription ended by the target stopping
+│   │                       or going away ends UNAVAILABLE: the producer sends the status
+│   │                       on a oneshot, and Responses yields it after the queue drains.
+│   │                       The broadcast receiver is drained at each sample, never
 │   │                       awaited, so publishes wake no subscriber task.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")

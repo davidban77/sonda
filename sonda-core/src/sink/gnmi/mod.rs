@@ -10,7 +10,7 @@
 //!
 //! Requires the `gnmi` feature flag.
 
-pub mod matcher;
+pub(crate) mod matcher;
 pub mod registry;
 pub mod service;
 pub mod target;
