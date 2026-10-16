@@ -14,9 +14,10 @@
 #![cfg(feature = "gnmi")]
 
 mod common;
+// `common` is compiled only with `config`; the counter is needed without it.
+#[path = "common/alloc.rs"]
+mod counting;
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -26,33 +27,8 @@ use sonda_core::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig, GnmiValueType};
 use sonda_core::encoder::Encoder;
 use sonda_core::model::metric::{Labels, MetricEvent};
 
-thread_local! {
-    // `const` initialisers: reading these never allocates, so the allocator
-    // below can touch them.
-    static COUNTING: Cell<bool> = const { Cell::new(false) };
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct CountingAlloc;
-
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // `try_with` fails only while a thread's locals are being torn down,
-        // which is never inside a counted window.
-        let _ = COUNTING.try_with(|counting| {
-            if counting.get() {
-                let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
-            }
-        });
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: CountingAlloc = CountingAlloc;
+static ALLOCATOR: counting::CountingAlloc = counting::CountingAlloc;
 
 const CALLS: usize = 1_000;
 
@@ -75,14 +51,9 @@ fn event(if_name: &str, value: f64) -> MetricEvent {
     .expect("metric name is valid")
 }
 
-/// Run `body` with allocation counting on for this thread and return the
-/// allocations it made on this thread.
+/// The allocations `body` made on this thread.
 fn count_allocations(body: impl FnOnce()) -> usize {
-    ALLOCS.with(|n| n.set(0));
-    COUNTING.with(|c| c.set(true));
-    body();
-    COUNTING.with(|c| c.set(false));
-    ALLOCS.with(Cell::get)
+    counting::count_allocations(body).1
 }
 
 /// Another thread allocating throughout a counted window adds nothing to it.

@@ -608,6 +608,10 @@ fn sink_kind_str(sink: &SinkConfig) -> &'static str {
         SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
         #[cfg(not(feature = "otlp"))]
         SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc",
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(_) => "gnmi_target",
+        #[cfg(not(feature = "gnmi"))]
+        SinkConfig::GnmiTargetDisabled { .. } => "gnmi_target",
     }
 }
 

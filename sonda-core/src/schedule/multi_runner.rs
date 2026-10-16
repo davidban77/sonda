@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ScenarioEntry;
-use crate::schedule::launch::{launch_scenario, prepare_entries};
+use crate::schedule::launch::{check_running_sinks, launch_prepared, prepare_entries};
+#[cfg(feature = "config")]
+use crate::schedule::LaunchId;
 use crate::{RuntimeError, SondaError};
 
 #[cfg(feature = "config")]
@@ -25,7 +27,7 @@ use crate::schedule::gate_bus::{
     SubscriptionSpec, WhileSpec,
 };
 #[cfg(feature = "config")]
-use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
+use crate::schedule::launch::{launch_scenario_with_gates_in, validate_entry, validate_file};
 #[cfg(feature = "config")]
 use std::collections::HashMap;
 
@@ -35,18 +37,10 @@ pub async fn run_multi(
     parent_cancel: CancellationToken,
 ) -> Result<(), SondaError> {
     let prepared = prepare_entries(entries)?;
+    check_running_sinks(prepared.iter().map(|p| &p.entry))?;
 
-    let mut handles = Vec::with_capacity(prepared.len());
+    let handles = launch_prepared(prepared, "multi", &parent_cancel).await?;
     let mut errors: Vec<String> = Vec::new();
-    for (i, prepared_entry) in prepared.into_iter().enumerate() {
-        let id = format!("multi-{i}");
-        let child = parent_cancel.child_token();
-        match launch_scenario(id, prepared_entry.entry, child, prepared_entry.start_delay).await {
-            Ok(handle) => handles.push(handle),
-            Err(e) => errors.push(e.to_string()),
-        }
-    }
-
     for mut handle in handles {
         if let Err(e) = handle.join_async(None).await {
             errors.push(e.to_string());
@@ -62,14 +56,24 @@ pub async fn run_multi(
     }
 }
 
-/// Prepare one compiled entry for the **gated** launch path: translate, expand,
-/// desugar, validate.
+/// The fields of a compiled entry the gated launch needs and translation drops.
+#[cfg(feature = "config")]
+struct GatedFields {
+    id: Option<String>,
+    while_clause: Option<crate::compiler::WhileClause>,
+    delay_clause: Option<crate::compiler::DelayClause>,
+    phase_offset: Option<String>,
+}
+
+/// Prepare every entry of a compiled file for the **gated** launch path:
+/// translate, expand and desugar each one, run the whole-file checks
+/// ([`validate_file`]) over all of them, then validate each entry.
 ///
 /// This is the gated counterpart to [`prepare_entries`], and the single
 /// definition of what [`launch_multi_compiled`] will accept. It is not the same
 /// rulebook: multi-column `csv_replay` fan-out is legal in the ungated pipeline
 /// and refused here, because a gate needs one entry per gated signal and the
-/// fan-out produces several.
+/// fan-out produces several. The whole-file checks are the same ones.
 ///
 /// That difference is why this is a function rather than a loop body.
 /// [`validate_compiled_gated`] calls it so `sonda --dry-run run` asks the gated
@@ -77,9 +81,43 @@ pub async fn run_multi(
 /// validated against the wrong rulebook would bless a file `run` refuses, which
 /// is the defect the flag exists to catch.
 ///
+/// Each prepared entry is paired with the index of the authored entry it came
+/// from. An entry that expands to nothing is left out.
+#[cfg(feature = "config")]
+fn prepare_gated_file(
+    entries: Vec<crate::compiler::compile_after::CompiledEntry>,
+) -> Result<Vec<(usize, GatedFields, ScenarioEntry)>, SondaError> {
+    let mut prepared = Vec::with_capacity(entries.len());
+    for (index, compiled_entry) in entries.into_iter().enumerate() {
+        let gated = GatedFields {
+            id: compiled_entry.id.clone(),
+            while_clause: compiled_entry.while_clause.clone(),
+            delay_clause: compiled_entry.delay_clause.clone(),
+            phase_offset: compiled_entry.phase_offset.clone(),
+        };
+        if let Some(entry) = expand_gated_entry(compiled_entry)? {
+            prepared.push((index, gated, entry));
+        }
+    }
+
+    validate_file(
+        &prepared
+            .iter()
+            .map(|(index, _, entry)| (*index, entry))
+            .collect::<Vec<_>>(),
+    )?;
+
+    for (_, _, entry) in &prepared {
+        validate_entry(entry)?;
+    }
+    Ok(prepared)
+}
+
+/// Translate, expand and desugar one compiled entry for the gated launch path.
+///
 /// `Ok(None)` means the entry expanded to nothing and the caller should skip it.
 #[cfg(feature = "config")]
-fn prepare_gated_entry(
+fn expand_gated_entry(
     compiled_entry: crate::compiler::compile_after::CompiledEntry,
 ) -> Result<Option<ScenarioEntry>, SondaError> {
     let id = compiled_entry.id.clone();
@@ -104,15 +142,13 @@ fn prepare_gated_entry(
             ))));
         }
     };
-    let translated = desugar_entry(translated)?;
-    validate_entry(&translated)?;
-    Ok(Some(translated))
+    Ok(Some(desugar_entry(translated)?))
 }
 
 /// Validate a compiled file through the **gated** pipeline without launching it,
 /// returning the entries that would run.
 ///
-/// Runs the same per-entry preparation [`launch_multi_compiled`] runs.
+/// Runs the same preparation [`launch_multi_compiled`] runs.
 /// `sonda --dry-run run` calls this for any file carrying a `while:` clause, so
 /// the two verbs decide from one rulebook rather than two — and prints what
 /// comes back, so the view it shows is post-expansion rather than as-authored.
@@ -123,7 +159,8 @@ fn prepare_gated_entry(
 /// `after:`, `clock_group` — which do not survive translation.
 ///
 /// Scope, stated because a validator that looks broader than it is would be
-/// worse than none: this covers per-entry preparation only. Gate-bus wiring and
+/// worse than none: this covers entry preparation and the whole-file checks
+/// only. Gate-bus wiring and
 /// cross-POST resolution are not exercised, and do not need to be — a
 /// `while.scenario_name` on the CLI is refused at parse, and a `while.ref`
 /// naming an id that does not exist is refused at `compile_after`, so both
@@ -132,13 +169,10 @@ fn prepare_gated_entry(
 pub fn validate_compiled_gated(
     file: CompiledFile,
 ) -> Result<Vec<(usize, ScenarioEntry)>, SondaError> {
-    let mut out = Vec::with_capacity(file.entries.len());
-    for (index, compiled_entry) in file.entries.into_iter().enumerate() {
-        if let Some(entry) = prepare_gated_entry(compiled_entry)? {
-            out.push((index, entry));
-        }
-    }
-    Ok(out)
+    Ok(prepare_gated_file(file.entries)?
+        .into_iter()
+        .map(|(index, _, entry)| (index, entry))
+        .collect())
 }
 
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in.
@@ -168,6 +202,11 @@ pub async fn launch_multi_compiled(
         bus_ids.sort();
         bus_ids.dedup();
     }
+    // Every entry is prepared and the whole file checked before any bus is
+    // registered or any scenario launched.
+    let prepared = prepare_gated_file(entries)?;
+    check_running_sinks(prepared.iter().map(|(_, _, entry)| entry))?;
+
     let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
     for id in bus_ids {
         buses.insert(id, Arc::new(GateBus::new()));
@@ -183,17 +222,14 @@ pub async fn launch_multi_compiled(
         }
     }
 
-    let mut launches: Vec<LaunchPlan> = Vec::with_capacity(entries.len());
-    for compiled_entry in entries.into_iter() {
-        let id = compiled_entry.id.clone();
-        let while_clause = compiled_entry.while_clause.clone();
-        let delay_clause = compiled_entry.delay_clause.clone();
-        let phase_offset = compiled_entry.phase_offset.clone();
-
-        let translated = match prepare_gated_entry(compiled_entry)? {
-            Some(entry) => entry,
-            None => continue,
-        };
+    let mut launches: Vec<LaunchPlan> = Vec::with_capacity(prepared.len());
+    for (_, gated, translated) in prepared {
+        let GatedFields {
+            id,
+            while_clause,
+            delay_clause,
+            phase_offset,
+        } = gated;
 
         let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
 
@@ -295,13 +331,16 @@ pub async fn launch_multi_compiled(
         });
     }
 
+    // Every entry of the file is one launch.
+    let launch = LaunchId::next();
     let mut handles = Vec::with_capacity(launches.len());
     for (idx, plan) in launches.into_iter().enumerate() {
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
         let deferred = plan.deferred;
         let active = plan.active;
         let scenario_cancel = CancellationToken::new();
-        match launch_scenario_with_gates(
+        match launch_scenario_with_gates_in(
+            launch,
             id.clone(),
             file_scenario_name.clone(),
             plan.entry,
@@ -1266,6 +1305,306 @@ scenarios:
         );
     }
 
+    /// Launch `yaml` with `{addr}` replaced by `addr`, and wait for every
+    /// scenario. Returns each scenario's id, result and final stats.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    async fn launch_gnmi_file(
+        yaml: &str,
+        addr: std::net::SocketAddr,
+    ) -> Vec<(
+        String,
+        Result<(), crate::SondaError>,
+        crate::schedule::stats::ScenarioStats,
+    )> {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let yaml = yaml.replace("{addr}", &addr.to_string());
+        let compiled = compile_scenario_file_compiled(&yaml, &InMemoryPackResolver::new())
+            .expect("compile must succeed");
+        let handles = launch_multi_compiled(compiled, None)
+            .await
+            .expect("launch must succeed");
+        let mut out = Vec::new();
+        for mut handle in handles {
+            let result = handle.join_async(Some(Duration::from_secs(5))).await;
+            out.push((handle.id.clone(), result, handle.stats_snapshot()));
+        }
+        out
+    }
+
+    /// A target held by the test on an ephemeral port, so a file can name a
+    /// fixed address its entries share.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    async fn held_target() -> crate::sink::gnmi::GnmiTargetSink {
+        crate::sink::gnmi::GnmiTargetSink::new(&crate::sink::gnmi::GnmiTargetConfig::new(
+            "127.0.0.1:0",
+        ))
+        .await
+        .expect("bind an ephemeral port")
+    }
+
+    /// Two entries of one file that render one leaf share it, the second
+    /// starting later and outliving the first.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn entries_of_one_launch_share_a_leaf_across_a_phase_offset() {
+        let held = held_target().await;
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 20
+  duration: 400ms
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={ifName}]/{name}"
+  sink:
+    type: gnmi_target
+    listen: "{addr}"
+  labels:
+    device: r1
+    ifName: eth0
+scenarios:
+  - id: first
+    signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+  - id: second
+    signal_type: metrics
+    name: in_octets
+    phase_offset: 100ms
+    generator:
+      type: constant
+      value: 2.0
+"#;
+        let results = launch_gnmi_file(yaml, held.target().local_addr()).await;
+
+        assert_eq!(results.len(), 2);
+        for (id, result, stats) in &results {
+            assert!(result.is_ok(), "{id} failed: {result:?}");
+            assert_eq!(stats.errors, 0, "{id}: {:?}", stats.last_sink_error);
+            assert!(stats.total_events > 0, "{id} published nothing");
+        }
+        assert_eq!(
+            held.target().series_count(),
+            0,
+            "the launch's series left with it"
+        );
+
+        // The same file through the ungated path.
+        let yaml = yaml.replace("{addr}", &held.target().local_addr().to_string());
+        let compiled = crate::compile_scenario_file_compiled(
+            &yaml,
+            &crate::compiler::expand::InMemoryPackResolver::new(),
+        )
+        .expect("compile must succeed");
+        let entries = crate::compiler::prepare::prepare(compiled).expect("prepare");
+        assert_eq!(entries.len(), 2);
+        run_multi(entries, CancellationToken::new())
+            .await
+            .expect("run_multi runs both entries to completion");
+        assert_eq!(held.target().series_count(), 0);
+    }
+
+    /// Two `while:`-gated entries taking turns on one leaf, as a flapping
+    /// link, run to completion in one launch.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gated_entries_of_one_launch_alternate_on_a_leaf() {
+        let held = held_target().await;
+        let results = launch_gnmi_file(
+            r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 20
+  duration: 800ms
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={ifName}]/{name}"
+  sink:
+    type: gnmi_target
+    listen: "{addr}"
+  labels:
+    device: r1
+    ifName: eth0
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link_driver
+    generator:
+      type: sequence
+      values: [0, 0, 0, 0, 1, 1, 1, 1]
+      repeat: true
+  - id: up
+    signal_type: metrics
+    name: oper_status
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: link
+      op: '>'
+      value: 0.5
+  - id: down
+    signal_type: metrics
+    name: oper_status
+    generator:
+      type: constant
+      value: 2.0
+    while:
+      ref: link
+      op: '<'
+      value: 0.5
+"#,
+            held.target().local_addr(),
+        )
+        .await;
+
+        assert_eq!(results.len(), 3);
+        for (id, result, stats) in &results {
+            assert!(result.is_ok(), "{id} failed: {result:?}");
+            assert_eq!(stats.errors, 0, "{id}: {:?}", stats.last_sink_error);
+            assert!(stats.total_events > 0, "{id} published nothing");
+        }
+    }
+
+    /// A second launch on a path the first still publishes is refused at its
+    /// first write, with the path in the error; the first runs on.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_launch_on_a_published_path_is_refused() {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let held = held_target().await;
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 20
+  duration: 2s
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={ifName}]/{name}"
+  sink:
+    type: gnmi_target
+    listen: "{addr}"
+  labels:
+    device: r1
+    ifName: eth0
+scenarios:
+  - id: counter
+    signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"#
+        .replace("{addr}", &held.target().local_addr().to_string());
+        let compile = || {
+            compile_scenario_file_compiled(&yaml, &InMemoryPackResolver::new())
+                .expect("compile must succeed")
+        };
+        let mut first = launch_multi_compiled(compile(), None)
+            .await
+            .expect("the first launch starts");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while held.target().series_count() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the first launch never published"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut second = launch_multi_compiled(compile(), None)
+            .await
+            .expect("admission does not check paths");
+        let err = second[0]
+            .join_async(Some(Duration::from_secs(5)))
+            .await
+            .expect_err("the path belongs to the first launch");
+        assert!(matches!(err, crate::SondaError::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("interface[name=eth0]/in-octets"),
+            "names the path: {err}"
+        );
+        assert!(first[0].is_alive(), "the first launch runs on");
+        first[0].stop();
+        first[0]
+            .join_async(Some(Duration::from_secs(5)))
+            .await
+            .expect("the first launch ends cleanly");
+    }
+
+    /// A file whose gnmi_target address a running target refuses launches
+    /// nothing, on both multi-launch paths.
+    #[cfg(all(feature = "config", feature = "gnmi"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_running_target_that_refuses_the_address_launches_nothing() {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+        use crate::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+        let held = GnmiTargetSink::new(&GnmiTargetConfig {
+            max_subscribers: Some(4),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        })
+        .await
+        .expect("bind an ephemeral port");
+        let addr = held.target().local_addr();
+        let yaml = format!(
+            "\
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 10s
+  encoder:
+    type: gnmi
+    path: \"/a/{{name}}\"
+  sink:
+    type: gnmi_target
+    listen: \"{addr}\"
+scenarios:
+  - id: refused
+    signal_type: metrics
+    name: refused
+    generator:
+      type: constant
+      value: 1.0
+"
+        );
+        let compiled = compile_scenario_file_compiled(&yaml, &InMemoryPackResolver::new())
+            .expect("compile must succeed");
+
+        let err = launch_multi_compiled(compiled.clone(), None)
+            .await
+            .err()
+            .expect("the gated path refuses the address");
+        assert!(
+            matches!(err, crate::SondaError::Config(_)),
+            "refused before launch: {err:?}"
+        );
+        assert!(err.to_string().contains("already serving"), "got {err}");
+
+        let entries = crate::compiler::prepare::prepare(compiled).expect("prepare");
+        let err = run_multi(entries, CancellationToken::new())
+            .await
+            .expect_err("the ungated path refuses the address");
+        assert!(
+            matches!(err, crate::SondaError::Config(_)),
+            "refused before launch: {err:?}"
+        );
+        assert!(err.to_string().contains("already serving"), "got {err}");
+
+        assert_eq!(held.target().series_count(), 0, "nothing published");
+    }
+
     #[cfg(feature = "config")]
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_multi_compiled_partial_cleanup_stops_already_launched_handles() {
@@ -2038,5 +2377,57 @@ scenarios:
                 .join(Some(Duration::from_secs(1)))
                 .expect("join must succeed");
         }
+    }
+
+    /// `launch_multi_compiled`, the path `sonda run` takes for a file with a
+    /// `while:` clause, runs the whole-file checks before it launches
+    /// anything.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[tokio::test]
+    async fn launch_multi_compiled_runs_the_whole_file_checks() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+scenarios:
+  - id: link_state
+    signal_type: metrics
+    name: link_state
+    generator: {type: flap, up_duration: 60s, down_duration: 30s}
+  - id: in_octets
+    signal_type: metrics
+    name: in_octets
+    generator: {type: constant, value: 1.0}
+    labels: {device: leaf-1, ifName: eth0}
+    encoder:
+      type: gnmi
+      path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+      values:
+        in_octet: uint
+    while: {ref: link_state, op: "<", value: 1}
+"#;
+        let compiled = crate::compile::compile_scenario_file_compiled(
+            yaml,
+            &crate::compiler::expand::InMemoryPackResolver::new(),
+        )
+        .expect("fixture must compile");
+        assert!(
+            compiled.entries.iter().any(|e| e.while_clause.is_some()),
+            "the file must carry a while: clause"
+        );
+
+        let err = match launch_multi_compiled(compiled, None).await {
+            Ok(handles) => panic!(
+                "a values: typo must stop the launch; {} scenarios launched",
+                handles.len()
+            ),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("gnmi encoder values: key `in_octet` names no metric this encoder serves"),
+            "{err}"
+        );
     }
 }

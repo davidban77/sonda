@@ -10,9 +10,14 @@ src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── emit.rs             ← synchronous single-event helpers: emit_log, emit_metric.
-│                          Check the encoder/sink pairing, build a one-shot encoder +
-│                          sink, encode one event, write, flush, drop. Used by the
-│                          sonda-server `POST /events` handler.
+│                          Check the encoder/sink pairing (emit_log also refuses the
+│                          gnmi encoder and gnmi_target sink), build a one-shot encoder +
+│                          sink, encode one event, write (write_metric_event for a sink
+│                          that opts in), flush, drop. A gnmi_target sink JOINS the live
+│                          target on its address and never binds; no live target is a
+│                          ConfigError. A joined write only overwrites a path the target
+│                          already serves and owns nothing; an unserved path is a
+│                          ConfigError. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
@@ -59,6 +64,8 @@ src/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),
 │   │                      MetricEvent (ValidatedMetricName name, Arc<Labels>), Labels, from_parts().
+│   │                      MetricKey = (ValidatedMetricName, Arc<Labels>), the one series key
+│   │                      (re-exported from schedule::stats).
 │   │                      Labels::iter() returns (&str, &str). Labels::new() is #[cfg(test)] pub(crate).
 │   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels).
 │                          Severity has explicit Ord/PartialOrd (rank-based, not derived from variant order).
@@ -82,17 +89,33 @@ src/
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_csv_replay.rs ← CSV-replay log generator (structured timestamp/severity/message + fields)
 ├── schedule/
-│   ├── mod.rs          ← GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
+│   ├── mod.rs          ← LaunchId (pub(crate): one per launch_prepared (run_multi, the
+│   │                      CLI) / launch_multi_compiled call, and per launch_scenario
+│   │                      (_with_gates) / create_sink call for a launch of one; reaches
+│   │                      sinks through create_sink_in),
+│   │                      GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
 │   │                      DynamicLabel (always-on rotating label, label_value_for_tick()),
 │   │                      ParsedSchedule (parses BaseScheduleConfig into resolved Duration values)
 │   ├── core_loop.rs    ← pub(crate) shared schedule loop (run_schedule_loop, TickFn, TickContext,
 │   │                      TickResult). Owns all rate control, gap/burst/spike window handling,
 │   │                      stats tracking, and shutdown. Signal runners provide a TickFn closure.
+│   │                      The tick and gap sleeps select on cancel; a cancel exits through
+│   │                      the loop's cancel check without emitting a tick.
 │   ├── stats.rs        ← ScenarioStats (live telemetry + current_values map: one entry per series for scrape endpoints)
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot;
 │   │                      recovers from poisoned stats lock instead of panicking)
 │   ├── launch.rs       ← validate_entry + prepare_entries + launch_scenario (unified launch API,
-│   │                      PreparedEntry, shared expand→validate→phase_offset pipeline)
+│   │                      PreparedEntry, shared expand→validate→phase_offset pipeline).
+│   │                      launch_prepared launches a file's entries as one launch, ids
+│   │                      `{prefix}-{i}`, failing fast (stops what it launched).
+│   │                      validate_file is the ONE home of cross-entry rules, run by
+│   │                      prepare_entries and the gated path: gnmi_target entries on one
+│   │                      address agree on settings, a wildcard and another address never
+│   │                      share a port, and every gnmi encoder agrees with its entries.
+│   │                      check_running_sinks() checks entries against sinks already
+│   │                      running in the process (gnmi_target via registry().check());
+│   │                      both multi-launch paths call it (POST /scenarios through
+│   │                      launch_multi_compiled).
 │   ├── runner.rs           ← metric event loop: builds generator/encoder/labels, delegates to core_loop
 │   ├── log_runner.rs       ← log event loop: builds log generator/encoder/labels, delegates to core_loop
 │   ├── histogram_runner.rs ← histogram event loop: pre-built Arc<Labels> per bucket, delegates to core_loop
@@ -114,7 +137,13 @@ src/
 │   │   │                   uncovered_label + template_for are the ONE coverage and
 │   │   │                   template rules validation also calls. Output is one Notification
 │   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
-│   │   │                   rejects it with every sink but gnmi_target.
+│   │   │                   pairs it with the gnmi_target sink only, in both directions.
+│   │   │                   Metrics, histogram and summary entries take it; validation
+│   │   │                   checks each series an entry emits (histogram: <name>_bucket
+│   │   │                   with `le`, _sum, _count; summary: <name> with `quantile`,
+│   │   │                   _sum, _count). The `le`/`quantile` template must reference
+│   │   │                   the key and may not drop it; _sum/_count need paths: entries
+│   │   │                   without it. Logs entries refuse both encoder and sink.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike
@@ -133,6 +162,64 @@ src/
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
+│   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages, used by
+│   │                      otlp_grpc; compiled with "otlp" or "gnmi" (unused under gnmi
+│   │                      alone)
+│   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
+│   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
+│   │   │                   field check validation and the sink both call; it returns
+│   │   │                   an IPv4-mapped listen as the IPv4 address it maps),
+│   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
+│   │   │                   synchronously from write_metric_event; write() is an error.
+│   │   │                   Keeps one (SeriesId, PathKey) entry per path it published
+│   │   │                   (`published`), each MetricKey pointing at its entry: the
+│   │   │                   first event of a key decodes its path, a second key on a
+│   │   │                   known path shares the entry, so an id that changes changes
+│   │   │                   for all. A write is delivered once upserted. A sink's Owner
+│   │   │                   is its launch (LaunchId): sinks of one launch share a path,
+│   │   │                   another launch's path is a ConfigError at the first write.
+│   │   │                   Drop releases each entry's id once (joined sinks have none).
+│   │   │                   A joined sink (join()) owns nothing: overwrite() only.
+│   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
+│   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
+│   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
+│   │   │                   Each slot counts its publishers: a publish that reaches the
+│   │   │                   write lock (no id, or a cached id that no longer names its
+│   │   │                   path) is a publisher's first of that path (+1),
+│   │   │                   release() is −1 at drop; the series leaves at zero, not when
+│   │   │                   idle. A path with no live publisher is free to any launch.
+│   │   │                   A sink caches the table's PathKey (path_of) so siblings
+│   │   │                   compare by pointer.
+│   │   │                   overwrite() takes nothing. publish()
+│   │   │                   copies the encoded bytes once, takes the broadcast lock once
+│   │   │                   with no subscriber and twice with one, never awaits. Store
+│   │   │                   and broadcast happen under the series' lock, so subscribers
+│   │   │                   see a series' updates in table order. Accepted
+│   │   │                   sockets get TCP_NODELAY; an accept error other than a
+│   │   │                   refused/aborted/reset connection backs off 100 ms. The
+│   │   │                   listener task owns a StoppedOnDrop guard, so the target
+│   │   │                   reads Stopped however the task ends (panic, runtime drop);
+│   │   │                   is_serving() is state == Listening.
+│   │   │                   Teardown: dropping the last Arc cancels the
+│   │   │                   root token; the listening socket closes at once (Incoming
+│   │   │                   ends), connections still open after DRAIN_GRACE are closed
+│   │   │                   (Connection reads EOF), state Listening → Draining → Stopped.
+│   │   ├── registry.rs ←   registry(): process-wide address → Weak<GnmiTarget> + state.
+│   │   │                   acquire() binds or joins; a target whose listener task exited
+│   │   │                   is not live; before binding it waits (≤ 2 s in all, never
+│   │   │                   under the bind lock) for a stopped target's socket on an
+│   │   │                   overlapping address to close. join() never binds
+│   │   │                   (emit_metric) and compares only the settings it sets; it finds
+│   │   │                   a live wildcard target covering the address. Differing
+│   │   │                   settings, or a second listener contending for a port
+│   │   │                   (listen_overlap: same address, or a wildcard covering the
+│   │   │                   other's family; IPv4-mapped addresses compare as IPv4),
+│   │   │                   are a ConfigError; port 0 always binds a
+│   │   │                   new target. check() answers as acquire() would, binding
+│   │   │                   nothing. listen_overlap assumes a dual-stack [::].
+│   │   └── service.rs  ←   GnmiService: tower::Service router served with
+│   │                       serve_with_incoming (never add_service); every path
+│   │                       answers UNIMPLEMENTED.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
@@ -224,6 +311,9 @@ src/
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_log_scenario (log_csv_replay rate derivation),
     │                      expand_entry (entry-level wrapper covering both)
+    ├── scalar_text.rs  ← ScalarText + required/optional deserialize_with: a string, number
+    │                      or boolean read as text. The ONE rule for text fields the schema
+    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor).
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
@@ -246,7 +336,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `gnmi` | no | Enables `prost` and `runtime` for the gNMI encoder (`encoder/gnmi/`). Validation rejects the encoder with every sink except `gnmi_target`. |
+| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream` and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain
@@ -387,7 +477,10 @@ For test families that share a shape and differ only by input/expected output, u
 
 - Start every file with `mod common;` to pull in shared helpers from `tests/common/mod.rs`:
   `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`,
-  `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`.
+  `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`. `common` is compiled only
+  with `config`; `tests/common/alloc.rs` (the per-thread `CountingAlloc` an allocation-budget
+  test installs as its `#[global_allocator]`, with `count_allocations`) is included with
+  `#[path = "common/alloc.rs"] mod counting;` so it builds without `config` too.
 - Add new helpers to `tests/common/mod.rs` — do not duplicate across test files.
 
 ### Golden-file snapshots — use `insta`

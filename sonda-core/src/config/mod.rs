@@ -6,6 +6,8 @@
 //! serialization and parsing are gated.
 
 pub mod aliases;
+#[cfg(all(feature = "config", feature = "gnmi"))]
+pub(crate) mod scalar_text;
 pub mod validate;
 
 use std::collections::HashMap;
@@ -414,6 +416,57 @@ pub struct BaseScheduleConfig {
     /// Behavior when a sink write returns an I/O error mid-run.
     #[cfg_attr(feature = "config", serde(default))]
     pub on_sink_error: OnSinkError,
+}
+
+/// Where a label key reported by [`BaseScheduleConfig::emitted_label_keys`]
+/// comes from, which decides when an event carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LabelSource {
+    /// A key in `labels`; on every event.
+    Static,
+    /// A key in `dynamic_labels`; on every event, replacing a static label of
+    /// the same key.
+    Dynamic,
+    /// A `cardinality_spikes` label; only while its spike window is open,
+    /// replacing a static or dynamic label of the same key.
+    Spike,
+}
+
+impl BaseScheduleConfig {
+    /// Every label key an entry built from this config can put on an event,
+    /// with its source: `labels` keys, then `dynamic_labels` keys, then
+    /// `cardinality_spikes` labels, one item per configured label. Static keys
+    /// come in the map's iteration order, and a key may appear under more
+    /// than one source.
+    ///
+    /// The metric runner builds its static labels from this and uses it to
+    /// decide whether a tick applies dynamic and spike labels, whose keys and
+    /// values it then takes from the parsed schedule. Validation checks label
+    /// keys against it.
+    ///
+    /// It covers the sources every entry kind shares. Labels a runner derives
+    /// for one entry kind, such as a histogram's `le` or a summary's
+    /// `quantile`, are not reported here and must be added by a check that
+    /// covers that kind.
+    pub fn emitted_label_keys(&self) -> impl Iterator<Item = (&str, LabelSource)> {
+        let statics = self
+            .labels
+            .iter()
+            .flatten()
+            .map(|(key, _)| (key.as_str(), LabelSource::Static));
+        let dynamics = self
+            .dynamic_labels
+            .iter()
+            .flatten()
+            .map(|dl| (dl.key.as_str(), LabelSource::Dynamic));
+        let spikes = self
+            .cardinality_spikes
+            .iter()
+            .flatten()
+            .map(|spike| (spike.label.as_str(), LabelSource::Spike));
+        statics.chain(dynamics).chain(spikes)
+    }
 }
 
 /// Full configuration for a single metric scenario run.

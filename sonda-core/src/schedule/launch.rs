@@ -21,7 +21,8 @@ use crate::schedule::log_runner::run_logs_with_sink_gated;
 use crate::schedule::runner::run_with_sink_gated;
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
-use crate::sink::create_sink;
+use crate::schedule::LaunchId;
+use crate::sink::create_sink_in;
 use crate::{ConfigError, SondaError};
 
 /// Extract the inner message from a [`SondaError`] for re-wrapping.
@@ -105,6 +106,31 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
         .collect())
 }
 
+/// Check entries against the sinks already running in this process,
+/// starting nothing: a `gnmi_target` address that a running target serves
+/// with other settings, or whose port a running target on another address
+/// holds, is refused, as it would be when the entry's sink starts.
+///
+/// Only targets bound before the call are seen, so an entry that passes can
+/// still be refused when its sink starts, if another target binds first.
+///
+/// # Errors
+///
+/// [`SondaError::Config`] for the first entry refused.
+pub fn check_running_sinks<'a>(
+    entries: impl IntoIterator<Item = &'a ScenarioEntry>,
+) -> Result<(), SondaError> {
+    #[cfg(feature = "gnmi")]
+    for entry in entries {
+        if let crate::sink::SinkConfig::GnmiTarget(cfg) = &entry.base().sink {
+            crate::sink::gnmi::registry().check(cfg)?;
+        }
+    }
+    #[cfg(not(feature = "gnmi"))]
+    let _ = entries;
+    Ok(())
+}
+
 /// [`prepare_entries`], with each authored entry's results kept together.
 ///
 /// `result[i]` holds every entry that authored entry `i` expanded into, in
@@ -157,6 +183,14 @@ pub fn prepare_entries_grouped(
         })
         .collect::<Result<Vec<_>, SondaError>>()?;
 
+    // Phase 1.75: rules that span more than one entry of the file.
+    validate_file(
+        &expanded
+            .iter()
+            .map(|(idx, entry)| (*idx, entry))
+            .collect::<Vec<_>>(),
+    )?;
+
     // Phase 2: validate all entries and resolve phase offsets, keeping each
     // authored entry's results in its own bucket.
     let mut prepared: Vec<Vec<PreparedEntry>> = Vec::with_capacity(group_count);
@@ -191,19 +225,453 @@ pub fn prepare_entries_grouped(
     Ok(prepared)
 }
 
-/// Launch a single scenario as a tokio task.
+/// Check the rules that span more than one entry of a file.
+///
+/// `entries` is every entry of the file after `csv_replay` expansion and alias
+/// desugaring, each paired with the index of the authored entry it came from;
+/// errors name that index. [`prepare_entries`] and the gated launch path both
+/// call this before they validate the entries one by one, so a file is held to
+/// the same cross-entry rules on either path: entries sharing a `gnmi_target`
+/// address agree on its settings, and every `gnmi` encoder agrees with the
+/// entries that use it.
+pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
+    #[cfg(feature = "gnmi")]
+    {
+        validate_gnmi_target_addresses(entries)?;
+        validate_gnmi_file(entries)?;
+    }
+    let _ = entries;
+    Ok(())
+}
+
+/// Check that the `gnmi_target` sinks of one file can share their listen
+/// addresses.
+///
+/// Entries on one address share one target, so they must use the same
+/// `max_subscribers`, `subscriber_buffer` and `sample_floor`. A wildcard
+/// address such as `0.0.0.0:57400` and an address of a family it covers on
+/// the same port cannot both listen (an IPv6 wildcard covers both
+/// families). Port 0 always binds a target of its own and is never
+/// compared, and a sink whose config does not resolve is left to per-entry
+/// validation. Every failure is a [`SondaError::Config`] naming both entries.
+#[cfg(feature = "gnmi")]
+fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
+    use crate::sink::gnmi::TargetSettings;
+    use crate::sink::SinkConfig;
+
+    let mut seen: Vec<(usize, TargetSettings)> = Vec::new();
+    for (index, entry) in entries {
+        let SinkConfig::GnmiTarget(cfg) = &entry.base().sink else {
+            continue;
+        };
+        let Ok(settings) = cfg.settings() else {
+            continue;
+        };
+        if settings.listen.port() == 0 {
+            continue;
+        }
+        for (other, earlier) in &seen {
+            if earlier.listen.port() != settings.listen.port() {
+                continue;
+            }
+            if earlier.listen == settings.listen {
+                if !earlier.serves(&settings) {
+                    return Err(SondaError::Config(ConfigError::invalid(format!(
+                        "scenario[{other}] and scenario[{index}] both use gnmi_target {} \
+                         with different settings ({}); every sink on one address must use \
+                         the same settings",
+                        settings.listen,
+                        earlier.beside(&settings),
+                    ))));
+                }
+            } else if crate::sink::gnmi::listen_overlap(earlier.listen, settings.listen) {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "scenario[{other}] listens on gnmi_target {} and scenario[{index}] on {}; \
+                     a wildcard address and another address cannot share port {}, so use one \
+                     address for both",
+                    earlier.listen,
+                    settings.listen,
+                    settings.listen.port(),
+                ))));
+            }
+        }
+        seen.push((*index, settings));
+    }
+    Ok(())
+}
+
+/// Check every `gnmi` encoder in a file against the entries that use it.
+///
+/// A metrics entry emits one series, named after the entry. A histogram
+/// emits `<name>_bucket` (with `le`), `<name>_sum` and `<name>_count`; a
+/// summary emits `<name>` (with `quantile`), `<name>_sum` and `<name>_count`.
+///
+/// - Entries that use equal encoder configs share one encoder. Every key in
+///   that encoder's `values:` and `paths:` is exactly the name of one of
+///   those entries' series. Otherwise the error names the key and, when one
+///   is within two edits, the closest series name; a key that is a
+///   histogram's own name points at its `<name>_bucket` series.
+/// - Two series with different names must not write the same leaf on the
+///   same target of the same listen address. A series' leaf is its `origin`
+///   and its effective template rendered the way the encoder renders it,
+///   with `{name}` as the series' name and every label placeholder, `{le}`
+///   and `{quantile}` included, standing for itself: `[name={ifName}]`
+///   matches only another `[name={ifName}]`, and keys compare in wire order,
+///   whatever order the templates list them in. Its target is the value of
+///   the encoder's `target_label` when that label is a static label of the
+///   entry, or empty when the entry has no such label. When a dynamic or
+///   spike label supplies it, the target can be any value, so it is shared
+///   with every other entry's target. Targets compare by value, whichever
+///   label each encoder takes its target from. Its listen address is the
+///   `gnmi_target` sink's: entries on different addresses never share a
+///   leaf, an entry on port 0 binds a target of its own, and an entry whose
+///   `listen` does not parse is left to per-entry validation.
+///
+/// The leaf rule compares placeholders by name and treats a varying target as
+/// any target, so it is approximate in both directions:
+///
+/// - It misses two series that write the same leaf when their templates
+///   spell it differently: a literal key value in one and a placeholder that
+///   can render to it in the other (`[name=eth0]` against `[name={ifName}]`
+///   with `ifName: eth0`), or two different placeholders that can render to
+///   the same value (`{ifName}` and `{port}`, both `eth0`).
+/// - It rejects two series that never write the same leaf when the same
+///   placeholder can never take the same value in both (`ifName: eth0`
+///   against `ifName: eth1`, or against a dynamic `ifName` of `[eth1, eth2]`),
+///   or when a varying target can never equal the other target (a dynamic
+///   `device` of `[leaf-1, leaf-2]` against `device: leaf-3`, or against an
+///   entry with no target).
+///
+/// An entry whose encoder config does not build, or that has no template for
+/// a series, is left to per-entry validation.
+#[cfg(feature = "gnmi")]
+fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+
+    use crate::config::validate::gnmi_series;
+    use crate::config::LabelSource;
+    use crate::encoder::gnmi::path::NAME_PLACEHOLDER;
+    use crate::encoder::gnmi::proto::Path;
+    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+    use crate::model::metric::Labels;
+    use crate::sink::SinkConfig;
+
+    let invalid = |idx: usize, msg: String| {
+        SondaError::Config(ConfigError::invalid(format!("scenario[{idx}]: {msg}")))
+    };
+
+    // Every gnmi entry: its position in `entries`, authored index, schedule
+    // config, encoder config and series.
+    let gnmi_entries: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(position, (idx, entry))| {
+            let (base, cfg, series) = gnmi_series(entry)?;
+            let histogram = matches!(entry, ScenarioEntry::Histogram(_)).then_some(&base.name);
+            Some((position, *idx, base, cfg, series, histogram))
+        })
+        .collect();
+
+    // One group per distinct encoder config: the index of its first entry,
+    // the names of the series it serves, and the names of its histograms.
+    let mut encoders: Vec<(&GnmiEncoderConfig, usize, Vec<&str>, Vec<&str>)> = Vec::new();
+    for (_, idx, _, cfg, series, histogram) in &gnmi_entries {
+        let group = match encoders.iter_mut().position(|(seen, ..)| *seen == *cfg) {
+            Some(group) => group,
+            None => {
+                encoders.push((*cfg, *idx, Vec::new(), Vec::new()));
+                encoders.len() - 1
+            }
+        };
+        let (_, _, names, histograms) = &mut encoders[group];
+        names.extend(series.iter().map(|s| s.name.as_str()));
+        histograms.extend(histogram.map(String::as_str));
+    }
+    for (cfg, idx, mut names, histograms) in encoders {
+        names.sort_unstable();
+        names.dedup();
+        for (field, mut keys) in [
+            ("values", cfg.values.keys().collect::<Vec<_>>()),
+            ("paths", cfg.paths.keys().collect::<Vec<_>>()),
+        ] {
+            keys.sort_unstable();
+            let Some(key) = keys
+                .into_iter()
+                .find(|key| names.binary_search(&key.as_str()).is_err())
+            else {
+                continue;
+            };
+            let bucket = histograms
+                .contains(&key.as_str())
+                .then(|| format!("{key}_bucket"));
+            let hint = match bucket.as_deref().or_else(|| nearest_name(key, &names)) {
+                Some(near) => format!("; did you mean `{near}`?"),
+                None => String::new(),
+            };
+            return Err(invalid(
+                idx,
+                format!(
+                    "gnmi encoder {field}: key `{key}` names no metric this encoder serves{hint}"
+                ),
+            ));
+        }
+    }
+
+    /// The `Path.target` an entry's events carry: one known value, the empty
+    /// string when the target label is absent, or any of several values when
+    /// a dynamic or spike label supplies it.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Target<'a> {
+        Known(&'a str),
+        Varies,
+    }
+    let shared = |a: Target<'_>, b: Target<'_>| match (a, b) {
+        (Target::Known(a), Target::Known(b)) => a == b,
+        _ => true,
+    };
+
+    /// The target a series is served from: a listen address, a port-0
+    /// target of the entry's own, or none when the sink is not a
+    /// `gnmi_target`.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Address {
+        Listen(SocketAddr),
+        Own(usize),
+        None,
+    }
+
+    /// Every writer of a leaf: its target, its series and its target label.
+    type Writers<'a> = Vec<(Target<'a>, &'a str, &'a str)>;
+    let mut leaves: HashMap<(Address, Path), Writers<'_>> = HashMap::new();
+    for (position, idx, base, cfg, series, _) in &gnmi_entries {
+        let address = match &base.sink {
+            SinkConfig::GnmiTarget(sink) => match sink.settings() {
+                Ok(settings) if settings.listen.port() == 0 => Address::Own(*position),
+                Ok(settings) => Address::Listen(settings.listen),
+                Err(_) => continue,
+            },
+            _ => Address::None,
+        };
+        let Ok(encoder) = GnmiEncoder::new(cfg) else {
+            continue;
+        };
+        let target_is_static = base
+            .emitted_label_keys()
+            .filter(|(key, _)| *key == cfg.target_label)
+            .all(|(_, source)| source == LabelSource::Static);
+        let target = if target_is_static {
+            Target::Known(
+                base.labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(&cfg.target_label))
+                    .map_or("", String::as_str),
+            )
+        } else {
+            Target::Varies
+        };
+
+        for one in series {
+            let name = one.name.as_str();
+            let Ok(template) = encoder.template_for(name) else {
+                continue;
+            };
+            let symbols: Vec<(&str, String)> = template
+                .placeholders()
+                .filter(|p| *p != NAME_PLACEHOLDER)
+                .map(|p| (p, format!("{{{p}}}")))
+                .collect();
+            let pairs: Vec<(&str, &str)> = symbols.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let Ok(labels) = Labels::from_pairs(&pairs) else {
+                continue;
+            };
+            let Ok(mut leaf) = template.render(name, &labels) else {
+                continue;
+            };
+            leaf.origin.clone_from(&cfg.origin);
+
+            let writers = leaves.entry((address, leaf.clone())).or_default();
+            if let Some((other_target, other, other_label)) = writers
+                .iter()
+                .find(|(other_target, other, _)| *other != name && shared(*other_target, target))
+            {
+                let on_target = match (*other_target, target) {
+                    (Target::Known(""), Target::Known(_)) => " with no target".to_string(),
+                    (Target::Known(value), Target::Known(_)) => format!(" on target `{value}`"),
+                    _ => {
+                        let varying: Vec<String> = [
+                            (*other_target, *other, *other_label),
+                            (target, name, cfg.target_label.as_str()),
+                        ]
+                        .into_iter()
+                        .filter(|(target, _, _)| *target == Target::Varies)
+                        .map(|(_, metric, label)| format!("`{metric}` takes `{label}`"))
+                        .collect();
+                        let source = if varying.len() == 1 {
+                            "a dynamic or spike label"
+                        } else {
+                            "dynamic or spike labels"
+                        };
+                        format!(
+                            " on a target they may share: {} from {source}",
+                            varying.join(" and ")
+                        )
+                    }
+                };
+                return Err(invalid(
+                    *idx,
+                    format!(
+                        "metrics `{other}` and `{name}` would both write the gnmi leaf `{leaf}`{on_target}, \
+                         each overwriting the other; give each metric its own path, for example \
+                         with {{name}} in the template or its own paths: entry"
+                    ),
+                ));
+            }
+            writers.push((target, name, cfg.target_label.as_str()));
+        }
+    }
+    Ok(())
+}
+
+/// The name in `names` closest to `key` by [`edit_distance`], if one is within
+/// two edits. Ties go to the earliest name in `names`.
+#[cfg(feature = "gnmi")]
+fn nearest_name<'a>(key: &str, names: &[&'a str]) -> Option<&'a str> {
+    names
+        .iter()
+        .map(|name| (edit_distance(key, name), *name))
+        .filter(|(distance, _)| *distance <= 2)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name)
+}
+
+/// Levenshtein distance between `a` and `b`: the fewest single-character
+/// insertions, deletions and substitutions that turn one into the other.
+#[cfg(feature = "gnmi")]
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current: Vec<usize> = vec![0; b.len() + 1];
+    for (i, a_char) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, b_char) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(a_char != *b_char);
+            current[j + 1] = substitute.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
+/// Launch every entry as one launch, each as a tokio task with the id
+/// `{id_prefix}-{i}` and a child token of `cancel`. Their sinks share what a
+/// launch shares, such as a gnmi path two entries render.
+///
+/// Fails fast: when an entry cannot launch, the scenarios already launched
+/// are stopped and joined (up to a second each, as `launch_multi_compiled`
+/// does), and that entry's error is returned.
+///
+/// # Errors
+///
+/// The first entry's launch error.
+pub async fn launch_prepared(
+    entries: Vec<PreparedEntry>,
+    id_prefix: &str,
+    cancel: &CancellationToken,
+) -> Result<Vec<ScenarioHandle>, SondaError> {
+    let launch = LaunchId::next();
+    let mut handles = Vec::with_capacity(entries.len());
+    for (i, prepared) in entries.into_iter().enumerate() {
+        let launched = launch_scenario_in(
+            launch,
+            format!("{id_prefix}-{i}"),
+            prepared.entry,
+            cancel.child_token(),
+            prepared.start_delay,
+        )
+        .await;
+        match launched {
+            Ok(handle) => handles.push(handle),
+            Err(e) => {
+                for handle in &handles {
+                    handle.stop();
+                }
+                for mut handle in handles {
+                    let _ = handle.join_async(Some(Duration::from_secs(1))).await;
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(handles)
+}
+
+/// Launch a single scenario as a tokio task, as a launch of one: its sink
+/// shares nothing with any other scenario's. Use [`launch_prepared`] for the
+/// entries of one file.
 pub async fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
     cancel: CancellationToken,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
-    launch_scenario_with_gates(id, None, entry, cancel, start_delay, None, None, None).await
+    launch_scenario_in(LaunchId::next(), id, entry, cancel, start_delay).await
 }
 
-/// Launch a scenario with optional `while:` / `after:` gating wired in.
+/// [`launch_scenario`] as part of `launch`.
+pub(crate) async fn launch_scenario_in(
+    launch: LaunchId,
+    id: String,
+    entry: ScenarioEntry,
+    cancel: CancellationToken,
+    start_delay: Option<Duration>,
+) -> Result<ScenarioHandle, SondaError> {
+    launch_scenario_with_gates_in(
+        launch,
+        id,
+        None,
+        entry,
+        cancel,
+        start_delay,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Launch a scenario with optional `while:` / `after:` gating wired in, as a
+/// launch of its own.
 #[allow(clippy::too_many_arguments)]
 pub async fn launch_scenario_with_gates(
+    id: String,
+    scenario_name: Option<String>,
+    entry: ScenarioEntry,
+    cancel: CancellationToken,
+    start_delay: Option<Duration>,
+    upstream_bus: Option<Arc<GateBus>>,
+    gate_ctx: Option<GateContext>,
+    resolver: Option<Arc<dyn GateBusResolver>>,
+) -> Result<ScenarioHandle, SondaError> {
+    launch_scenario_with_gates_in(
+        LaunchId::next(),
+        id,
+        scenario_name,
+        entry,
+        cancel,
+        start_delay,
+        upstream_bus,
+        gate_ctx,
+        resolver,
+    )
+    .await
+}
+
+/// [`launch_scenario_with_gates`] as part of `launch`: the scenario's sink is
+/// created in that launch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn launch_scenario_with_gates_in(
+    launch: LaunchId,
     id: String,
     scenario_name: Option<String>,
     entry: ScenarioEntry,
@@ -288,7 +756,7 @@ pub async fn launch_scenario_with_gates(
             }
 
             let sink_labels = entry.base().labels.clone();
-            let mut sink = create_sink(&entry.base().sink, sink_labels.as_ref()).await?;
+            let mut sink = create_sink_in(&entry.base().sink, sink_labels.as_ref(), launch).await?;
 
             match entry {
                 ScenarioEntry::Metrics(config) => {
@@ -392,6 +860,10 @@ fn sink_type_label(sink: &crate::sink::SinkConfig) -> &'static str {
         SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
         #[cfg(not(feature = "otlp"))]
         SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc",
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(_) => "gnmi_target",
+        #[cfg(not(feature = "gnmi"))]
+        SinkConfig::GnmiTargetDisabled {} => "gnmi_target",
         _ => "unknown",
     }
 }
@@ -2049,5 +2521,572 @@ mod tests {
             exit_duration < Duration::from_millis(200),
             "cancel-to-exit must be under 200ms; took {exit_duration:?}"
         );
+    }
+
+    // ---- Whole-file gnmi checks ------------------------------------------------
+
+    /// The per-entry pairing rule rejects the gnmi encoder with every sink in
+    /// this build. A file that reaches it has passed the whole-file checks,
+    /// which run first.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const GNMI_PAIRING_ERROR: &str = "the gnmi encoder can only be used with the gnmi_target sink";
+
+    /// A file with two metrics entries, `in_octets` and `out_octets`, sharing
+    /// one gnmi encoder whose body (after `type: gnmi`) is `encoder`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn two_counters(encoder: &str) -> String {
+        format!(
+            r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  labels:
+    device: leaf-1
+    ifName: eth0
+  encoder:
+    type: gnmi
+{encoder}
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: {{type: constant, value: 1.0}}
+  - signal_type: metrics
+    name: out_octets
+    generator: {{type: constant, value: 1.0}}
+"#
+        )
+    }
+
+    /// Compile a v2 file into the entries `prepare_entries` receives.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn compile_entries(
+        yaml: &str,
+        resolver: &crate::compiler::expand::InMemoryPackResolver,
+    ) -> Vec<ScenarioEntry> {
+        crate::compile::compile_scenario_file(yaml, resolver).expect("fixture must compile")
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn prepare_error(entries: Vec<ScenarioEntry>) -> String {
+        prepare_entries(entries)
+            .expect_err("a gnmi file must not prepare in this build")
+            .to_string()
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_values_key_naming_no_metric_is_rejected() {
+        let yaml = two_counters(
+            "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    \
+             values:\n      in_octet: uint",
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("values: key `in_octet`"), "{msg}");
+        assert!(msg.contains("did you mean `in_octets`?"), "{msg}");
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_paths_key_naming_no_metric_is_rejected() {
+        let yaml = two_counters(
+            "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    \
+             paths:\n      out_octet: \"/interfaces/interface[name={ifName}]/state/out\"",
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("paths: key `out_octet`"), "{msg}");
+        assert!(msg.contains("did you mean `out_octets`?"), "{msg}");
+    }
+
+    /// A key more than two edits from every metric name gets no suggestion.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_values_key_far_from_every_metric_is_rejected_without_a_suggestion() {
+        let yaml = two_counters(
+            "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    \
+             values:\n      if_speed: uint",
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("values: key `if_speed`"), "{msg}");
+        assert!(!msg.contains("did you mean"), "{msg}");
+    }
+
+    /// Keys may name metrics that appear only once a pack has expanded.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_keys_naming_pack_expanded_metrics_are_accepted() {
+        let pack: crate::packs::MetricPackDef = serde_yaml_ng::from_str(
+            r#"
+name: interface_counters
+description: test
+category: network
+metrics:
+  - name: in_octets
+    generator: {type: constant, value: 1.0}
+  - name: out_octets
+    generator: {type: constant, value: 1.0}
+"#,
+        )
+        .expect("pack must parse");
+        let mut resolver = crate::compiler::expand::InMemoryPackResolver::new();
+        resolver.insert("interface_counters", pack);
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  labels:
+    device: leaf-1
+    ifName: eth0
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+    values:
+      in_octets: uint
+    paths:
+      out_octets: "/interfaces/interface[name={ifName}]/state/out-octets"
+scenarios:
+  - signal_type: metrics
+    pack: interface_counters
+"#;
+        let entries = compile_entries(yaml, &resolver);
+        let names: Vec<&str> = entries.iter().map(|e| e.base().name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["in_octets", "out_octets"],
+            "the pack entry must expand to the metrics the keys name"
+        );
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}");
+    }
+
+    /// Two metrics whose paths render to the same leaf on the same target are
+    /// rejected, whether they share a template without `{name}`, one copies
+    /// the other's rendered `{name}` into its `paths:` entry, or they list the
+    /// same keys in a different order. The error names both metrics, the leaf
+    /// and the target.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::shared_template_without_name(
+        "    path: \"/interfaces/interface[name={ifName}]/state\"",
+        "openconfig:/interfaces/interface[name={ifName}]/state",
+    )]
+    #[case::override_copies_the_rendered_name(
+        "    path: \"/interfaces/interface[name={ifName}]/state/counters/{name}\"\n    paths:\n      out_octets: \"/interfaces/interface[name={ifName}]/state/counters/in-octets\"",
+        "openconfig:/interfaces/interface[name={ifName}]/state/counters/in-octets",
+    )]
+    #[case::same_keys_in_another_order(
+        "    path: \"/interfaces/interface[name={ifName}][type=eth]/state\"\n    paths:\n      out_octets: \"/interfaces/interface[type=eth][name={ifName}]/state\"",
+        "openconfig:/interfaces/interface[name={ifName}][type=eth]/state",
+    )]
+    fn gnmi_metrics_writing_the_same_leaf_are_rejected(#[case] encoder: &str, #[case] leaf: &str) {
+        let entries = compile_entries(&two_counters(encoder), &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains("metrics `in_octets` and `out_octets`"), "{msg}");
+        assert!(msg.contains(&format!("gnmi leaf `{leaf}` on target `leaf-1`")), "{msg}");
+    }
+
+    /// Two metrics sharing a template without `{name}`; `in_octets` and
+    /// `out_octets` take the given blocks, which decide their target. A block
+    /// may also give its entry its own encoder, such as [`HOST_ENCODER`].
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn two_targets(in_octets: &str, out_octets: &str) -> String {
+        format!(
+            r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  labels:
+    ifName: eth0
+  encoder:
+    type: gnmi
+    path: "/interfaces/interface[name={{ifName}}]/state"
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: {{type: constant, value: 1.0}}
+{in_octets}  - signal_type: metrics
+    name: out_octets
+    generator: {{type: constant, value: 1.0}}
+{out_octets}"#
+        )
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_1: &str = "    labels:\n      device: leaf-1\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_2: &str = "    labels:\n      device: leaf-2\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const DYNAMIC_LEAF_1_OR_2: &str =
+        "    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_9_REPLACED_BY_DYNAMIC: &str = "    labels:\n      device: leaf-9\n    dynamic_labels:\n      - key: device\n        values: [leaf-1, leaf-2]\n";
+    /// A spike over `device` renders `leaf-0` and `leaf-1` while it lasts.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_2_SPIKED: &str = "    labels:\n      device: leaf-2\n    cardinality_spikes:\n      - label: device\n        every: 10s\n        for: 5s\n        cardinality: 2\n        prefix: leaf-\n";
+    /// The same template, from an encoder that takes its target from `host`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const HOST_ENCODER: &str = "    encoder:\n      type: gnmi\n      target_label: host\n      path: \"/interfaces/interface[name={ifName}]/state\"\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const HOST_LEAF_1: &str = "    labels:\n      host: leaf-1\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const HOST_LEAF_2: &str = "    labels:\n      host: leaf-2\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const DYNAMIC_HOST_LEAF_1_OR_2: &str =
+        "    dynamic_labels:\n      - key: host\n        values: [leaf-1, leaf-2]\n";
+    /// A static `device` with a dynamic label on another key, here a path
+    /// placeholder, which does not make the target vary.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_1_DYNAMIC_IFNAME: &str = "    labels:\n      device: leaf-1\n    dynamic_labels:\n      - key: ifName\n        values: [eth0, eth1]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const STATIC_LEAF_2_DYNAMIC_IFNAME: &str = "    labels:\n      device: leaf-2\n    dynamic_labels:\n      - key: ifName\n        values: [eth0, eth1]\n";
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const OUT_OCTETS_TARGET_VARIES: &str =
+        " on a target they may share: `out_octets` takes `device` from a dynamic or spike label";
+
+    /// Two metrics writing the same leaf collide only when their targets can
+    /// match, whichever label each encoder takes its target from. A static
+    /// target label is one target, a missing one is the empty target, and a
+    /// dynamic or spike one can be any target, including a static one it
+    /// replaces. `None` means the file passes the whole-file check; otherwise
+    /// the error names the leaf followed by the given clause.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::different_static_targets(STATIC_LEAF_1, STATIC_LEAF_2, None)]
+    #[case::absent_and_static_targets("", STATIC_LEAF_1, None)]
+    #[case::both_targets_absent("", "", Some(" with no target"))]
+    #[case::static_and_dynamic_targets(STATIC_LEAF_1, DYNAMIC_LEAF_1_OR_2, Some(OUT_OCTETS_TARGET_VARIES))]
+    #[case::dynamic_replaces_a_different_static(STATIC_LEAF_1, STATIC_LEAF_9_REPLACED_BY_DYNAMIC, Some(OUT_OCTETS_TARGET_VARIES))]
+    #[case::static_and_spike_targets(STATIC_LEAF_1, STATIC_LEAF_2_SPIKED, Some(OUT_OCTETS_TARGET_VARIES))]
+    #[case::both_targets_dynamic(DYNAMIC_LEAF_1_OR_2, DYNAMIC_LEAF_1_OR_2, Some(" on a target they may share: `in_octets` takes `device` and `out_octets` takes `device` from dynamic or spike labels"))]
+    #[case::different_labels_with_different_values(STATIC_LEAF_1, &format!("{HOST_LEAF_2}{HOST_ENCODER}"), None)]
+    #[case::different_labels_with_the_same_value(STATIC_LEAF_1, &format!("{HOST_LEAF_1}{HOST_ENCODER}"), Some(" on target `leaf-1`"))]
+    #[case::different_labels_both_absent("", HOST_ENCODER, Some(" with no target"))]
+    #[case::dynamic_host_and_static_device(&format!("{DYNAMIC_HOST_LEAF_1_OR_2}{HOST_ENCODER}"), STATIC_LEAF_1, Some(" on a target they may share: `in_octets` takes `host` from a dynamic or spike label"))]
+    #[case::different_static_targets_with_a_dynamic_placeholder(STATIC_LEAF_1_DYNAMIC_IFNAME, STATIC_LEAF_2_DYNAMIC_IFNAME, None)]
+    fn gnmi_metrics_sharing_a_leaf_collide_only_on_a_shared_target(
+        #[case] in_octets: &str,
+        #[case] out_octets: &str,
+        #[case] rejected_with: Option<&str>,
+    ) {
+        let entries = compile_entries(&two_targets(in_octets, out_octets), &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+        for (entry, block) in entries.iter().zip([in_octets, out_octets]) {
+            let ScenarioEntry::Metrics(config) = entry else {
+                panic!("both entries must be metrics entries");
+            };
+            let crate::encoder::EncoderConfig::Gnmi(gnmi) = &config.encoder else {
+                panic!("{}: the entry must use the gnmi encoder", config.name);
+            };
+            let target = gnmi.target_label.as_str();
+            let expected_target = if block.contains("target_label: host") { "host" } else { "device" };
+            assert_eq!(target, expected_target, "{}: the target label must be as the case describes", config.name);
+            assert_eq!(
+                config.labels.as_ref().is_some_and(|l| l.contains_key(target)),
+                block.contains(&format!("    labels:\n      {target}: ")),
+                "{}: the static target label must be as the case describes",
+                config.name
+            );
+            assert_eq!(
+                config.dynamic_labels.iter().flatten().any(|dl| dl.key == target),
+                block.contains(&format!("- key: {target}\n")),
+                "{}: the dynamic target label must be as the case describes",
+                config.name
+            );
+            assert_eq!(
+                config.cardinality_spikes.iter().flatten().any(|spike| spike.label == target),
+                block.contains(&format!("- label: {target}\n")),
+                "{}: the spike over the target label must be as the case describes",
+                config.name
+            );
+        }
+
+        let msg = prepare_error(entries);
+        match rejected_with {
+            None => assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}"),
+            Some(clause) => {
+                assert!(msg.contains("metrics `in_octets` and `out_octets`"), "{msg}");
+                assert!(
+                    msg.contains(&format!(
+                        "gnmi leaf `openconfig:/interfaces/interface[name={{ifName}}]/state`{clause}, "
+                    )),
+                    "{msg}"
+                );
+            }
+        }
+    }
+
+    /// A key must name a metric that its own encoder serves. `out_octets` has
+    /// its own encoder, so `in_octets`'s encoder naming it is rejected.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_key_naming_a_metric_of_another_encoder_is_rejected() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1s
+  labels:
+    device: leaf-1
+    ifName: eth0
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: {type: constant, value: 1.0}
+    encoder:
+      type: gnmi
+      path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+      values:
+        out_octets: uint
+  - signal_type: metrics
+    name: out_octets
+    generator: {type: constant, value: 1.0}
+    encoder:
+      type: gnmi
+      path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+"#;
+        let entries = compile_entries(yaml, &Default::default());
+        let names: Vec<&str> = entries.iter().map(|e| e.base().name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["in_octets", "out_octets"],
+            "the file must expand to both metrics"
+        );
+
+        let msg = prepare_error(entries);
+        assert!(
+            msg.contains("scenario[0]: gnmi encoder values: key `out_octets` names no metric this encoder serves"),
+            "{msg}"
+        );
+    }
+
+    /// Metrics that share a template are accepted when `{name}` tells their
+    /// paths apart, and metrics with their own `paths:` entries never share one.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::name_in_the_shared_template("    path: \"/interfaces/interface[name={ifName}]/state/{name}\"")]
+    #[case::own_paths_entries("    paths:\n      in_octets: \"/interfaces/interface[name={ifName}]/state/in-octets\"\n      out_octets: \"/interfaces/interface[name={ifName}]/state/out-octets\"")]
+    fn gnmi_metrics_with_distinct_paths_are_accepted(#[case] encoder: &str) {
+        let entries = compile_entries(&two_counters(encoder), &Default::default());
+        assert_eq!(entries.len(), 2, "the file must expand to two entries");
+
+        let msg = prepare_error(entries);
+        assert!(msg.contains(GNMI_PAIRING_ERROR), "{msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::equal("in_octets", "in_octets", 0)]
+    #[case::one_insertion("in_octet", "in_octets", 1)]
+    #[case::two_edits("flaw", "lawn", 2)]
+    #[case::three_edits("kitten", "sitting", 3)]
+    #[case::from_empty("", "abc", 3)]
+    #[case::to_empty("abc", "", 3)]
+    fn edit_distance_counts_single_character_edits(#[case] a: &str, #[case] b: &str, #[case] expected: usize) {
+        assert_eq!(edit_distance(a, b), expected);
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::within_two_edits("in_octe", &["in_octets", "out_octets"], Some("in_octets"))]
+    #[case::three_edits_away("in_oct", &["in_octets", "out_octets"], None)]
+    #[case::tie_goes_to_the_first_name("aa", &["ab", "ba"], Some("ab"))]
+    #[case::no_names("in_octets", &[], None)]
+    fn nearest_name_suggests_only_within_two_edits(#[case] key: &str, #[case] names: &[&str], #[case] expected: Option<&str>) {
+        assert_eq!(nearest_name(key, names), expected);
+    }
+
+    #[test]
+    fn sink_type_label_names_the_gnmi_target_sink() {
+        #[cfg(feature = "gnmi")]
+        let sink = crate::sink::SinkConfig::GnmiTarget(crate::sink::gnmi::GnmiTargetConfig::new(
+            "127.0.0.1:0",
+        ));
+        #[cfg(not(feature = "gnmi"))]
+        let sink = crate::sink::SinkConfig::GnmiTargetDisabled {};
+        assert_eq!(sink_type_label(&sink), "gnmi_target");
+    }
+
+    /// A metrics entry on a `gnmi_target` sink listening on `listen`.
+    #[cfg(feature = "gnmi")]
+    fn gnmi_entry(name: &str, listen: &str, max_subscribers: Option<usize>) -> ScenarioEntry {
+        let mut entry = metrics_entry(name);
+        if let ScenarioEntry::Metrics(ref mut config) = entry {
+            let mut sink = crate::sink::gnmi::GnmiTargetConfig::new(listen);
+            sink.max_subscribers = max_subscribers;
+            config.base.sink = SinkConfig::GnmiTarget(sink);
+            config.encoder = EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+                path: Some("/a/{name}".to_string()),
+                ..Default::default()
+            });
+        }
+        entry
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn entries_sharing_an_address_must_agree() {
+        prepare_entries(vec![
+            gnmi_entry("a", "127.0.0.1:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(4)),
+            gnmi_entry("c", "127.0.0.2:57400", None),
+        ])
+        .expect("identical settings on one address, and another specific address");
+
+        let err = prepare_entries(vec![
+            gnmi_entry("a", "127.0.0.1:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(8)),
+        ])
+        .expect_err("different settings on one address");
+        let msg = err.to_string();
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(msg.contains("scenario[0] and scenario[1]"), "got {msg}");
+        assert!(msg.contains("max_subscribers 4 and 8"), "got {msg}");
+
+        let err = prepare_entries(vec![
+            gnmi_entry("a", "0.0.0.0:57400", None),
+            gnmi_entry("b", "127.0.0.1:57400", None),
+        ])
+        .expect_err("a wildcard and a specific address on one port");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(err.to_string().contains("wildcard"), "got {err}");
+
+        prepare_entries(vec![
+            gnmi_entry("a", "127.0.0.1:0", Some(4)),
+            gnmi_entry("b", "127.0.0.1:0", Some(8)),
+        ])
+        .expect("port 0 binds a target per entry, so nothing is shared");
+
+        prepare_entries(vec![
+            gnmi_entry("a", "0.0.0.0:57400", None),
+            gnmi_entry("b", "[::1]:57400", None),
+        ])
+        .expect("an IPv4 wildcard and an IPv6 address bind side by side");
+
+        // An IPv4-mapped address is the IPv4 address it maps.
+        prepare_entries(vec![
+            gnmi_entry("a", "[::ffff:127.0.0.1]:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(4)),
+        ])
+        .expect("an IPv4-mapped address and the IPv4 address it maps are one address");
+        let err = prepare_entries(vec![
+            gnmi_entry("a", "[::ffff:127.0.0.1]:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(8)),
+        ])
+        .expect_err("one address, different settings");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("both use gnmi_target 127.0.0.1:57400"),
+            "got {msg}"
+        );
+        assert!(!msg.contains("wildcard"), "got {msg}");
+    }
+
+    /// A file whose entries share one gnmi encoder through `defaults:`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn shared_encoder_file(paths: &str, scenarios: &str) -> String {
+        format!(
+            "version: 2\nkind: runnable\ndefaults:\n  rate: 1\n  duration: 1s\n  encoder:\n    \
+             type: gnmi\n    paths:\n{paths}  sink:\n    type: gnmi_target\n    listen: \
+             127.0.0.1:57400\nscenarios:\n{scenarios}"
+        )
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const THREE_KINDS: &str = "  - signal_type: metrics\n    name: in_octets\n    generator: {type: constant, value: 1.0}\n  - signal_type: histogram\n    name: latency\n    distribution: {type: exponential, rate: 10.0}\n  - signal_type: summary\n    name: rpc\n    distribution: {type: exponential, rate: 10.0}\n";
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    const THREE_KINDS_PATHS: &str = "      in_octets: \"/interfaces/{name}\"\n      latency_bucket: \"/latency[le={le}]/{name}\"\n      latency_sum: \"/latency/{name}\"\n      latency_count: \"/latency/{name}\"\n      rpc: \"/rpc[quantile={quantile}]/{name}\"\n      rpc_sum: \"/rpc/{name}\"\n      rpc_count: \"/rpc/{name}\"\n";
+
+    /// Histogram and summary series are series of the encoder they share
+    /// with a metrics entry, so `paths:` keys may name them.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_keys_may_name_histogram_and_summary_series() {
+        let yaml = shared_encoder_file(THREE_KINDS_PATHS, THREE_KINDS);
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 3, "metrics, histogram and summary");
+        prepare_entries(entries).expect("every key names a series this encoder serves");
+    }
+
+    /// A key names a series exactly: a histogram's own name is not one of
+    /// its series, and the hint names its bucket series.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_key_naming_a_histogram_points_at_its_bucket_series() {
+        let paths = THREE_KINDS_PATHS.replace("latency_bucket:", "latency:");
+        let yaml = shared_encoder_file(&paths, THREE_KINDS);
+        let msg = prepare_error(compile_entries(&yaml, &Default::default()));
+        assert!(
+            msg.contains("paths: key `latency` names no metric this encoder serves"),
+            "{msg}"
+        );
+        assert!(msg.contains("did you mean `latency_bucket`?"), "{msg}");
+    }
+
+    /// Two histograms whose bucket series render to one leaf collide, like
+    /// two metrics would.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_histogram_series_take_part_in_the_leaf_check() {
+        let paths = "      a_bucket: \"/latency[le={le}]/bucket\"\n      a_sum: \"/a/{name}\"\n      a_count: \"/a/{name}\"\n      b_bucket: \"/latency[le={le}]/bucket\"\n      b_sum: \"/b/{name}\"\n      b_count: \"/b/{name}\"\n";
+        let scenarios = "  - signal_type: histogram\n    name: a\n    distribution: {type: exponential, rate: 10.0}\n  - signal_type: histogram\n    name: b\n    distribution: {type: exponential, rate: 10.0}\n";
+        let yaml = shared_encoder_file(paths, scenarios);
+        let msg = prepare_error(compile_entries(&yaml, &Default::default()));
+        assert!(msg.contains("`a_bucket` and `b_bucket`"), "{msg}");
+        assert!(msg.contains("le={le}"), "{msg}");
+    }
+
+    /// Two metrics entries on one literal leaf collide only when they serve
+    /// it from the same listen address.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::same_address("127.0.0.1:57400", "127.0.0.1:57400", false)]
+    #[case::different_ports("127.0.0.1:57400", "127.0.0.1:57401", true)]
+    #[case::different_hosts("127.0.0.1:57400", "127.0.0.2:57400", true)]
+    #[case::each_on_port_zero("127.0.0.1:0", "127.0.0.1:0", true)]
+    fn gnmi_leaf_check_is_per_listen_address(
+        #[case] first: &str,
+        #[case] second: &str,
+        #[case] accepted: bool,
+    ) {
+        let entry = |name: &str, listen: &str| {
+            format!(
+                "  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    sink:\n      type: gnmi_target\n      listen: \"{listen}\"\n"
+            )
+        };
+        let paths = "      up: \"/system/state\"\n      down: \"/system/state\"\n";
+        let scenarios = format!("{}{}", entry("up", first), entry("down", second));
+        let yaml = shared_encoder_file(paths, &scenarios);
+        let entries = compile_entries(&yaml, &Default::default());
+        let result = prepare_entries(entries);
+        if accepted {
+            result.expect("different targets never share a leaf");
+        } else {
+            let msg = result.expect_err("one target, one leaf").to_string();
+            assert!(msg.contains("would both write the gnmi leaf"), "{msg}");
+        }
     }
 }

@@ -109,6 +109,11 @@ pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
         .with_state(state)
 }
 
+/// Serialises the tests that hold gnmi targets, so each can say what the
+/// process-wide registry holds.
+#[cfg(all(test, feature = "gnmi"))]
+pub(crate) static GNMI_REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;

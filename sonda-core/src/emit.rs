@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::config::validate::validate_encoder_sink_pairing;
+use crate::config::validate::{reject_gnmi_for_logs, validate_encoder_sink_pairing};
 use crate::encoder::{create_encoder, EncoderConfig};
 use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
@@ -12,13 +12,16 @@ use crate::SondaError;
 /// Encode a [`LogEvent`] and deliver it through a one-shot sink.
 ///
 /// Returns a [`SondaError::Config`] before building anything when the encoder
-/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
+/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]), or
+/// when either is the `gnmi` encoder or the `gnmi_target` sink, which carry
+/// metric signals only.
 pub async fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
     sink: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
+    reject_gnmi_for_logs(encoder, sink)?;
     validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
     let mut sink = create_sink(sink, labels).await?;
@@ -32,6 +35,11 @@ pub async fn emit_log(
 ///
 /// Returns a [`SondaError::Config`] before building anything when the encoder
 /// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
+///
+/// A `gnmi_target` sink joins the live target on its address and never
+/// binds one: with no running scenario listening there, this is a
+/// [`SondaError::Config`]. The event stays in the target's table after the
+/// call returns.
 pub async fn emit_metric(
     event: &MetricEvent,
     encoder: &EncoderConfig,
@@ -40,7 +48,11 @@ pub async fn emit_metric(
 ) -> Result<(), SondaError> {
     validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
-    let mut sink = create_sink(sink, labels).await?;
+    let mut sink: Box<dyn crate::sink::Sink> = match sink {
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(cfg) => Box::new(crate::sink::gnmi::GnmiTargetSink::join(cfg)?),
+        _ => create_sink(sink, labels).await?,
+    };
     let mut buf: Vec<u8> = Vec::new();
     encoder.encode_metric(event, &mut buf)?;
     // Same rule as the schedule runners: only a sink that asked for the event
@@ -328,13 +340,203 @@ mod tests {
         let log_err = emit_log(&log, &gnmi, &sink, None)
             .await
             .expect_err("gnmi must be refused");
-        for err in [metric_err, log_err] {
+        for (err, needle) in [(metric_err, "gnmi_target"), (log_err, "not logs entries")] {
             assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
-            assert!(err.to_string().contains("gnmi_target"), "got: {err}");
+            assert!(err.to_string().contains(needle), "got: {err}");
         }
         assert!(
             std::fs::metadata(&path).is_err(),
             "no sink may be built for a refused pairing"
         );
+    }
+
+    /// A sink holding a target and publishing a series stands in for a
+    /// running scenario.
+    #[cfg(feature = "gnmi")]
+    async fn running_scenario(
+        encoder: &EncoderConfig,
+        if_name: &str,
+    ) -> crate::sink::gnmi::GnmiTargetSink {
+        use crate::encoder::create_encoder;
+        use crate::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+        use crate::sink::Sink;
+
+        let mut held = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
+            .await
+            .expect("bind an ephemeral port");
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            1.0,
+            Labels::from_pairs(&[("ifName", if_name)]).expect("labels"),
+        )
+        .expect("metric event");
+        let mut buf = Vec::new();
+        create_encoder(encoder)
+            .expect("valid encoder")
+            .encode_metric(&event, &mut buf)
+            .expect("encodes");
+        held.write_metric_event(&event, &buf)
+            .await
+            .expect("the scenario publishes its series");
+        held
+    }
+
+    #[cfg(feature = "gnmi")]
+    fn interface_encoder() -> EncoderConfig {
+        EncoderConfig::Gnmi(crate::encoder::gnmi::GnmiEncoderConfig {
+            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// `emit_metric` joins the running target and replaces the latest value
+    /// of a series it serves, through the metric hook, without owning it.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_metric_reaches_a_gnmi_target_through_the_hook() {
+        use crate::encoder::gnmi::proto;
+        use crate::sink::gnmi::GnmiTargetConfig;
+        use prost::Message;
+
+        let encoder = interface_encoder();
+        let held = running_scenario(&encoder, "Gi0").await;
+        let target = std::sync::Arc::clone(held.target());
+        assert_eq!(target.series_count(), 1, "the scenario serves one series");
+
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            42.5,
+            Labels::from_pairs(&[("ifName", "Gi0")]).expect("labels"),
+        )
+        .expect("metric event");
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new(target.local_addr().to_string()));
+        emit_metric(&event, &encoder, &sink, None)
+            .await
+            .expect("emit_metric must deliver to the target");
+
+        assert_eq!(
+            target.series_count(),
+            1,
+            "the event replaced the served series"
+        );
+        let snapshot = target.snapshot();
+        let notification =
+            proto::Notification::decode(snapshot[0].latest.as_ref()).expect("a notification");
+        assert_eq!(notification.update.len(), 1);
+        let value = notification.update[0]
+            .val
+            .as_ref()
+            .and_then(|v| v.value.as_ref());
+        assert_eq!(
+            value,
+            Some(&proto::typed_value::Value::DoubleVal(42.5)),
+            "the latest value is the event's"
+        );
+
+        drop(held);
+        assert_eq!(
+            target.series_count(),
+            0,
+            "the series leaves with the scenario; emit_metric owned nothing"
+        );
+    }
+
+    /// An event for a path the running target does not serve is refused,
+    /// naming the path and the address, and adds nothing.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_metric_refuses_a_path_the_target_does_not_serve() {
+        use crate::sink::gnmi::GnmiTargetConfig;
+
+        let encoder = interface_encoder();
+        let held = running_scenario(&encoder, "Gi0").await;
+        let target = std::sync::Arc::clone(held.target());
+        let addr = target.local_addr();
+
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            42.5,
+            Labels::from_pairs(&[("ifName", "Gi1")]).expect("labels"),
+        )
+        .expect("metric event");
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new(addr.to_string()));
+        let err = emit_metric(&event, &encoder, &sink, None)
+            .await
+            .expect_err("Gi1 is not served");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("interface[name=Gi1]/in-octets") && msg.contains(&addr.to_string()),
+            "got {msg}"
+        );
+        assert_eq!(target.series_count(), 1, "nothing was added");
+    }
+
+    /// The gnmi encoder and the gnmi_target sink carry metrics only; a log
+    /// sent to them is a config error, not an encode failure.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_log_rejects_the_gnmi_target_sink() {
+        use crate::encoder::gnmi::GnmiEncoderConfig;
+        use crate::sink::gnmi::GnmiTargetConfig;
+
+        let log = LogEvent::new(
+            Severity::Info,
+            "probe".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        let gnmi = EncoderConfig::Gnmi(GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            ..Default::default()
+        });
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new("127.0.0.1:0"));
+
+        let err = emit_log(&log, &gnmi, &sink, None)
+            .await
+            .expect_err("a log on gnmi_target must be refused");
+        assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
+        assert!(err.to_string().contains("not logs entries"), "got: {err}");
+    }
+
+    /// With no running scenario on the address, `emit_metric` refuses the
+    /// event instead of binding a target of its own.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn emit_metric_without_a_live_gnmi_target_is_a_config_error() {
+        use crate::encoder::gnmi::GnmiEncoderConfig;
+        use crate::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+        // A port a target held and released, so nothing listens on it now.
+        let addr = {
+            let held = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
+                .await
+                .expect("bind an ephemeral port");
+            let addr = held.target().local_addr();
+            let stopped = held.target().wait();
+            drop(held);
+            stopped.await;
+            addr
+        };
+        let event = MetricEvent::new("in_octets".to_string(), 1.0, Labels::default())
+            .expect("metric event");
+        let encoder = EncoderConfig::Gnmi(GnmiEncoderConfig {
+            path: Some("/a/{name}".to_string()),
+            ..Default::default()
+        });
+        let sink = SinkConfig::GnmiTarget(GnmiTargetConfig::new(addr.to_string()));
+
+        let err = emit_metric(&event, &encoder, &sink, None)
+            .await
+            .expect_err("nothing to join");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string()
+                .contains(&format!("no running scenario listens on {addr}")),
+            "got {err}"
+        );
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .expect_err("emit_metric bound nothing on the address");
     }
 }

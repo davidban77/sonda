@@ -525,7 +525,11 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
             let gap_end = start + elapsed + sleep_for;
             let now = Instant::now();
             if gap_end > now {
-                tokio::time::sleep(gap_end - now).await;
+                // A cancel ends the sleep; the loop's cancel check exits.
+                tokio::select! {
+                    () = tokio::time::sleep(gap_end - now) => {}
+                    () = cancel.cancelled() => continue,
+                }
             }
             // WHERE THE WALK STARTS DECIDES WHETHER A LATE ROW IS EMITTED OR
             // DELETED, and under the ruling those are not interchangeable.
@@ -649,7 +653,12 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         // above was made about.
         let now = Instant::now();
         if now < emit_at {
-            tokio::time::sleep(emit_at - now).await;
+            // A cancel ends the sleep without emitting this tick; the loop's
+            // cancel check exits.
+            tokio::select! {
+                () = tokio::time::sleep(emit_at - now) => {}
+                () = cancel.cancelled() => continue,
+            }
         }
 
         // Invoke the signal-specific tick callback.
@@ -662,6 +671,8 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         };
         events_buf.clear();
         tick_output.clear();
+        // Whether an error came from the sink's write rather than the tick.
+        let mut from_sink = false;
         let tick_outcome = match tick_fn(&ctx, tick_output, &mut events_buf) {
             Ok(mut result) => match drain_writes(tick_output, sink).await {
                 Ok(Some(delivered)) => {
@@ -669,7 +680,10 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     Ok(result)
                 }
                 Ok(None) => Ok(result),
-                Err(e) => Err(e),
+                Err(e) => {
+                    from_sink = true;
+                    Err(e)
+                }
             },
             Err(e) => {
                 tick_output.clear();
@@ -722,10 +736,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                     sink_warn_limiter.observe(&schedule.name, &io_err);
                     if let Some(ref s) = stats {
                         if let Ok(mut st) = s.write() {
-                            st.errors = st.errors.saturating_add(1);
-                            st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                            st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                            st.last_sink_error = Some(io_err.to_string());
+                            record_sink_failure(&mut st, &io_err);
                             st.in_gap = currently_in_gap;
                             st.in_burst = currently_in_burst;
                             st.in_cardinality_spike = currently_in_spike;
@@ -735,10 +746,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                 OnSinkError::Fail => {
                     if let Some(ref s) = stats {
                         if let Ok(mut st) = s.write() {
-                            st.errors = st.errors.saturating_add(1);
-                            st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                            st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                            st.last_sink_error = Some(io_err.to_string());
+                            record_sink_failure(&mut st, &io_err);
                         }
                     }
                     return Err(SondaError::Sink(io_err));
@@ -753,6 +761,22 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                         st.in_cardinality_spike = currently_in_spike;
                     }
                 }
+            }
+            // A sink that refuses an event for its configuration (a gnmi path
+            // another launch owns) ends the scenario under either policy. It
+            // is counted and kept as the last sink error first, so the reason
+            // shows in the scenario's stats. A config error from the tick
+            // itself is not a sink failure and falls through.
+            Err(SondaError::Config(e)) if from_sink => {
+                if let Some(ref s) = stats {
+                    if let Ok(mut st) = s.write() {
+                        record_sink_failure(&mut st, &e);
+                        st.in_gap = currently_in_gap;
+                        st.in_burst = currently_in_burst;
+                        st.in_cardinality_spike = currently_in_spike;
+                    }
+                }
+                return Err(SondaError::Config(e));
             }
             Err(other) => return Err(other),
         }
@@ -799,6 +823,15 @@ async fn drain_writes(
     Ok(delivered)
 }
 
+/// Count one failed sink call in `st` and keep `error` as the last sink
+/// error.
+fn record_sink_failure(st: &mut ScenarioStats, error: &dyn std::fmt::Display) {
+    st.errors = st.errors.saturating_add(1);
+    st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+    st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+    st.last_sink_error = Some(error.to_string());
+}
+
 /// Apply the scenario's sink-error policy to a flush call made at scenario
 /// shutdown.
 ///
@@ -820,10 +853,7 @@ pub(crate) fn apply_flush_policy(
                 );
                 if let Some(s) = stats {
                     if let Ok(mut st) = s.write() {
-                        st.errors = st.errors.saturating_add(1);
-                        st.total_sink_failures = st.total_sink_failures.saturating_add(1);
-                        st.consecutive_failures = st.consecutive_failures.saturating_add(1);
-                        st.last_sink_error = Some(io_err.to_string());
+                        record_sink_failure(&mut st, &io_err);
                     }
                 }
                 Ok(())
@@ -2476,6 +2506,58 @@ mod tests {
 
     // ---- Gap window: suppresses events during gap ---------------------------
 
+    /// A slow scenario stops promptly on cancel, without emitting another
+    /// tick, whether it is sleeping to its next tick or through a gap.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::tick_sleep(None)]
+    // Gap from 5 s to 20 s: tick 1 (at 10 s) lands in it, so the loop sleeps
+    // through the gap from the first tick on.
+    #[case::gap_sleep(Some(GapWindow { every: Duration::from_secs(20), duration: Duration::from_secs(15) }))]
+    #[tokio::test]
+    async fn a_cancel_ends_a_slow_scenarios_sleep(#[case] gap_window: Option<GapWindow>) {
+        let schedule = ParsedSchedule {
+            gap_window,
+            ..minimal_schedule(None)
+        };
+        let mut ticks = 0u64;
+        let mut tick_fn = |_ctx: &TickContext<'_>,
+                           _output: &mut TickOutput,
+                           _events_buf: &mut Vec<MetricEvent>|
+         -> Result<TickResult, SondaError> {
+            ticks += 1;
+            Ok(TickResult {
+                bytes_written: 1,
+                delivered: true,
+            })
+        };
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                cancel.cancel();
+            })
+        };
+        let started = Instant::now();
+        let mut sink = null_sink();
+        run_schedule_loop(&schedule, 0.1, &cancel, None, &mut sink, &mut tick_fn)
+            .await
+            .expect("a cancelled run ends cleanly");
+        let took = started.elapsed();
+        canceller.await.expect("the canceller ran");
+
+        assert!(
+            took >= Duration::from_millis(100),
+            "returned before the cancel: {took:?}"
+        );
+        assert!(
+            took < Duration::from_millis(500),
+            "returned {took:?} after starting"
+        );
+        assert_eq!(ticks, 1, "only the first tick, none after the cancel");
+    }
+
     /// Events are suppressed during a gap window.
     #[tokio::test]
     async fn loop_suppresses_events_during_gap() {
@@ -2839,6 +2921,91 @@ mod tests {
                 .contains("fail-before-die"),
             "last_sink_error must carry the io error message"
         );
+    }
+
+    /// Refuses every write with a config error, as a gnmi sink does for a
+    /// path another launch owns.
+    struct RefusingSink;
+
+    #[async_trait]
+    impl Sink for RefusingSink {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "the path is owned elsewhere",
+            )))
+        }
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    /// A config error from the sink's write ends the scenario under either
+    /// policy, counted and kept as the last sink error. One from the tick
+    /// itself ends it too, but is not booked as a sink failure.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::sink_warn(true, OnSinkError::Warn)]
+    #[case::sink_fail(true, OnSinkError::Fail)]
+    #[case::tick_warn(false, OnSinkError::Warn)]
+    #[case::tick_fail(false, OnSinkError::Fail)]
+    #[tokio::test]
+    async fn a_config_error_from_the_sink_is_recorded_and_ends_the_scenario(
+        #[case] from_sink: bool,
+        #[case] policy: OnSinkError,
+    ) {
+        let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
+        schedule.on_sink_error = policy;
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let mut tick_fn = |_ctx: &TickContext<'_>,
+                           output: &mut TickOutput,
+                           _events_buf: &mut Vec<MetricEvent>|
+         -> Result<TickResult, SondaError> {
+            if !from_sink {
+                return Err(SondaError::Config(crate::ConfigError::invalid(
+                    "the tick refused",
+                )));
+            }
+            output.writes.push(WriteCommand::Bytes(b"event".to_vec()));
+            Ok(TickResult {
+                bytes_written: 5,
+                delivered: true,
+            })
+        };
+
+        let mut sink: Box<dyn Sink> = Box::new(RefusingSink);
+        let result = run_schedule_loop(
+            &schedule,
+            10.0,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(SondaError::Config(_))),
+            "got {result:?}"
+        );
+        let st = stats.read().expect("stats lock");
+        if from_sink {
+            assert_eq!(st.errors, 1);
+            assert_eq!(st.total_sink_failures, 1);
+            assert!(
+                st.last_sink_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("the path is owned elsewhere")),
+                "got {:?}",
+                st.last_sink_error
+            );
+        } else {
+            assert_eq!(
+                st.total_sink_failures, 0,
+                "a tick error is not a sink failure"
+            );
+            assert_eq!(st.last_sink_error, None);
+        }
     }
 
     #[tokio::test]

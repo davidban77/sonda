@@ -173,6 +173,11 @@ impl Labels {
     }
 }
 
+/// The identity of one series: its metric name and its full label set.
+///
+/// Cloning one is two reference-count bumps.
+pub type MetricKey = (ValidatedMetricName, Arc<Labels>);
+
 /// A single timestamped metric sample.
 ///
 /// Carries a metric name, `f64` value, a set of string label pairs, and a timestamp.
