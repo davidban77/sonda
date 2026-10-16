@@ -264,7 +264,9 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 bail!("--sink gnmi_target requires the gnmi feature: cargo build -F gnmi")
             }
         }
-        kind if SinkConfig::KINDS.contains(&kind) => bail!(
+        // Sinks with no flag form; a kind added to `SinkConfig` without an
+        // arm above reaches "unknown sink" instead.
+        kind @ ("memory" | "kafka") => bail!(
             "--sink {kind} cannot be set from the command line; configure it under sink: in \
              the scenario file"
         ),
