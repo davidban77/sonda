@@ -93,7 +93,7 @@ pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes
                 Ok(e) => e,
                 Err(e) => return error_response(e),
             };
-            let sink_type = sink_kind(&sink);
+            let sink_type = sink.kind();
             let labels_for_sink = (!labels.is_empty()).then_some(labels);
             let result = emit_log(&event, &encoder, &sink, labels_for_sink.as_ref()).await;
             ("logs", sink_type, result)
@@ -108,7 +108,7 @@ pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes
                 Ok(e) => e,
                 Err(e) => return error_response(e),
             };
-            let sink_type = sink_kind(&sink);
+            let sink_type = sink.kind();
             let labels_for_sink = (!labels.is_empty()).then_some(labels);
             let result = emit_metric(&event, &encoder, &sink, labels_for_sink.as_ref()).await;
             ("metrics", sink_type, result)
@@ -186,29 +186,6 @@ fn error_response(err: SondaError) -> Response {
         SondaError::Generator(e) => internal_error(format!("generator error: {e}")),
         SondaError::Runtime(e) => internal_error(format!("runtime error: {e}")),
         _ => internal_error("unexpected error variant"),
-    }
-}
-
-fn sink_kind(sink: &SinkConfig) -> &'static str {
-    match sink {
-        SinkConfig::Stdout => "stdout",
-        SinkConfig::File { .. } => "file",
-        SinkConfig::Tcp { .. } => "tcp",
-        SinkConfig::Udp { .. } => "udp",
-        SinkConfig::Memory { .. } => "memory",
-        #[cfg(feature = "http")]
-        SinkConfig::HttpPush { .. } => "http_push",
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { .. } => "loki",
-        #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { .. } => "remote_write",
-        #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { .. } => "kafka",
-        #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
-        #[cfg(feature = "gnmi")]
-        SinkConfig::GnmiTarget(_) => "gnmi_target",
-        _ => "other",
     }
 }
 
@@ -328,31 +305,6 @@ mod tests {
         let err = SondaError::Runtime(sonda_core::RuntimeError::ThreadPanicked);
         let resp = error_response(err);
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
-    fn sink_kind_tags_match_yaml_type_names() {
-        assert_eq!(sink_kind(&SinkConfig::Stdout), "stdout");
-        assert_eq!(
-            sink_kind(&SinkConfig::Tcp {
-                address: "x:1".into(),
-                retry: None,
-            }),
-            "tcp"
-        );
-        assert_eq!(
-            sink_kind(&SinkConfig::Udp {
-                address: "x:1".into(),
-            }),
-            "udp"
-        );
-        #[cfg(feature = "gnmi")]
-        assert_eq!(
-            sink_kind(&SinkConfig::GnmiTarget(
-                sonda_core::sink::gnmi::GnmiTargetConfig::new("127.0.0.1:0")
-            )),
-            "gnmi_target"
-        );
     }
 
     #[test]

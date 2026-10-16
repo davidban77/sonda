@@ -695,7 +695,7 @@ pub(crate) async fn launch_scenario_with_gates_in(
     };
     let labels = Arc::new(entry.base().labels.clone().unwrap_or_default());
     let prometheus_meta = derive_prometheus_meta(&entry);
-    let sink_type = sink_type_label(&entry.base().sink);
+    let sink_type = entry.base().sink.kind();
 
     let started_at = Instant::now();
 
@@ -827,45 +827,6 @@ pub(crate) async fn launch_scenario_with_gates_in(
         cleaned_up,
     )
     .with_sink_type(sink_type))
-}
-
-fn sink_type_label(sink: &crate::sink::SinkConfig) -> &'static str {
-    use crate::sink::SinkConfig;
-    // Catch-all guards against future #[non_exhaustive] variants; in-crate
-    // the match is exhaustive today.
-    #[allow(unreachable_patterns)]
-    match sink {
-        SinkConfig::Stdout => "stdout",
-        SinkConfig::File { .. } => "file",
-        SinkConfig::Tcp { .. } => "tcp",
-        SinkConfig::Udp { .. } => "udp",
-        SinkConfig::Memory { .. } => "memory",
-        #[cfg(feature = "http")]
-        SinkConfig::HttpPush { .. } => "http_push",
-        #[cfg(not(feature = "http"))]
-        SinkConfig::HttpPushDisabled {} => "http_push",
-        #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { .. } => "remote_write",
-        #[cfg(not(feature = "remote-write"))]
-        SinkConfig::RemoteWriteDisabled {} => "remote_write",
-        #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { .. } => "kafka",
-        #[cfg(not(feature = "kafka"))]
-        SinkConfig::KafkaDisabled {} => "kafka",
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { .. } => "loki",
-        #[cfg(not(feature = "http"))]
-        SinkConfig::LokiDisabled {} => "loki",
-        #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
-        #[cfg(not(feature = "otlp"))]
-        SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc",
-        #[cfg(feature = "gnmi")]
-        SinkConfig::GnmiTarget(_) => "gnmi_target",
-        #[cfg(not(feature = "gnmi"))]
-        SinkConfig::GnmiTargetDisabled {} => "gnmi_target",
-        _ => "unknown",
-    }
 }
 
 fn derive_prometheus_meta(entry: &ScenarioEntry) -> Option<Arc<PromMeta>> {
@@ -2916,17 +2877,6 @@ scenarios:
     #[case::no_names("in_octets", &[], None)]
     fn nearest_name_suggests_only_within_two_edits(#[case] key: &str, #[case] names: &[&str], #[case] expected: Option<&str>) {
         assert_eq!(nearest_name(key, names), expected);
-    }
-
-    #[test]
-    fn sink_type_label_names_the_gnmi_target_sink() {
-        #[cfg(feature = "gnmi")]
-        let sink = crate::sink::SinkConfig::GnmiTarget(crate::sink::gnmi::GnmiTargetConfig::new(
-            "127.0.0.1:0",
-        ));
-        #[cfg(not(feature = "gnmi"))]
-        let sink = crate::sink::SinkConfig::GnmiTargetDisabled {};
-        assert_eq!(sink_type_label(&sink), "gnmi_target");
     }
 
     /// A metrics entry on a `gnmi_target` sink listening on `listen`.

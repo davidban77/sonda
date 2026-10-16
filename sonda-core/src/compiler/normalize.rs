@@ -468,7 +468,7 @@ fn normalize_entry(
         {
             return Err(NormalizeError::CloseStaleMarkerNotSupported {
                 source_id: diagnostic_label,
-                sink_kind: sink_kind_str(&sink),
+                sink_kind: sink.kind(),
             });
         }
     }
@@ -578,40 +578,6 @@ fn is_remote_write_sink(sink: &SinkConfig) -> bool {
     {
         let _ = sink;
         false
-    }
-}
-
-fn sink_kind_str(sink: &SinkConfig) -> &'static str {
-    match sink {
-        SinkConfig::Stdout => "stdout",
-        SinkConfig::File { .. } => "file",
-        SinkConfig::Tcp { .. } => "tcp",
-        SinkConfig::Udp { .. } => "udp",
-        SinkConfig::Memory { .. } => "memory",
-        #[cfg(feature = "http")]
-        SinkConfig::HttpPush { .. } => "http_push",
-        #[cfg(not(feature = "http"))]
-        SinkConfig::HttpPushDisabled { .. } => "http_push",
-        #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { .. } => "remote_write",
-        #[cfg(not(feature = "remote-write"))]
-        SinkConfig::RemoteWriteDisabled { .. } => "remote_write",
-        #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { .. } => "kafka",
-        #[cfg(not(feature = "kafka"))]
-        SinkConfig::KafkaDisabled { .. } => "kafka",
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { .. } => "loki",
-        #[cfg(not(feature = "http"))]
-        SinkConfig::LokiDisabled { .. } => "loki",
-        #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
-        #[cfg(not(feature = "otlp"))]
-        SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc",
-        #[cfg(feature = "gnmi")]
-        SinkConfig::GnmiTarget(_) => "gnmi_target",
-        #[cfg(not(feature = "gnmi"))]
-        SinkConfig::GnmiTargetDisabled { .. } => "gnmi_target",
     }
 }
 
