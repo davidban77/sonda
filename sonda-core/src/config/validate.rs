@@ -3118,7 +3118,7 @@ generator:
     #[case::subscriber_buffer_zero(|c: &mut GnmiTargetConfig| c.subscriber_buffer = Some(0), "subscriber_buffer must be between 1 and 65536, got 0")]
     #[case::subscriber_buffer_too_large(|c: &mut GnmiTargetConfig| c.subscriber_buffer = Some(65_537), "got 65537")]
     #[case::sample_floor_zero(|c: &mut GnmiTargetConfig| c.sample_floor = Some("0s".into()), "invalid gnmi_target sample_floor \"0s\"")]
-    #[case::sample_floor_below_a_microsecond(|c: &mut GnmiTargetConfig| c.sample_floor = Some("0.0001ms".into()), "invalid gnmi_target sample_floor \"0.0001ms\": must be at least 1us")]
+    #[case::sample_floor_below_a_microsecond(|c: &mut GnmiTargetConfig| c.sample_floor = Some("0.0001ms".into()), "invalid gnmi_target sample_floor \"0.0001ms\": must be at least 0.001ms")]
     #[case::sample_floor_garbage(|c: &mut GnmiTargetConfig| c.sample_floor = Some("soon".into()), "invalid gnmi_target sample_floor \"soon\"")]
     #[rustfmt::skip]
     fn gnmi_target_sink_settings_are_validated(

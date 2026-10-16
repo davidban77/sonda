@@ -167,23 +167,25 @@ src/
 │   │                      alone)
 │   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
 │   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
-│   │   │                   field check validation and the sink both call),
+│   │   │                   field check validation and the sink both call; it returns
+│   │   │                   an IPv4-mapped listen as the IPv4 address it maps),
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
 │   │   │                   synchronously from write_metric_event; write() is an error.
-│   │   │                   Keeps MetricKey → (SeriesId, PathKey): the first event of a
-│   │   │                   series decodes its path, later ones reuse the id. A write is
-│   │   │                   delivered once upserted. A sink's Owner is its launch
-│   │   │                   (LaunchId): sinks of one launch share a path, another
-│   │   │                   launch's path is a ConfigError at the first write. The
-│   │   │                   sink's `paths` map holds each path it published once; a
-│   │   │                   second key on a known path reuses its id. Drop releases
-│   │   │                   each of those ids once (joined sinks publish none).
+│   │   │                   Keeps one (SeriesId, PathKey) entry per path it published
+│   │   │                   (`published`), each MetricKey pointing at its entry: the
+│   │   │                   first event of a key decodes its path, a second key on a
+│   │   │                   known path shares the entry, so an id that changes changes
+│   │   │                   for all. A write is delivered once upserted. A sink's Owner
+│   │   │                   is its launch (LaunchId): sinks of one launch share a path,
+│   │   │                   another launch's path is a ConfigError at the first write.
+│   │   │                   Drop releases each entry's id once (joined sinks have none).
 │   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
 │   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
-│   │   │                   Each slot counts its publishers: publish with no id is a
-│   │   │                   sink's first publish of the path (+1, under the write lock),
+│   │   │                   Each slot counts its publishers: a publish that reaches the
+│   │   │                   write lock (no id, or a cached id that no longer names its
+│   │   │                   path) is a publisher's first of that path (+1),
 │   │   │                   release() is −1 at drop; the series leaves at zero, not when
 │   │   │                   idle. A path with no live publisher is free to any launch.
 │   │   │                   A sink caches the table's PathKey (path_of) so siblings

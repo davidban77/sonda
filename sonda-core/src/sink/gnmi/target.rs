@@ -331,8 +331,9 @@ impl GnmiTarget {
     /// subscribed.
     ///
     /// With `id` naming a series `owner` holds, that series is updated under
-    /// the read lock. With no `id`, this is a sink's first publish of `path`:
-    /// the series is found or created under the write lock, with a new id and
+    /// the read lock. Otherwise (no `id`, or one that no longer names this
+    /// path's series) this is the publisher's first publish of `path`: the
+    /// series is found or created under the write lock, with a new id and
     /// `owner` as its owner, and counts one more publisher. Each publisher is
     /// [released](Self::release) once; the series leaves with the last.
     ///
@@ -365,6 +366,12 @@ impl GnmiTarget {
         let slot = table.slots.get(&id)?;
         self.replace(id, &mut lock(&slot.latest), Bytes::copy_from_slice(encoded));
         Some(id)
+    }
+
+    /// How many publishers series `id` counts.
+    #[cfg(test)]
+    pub(crate) fn publishers(&self, id: SeriesId) -> Option<usize> {
+        self.read().slots.get(&id).map(|slot| slot.publishers)
     }
 
     /// The key the table holds for series `id`, which a publisher caches so
@@ -421,7 +428,6 @@ impl GnmiTarget {
         path: &PathKey,
         latest: Bytes,
     ) -> Result<(SeriesId, bool), SondaError> {
-        let requested = id;
         if let Some(id) = id {
             let table = self.read();
             // A cached id names this path's series unless the id was freed
@@ -465,10 +471,9 @@ impl GnmiTarget {
             owner,
             publishers: 0,
         });
-        // A publish with no id is the publisher's first of this path.
-        if requested.is_none() {
-            slot.publishers += 1;
-        }
+        // Reaching here is a publisher's first publish of this path: with no
+        // id, or with a cached id that no longer names its series.
+        slot.publishers += 1;
         let current = slot
             .latest
             .get_mut()
@@ -915,11 +920,27 @@ mod tests {
             .publish(OWNER, Some(stale), &old_path, b"old again")
             .expect("one owner");
         assert_ne!(resolved, stale);
+        assert_eq!(
+            target.publishers(reused),
+            Some(1),
+            "the other path's count is untouched"
+        );
+        assert_eq!(
+            target.publishers(resolved),
+            Some(1),
+            "the re-published series counts its publisher"
+        );
         let mut latest: Vec<Bytes> = target.snapshot().into_iter().map(|s| s.latest).collect();
         latest.sort();
         assert_eq!(
             latest,
             [Bytes::from_static(b"new"), Bytes::from_static(b"old again")]
+        );
+        target.release(OWNER, [resolved, reused]);
+        assert_eq!(
+            target.series_count(),
+            0,
+            "both series leave with their publisher"
         );
     }
 

@@ -113,6 +113,9 @@ impl GnmiTargetConfig {
                 self.listen
             ))
         })?;
+        // An IPv4-mapped address binds the IPv4 socket it maps, so it is
+        // that address everywhere a listen address is compared or keyed.
+        let listen = canonical(listen);
         let max_subscribers = self.max_subscribers.unwrap_or(DEFAULT_MAX_SUBSCRIBERS);
         if max_subscribers == 0 {
             return Err(invalid(
@@ -135,7 +138,7 @@ impl GnmiTargetConfig {
                 // below one parses as zero.
                 if floor.is_zero() {
                     return Err(invalid(format!(
-                        "invalid gnmi_target sample_floor {s:?}: must be at least 1us"
+                        "invalid gnmi_target sample_floor {s:?}: must be at least 0.001ms"
                     )));
                 }
                 floor
@@ -239,10 +242,14 @@ impl TargetSettings {
 pub struct GnmiTargetSink {
     target: Arc<GnmiTarget>,
     owner: Owner,
-    owned: HashMap<MetricKey, (SeriesId, PathKey)>,
-    /// Every path this sink has published, once each: a second series key
-    /// rendering one of them reuses its id rather than counting again.
-    paths: HashMap<PathKey, SeriesId>,
+    /// Each series key's entry in `published`.
+    owned: HashMap<MetricKey, usize>,
+    /// Every path this sink has published, once each, with its series id.
+    /// Series keys rendering one path share its entry, so an id that changes
+    /// changes for all of them.
+    published: Vec<(SeriesId, PathKey)>,
+    /// Each path's entry in `published`, looked up on a key's first event.
+    paths: HashMap<PathKey, usize>,
     last_delivered: bool,
     joined: bool,
 }
@@ -281,6 +288,7 @@ impl GnmiTargetSink {
             owner: Owner::from(LaunchId::next()),
             target: registry().join(cfg)?,
             owned: HashMap::new(),
+            published: Vec::new(),
             paths: HashMap::new(),
             last_delivered: false,
             joined: true,
@@ -293,6 +301,7 @@ impl GnmiTargetSink {
             owner: Owner::from(launch),
             target,
             owned: HashMap::new(),
+            published: Vec::new(),
             paths: HashMap::new(),
             last_delivered: false,
             joined: false,
@@ -359,31 +368,34 @@ impl Sink for GnmiTargetSink {
             return Ok(());
         }
         let key = (event.name.clone(), Arc::clone(&event.labels));
-        match self.owned.get_mut(&key) {
-            Some((id, path)) => {
-                let (published, _) = self.target.publish(self.owner, Some(*id), path, encoded)?;
-                *id = published;
-            }
+        let entry = match self.owned.get(&key) {
+            Some(&entry) => entry,
             None => {
                 let path = PathKey::decode(encoded)?;
-                let (id, path) = match self.paths.get_key_value(&path) {
+                match self.paths.get(&path) {
                     // Another of this sink's series renders the same path.
-                    Some((known, id)) => {
-                        let (id, _) = self.target.publish(self.owner, Some(*id), known, encoded)?;
-                        (id, known.clone())
+                    Some(&entry) => {
+                        self.owned.insert(key, entry);
+                        entry
                     }
                     None => {
                         let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
                         // Cache the table's own key, which a sibling may have
                         // made, so later publishes match it by pointer.
                         let path = self.target.path_of(id).unwrap_or(path);
-                        self.paths.insert(path.clone(), id);
-                        (id, path)
+                        let entry = self.published.len();
+                        self.published.push((id, path.clone()));
+                        self.paths.insert(path, entry);
+                        self.owned.insert(key, entry);
+                        self.last_delivered = true;
+                        return Ok(());
                     }
-                };
-                self.owned.insert(key, (id, path));
+                }
             }
-        }
+        };
+        let (id, path) = &mut self.published[entry];
+        let (published, _) = self.target.publish(self.owner, Some(*id), path, encoded)?;
+        *id = published;
         self.last_delivered = true;
         Ok(())
     }
@@ -392,9 +404,9 @@ impl Sink for GnmiTargetSink {
 impl Drop for GnmiTargetSink {
     /// Release this sink's claim on each path it published, once per path.
     fn drop(&mut self) {
-        if !self.paths.is_empty() {
+        if !self.published.is_empty() {
             self.target
-                .release(self.owner, self.paths.values().copied());
+                .release(self.owner, self.published.iter().map(|(id, _)| *id));
         }
     }
 }
@@ -437,6 +449,19 @@ mod tests {
         let (a, b): (SocketAddr, SocketAddr) = (a.parse().unwrap(), b.parse().unwrap());
         assert_eq!(listen_overlap(a, b), overlap, "{a} and {b}");
         assert_eq!(listen_overlap(b, a), overlap, "{b} and {a}");
+    }
+
+    /// `settings()` gives the address an IPv4-mapped listen binds: the IPv4
+    /// address it maps.
+    #[test]
+    fn settings_canonicalise_an_ipv4_mapped_listen() {
+        let settings = GnmiTargetConfig::new("[::ffff:127.0.0.1]:57400")
+            .settings()
+            .expect("a socket address");
+        assert_eq!(
+            settings.listen,
+            "127.0.0.1:57400".parse::<SocketAddr>().unwrap()
+        );
     }
 
     /// `covers` is one way: a wildcard covers the addresses of the families
@@ -710,7 +735,7 @@ mod tests {
         publish(&mut first, "up").await;
         publish(&mut second, "up").await;
         assert_eq!(target.series_count(), 1, "one launch, one shared series");
-        let cached = |sink: &GnmiTargetSink| sink.owned.values().next().cloned().expect("cached");
+        let cached = |sink: &GnmiTargetSink| sink.published.first().cloned().expect("cached");
         let ((id, first_key), (_, second_key)) = (cached(&first), cached(&second));
         let held = target.path_of(id).expect("the series is served");
         assert!(
@@ -820,6 +845,7 @@ mod tests {
                 .expect("the sink's own leaf");
         }
         assert_eq!(sink.owned.len(), 2, "two series keys");
+        assert_eq!(sink.published.len(), 1, "sharing one entry");
         assert_eq!(sink.target().series_count(), 1, "one leaf");
         let target = Arc::clone(sink.target());
         drop(sink);

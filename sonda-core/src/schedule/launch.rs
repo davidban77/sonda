@@ -2984,6 +2984,24 @@ scenarios:
             gnmi_entry("b", "[::1]:57400", None),
         ])
         .expect("an IPv4 wildcard and an IPv6 address bind side by side");
+
+        // An IPv4-mapped address is the IPv4 address it maps.
+        prepare_entries(vec![
+            gnmi_entry("a", "[::ffff:127.0.0.1]:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(4)),
+        ])
+        .expect("an IPv4-mapped address and the IPv4 address it maps are one address");
+        let err = prepare_entries(vec![
+            gnmi_entry("a", "[::ffff:127.0.0.1]:57400", Some(4)),
+            gnmi_entry("b", "127.0.0.1:57400", Some(8)),
+        ])
+        .expect_err("one address, different settings");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("both use gnmi_target 127.0.0.1:57400"),
+            "got {msg}"
+        );
+        assert!(!msg.contains("wildcard"), "got {msg}");
     }
 
     /// A file whose entries share one gnmi encoder through `defaults:`.
