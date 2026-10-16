@@ -5,7 +5,9 @@
 //! binary. The counter itself is thread-local, so only allocations made on the
 //! measuring thread inside a counted window are counted; the runner is driven
 //! on that thread by a current-thread runtime, and tests running in parallel
-//! on other threads cannot add to it.
+//! on other threads cannot add to it. The same holds for the write path itself:
+//! an allocation it makes on another thread (a `spawn_blocking` write, a
+//! background task) is not counted and cannot fail these budgets.
 //!
 //! Two checks, both numbers rather than "no panic":
 //!
@@ -24,8 +26,9 @@
 // The whole file drives `schedule::runner`, which the `runtime` feature owns.
 #![cfg(all(feature = "runtime", feature = "config"))]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+#[path = "common/alloc.rs"]
+mod counting;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -39,42 +42,12 @@ use sonda_core::model::metric::MetricEvent;
 use sonda_core::sink::{Sink, SinkConfig};
 use sonda_core::{OnSinkError, SondaError};
 
-thread_local! {
-    // `const` initialisers: reading these never allocates, so the allocator
-    // below can touch them.
-    static COUNTING: Cell<bool> = const { Cell::new(false) };
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct CountingAlloc;
-
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // `try_with` fails only while a thread's locals are being torn down,
-        // which is never inside a counted window.
-        let _ = COUNTING.try_with(|counting| {
-            if counting.get() {
-                let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
-            }
-        });
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: CountingAlloc = CountingAlloc;
+static ALLOCATOR: counting::CountingAlloc = counting::CountingAlloc;
 
-/// Run `body` with allocation counting on for this thread and return the
-/// allocations it made on this thread.
+/// The allocations `body` made on this thread.
 fn count_allocations(body: impl FnOnce()) -> usize {
-    ALLOCS.with(|n| n.set(0));
-    COUNTING.with(|c| c.set(true));
-    body();
-    COUNTING.with(|c| c.set(false));
-    ALLOCS.with(Cell::get)
+    counting::count_allocations(body).1
 }
 
 /// Another thread allocating throughout a counted window adds nothing to it.
