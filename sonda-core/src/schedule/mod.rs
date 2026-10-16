@@ -20,10 +20,32 @@ pub use gate_bus::{
     SubscriptionSpec, WhileSpec,
 };
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::config::{DynamicLabelStrategy, OnSinkError, SpikeStrategy};
 use crate::util::splitmix64;
+
+/// One launch: the scenarios one call starts together. A file run through
+/// `run_multi` or `launch_multi_compiled` is one launch; a scenario started on
+/// its own is a launch of one. Sinks of one launch may share what sinks of
+/// different launches may not, such as a gnmi path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct LaunchId(u64);
+
+impl LaunchId {
+    /// An id no other launch in this process has.
+    pub(crate) fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// The id as a number, unique within the process.
+    #[cfg_attr(not(feature = "gnmi"), allow(dead_code))]
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
 
 /// Configuration for a gap window (intentional silent period).
 #[derive(Debug, Clone)]

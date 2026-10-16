@@ -13,7 +13,7 @@ use sonda_core::encoder::EncoderConfig;
 use sonda_core::model::log::{LogEvent, Severity};
 use sonda_core::model::metric::{Labels, MetricEvent};
 use sonda_core::sink::SinkConfig;
-use sonda_core::SondaError;
+use sonda_core::{EncoderError, SondaError};
 use tracing::info;
 
 use crate::routes::sink_warnings::{collect_warnings_for_sink, log_warnings};
@@ -179,6 +179,9 @@ fn error_response(err: SondaError) -> Response {
     match err {
         SondaError::Config(e) => unprocessable(format!("{e}")),
         SondaError::Sink(e) => bad_gateway(format!("sink error: {e}")),
+        SondaError::Encoder(EncoderError::EventRejected(e)) => {
+            unprocessable(format!("event rejected: {e}"))
+        }
         SondaError::Encoder(e) => internal_error(format!("encoder error: {e}")),
         SondaError::Generator(e) => internal_error(format!("generator error: {e}")),
         SondaError::Runtime(e) => internal_error(format!("runtime error: {e}")),
@@ -203,6 +206,8 @@ fn sink_kind(sink: &SinkConfig) -> &'static str {
         SinkConfig::Kafka { .. } => "kafka",
         #[cfg(feature = "otlp")]
         SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(_) => "gnmi_target",
         _ => "other",
     }
 }
@@ -341,6 +346,13 @@ mod tests {
             }),
             "udp"
         );
+        #[cfg(feature = "gnmi")]
+        assert_eq!(
+            sink_kind(&SinkConfig::GnmiTarget(
+                sonda_core::sink::gnmi::GnmiTargetConfig::new("127.0.0.1:0")
+            )),
+            "gnmi_target"
+        );
     }
 
     #[test]
@@ -356,5 +368,215 @@ mod tests {
         map.insert("1bad".to_string(), "value".to_string());
         let err = labels_from_map(&map).expect_err("invalid key must fail");
         assert!(matches!(err, SondaError::Config(_)));
+    }
+
+    #[test]
+    fn error_response_maps_a_rejected_event_to_422() {
+        let err = SondaError::Encoder(EncoderError::EventRejected("no ifName".to_string()));
+        let resp = error_response(err);
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn error_response_maps_other_encoder_errors_to_500() {
+        let err = SondaError::Encoder(EncoderError::Other("protobuf".to_string()));
+        let resp = error_response(err);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[cfg(feature = "gnmi")]
+    mod gnmi {
+        use std::sync::Arc;
+
+        use http_body_util::BodyExt;
+        use hyper::Request;
+        use sonda_core::sink::gnmi::{registry, GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
+        use sonda_core::sink::Sink;
+        use tower::ServiceExt;
+
+        use super::*;
+        use crate::routes::GNMI_REGISTRY as REGISTRY;
+
+        const TEMPLATE: &str = "/interfaces/interface[name={ifName}]/{name}";
+
+        /// POST a metrics event with the given encoder, on a gnmi_target
+        /// sink listening on `listen`; returns the status and the body.
+        async fn post_metric(
+            labels: serde_json::Value,
+            encoder: serde_json::Value,
+            listen: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let body = json!({
+                "signal_type": "metrics",
+                "labels": labels,
+                "metric": {"name": "in_octets", "value": 42.0},
+                "encoder": encoder,
+                "sink": {"type": "gnmi_target", "listen": listen},
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/events")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request");
+            let response = crate::routes::router(AppState::new())
+                .oneshot(request)
+                .await
+                .expect("infallible");
+            let status = response.status();
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, json)
+        }
+
+        /// A target held by the test, standing in for a running scenario.
+        async fn hold_target() -> (GnmiTargetSink, Arc<GnmiTarget>) {
+            let sink = GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0"))
+                .await
+                .expect("bind an ephemeral port");
+            let target = Arc::clone(sink.target());
+            (sink, target)
+        }
+
+        fn template(path: &str) -> serde_json::Value {
+            json!({"type": "gnmi", "path": path})
+        }
+
+        /// `in_octets` with `ifName` = `if_name` and `value`, as the gnmi
+        /// encoder for [`TEMPLATE`] encodes it.
+        fn notification(if_name: &str, value: f64) -> (MetricEvent, Vec<u8>) {
+            let encoder: EncoderConfig =
+                serde_json::from_value(template(TEMPLATE)).expect("a gnmi encoder");
+            let event = MetricEvent::new(
+                "in_octets".to_string(),
+                value,
+                Labels::from_pairs(&[("ifName", if_name)]).expect("labels"),
+            )
+            .expect("event");
+            let mut buf = Vec::new();
+            sonda_core::encoder::create_encoder(&encoder)
+                .expect("valid encoder")
+                .encode_metric(&event, &mut buf)
+                .expect("encodes");
+            (event, buf)
+        }
+
+        /// A target held by the test and serving `ifName` = `if_name`,
+        /// standing in for a running scenario.
+        async fn serving_target(if_name: &str) -> (GnmiTargetSink, Arc<GnmiTarget>) {
+            let (mut sink, target) = hold_target().await;
+            let (event, encoded) = notification(if_name, 1.0);
+            sink.write_metric_event(&event, &encoded)
+                .await
+                .expect("the scenario publishes its series");
+            (sink, target)
+        }
+
+        /// An event for a series the running target serves replaces its
+        /// latest value; the 200 is that replacement.
+        #[tokio::test]
+        async fn a_valid_event_reaches_the_target_with_200() {
+            let _registry = REGISTRY.lock().await;
+            let (_held, target) = serving_target("Gi0").await;
+            let listen = target.local_addr().to_string();
+            assert_eq!(target.series_count(), 1, "the scenario serves one series");
+
+            let (status, body) =
+                post_metric(json!({"ifName": "Gi0"}), template(TEMPLATE), &listen).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(body["sent"], json!(true), "body: {body}");
+            assert_eq!(target.series_count(), 1, "the served series was replaced");
+        }
+
+        /// An event for a path the running target does not serve is a 422
+        /// naming the path and the address, and adds nothing.
+        #[tokio::test]
+        async fn an_event_for_a_path_nothing_serves_is_422() {
+            let _registry = REGISTRY.lock().await;
+            let (_held, target) = serving_target("Gi0").await;
+            let addr = target.local_addr().to_string();
+
+            let (status, body) =
+                post_metric(json!({"ifName": "Gi1"}), template(TEMPLATE), &addr).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            let text = body.to_string();
+            assert!(
+                text.contains("interface[name=Gi1]/in-octets"),
+                "body: {body}"
+            );
+            assert!(text.contains(&addr), "body: {body}");
+            assert_eq!(target.series_count(), 1, "nothing was added");
+        }
+
+        #[tokio::test]
+        async fn an_invalid_template_is_422() {
+            let _registry = REGISTRY.lock().await;
+            let (_held, target) = hold_target().await;
+            let (status, body) = post_metric(
+                json!({"ifName": "Gi0"}),
+                template("/interfaces/interface[name={ifName}"),
+                &target.local_addr().to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            assert_eq!(target.series_count(), 0, "nothing was published");
+        }
+
+        #[tokio::test]
+        async fn an_event_the_template_cannot_place_is_422() {
+            let _registry = REGISTRY.lock().await;
+            let (_held, target) = hold_target().await;
+            // The template is valid, but this event carries no `ifName`.
+            let (status, body) = post_metric(
+                json!({"device": "rtr1"}),
+                template("/interfaces/interface[name={ifName}]/{name}"),
+                &target.local_addr().to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            assert!(
+                body.to_string().contains("event rejected"),
+                "the 422 is the per-event one: {body}"
+            );
+            assert_eq!(target.series_count(), 0, "nothing was published");
+        }
+
+        /// With no running scenario on the address the event is refused,
+        /// and the server binds nothing.
+        #[tokio::test]
+        async fn no_live_target_is_422_and_binds_nothing() {
+            let _registry = REGISTRY.lock().await;
+            // A port a target held and released, so nothing listens on it now.
+            let addr = {
+                let (held, target) = hold_target().await;
+                let stopped = target.wait();
+                let addr = target.local_addr();
+                drop((held, target));
+                stopped.await;
+                addr
+            };
+            assert!(registry().is_empty(), "the precondition: no live target");
+
+            let (status, body) = post_metric(
+                json!({"ifName": "Gi0"}),
+                template("/interfaces/interface[name={ifName}]/{name}"),
+                &addr.to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+            assert!(
+                body.to_string().contains("no running scenario listens on"),
+                "body: {body}"
+            );
+            assert!(registry().is_empty(), "the request bound no target");
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .expect_err("nothing listens on the address");
+        }
     }
 }

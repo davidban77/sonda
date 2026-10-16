@@ -33,10 +33,10 @@ use sonda_core::sink::SinkConfig;
 ///   variants render as `name (disabled)` so users can see the
 ///   configuration was accepted but cannot run.
 ///
-/// This function is exhaustive over [`SinkConfig`] under every feature
-/// combination, so adding a new variant in `sonda-core` will fail to
-/// compile here until it is wired up — preventing the
-/// `--no-default-features` regression that prompted this module.
+/// `SinkConfig` is `#[non_exhaustive]`, so a match on it from this crate
+/// needs a wildcard arm and is not checked for exhaustiveness: a variant
+/// added in `sonda-core` compiles here and renders through the fallback as
+/// `unknown (<Debug>)` until an arm is added below.
 pub fn sink_display(sink: &SinkConfig) -> String {
     match sink {
         SinkConfig::Stdout => "stdout".to_string(),
@@ -75,8 +75,12 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc ({endpoint})"),
         #[cfg(not(feature = "otlp"))]
         SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc (disabled)".to_string(),
-        // `SinkConfig` is `#[non_exhaustive]` across the crate boundary;
-        // fall back to the Debug form so a future variant still renders.
+        #[cfg(feature = "gnmi")]
+        SinkConfig::GnmiTarget(cfg) => format!("gnmi_target ({})", cfg.listen),
+        #[cfg(not(feature = "gnmi"))]
+        SinkConfig::GnmiTargetDisabled {} => "gnmi_target (disabled)".to_string(),
+        // Required by `#[non_exhaustive]`; reached only by a variant with no
+        // arm above.
         other => format!("unknown ({other:?})"),
     }
 }
@@ -163,5 +167,24 @@ mod tests {
     fn loki_disabled_renders_disabled_marker() {
         let s = SinkConfig::LokiDisabled {};
         assert_eq!(sink_display(&s), "loki (disabled)");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_target_includes_listen_address_in_parens() {
+        let s = SinkConfig::GnmiTarget(sonda_core::sink::gnmi::GnmiTargetConfig::new(
+            "0.0.0.0:57400",
+        ));
+        let display = sink_display(&s);
+        assert!(!display.contains("unknown ("), "got {display}");
+        assert_eq!(display, "gnmi_target (0.0.0.0:57400)");
+    }
+
+    #[cfg(not(feature = "gnmi"))]
+    #[test]
+    fn gnmi_target_disabled_renders_disabled_marker() {
+        let display = sink_display(&SinkConfig::GnmiTargetDisabled {});
+        assert!(!display.contains("unknown ("), "got {display}");
+        assert_eq!(display, "gnmi_target (disabled)");
     }
 }

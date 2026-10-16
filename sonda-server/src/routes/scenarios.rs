@@ -6583,4 +6583,57 @@ scenarios:
         assert!(body["conflicting_scenarios"].is_array());
         cleanup_scenarios(&state).await;
     }
+
+    /// A gnmi_target address a running target serves with other settings is
+    /// refused at admission with 422, and nothing is launched.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn post_gnmi_target_address_a_running_target_refuses_is_422() {
+        use sonda_core::sink::gnmi::{GnmiTargetConfig, GnmiTargetSink};
+
+        let _registry = crate::routes::GNMI_REGISTRY.lock().await;
+        let held = GnmiTargetSink::new(&GnmiTargetConfig {
+            max_subscribers: Some(4),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        })
+        .await
+        .expect("bind an ephemeral port");
+        let addr = held.target().local_addr();
+
+        let yaml = format!(
+            "\
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 200ms
+  encoder:
+    type: gnmi
+    path: \"/a/{{name}}\"
+  sink:
+    type: gnmi_target
+    listen: \"{addr}\"
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator:
+      type: constant
+      value: 1.0
+"
+        );
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", &yaml).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        let detail = body.to_string();
+        assert!(
+            detail.contains("already serving") && detail.contains(&addr.to_string()),
+            "the 422 must name the address and the conflict: {detail}"
+        );
+        assert!(
+            state.scenarios.read().is_empty(),
+            "a refused body must launch nothing"
+        );
+        drop(held);
+    }
 }

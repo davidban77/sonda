@@ -156,7 +156,8 @@ entry wins over a builtin of the same name. The verbosity model is captured in t
   check also live in `sonda_core::verify`).
 
 All subcommands route through the unified `sonda_core::prepare_entries` + `sonda_core::launch_scenario`
-API. No per-signal-type dispatch in main.rs.
+API (a file of several entries through `sonda_core::launch_prepared`, so they are one launch). No
+per-signal-type dispatch in main.rs.
 
 ## Adding a New Subcommand
 
