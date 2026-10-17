@@ -77,13 +77,34 @@ pub struct SeriesUpdate {
 
 /// The gNMI identity of a series: its full path, with the origin and target
 /// name. Two events whose notifications carry one path are one series.
+///
+/// The key's hash is computed once, when the key is made, and stored with
+/// the path: hashing the key writes that one value, so a table holding the
+/// key grows without hashing any path again. Keys compare by hash, then by
+/// path.
 #[derive(Clone, Debug)]
-pub(crate) struct PathKey(Arc<proto::Path>);
+pub(crate) struct PathKey(Arc<Keyed>);
+
+/// A path and its hash.
+#[derive(Debug)]
+struct Keyed {
+    path: proto::Path,
+    hash: u64,
+}
 
 impl PathKey {
     /// A key for `path`.
     pub(crate) fn new(path: proto::Path) -> Self {
-        Self(Arc::new(path))
+        let mut hasher = std::hash::DefaultHasher::new();
+        path.origin.hash(&mut hasher);
+        path.target.hash(&mut hasher);
+        path.elem.len().hash(&mut hasher);
+        for elem in &path.elem {
+            elem.name.hash(&mut hasher);
+            elem.key.hash(&mut hasher);
+        }
+        let hash = hasher.finish();
+        Self(Arc::new(Keyed { path, hash }))
     }
 
     /// The path of the first update in an encoded `gnmi.Notification`: the
@@ -122,7 +143,13 @@ impl PathKey {
 
     /// The path.
     pub(crate) fn path(&self) -> &proto::Path {
-        &self.0
+        &self.0.path
+    }
+
+    /// A key for `path` carrying `hash` instead of the path's own.
+    #[cfg(test)]
+    fn with_hash(path: proto::Path, hash: u64) -> Self {
+        Self(Arc::new(Keyed { path, hash }))
     }
 
     /// Whether `self` and `other` are one key, not just equal ones.
@@ -134,7 +161,8 @@ impl PathKey {
 
 impl PartialEq for PathKey {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.hash == other.0.hash && self.0.path == other.0.path)
     }
 }
 
@@ -142,13 +170,7 @@ impl Eq for PathKey {}
 
 impl Hash for PathKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.origin.hash(state);
-        self.0.target.hash(state);
-        self.0.elem.len().hash(state);
-        for elem in &self.0.elem {
-            elem.name.hash(state);
-            elem.key.hash(state);
-        }
+        state.write_u64(self.0.hash);
     }
 }
 
@@ -882,6 +904,35 @@ mod tests {
             }
             other => panic!("a receiver that never read must have lagged, got {other:?}"),
         }
+    }
+
+    fn hash_of(key: &PathKey) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Two keys for one path are equal and hash alike, however each was
+    /// made; keys whose hashes match but whose paths differ are not equal.
+    #[test]
+    fn path_keys_compare_by_hash_then_path() {
+        let a = path("Gi0", "in-octets");
+        let same = path("Gi0", "in-octets");
+        assert!(!a.is_same_key(&same), "two keys, not one");
+        assert_eq!(a, same);
+        assert_eq!(hash_of(&a), hash_of(&same));
+
+        let buf = encoded(&[("ifName", "Gi0")], 1.0);
+        let decoded = PathKey::decode(&buf).expect("a notification with an update");
+        let built = PathKey::new(decoded.path().clone());
+        assert_eq!(decoded, built);
+        assert_eq!(hash_of(&decoded), hash_of(&built));
+
+        let other = path("Gi1", "in-octets");
+        assert_ne!(a, other);
+        let collided = PathKey::with_hash(other.path().clone(), a.0.hash);
+        assert_eq!(hash_of(&collided), hash_of(&a), "the forced hash is used");
+        assert_ne!(collided, a, "an equal hash is not an equal path");
     }
 
     #[tokio::test]

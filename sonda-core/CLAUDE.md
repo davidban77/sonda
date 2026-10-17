@@ -182,7 +182,10 @@ src/
 │   │   │                   Drop releases each entry's id once (joined sinks have none).
 │   │   │                   A joined sink (join()) owns nothing: overwrite() only.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
-│   │   │                   RENDERED PATH (PathKey: origin, target, elems). A series has
+│   │   │                   RENDERED PATH (PathKey: origin, target, elems; its hash is
+│   │   │                   computed once in new() and Hash writes that u64, Eq compares
+│   │   │                   the hash, then the path, so table growth rehashes no
+│   │   │                   path). A series has
 │   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
 │   │   │                   Each slot counts its publishers: a publish that reaches the
 │   │   │                   write lock (no id, or a cached id that no longer names its
