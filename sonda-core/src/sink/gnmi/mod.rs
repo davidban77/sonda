@@ -156,6 +156,7 @@ impl GnmiTargetConfig {
             sample_floor,
             keepalive_interval: target::KEEPALIVE_INTERVAL,
             keepalive_timeout: target::KEEPALIVE_TIMEOUT,
+            stall_floor: service::STALL_FLOOR,
         })
     }
 }
@@ -175,6 +176,10 @@ pub(crate) struct TargetSettings {
     /// connection. [`target::KEEPALIVE_TIMEOUT`] except in tests; not
     /// configurable.
     pub(crate) keepalive_timeout: Duration,
+    /// The least time a subscription may go without its client draining a
+    /// response before it is ended as stalled. [`service::STALL_FLOOR`]
+    /// except in tests; not configurable.
+    pub(crate) stall_floor: Duration,
 }
 
 /// Whether listeners on `a` and `b` would contend for one port: the same

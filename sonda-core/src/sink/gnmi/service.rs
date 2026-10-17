@@ -9,6 +9,7 @@
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Weak;
 use std::task::{Context, Poll};
@@ -37,6 +38,10 @@ pub const GNMI_VERSION: &str = "0.10.0";
 /// Responses one subscription holds for its client before it waits for the
 /// client to read.
 pub const OUTBOUND_CAPACITY: usize = 64;
+
+/// The least time a subscription with responses waiting may go without its
+/// client draining one before it is ended as stalled.
+pub(crate) const STALL_FLOOR: Duration = Duration::from_secs(10);
 
 /// The HTTP/2 path of `gNMI.Capabilities`.
 const CAPABILITIES_PATH: &str = "/gnmi.gNMI/Capabilities";
@@ -187,7 +192,8 @@ impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHa
     }
 
     fn call(&mut self, req: tonic::Request<Streaming<proto::SubscribeRequest>>) -> Self::Future {
-        Box::pin(subscribe(self.target.clone(), req.into_inner()))
+        let peer = req.remote_addr();
+        Box::pin(subscribe(self.target.clone(), peer, req.into_inner()))
     }
 }
 
@@ -201,6 +207,7 @@ impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHa
 /// the place, and returns the producer's response stream.
 async fn subscribe(
     target: Weak<GnmiTarget>,
+    peer: Option<SocketAddr>,
     mut inbound: Streaming<proto::SubscribeRequest>,
 ) -> Result<tonic::Response<SubscribeStream>, Status> {
     let list = match inbound.message().await? {
@@ -235,6 +242,7 @@ async fn subscribe(
             settings.max_subscribers
         ))
     })?;
+    let stall_limit = stall_limit(samples.iter().map(|g| g.period), settings.stall_floor);
     let state = held.state();
     drop(held);
 
@@ -249,6 +257,8 @@ async fn subscribe(
         once,
         updates_only: list.updates_only,
         samples,
+        stall_limit,
+        peer,
         _place: place,
         tx,
         ending,
@@ -299,6 +309,17 @@ fn sample_groups(
         .collect()
 }
 
+/// How long a subscription with responses waiting may go without its client
+/// draining one: three of its longest sample periods, and never less than
+/// `floor`. A ONCE list has no periods, so its limit is `floor`.
+fn stall_limit(periods: impl Iterator<Item = Duration>, floor: Duration) -> Duration {
+    periods
+        .max()
+        .unwrap_or_default()
+        .saturating_mul(3)
+        .max(floor)
+}
+
 /// `SubscribeResponse { update }` around one encoded `gnmi.Notification`.
 fn update_response(notification: &Bytes) -> PreEncoded {
     let len = notification.len();
@@ -326,6 +347,8 @@ enum Step {
     ClientDone,
     /// The target's listener stopped.
     TargetStopped,
+    /// The client drained no response for the stall limit.
+    Stalled,
     /// One response went to the client.
     Sent,
     /// A sample group is due.
@@ -340,11 +363,16 @@ struct Producer {
     /// The initial sync sends only the sync marker.
     updates_only: bool,
     samples: Vec<SampleGroup>,
+    /// How long responses may wait without the client draining one.
+    stall_limit: Duration,
+    /// The client's address, for the log line when it stalls.
+    peer: Option<SocketAddr>,
     /// The subscriber place the subscription holds until the producer
     /// returns.
     _place: OwnedSemaphorePermit,
     tx: mpsc::Sender<Result<PreEncoded, Status>>,
-    /// Takes the status the subscription ends with when the target stopped.
+    /// Takes the status the subscription ends with when the target stopped
+    /// or the client stalled.
     ending: oneshot::Sender<Status>,
 }
 
@@ -356,9 +384,12 @@ impl Producer {
     /// Returns when the client stops receiving, after the sync marker for a
     /// ONCE list, and when the target's listener stops or the target is
     /// gone, in which case the stream ends with `UNAVAILABLE` after the
-    /// responses already sent. The client's request stream ending does not
-    /// end a subscription. Returning gives the subscriber place back, ends
-    /// the response stream and aborts `draining`.
+    /// responses already sent. Also returns, ending the stream with
+    /// `UNAVAILABLE` and logging the client's address, when responses wait
+    /// for `stall_limit` without the client draining one; a client that
+    /// drains slowly is never ended. The client's request stream ending does
+    /// not end a subscription. Returning gives the subscriber place back,
+    /// ends the response stream and aborts `draining`.
     async fn run(mut self, draining: JoinHandle<()>, state: watch::Receiver<TargetState>) {
         let stopped = listener_stopped(state);
         tokio::pin!(stopped);
@@ -372,14 +403,16 @@ impl Producer {
                 let step = tokio::select! {
                     _ = &mut stopped => Step::TargetStopped,
                     _ = self.tx.closed() => Step::ClientDone,
-                    permit = self.tx.reserve(), if !pending.is_empty() => match permit {
-                        Ok(permit) => {
+                    permit = tokio::time::timeout(self.stall_limit, self.tx.reserve()),
+                        if !pending.is_empty() => match permit {
+                        Ok(Ok(permit)) => {
                             if let Some(response) = pending.pop_front() {
                                 permit.send(Ok(response));
                             }
                             Step::Sent
                         }
-                        Err(_) => Step::ClientDone,
+                        Ok(Err(_)) => Step::ClientDone,
+                        Err(_) => Step::Stalled,
                     },
                     _ = tokio::time::sleep_until(next_sample.unwrap_or_else(Instant::now)),
                         if pending.is_empty() && next_sample.is_some() => Step::Sample,
@@ -387,6 +420,17 @@ impl Producer {
                 match step {
                     Step::ClientDone => break None,
                     Step::TargetStopped => break Some(target_stopped()),
+                    Step::Stalled => {
+                        tracing::warn!(
+                            peer = ?self.peer,
+                            limit = ?self.stall_limit,
+                            "gnmi subscriber stalled; ending its subscription"
+                        );
+                        break Some(Status::unavailable(format!(
+                            "subscriber stalled: no data drained for {:?}",
+                            self.stall_limit
+                        )));
+                    }
                     Step::Sent => {}
                     Step::Sample => match self.sample() {
                         Some(responses) => pending = responses,
@@ -1247,16 +1291,7 @@ mod tests {
         assert_eq!(sink.target().series_count(), SERIES);
         // A 64 KiB window holds far fewer than SERIES updates, so the
         // subscription is still sending when the target stops.
-        let channel = tonic::transport::Endpoint::from_shared(format!(
-            "http://{}",
-            sink.target().local_addr()
-        ))
-        .expect("a valid uri")
-        .initial_stream_window_size(65_535)
-        .initial_connection_window_size(65_535)
-        .connect()
-        .await
-        .expect("connect to the target");
+        let channel = connect_with_small_window(sink.target().local_addr()).await;
         let mut client = open_on(channel, once("/interfaces"), true)
             .await
             .expect("subscribed");
@@ -1389,14 +1424,143 @@ mod tests {
     /// A target on an ephemeral port that pings a connection silent for
     /// `keepalive` and closes it when the ping goes unanswered as long.
     async fn target_with_keepalive(keepalive: Duration, max_subscribers: usize) -> Arc<GnmiTarget> {
+        target_with(max_subscribers, |settings| {
+            settings.keepalive_interval = keepalive;
+            settings.keepalive_timeout = keepalive;
+        })
+        .await
+    }
+
+    /// A target on an ephemeral port serving `max_subscribers`, with its
+    /// settings adjusted by `adjust`.
+    async fn target_with(
+        max_subscribers: usize,
+        adjust: impl FnOnce(&mut crate::sink::gnmi::TargetSettings),
+    ) -> Arc<GnmiTarget> {
         let mut cfg = GnmiTargetConfig::new("127.0.0.1:0");
         cfg.max_subscribers = Some(max_subscribers);
         let mut settings = cfg.settings().expect("valid settings");
-        settings.keepalive_interval = keepalive;
-        settings.keepalive_timeout = keepalive;
+        adjust(&mut settings);
         GnmiTarget::bind(settings)
             .await
             .expect("bind an ephemeral port")
+    }
+
+    /// A connection to `addr` whose HTTP/2 windows are 64 KiB, so a few
+    /// hundred unread updates fill them.
+    async fn connect_with_small_window(addr: SocketAddr) -> Channel {
+        tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+            .expect("a valid uri")
+            .initial_stream_window_size(65_535)
+            .initial_connection_window_size(65_535)
+            .connect()
+            .await
+            .expect("connect to the target")
+    }
+
+    /// The series, sample period and stall floor of the stall tests: 2,000
+    /// updates per sample are far more than a 64 KiB window holds, and the
+    /// stall limit is max(3 × 50 ms, 200 ms) = 200 ms.
+    const STALL_SERIES: usize = 2_000;
+    const STALL_PERIOD: Duration = Duration::from_millis(50);
+    const STALL_TEST_FLOOR: Duration = Duration::from_millis(200);
+
+    /// A target holding [`STALL_SERIES`] series, sampling as often as
+    /// [`STALL_PERIOD`], with a stall floor of [`STALL_TEST_FLOOR`].
+    async fn stall_target() -> Arc<GnmiTarget> {
+        let target = target_with(1, |settings| {
+            settings.sample_floor = STALL_PERIOD;
+            settings.stall_floor = STALL_TEST_FLOOR;
+        })
+        .await;
+        for i in 0..STALL_SERIES {
+            publish_into(&target, "in_octets", &format!("eth{i}"));
+        }
+        assert_eq!(target.series_count(), STALL_SERIES);
+        target
+    }
+
+    #[test]
+    fn stall_limit_is_three_longest_periods_or_the_floor() {
+        let floor = Duration::from_secs(10);
+        let s = Duration::from_secs;
+        assert_eq!(stall_limit([s(1), s(5)].into_iter(), floor), s(15));
+        assert_eq!(stall_limit([s(1), s(2)].into_iter(), floor), floor);
+        assert_eq!(stall_limit(std::iter::empty(), floor), floor, "a ONCE list");
+    }
+
+    /// A client that keeps its connection open but never reads its
+    /// responses is ended once responses have waited the stall limit: its
+    /// place is given back, a new subscriber is admitted, and when it does
+    /// read, its stream ends with the stall status.
+    #[tokio::test]
+    async fn a_subscriber_that_drains_nothing_is_ended_as_stalled() {
+        let target = stall_target().await;
+        let mut stalled = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            stream("/interfaces", STALL_PERIOD),
+            true,
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(target.subscriber_count(), 1);
+        assert!(
+            within(2 * STALL_TEST_FLOOR, || target.subscriber_count() == 0).await,
+            "a client that drains nothing still holds its place"
+        );
+        let _next = open(target.local_addr(), stream("/interfaces", STALL_PERIOD))
+            .await
+            .expect("the stalled client's place was given back");
+        assert_eq!(target.subscriber_count(), 1);
+
+        let mut updates = 0usize;
+        let ending = loop {
+            match tokio::time::timeout(PATIENCE, stalled.responses.message())
+                .await
+                .expect("a response in time")
+            {
+                Ok(Some(_)) => updates += 1,
+                ending => break ending,
+            }
+        };
+        assert!(updates > 0, "the stalled client was sent updates");
+        let status = ending.expect_err("the stream ends with a status, not OK");
+        assert_eq!(status.code(), tonic::Code::Unavailable, "{status}");
+        assert!(status.message().contains("stalled"), "{status}");
+    }
+
+    /// A client that reads slowly but without pause, with the target always
+    /// waiting on it, stays subscribed across several stall limits.
+    #[tokio::test]
+    async fn a_slow_but_moving_reader_is_not_ended() {
+        let target = stall_target().await;
+        let mut client = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            stream("/interfaces", STALL_PERIOD),
+            true,
+        )
+        .await
+        .expect("subscribed");
+        let started = Instant::now();
+        let mut read = 0usize;
+        while started.elapsed() < 5 * STALL_TEST_FLOOR {
+            for _ in 0..50 {
+                let message = tokio::time::timeout(PATIENCE, client.responses.message())
+                    .await
+                    .expect("a response in time")
+                    .expect("no error on the stream");
+                assert!(message.is_some(), "the stream ended after {read} responses");
+                read += 1;
+            }
+            assert_eq!(target.subscriber_count(), 1, "ended after {read} responses");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let kept_up = STALL_SERIES * (started.elapsed().as_millis() as usize)
+            / STALL_PERIOD.as_millis() as usize;
+        assert!(
+            read < kept_up / 2,
+            "the reader kept up ({read} of {kept_up}), so the target never waited on it"
+        );
     }
 
     /// A proxy on an ephemeral port forwarding one connection to `target`

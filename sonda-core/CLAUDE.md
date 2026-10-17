@@ -256,13 +256,19 @@ src/
 │   │                       missed periods in one step), framing each stored Notification
 │   │                       as SubscribeResponse.update bytes. Its select! arms: listener
 │   │                       left Listening (state()), tx.closed(), tx.reserve() (mpsc of
-│   │                       64: a client that stops reading parks only its own task), the
-│   │                       next sample. STREAM runs until the client goes or the target
-│   │                       stops; ONCE ends with OK after the sync marker. A subscription
-│   │                       ended by the target stopping or going away ends UNAVAILABLE:
-│   │                       the producer sends the status on a oneshot, and Responses
-│   │                       yields it after the queue drains. Publishes wake no subscriber
-│   │                       task.
+│   │                       64: a client that stops reading parks only its own task) under
+│   │                       a timeout of stall_limit = max(3 x the list's longest sample
+│   │                       period, stall_floor), the next sample. stall_floor is
+│   │                       STALL_FLOOR (10 s), carried in TargetSettings so tests can
+│   │                       shorten it (no config). Responses waiting a whole stall_limit
+│   │                       with none drained end the subscription UNAVAILABLE ("subscriber
+│   │                       stalled: no data drained for ..."), logged at warn with the
+│   │                       peer address; a slow reader that drains anything is not ended.
+│   │                       STREAM runs until the client goes, stalls or the target stops;
+│   │                       ONCE ends with OK after the sync marker. A subscription ended
+│   │                       by the target stopping or going away ends UNAVAILABLE too: the
+│   │                       producer sends the status on a oneshot, and Responses yields it
+│   │                       after the queue drains. Publishes wake no subscriber task.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
