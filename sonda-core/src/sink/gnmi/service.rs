@@ -1300,12 +1300,14 @@ mod tests {
         )
         .await
         .expect("subscribed");
+        let mut synced = std::collections::HashSet::new();
         for i in 0..SERIES {
-            assert!(
-                matches!(next(&mut client).await, Received::Update(_)),
-                "sync update {i} of {SERIES}"
-            );
+            match next(&mut client).await {
+                Received::Update(path) => synced.insert(path),
+                other => panic!("sync update {i} of {SERIES}: {other:?}"),
+            };
         }
+        assert_eq!(synced.len(), SERIES, "the sync carries every series once");
         assert_eq!(next(&mut client).await, Received::Sync);
         for batch in 1..=2 {
             for i in 0..SERIES {

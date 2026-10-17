@@ -185,8 +185,8 @@ src/
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems; its hash is
 │   │   │                   computed once in new() and Hash writes that u64, Eq compares
 │   │   │                   the hash, then the path, so table growth rehashes no
-│   │   │                   path). A series has
-│   │   │                   one Owner, a launch: only its sinks publish it (an upsert).
+│   │   │                   path). A series has one Owner, a launch: only its sinks
+│   │   │                   publish it (an upsert).
 │   │   │                   Each slot counts its publishers: a publish that reaches the
 │   │   │                   write lock (no id, or a cached id that no longer names its
 │   │   │                   path) is a publisher's first of that path (+1),
@@ -229,41 +229,40 @@ src/
 │   │   │                   are a ConfigError; port 0 always binds a
 │   │   │                   new target. check() answers as acquire() would, binding
 │   │   │                   nothing. listen_overlap assumes a dual-stack [::].
-│   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's paths joined to
-│   │   │                   its prefix; matches() is a prefix match on elements, a key
-│   │   │                   of "*" or an absent key matching any value, an empty origin
-│   │   │                   or target matching any. new() refuses (UNIMPLEMENTED, named)
-│   │   │                   POLL, ON_CHANGE in a STREAM list, BYTES, ASCII and JSON_IETF
-│   │   │                   encodings and element wildcards; INVALID_ARGUMENT for an empty list,
-│   │   │                   empty element name, or an unknown list encoding or mode
-│   │   │                   or (STREAM lists only) subscription mode. JSON (encoding 0,
-│   │   │                   also an unset encoding) is accepted and served as PROTO.
+│   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's paths joined to its
+│   │   │                   prefix; matches() is a prefix match on elements, a key of "*"
+│   │   │                   or an absent key matching any value, an empty origin or target
+│   │   │                   matching any. new() refuses (UNIMPLEMENTED, named) POLL,
+│   │   │                   ON_CHANGE in a STREAM list, BYTES, ASCII and JSON_IETF
+│   │   │                   encodings and element wildcards; INVALID_ARGUMENT for an empty
+│   │   │                   list, an empty element name, or an unknown list encoding or
+│   │   │                   mode or (STREAM lists only) subscription mode. JSON (encoding
+│   │   │                   0, also an unset encoding) is accepted and served as PROTO.
 │   │   │                   pub(crate).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service). Holds the target
-│   │                       WEAKLY (so does every handler and subscription task):
-│   │                       nothing a client does keeps a target alive; a request
-│   │                       after it is gone is UNAVAILABLE. Capabilities: 0.10.0,
-│   │                       [PROTO], no models. Subscribe: first message must be a
-│   │                       SubscriptionList; a place is taken with target.admit() or
-│   │                       the request is RESOURCE_EXHAUSTED, and the producer holds
-│   │                       it until it returns. One task reads and ignores the rest of
-│   │                       the inbound stream (never polled in a select!); its end does
-│   │                       not end the subscription. A producer task sends the initial
-│   │                       sync (matching snapshot, none with updates_only, then
-│   │                       sync_response) and,
-│   │                       for STREAM, re-reads the table per sample group (period =
-│   │                       max(sample_interval, sample_floor), one group per distinct
-│   │                       period; next_due skips missed periods in one step), framing
-│   │                       each stored Notification as SubscribeResponse.update bytes.
-│   │                       Its select! arms: listener left Listening (state()),
-│   │                       tx.closed(), tx.reserve() (mpsc of 64: a client that stops
-│   │                       reading parks only its own task), the next sample. STREAM
-│   │                       runs until the client goes or the target stops; ONCE ends
-│   │                       with OK after the sync marker. A subscription ended by the target stopping
-│   │                       or going away ends UNAVAILABLE: the producer sends the status
-│   │                       on a oneshot, and Responses yields it after the queue drains.
-│   │                       Publishes wake no subscriber task.
+│   │                       WEAKLY (so does every handler and subscription task): nothing a
+│   │                       client does keeps a target alive; a request after it is gone is
+│   │                       UNAVAILABLE. Capabilities: 0.10.0, [PROTO], no models.
+│   │                       Subscribe: first message must be a SubscriptionList; a place is
+│   │                       taken with target.admit() or the request is RESOURCE_EXHAUSTED,
+│   │                       and the producer holds it until it returns. One task reads and
+│   │                       ignores the rest of the inbound stream (never polled in a
+│   │                       select!); its end does not end the subscription. A producer
+│   │                       task sends the initial sync (matching snapshot, none with
+│   │                       updates_only, then sync_response) and, for STREAM, re-reads the
+│   │                       table per sample group (period = max(sample_interval,
+│   │                       sample_floor), one group per distinct period; next_due skips
+│   │                       missed periods in one step), framing each stored Notification
+│   │                       as SubscribeResponse.update bytes. Its select! arms: listener
+│   │                       left Listening (state()), tx.closed(), tx.reserve() (mpsc of
+│   │                       64: a client that stops reading parks only its own task), the
+│   │                       next sample. STREAM runs until the client goes or the target
+│   │                       stops; ONCE ends with OK after the sync marker. A subscription
+│   │                       ended by the target stopping or going away ends UNAVAILABLE:
+│   │                       the producer sends the status on a oneshot, and Responses
+│   │                       yields it after the queue drains. Publishes wake no subscriber
+│   │                       task.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/

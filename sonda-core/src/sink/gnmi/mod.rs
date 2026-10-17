@@ -74,9 +74,10 @@ pub struct GnmiTargetConfig {
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_subscribers: Option<usize>,
-    /// Broadcast capacity per target, 1 to 65536; it takes effect with
-    /// ON_CHANGE subscriptions. Default 1024. Every sink on one address must
-    /// use the same value.
+    /// Broadcast capacity per target, 1 to 65536. Only ON_CHANGE
+    /// subscriptions read the broadcast, and the target refuses them, so the
+    /// value changes nothing a subscriber receives. Default 1024. Every sink
+    /// on one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = MAX_SUBSCRIBER_BUFFER)))]
     pub subscriber_buffer: Option<usize>,
