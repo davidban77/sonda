@@ -21,6 +21,24 @@ pub const DEFAULT_HISTOGRAM_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
+/// The `le` label value of the bucket that counts every observation.
+#[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+pub(crate) const INF_BUCKET: &str = "+Inf";
+
+/// Format a bucket boundary as the `le` label value.
+///
+/// Uses Prometheus conventions: integer values render without decimal point,
+/// otherwise uses the default f64 formatting.
+#[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+pub(crate) fn format_le_value(bound: f64) -> String {
+    if bound == bound.trunc() && !bound.is_infinite() {
+        // Integer value — format without unnecessary decimal places.
+        format!("{}", bound as i64)
+    } else {
+        format!("{}", bound)
+    }
+}
+
 /// Distribution model for generating observations.
 ///
 /// Determines how sample values are distributed when the histogram generator
@@ -184,6 +202,17 @@ impl HistogramGenerator {
         &self.buckets
     }
 
+    /// The `le` label values of the bucket series: each boundary formatted
+    /// with [`format_le_value`], then [`INF_BUCKET`].
+    #[cfg_attr(not(feature = "gnmi"), allow(dead_code))]
+    pub(crate) fn le_values(&self) -> Vec<String> {
+        self.buckets
+            .iter()
+            .map(|bound| format_le_value(*bound))
+            .chain(std::iter::once(INF_BUCKET.to_string()))
+            .collect()
+    }
+
     /// Advance the generator by one tick, sampling observations and updating
     /// cumulative state.
     ///
@@ -268,6 +297,50 @@ fn uniform_01(input: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- format_le_value / le_values -----------------------------------------
+
+    #[test]
+    fn format_le_integer_value() {
+        assert_eq!(format_le_value(1.0), "1");
+        assert_eq!(format_le_value(10.0), "10");
+    }
+
+    #[test]
+    fn format_le_fractional_value() {
+        assert_eq!(format_le_value(0.005), "0.005");
+        assert_eq!(format_le_value(0.025), "0.025");
+        assert_eq!(format_le_value(2.5), "2.5");
+    }
+
+    #[test]
+    fn le_values_are_each_bucket_then_inf() {
+        let gen = HistogramGenerator::new(
+            vec![0.5, 2.0, 10.0],
+            Distribution::Exponential { rate: 1.0 },
+            1,
+            0.0,
+            0,
+            1.0,
+        );
+        assert_eq!(gen.le_values(), ["0.5", "2", "10", "+Inf"]);
+    }
+
+    #[test]
+    fn le_values_of_the_default_buckets() {
+        let gen = HistogramGenerator::new(
+            DEFAULT_HISTOGRAM_BUCKETS.to_vec(),
+            Distribution::Exponential { rate: 1.0 },
+            1,
+            0.0,
+            0,
+            1.0,
+        );
+        let le = gen.le_values();
+        assert_eq!(le.len(), DEFAULT_HISTOGRAM_BUCKETS.len() + 1);
+        assert_eq!(le.first().map(String::as_str), Some("0.005"));
+        assert_eq!(le.last().map(String::as_str), Some(INF_BUCKET));
+    }
 
     /// Helper: create a histogram generator with exponential distribution.
     fn exponential_gen(buckets: Vec<f64>, rate: f64, seed: u64) -> HistogramGenerator {

@@ -21,6 +21,13 @@ use super::histogram::Distribution;
 /// These match common Prometheus summary quantile configurations.
 pub const DEFAULT_SUMMARY_QUANTILES: &[f64] = &[0.5, 0.9, 0.95, 0.99];
 
+/// Format a quantile target as the `quantile` label value, with the default
+/// f64 formatting.
+#[cfg_attr(not(feature = "runtime"), allow(dead_code))]
+pub(crate) fn format_quantile_value(quantile: f64) -> String {
+    format!("{}", quantile)
+}
+
 /// A single summary sample produced by [`SummaryGenerator::observe`].
 ///
 /// Count and sum are cumulative — they never decrease across successive ticks.
@@ -121,6 +128,16 @@ impl SummaryGenerator {
         &self.quantiles
     }
 
+    /// The `quantile` label values of the quantile series: each target
+    /// formatted with [`format_quantile_value`].
+    #[cfg_attr(not(feature = "gnmi"), allow(dead_code))]
+    pub(crate) fn quantile_values(&self) -> Vec<String> {
+        self.quantiles
+            .iter()
+            .map(|quantile| format_quantile_value(*quantile))
+            .collect()
+    }
+
     /// Advance the generator by one tick, sampling observations and computing
     /// quantile values.
     ///
@@ -206,6 +223,28 @@ fn uniform_01(input: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- format_quantile_value / quantile_values -----------------------------
+
+    #[test]
+    fn format_quantile_value_uses_default_float_formatting() {
+        assert_eq!(format_quantile_value(0.5), "0.5");
+        assert_eq!(format_quantile_value(0.99), "0.99");
+        assert_eq!(format_quantile_value(0.999), "0.999");
+    }
+
+    #[test]
+    fn quantile_values_are_each_target() {
+        let gen = SummaryGenerator::new(
+            vec![0.25, 0.5, 0.99],
+            Distribution::Exponential { rate: 1.0 },
+            1,
+            0.0,
+            0,
+            1.0,
+        );
+        assert_eq!(gen.quantile_values(), ["0.25", "0.5", "0.99"]);
+    }
 
     /// Helper: create a summary generator with exponential distribution.
     fn exponential_summary(quantiles: Vec<f64>, rate: f64, seed: u64) -> SummaryGenerator {

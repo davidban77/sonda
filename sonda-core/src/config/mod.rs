@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use crate::encoder::EncoderConfig;
 use crate::generator::{CsvColumnSpec, GeneratorConfig, LogGeneratorConfig};
 use crate::sink::SinkConfig;
+use crate::util::{random_spike_index, random_spike_value};
 use crate::{ConfigError, SondaError};
 
 /// Gap window configuration — a recurring silent period within a scenario.
@@ -478,8 +479,9 @@ impl BaseScheduleConfig {
     /// each spike of `key` wraps what comes before it as its `outside` set. A
     /// counter's values are its prefix, `{key}_` when none is set, followed by
     /// `0` to `cardinality - 1`, as the runner's `label_value_for_tick`
-    /// produces them over a cycle of `cardinality` ticks. Which of a spike's
-    /// values an event carries depends on when its window is open.
+    /// produces them over a cycle of `cardinality` ticks; a `random` spike's
+    /// seed is `0` when none is set. Which of a spike's values an event
+    /// carries depends on when its window is open.
     pub fn label_value_set(&self, key: &str) -> Option<LabelValueSet> {
         let default_prefix = || format!("{key}_");
         let dynamic = self
@@ -519,12 +521,23 @@ impl BaseScheduleConfig {
                     cardinality: spike.cardinality,
                     outside,
                 },
-                SpikeStrategy::Random => LabelValueSet::RandomShape { prefix, outside },
+                SpikeStrategy::Random => LabelValueSet::RandomShape {
+                    prefix,
+                    seed: spike.seed.unwrap_or(0),
+                    cardinality: spike.cardinality,
+                    outside,
+                },
             });
         }
         set
     }
 }
+
+/// The largest `random` cardinality spike whose values a [`LabelValueSet`]
+/// compares one by one with a counter's. Against a counter, the values of a
+/// larger one are compared by their shape only. Every other comparison with
+/// a `random` spike is exact at any cardinality.
+pub const MAX_ENUMERATED_SPIKE: u64 = 65_536;
 
 /// The values a label key can take on an entry's events, from
 /// [`BaseScheduleConfig::label_value_set`].
@@ -558,11 +571,17 @@ pub enum LabelValueSet {
         outside: Option<Box<LabelValueSet>>,
     },
     /// A `random` cardinality spike: while its window is open, `prefix`
-    /// followed by 16 lowercase hexadecimal digits. Only this shape of its
-    /// values is known.
+    /// followed by 16 lowercase hexadecimal digits, one value for each of
+    /// `0` to `cardinality - 1`, as the runner's `label_value_for_tick`
+    /// produces them. Against a counter, a spike of more than
+    /// [`MAX_ENUMERATED_SPIKE`] values is compared by this shape only.
     RandomShape {
         /// The text before the hexadecimal digits.
         prefix: String,
+        /// The seed the digits are derived from.
+        seed: u64,
+        /// How many values the window produces.
+        cardinality: u64,
         /// The values while the window is closed.
         outside: Option<Box<LabelValueSet>>,
     },
@@ -576,8 +595,9 @@ pub enum LabelValueSet {
 pub(crate) enum Overlap {
     /// No value is in both.
     Disjoint,
-    /// A value of the other has the shape of a [`LabelValueSet::RandomShape`]
-    /// value: the two may meet.
+    /// A counter holds a value of the shape of the values of a
+    /// [`LabelValueSet::RandomShape`] with more than [`MAX_ENUMERATED_SPIKE`]
+    /// values: the two may meet.
     ByShape,
     /// A value is in both.
     Certain,
@@ -590,22 +610,38 @@ enum ValuePart<'a> {
     Listed(&'a [String]),
     /// `prefix` followed by `0` to `cardinality - 1` in decimal.
     Counter { prefix: &'a str, cardinality: u64 },
-    /// `prefix` followed by 16 lowercase hexadecimal digits.
-    Shape { prefix: &'a str },
+    /// A `random` spike's values: `prefix` followed by the hash of `seed`
+    /// and each of `0` to `cardinality - 1` as 16 lowercase hexadecimal
+    /// digits.
+    Random {
+        prefix: &'a str,
+        seed: u64,
+        cardinality: u64,
+    },
 }
 
 impl LabelValueSet {
-    /// Whether an event can carry `value` for this key. A
-    /// [`LabelValueSet::RandomShape`] contains every value of its shape.
+    /// Whether an event can carry `value` for this key.
     pub fn contains(&self, value: &str) -> bool {
         self.meets_value(value) != Overlap::Disjoint
     }
 
-    /// Whether some value is in both sets: finite sets by intersection, and a
-    /// [`LabelValueSet::RandomShape`] with any set holding a value of its
-    /// shape.
+    /// Whether some value is in both sets: by their values, except that a
+    /// counter and a [`LabelValueSet::RandomShape`] with more than
+    /// [`MAX_ENUMERATED_SPIKE`] values overlap when the counter holds any
+    /// value of the spike's shape.
     pub fn overlaps(&self, other: &LabelValueSet) -> bool {
         self.meets(other) != Overlap::Disjoint
+    }
+
+    /// Whether this set holds a [`LabelValueSet::RandomShape`] with more than
+    /// [`MAX_ENUMERATED_SPIKE`] values, whose values meet a counter's by
+    /// their shape only.
+    #[cfg_attr(not(feature = "gnmi"), allow(dead_code))]
+    pub(crate) fn compared_by_shape(&self) -> bool {
+        self.parts().iter().any(|part| {
+            matches!(part, ValuePart::Random { cardinality, .. } if *cardinality > MAX_ENUMERATED_SPIKE)
+        })
     }
 
     /// How this set meets one value.
@@ -662,8 +698,17 @@ impl LabelValueSet {
                     });
                     outside.as_deref()
                 }
-                LabelValueSet::RandomShape { prefix, outside } => {
-                    parts.push(ValuePart::Shape { prefix });
+                LabelValueSet::RandomShape {
+                    prefix,
+                    seed,
+                    cardinality,
+                    outside,
+                } => {
+                    parts.push(ValuePart::Random {
+                        prefix,
+                        seed: *seed,
+                        cardinality: *cardinality,
+                    });
                     outside.as_deref()
                 }
             };
@@ -680,13 +725,12 @@ impl ValuePart<'_> {
                 prefix,
                 cardinality,
             } => counter_index(prefix, value).is_some_and(|i| i < u128::from(cardinality)),
-            ValuePart::Shape { prefix } => {
-                return if has_shape(prefix, value) {
-                    Overlap::ByShape
-                } else {
-                    Overlap::Disjoint
-                };
-            }
+            ValuePart::Random {
+                prefix,
+                seed,
+                cardinality,
+            } => shape_hash(prefix, value)
+                .is_some_and(|hash| random_spike_index(seed, hash) < cardinality),
         };
         if found {
             Overlap::Certain
@@ -731,16 +775,65 @@ impl ValuePart<'_> {
                     prefix,
                     cardinality,
                 },
-                ValuePart::Shape { prefix: shape },
+                ValuePart::Random {
+                    prefix: shape,
+                    cardinality: count,
+                    ..
+                },
             )
             | (
-                ValuePart::Shape { prefix: shape },
+                ValuePart::Random {
+                    prefix: shape,
+                    cardinality: count,
+                    ..
+                },
                 ValuePart::Counter {
                     prefix,
                     cardinality,
                 },
-            ) => shaped(counter_meets_shape(prefix, cardinality, shape)),
-            (ValuePart::Shape { prefix: a }, ValuePart::Shape { prefix: b }) => shaped(a == b),
+            ) if count > MAX_ENUMERATED_SPIKE => {
+                shaped(counter_meets_shape(prefix, cardinality, shape))
+            }
+            (
+                ValuePart::Counter {
+                    prefix,
+                    cardinality,
+                },
+                ValuePart::Random {
+                    prefix: shape,
+                    seed,
+                    cardinality: count,
+                },
+            )
+            | (
+                ValuePart::Random {
+                    prefix: shape,
+                    seed,
+                    cardinality: count,
+                },
+                ValuePart::Counter {
+                    prefix,
+                    cardinality,
+                },
+            ) => certain(
+                counter_meets_shape(prefix, cardinality, shape)
+                    && (0..count).any(|i| {
+                        counter_index(prefix, &random_spike_value(shape, seed, i))
+                            .is_some_and(|n| n < u128::from(cardinality))
+                    }),
+            ),
+            (
+                ValuePart::Random {
+                    prefix: a,
+                    seed: x,
+                    cardinality: n,
+                },
+                ValuePart::Random {
+                    prefix: b,
+                    seed: y,
+                    cardinality: m,
+                },
+            ) => certain(a == b && random_spikes_meet(n, m, x ^ y)),
         }
     }
 }
@@ -764,6 +857,43 @@ fn has_shape(prefix: &str, value: &str) -> bool {
     value
         .strip_prefix(prefix)
         .is_some_and(|rest| rest.len() == 16 && is_lower_hex(rest))
+}
+
+/// The number written by the 16 lowercase hexadecimal digits after `prefix`
+/// in `value`, when `value` has that shape.
+fn shape_hash(prefix: &str, value: &str) -> Option<u64> {
+    if !has_shape(prefix, value) {
+        return None;
+    }
+    u64::from_str_radix(&value[prefix.len()..], 16).ok()
+}
+
+/// Whether two `random` spikes on one prefix, of `count` and `other_count`
+/// values, share a value. Index `i` of the first and `j` of the second give
+/// one hash exactly when `seed ^ i == other_seed ^ j`, so they share a value
+/// when some `i < count` has `i ^ seeds < other_count`, with `seeds` the two
+/// seeds xor-ed.
+fn random_spikes_meet(count: u64, other_count: u64, seeds: u64) -> bool {
+    min_xor_below(count, seeds).is_some_and(|smallest| smallest < other_count)
+}
+
+/// The smallest `i ^ c` over `i < n`, or `None` when `n` is 0. Walks the bits
+/// from the top: `i` takes the bit of `c`, a 0 in `i ^ c`, unless that would
+/// put `i` above `n - 1`; once `i` is below `n - 1`, every lower bit of
+/// `i ^ c` is 0.
+fn min_xor_below(n: u64, c: u64) -> Option<u64> {
+    let limit = n.checked_sub(1)?;
+    let mut smallest = 0;
+    for bit in (0..u64::BITS).rev() {
+        let wanted = c >> bit & 1;
+        let allowed = limit >> bit & 1;
+        if wanted > allowed {
+            smallest |= 1 << bit;
+        } else if wanted < allowed {
+            break;
+        }
+    }
+    Some(smallest)
 }
 
 fn is_lower_hex(s: &str) -> bool {
@@ -5735,6 +5865,13 @@ mod label_value_tests {
         }
     }
 
+    fn unseeded(spike: CardinalitySpikeConfig) -> CardinalitySpikeConfig {
+        CardinalitySpikeConfig {
+            seed: None,
+            ..spike
+        }
+    }
+
     fn values(list: &[&str]) -> LabelValueSet {
         LabelValueSet::Values(list.iter().map(|v| v.to_string()).collect())
     }
@@ -5750,11 +5887,37 @@ mod label_value_tests {
         }
     }
 
+    /// A random spike too large to compare value by value with a counter.
     fn shape(prefix: &str, outside: Option<LabelValueSet>) -> LabelValueSet {
+        random(prefix, 0, MAX_ENUMERATED_SPIKE + 1, outside)
+    }
+
+    fn random(
+        prefix: &str,
+        seed: u64,
+        cardinality: u64,
+        outside: Option<LabelValueSet>,
+    ) -> LabelValueSet {
         LabelValueSet::RandomShape {
             prefix: prefix.to_string(),
+            seed,
+            cardinality,
             outside: outside.map(Box::new),
         }
+    }
+
+    /// The `index`-th value of a random spike with this prefix and seed.
+    fn nth(prefix: &str, seed: u64, index: u64) -> LabelValueSet {
+        fixed(&random_spike_value(prefix, seed, index))
+    }
+
+    /// The `index`-th value of a random spike with its hex digits in
+    /// uppercase, which the runner never writes.
+    fn nth_upper(prefix: &str, seed: u64, index: u64) -> LabelValueSet {
+        fixed(&format!(
+            "{prefix}{}",
+            random_spike_value("", seed, index).to_uppercase()
+        ))
     }
 
     fn spike_count(
@@ -5772,8 +5935,8 @@ mod label_value_tests {
     /// Over a full cycle of `cardinality` ticks, the runner's
     /// `label_value_for_tick` produces exactly the values the label's set
     /// declares: each produced value is in the set, and the set declares as
-    /// many values as the cycle produces. For a random spike, each produced
-    /// value has the declared shape.
+    /// many values as the cycle produces. A random spike's set lists exactly
+    /// the produced values, and holds no value of its shape past them.
     #[cfg(feature = "runtime")]
     #[rustfmt::skip]
     #[rstest::rstest]
@@ -5784,6 +5947,7 @@ mod label_value_tests {
     #[case::spike_counter_default_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Counter, None, 5)]), "pod", 5)]
     #[case::spike_random_with_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Random, Some("pod-"), 5)]), "pod", 5)]
     #[case::spike_random_default_prefix(base(&[], vec![], vec![spike("pod", SpikeStrategy::Random, None, 5)]), "pod", 5)]
+    #[case::spike_random_default_seed(base(&[], vec![], vec![unseeded(spike("pod", SpikeStrategy::Random, Some("pod-"), 5))]), "pod", 5)]
     fn label_value_set_matches_label_value_for_tick(
         #[case] config: BaseScheduleConfig,
         #[case] key: &str,
@@ -5809,7 +5973,14 @@ mod label_value_tests {
             LabelValueSet::Values(list) => list.len() as u64,
             LabelValueSet::Counter { cardinality, .. }
             | LabelValueSet::SpikeCounter { cardinality, outside: None, .. } => *cardinality,
-            LabelValueSet::RandomShape { outside: None, .. } => return,
+            LabelValueSet::RandomShape { prefix, seed, cardinality, outside: None } => {
+                let listed: BTreeSet<String> =
+                    (0..*cardinality).map(|i| random_spike_value(prefix, *seed, i)).collect();
+                assert_eq!(listed, produced, "{set:?} lists exactly the produced values");
+                let past = random_spike_value(prefix, *seed, *cardinality);
+                assert!(!produced.contains(&past) && !set.contains(&past), "{past:?} is past the cycle");
+                *cardinality
+            }
             other => panic!("unexpected set for one source: {other:?}"),
         };
         assert_eq!(declared, cardinality, "{set:?} declares {declared} values");
@@ -5826,11 +5997,12 @@ mod label_value_tests {
     #[case::last_dynamic_wins(base(&[], vec![counter("k", None, 2), listed("k", &["x"])], vec![]), Some(values(&["x"])))]
     #[case::counter_default_prefix(base(&[], vec![counter("k", None, 2)], vec![]), Some(count("k_", 2)))]
     #[case::spike_over_static(base(&[("k", "a")], vec![], vec![spike("k", SpikeStrategy::Counter, Some("p-"), 3)]), Some(spike_count("p-", 3, Some(fixed("a")))))]
-    #[case::spike_on_absent_key(base(&[], vec![], vec![spike("k", SpikeStrategy::Random, None, 3)]), Some(shape("k_", None)))]
+    #[case::spike_on_absent_key(base(&[], vec![], vec![spike("k", SpikeStrategy::Random, None, 3)]), Some(random("k_", 7, 3, None)))]
     #[case::spikes_over_dynamic(
         base(&[("k", "a")], vec![listed("k", &["v"])], vec![spike("k", SpikeStrategy::Counter, None, 2), spike("other", SpikeStrategy::Counter, None, 2), spike("k", SpikeStrategy::Random, Some("r-"), 2)]),
-        Some(shape("r-", Some(spike_count("k_", 2, Some(values(&["v"]))))))
+        Some(random("r-", 7, 2, Some(spike_count("k_", 2, Some(values(&["v"]))))))
     )]
+    #[case::random_spike_default_seed(base(&[], vec![], vec![unseeded(spike("k", SpikeStrategy::Random, Some("r-"), 3))]), Some(random("r-", 0, 3, None)))]
     fn label_value_set_layers_sources_in_runner_order(
         #[case] config: BaseScheduleConfig,
         #[case] expected: Option<LabelValueSet>,
@@ -5856,7 +6028,8 @@ mod label_value_tests {
 
     /// How two sets meet, in both orders. A counter holds its prefix followed
     /// by a decimal number with no leading zeros below its cardinality; a
-    /// random spike meets a value only by its shape.
+    /// random spike holds exactly its values at any cardinality, and one above
+    /// the cap meets a counter by its shape.
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::equal_statics(fixed("eth0"), fixed("eth0"), Overlap::Certain)]
@@ -5871,12 +6044,12 @@ mod label_value_tests {
     #[case::prefix_reaching_past_cardinality(count("a-", 10), count("a-1", 1), Overlap::Disjoint)]
     #[case::prefix_with_leading_zero_digit(count("a-", 100), count("a-0", 5), Overlap::Disjoint)]
     #[case::unrelated_counters(count("a-", 5), count("b-", 5), Overlap::Disjoint)]
-    #[case::static_of_the_shape(shape("pod-", None), fixed("pod-0123456789abcdef"), Overlap::ByShape)]
+    #[case::large_random_and_an_unlisted_value_of_its_shape(shape("pod-", None), fixed("pod-0123456789abcdef"), Overlap::Disjoint)]
     #[case::static_too_short(shape("pod-", None), fixed("pod-0123"), Overlap::Disjoint)]
-    #[case::static_uppercase_hex(shape("pod-", None), fixed("pod-0123456789ABCDEF"), Overlap::Disjoint)]
+    #[case::static_uppercase_hex(random("pod-", 0, 4, None), nth_upper("pod-", 0, 0), Overlap::Disjoint)]
     #[case::shape_outside_value(shape("pod-", Some(fixed("leaf-1"))), fixed("leaf-1"), Overlap::Certain)]
     #[case::spike_counter_outside_value(spike_count("device_", 2, Some(fixed("leaf-2"))), fixed("leaf-1"), Overlap::Disjoint)]
-    #[case::shapes_on_one_prefix(shape("pod-", None), shape("pod-", None), Overlap::ByShape)]
+    #[case::large_randoms_with_one_seed(shape("pod-", None), shape("pod-", None), Overlap::Certain)]
     #[case::shapes_on_two_prefixes(shape("pod-", None), shape("pods-", None), Overlap::Disjoint)]
     #[case::counter_too_short_for_shape(count("pod-", 1000), shape("pod-", None), Overlap::Disjoint)]
     #[case::counter_reaching_sixteen_digits(count("pod-", 10u64.pow(16)), shape("pod-", None), Overlap::ByShape)]
@@ -5885,6 +6058,28 @@ mod label_value_tests {
     #[case::shape_reaching_into_counter_digits(count("pod", u64::MAX), shape("pod1", None), Overlap::ByShape)]
     #[case::shape_reaching_past_cardinality(count("pod", 10u64.pow(16)), shape("pod1", None), Overlap::Disjoint)]
     #[case::shape_reaching_into_a_non_digit(count("pod", u64::MAX), shape("pod-", None), Overlap::Disjoint)]
+    #[case::random_first_value(random("pod-", 0, 4, None), nth("pod-", 0, 0), Overlap::Certain)]
+    #[case::random_last_value(random("pod-", 0, 4, None), nth("pod-", 0, 3), Overlap::Certain)]
+    #[case::random_value_past_cardinality(random("pod-", 0, 4, None), nth("pod-", 0, 4), Overlap::Disjoint)]
+    #[case::random_value_of_another_seed(random("pod-", 0, 4, None), nth("pod-", 100, 0), Overlap::Disjoint)]
+    #[case::random_value_of_another_prefix(random("pod-", 0, 4, None), nth("pods-", 0, 0), Overlap::Disjoint)]
+    #[case::random_and_an_unlisted_value_of_its_shape(random("pod-", 0, 4, None), fixed("pod-0123456789abcdef"), Overlap::Disjoint)]
+    #[case::random_at_the_cap(random("pod-", 0, MAX_ENUMERATED_SPIKE, None), nth("pod-", 0, MAX_ENUMERATED_SPIKE - 1), Overlap::Certain)]
+    #[case::random_at_the_cap_and_an_unlisted_value(random("pod-", 0, MAX_ENUMERATED_SPIKE, None), nth("pod-", 0, MAX_ENUMERATED_SPIKE), Overlap::Disjoint)]
+    #[case::large_random_last_value(shape("pod-", None), nth("pod-", 0, MAX_ENUMERATED_SPIKE), Overlap::Certain)]
+    #[case::large_random_value_past_cardinality(shape("pod-", None), nth("pod-", 0, MAX_ENUMERATED_SPIKE + 1), Overlap::Disjoint)]
+    #[case::huge_random_value_5(random("pod-", 0, 1 << 63, None), nth("pod-", 0, 5), Overlap::Certain)]
+    #[case::huge_random_value_past_cardinality(random("pod-", 0, 1 << 63, None), nth("pod-", 0, (1 << 63) + 5), Overlap::Disjoint)]
+    #[case::huge_randoms_sharing_values(random("pod-", 0, 1 << 63, None), random("pod-", 5, 1 << 63, None), Overlap::Certain)]
+    #[case::huge_randoms_split_by_the_top_bit(random("pod-", 0, 1 << 63, None), random("pod-", 1 << 63, 1 << 63, None), Overlap::Disjoint)]
+    #[case::random_outside_value(random("pod-", 0, 4, Some(fixed("leaf-1"))), fixed("leaf-1"), Overlap::Certain)]
+    #[case::random_in_a_list(random("pod-", 0, 4, None), values(&["eth0", &random_spike_value("pod-", 0, 2)]), Overlap::Certain)]
+    #[case::random_and_a_list_of_unlisted_values(random("pod-", 0, 4, None), values(&["eth0", &random_spike_value("pod-", 0, 4)]), Overlap::Disjoint)]
+    #[case::randoms_with_one_set_of_values(random("pod-", 0, 4, None), random("pod-", 2, 4, None), Overlap::Certain)]
+    #[case::randoms_with_disjoint_values(random("pod-", 0, 4, None), random("pod-", 100, 4, None), Overlap::Disjoint)]
+    #[case::randoms_on_two_prefixes(random("pod-", 0, 4, None), random("pods", 0, 4, None), Overlap::Disjoint)]
+    #[case::random_inside_a_larger_random(random("pod-", 0, 4, None), shape("pod-", None), Overlap::Certain)]
+    #[case::random_and_a_larger_random_on_two_prefixes(random("pod-", 0, 4, None), shape("pods", None), Overlap::Disjoint)]
     fn label_value_sets_meet(
         #[case] a: LabelValueSet,
         #[case] b: LabelValueSet,
@@ -5897,5 +6092,120 @@ mod label_value_tests {
             assert_eq!(a.meets_value(value), expected, "{a:?} holds {value:?}");
             assert_eq!(a.contains(value), expected != Overlap::Disjoint);
         }
+    }
+
+    /// A counter meets a random spike under the cap exactly when it holds
+    /// one of the spike's values, which takes a counter whose prefix leaves
+    /// only decimal digits of a value for its number.
+    #[test]
+    fn counter_meets_random_spike_values_exactly() {
+        let value = random_spike_value("pod-", 42, 0);
+        assert_eq!(value, "pod-bdd732262feb6e95", "the anchored first value");
+        let (prefix, digits) = value.split_at(value.len() - 2);
+        let number: u64 = digits
+            .parse()
+            .expect("the value ends in two decimal digits");
+        let spike = random("pod-", 42, 1, None);
+
+        let holding = count(prefix, number + 1);
+        assert_eq!(spike.meets(&holding), Overlap::Certain);
+        assert_eq!(holding.meets(&spike), Overlap::Certain);
+        let short = count(prefix, number);
+        assert_eq!(spike.meets(&short), Overlap::Disjoint);
+        assert_eq!(short.meets(&spike), Overlap::Disjoint);
+        assert_eq!(
+            shape("pod-", None).meets(&short),
+            Overlap::ByShape,
+            "the shape alone meets it"
+        );
+
+        let sixteen_digits = count("pod-", 10u64.pow(16));
+        let decimal = (0..4)
+            .map(|i| random_spike_value("pod-", 0, i))
+            .filter(|value| value["pod-".len()..].bytes().all(|b| b.is_ascii_digit()))
+            .count();
+        assert_eq!(decimal, 0, "no listed value is all decimal digits");
+        assert_eq!(
+            random("pod-", 0, 4, None).meets(&sixteen_digits),
+            Overlap::Disjoint
+        );
+        assert_eq!(shape("pod-", None).meets(&sixteen_digits), Overlap::ByShape);
+
+        let at_the_cap = random("pod-", 42, MAX_ENUMERATED_SPIKE, None);
+        assert_eq!(
+            at_the_cap.meets(&holding),
+            Overlap::Certain,
+            "listed up to the cap"
+        );
+        assert_eq!(
+            at_the_cap.meets(&short),
+            Overlap::Disjoint,
+            "listed up to the cap"
+        );
+        let past_the_cap = random("pod-", 42, MAX_ENUMERATED_SPIKE + 1, None);
+        assert_eq!(
+            past_the_cap.meets(&holding),
+            Overlap::ByShape,
+            "by shape past the cap"
+        );
+        assert_eq!(
+            past_the_cap.meets(&short),
+            Overlap::ByShape,
+            "by shape past the cap"
+        );
+    }
+
+    /// The closed form behind two random spikes meeting agrees with trying
+    /// every index: for every `n` and `m` up to 64 and 1 002 values of `c`,
+    /// and at the edges of the range.
+    #[test]
+    fn random_spikes_meet_as_trying_every_index_does() {
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut seeds = vec![0, u64::MAX];
+        seeds.extend((0..1_000u64).map(|k| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            match k % 65 {
+                64 => state,
+                width => state & ((1u64 << width) - 1),
+            }
+        }));
+        let (mut checked, mut met) = (0u64, 0u64);
+        for &c in &seeds {
+            for n in 0..=64u64 {
+                assert_eq!(
+                    min_xor_below(n, c),
+                    (0..n).map(|i| i ^ c).min(),
+                    "n {n}, c {c:#x}"
+                );
+                for m in 0..=64u64 {
+                    let brute = (0..n).any(|i| (i ^ c) < m);
+                    assert_eq!(random_spikes_meet(n, m, c), brute, "n {n}, m {m}, c {c:#x}");
+                    checked += 1;
+                    met += u64::from(brute);
+                }
+            }
+        }
+        assert_eq!(checked, 1_002 * 65 * 65);
+        assert!(
+            met > 0 && met < checked,
+            "both outcomes occur: {met} of {checked}"
+        );
+
+        let half = 1u64 << 63;
+        assert!(random_spikes_meet(1, 1, 0));
+        assert!(!random_spikes_meet(1, 1, u64::MAX));
+        assert!(random_spikes_meet(half, half, 0));
+        assert!(random_spikes_meet(half, half, half - 1));
+        assert!(!random_spikes_meet(half, half, half));
+        assert!(!random_spikes_meet(half, half, u64::MAX));
+        assert_eq!(min_xor_below(half, half), Some(half));
+        assert_eq!(
+            min_xor_below(u64::MAX, u64::MAX),
+            Some(1),
+            "i stops at u64::MAX - 1"
+        );
+        assert_eq!(min_xor_below(0, 0), None);
     }
 }
