@@ -261,9 +261,11 @@ src/
 │   │                       period, stall_floor), the next sample. stall_floor is
 │   │                       STALL_FLOOR (10 s), carried in TargetSettings so tests can
 │   │                       shorten it (no config). Responses waiting a whole stall_limit
-│   │                       with none drained end the subscription UNAVAILABLE ("subscriber
-│   │                       stalled: no data drained for ..."), logged at warn with the
-│   │                       peer address; a slow reader that drains anything is not ended.
+│   │                       with none taken from the queue end the subscription UNAVAILABLE
+│   │                       ("subscriber stalled: no data drained for ..."), logged at warn
+│   │                       with the peer address (or "unknown"). Responses leave the queue
+│   │                       only as the client grants HTTP/2 flow-control credit, so a
+│   │                       reader that grants some within the limit is not ended.
 │   │                       STREAM runs until the client goes, stalls or the target stops;
 │   │                       ONCE ends with OK after the sync marker. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the

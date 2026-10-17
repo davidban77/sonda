@@ -386,10 +386,12 @@ impl Producer {
     /// gone, in which case the stream ends with `UNAVAILABLE` after the
     /// responses already sent. Also returns, ending the stream with
     /// `UNAVAILABLE` and logging the client's address, when responses wait
-    /// for `stall_limit` without the client draining one; a client that
-    /// drains slowly is never ended. The client's request stream ending does
-    /// not end a subscription. Returning gives the subscriber place back,
-    /// ends the response stream and aborts `draining`.
+    /// for `stall_limit` with none taken from the queue. Responses leave the
+    /// queue only as the client grants HTTP/2 flow-control credit, so a
+    /// client that grants some within the limit, however little, is not
+    /// ended. The client's request stream ending does not end a
+    /// subscription. Returning gives the subscriber place back, ends the
+    /// response stream and aborts `draining`.
     async fn run(mut self, draining: JoinHandle<()>, state: watch::Receiver<TargetState>) {
         let stopped = listener_stopped(state);
         tokio::pin!(stopped);
@@ -421,8 +423,11 @@ impl Producer {
                     Step::ClientDone => break None,
                     Step::TargetStopped => break Some(target_stopped()),
                     Step::Stalled => {
+                        let peer = self
+                            .peer
+                            .map_or_else(|| "unknown".to_string(), |peer| peer.to_string());
                         tracing::warn!(
-                            peer = ?self.peer,
+                            %peer,
                             limit = ?self.stall_limit,
                             "gnmi subscriber stalled; ending its subscription"
                         );
@@ -1529,6 +1534,37 @@ mod tests {
         assert!(status.message().contains("stalled"), "{status}");
     }
 
+    /// A client whose list's longest sample period, times three, exceeds the
+    /// floor is held to that longer limit: with a 100 ms period and a
+    /// 200 ms floor, a client that never reads still holds its place at
+    /// 250 ms and has lost it by 600 ms.
+    #[tokio::test]
+    async fn the_stall_limit_is_three_of_the_longest_sample_periods() {
+        let period = 2 * STALL_PERIOD;
+        let target = stall_target().await;
+        let opened = Instant::now();
+        let _stalled = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            stream("/interfaces", period),
+            true,
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(target.subscriber_count(), 1);
+        tokio::time::sleep_until(opened + Duration::from_millis(250)).await;
+        assert_eq!(
+            target.subscriber_count(),
+            1,
+            "ended before 3 × the 100 ms period, at the 200 ms floor"
+        );
+        assert!(
+            within(Duration::from_millis(350), || target.subscriber_count()
+                == 0)
+            .await,
+            "still held at 600 ms, past the 300 ms limit"
+        );
+    }
+
     /// A client that reads slowly but without pause, with the target always
     /// waiting on it, stays subscribed across several stall limits.
     #[tokio::test]
@@ -1564,9 +1600,10 @@ mod tests {
     }
 
     /// A proxy on an ephemeral port forwarding one connection to `target`
-    /// in both directions until `cut` turns true; from then on it forwards
-    /// nothing and keeps both sockets open.
-    async fn proxy(target: SocketAddr, cut: watch::Receiver<bool>) -> SocketAddr {
+    /// in both directions, each read `delay` after it arrives, until `cut`
+    /// turns true; from then on it forwards nothing and keeps both sockets
+    /// open.
+    async fn proxy(target: SocketAddr, cut: watch::Receiver<bool>, delay: Duration) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("bound");
         tokio::spawn(async move {
@@ -1575,15 +1612,21 @@ mod tests {
             let (client_read, client_write) = client.into_split();
             let (server_read, server_write) = server.into_split();
             tokio::join!(
-                pipe(client_read, server_write, cut.clone()),
-                pipe(server_read, client_write, cut)
+                pipe(client_read, server_write, cut.clone(), delay),
+                pipe(server_read, client_write, cut, delay)
             );
         });
         addr
     }
 
-    /// Copy `from` to `to` until `cut` turns true, then hold both open.
-    async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, mut cut: watch::Receiver<bool>) {
+    /// Copy `from` to `to`, each read `delay` after it arrives, until `cut`
+    /// turns true, then hold both open.
+    async fn pipe(
+        mut from: OwnedReadHalf,
+        mut to: OwnedWriteHalf,
+        mut cut: watch::Receiver<bool>,
+        delay: Duration,
+    ) {
         let mut buf = vec![0u8; 16 * 1024];
         loop {
             let n = tokio::select! {
@@ -1593,6 +1636,9 @@ mod tests {
                 },
                 _ = cut.wait_for(|cut| *cut) => break,
             };
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             if *cut.borrow() || to.write_all(&buf[..n]).await.is_err() {
                 break;
             }
@@ -1608,7 +1654,7 @@ mod tests {
         let target = target_with_keepalive(Duration::from_millis(200), 1).await;
         publish_into(&target, "in_octets", "eth0");
         let (cut, uncut) = watch::channel(false);
-        let via = proxy(target.local_addr(), uncut).await;
+        let via = proxy(target.local_addr(), uncut, Duration::ZERO).await;
         let mut client = open(via, stream("/interfaces", Duration::ZERO))
             .await
             .expect("subscribed through the proxy");
@@ -1632,14 +1678,18 @@ mod tests {
     }
 
     /// A client that answers pings keeps its subscription across the same
-    /// keepalive interval and timeout.
+    /// keepalive interval and timeout. It is reached through a proxy that
+    /// delays each direction by 25 ms, so every ping's answer takes at least
+    /// 50 ms to arrive.
     #[tokio::test]
     async fn a_client_answering_pings_keeps_its_subscription() {
         let target = target_with_keepalive(Duration::from_millis(200), 1).await;
         publish_into(&target, "in_octets", "eth0");
-        let mut client = open(target.local_addr(), stream("/interfaces", Duration::ZERO))
+        let (_cut, uncut) = watch::channel(false);
+        let via = proxy(target.local_addr(), uncut, Duration::from_millis(25)).await;
+        let mut client = open(via, stream("/interfaces", Duration::ZERO))
             .await
-            .expect("subscribed");
+            .expect("subscribed through the proxy");
         let expected = Received::Update(counter("eth0", "in-octets"));
         assert_eq!(next(&mut client).await, expected);
         assert_eq!(next(&mut client).await, Received::Sync);
