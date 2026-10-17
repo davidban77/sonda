@@ -337,11 +337,14 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
 /// - Each element name, key value and target is compared on its own, so a
 ///   label used in two places is matched in each place separately. This can
 ///   reject two series that never write the same leaf, and never misses one.
-/// - A `random` cardinality spike's values are compared one by one up to
-///   [`MAX_ENUMERATED_SPIKE`](crate::config::MAX_ENUMERATED_SPIKE) values. A
-///   larger spike's values are compared by their shape only, its prefix
-///   followed by 16 lowercase hex digits, so it meets any value of that
-///   shape, and the error says the two metrics may collide.
+/// - A counter label against a `random` cardinality spike of more than
+///   [`MAX_ENUMERATED_SPIKE`](crate::config::MAX_ENUMERATED_SPIKE) values:
+///   the spike's values are compared by their shape only, its prefix
+///   followed by 16 lowercase hex digits, so the counter meets it when it
+///   holds any value of that shape, and the error says the two metrics may
+///   collide. A smaller spike is compared with a counter value by value, and
+///   a spike of any size is compared exactly with a literal, a listed value
+///   or another spike.
 ///
 /// An entry whose encoder config does not build, or that has no template for
 /// a series, is left to per-entry validation.
@@ -598,7 +601,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         Some(format!(
             "metrics `{}` and `{}` may collide on the gnmi leaf `{}`{spelled}{on_target}: the \
              values of {} come from a random cardinality spike of more than {} values and are \
-             compared by their prefix and 16 hex digits only; {advice}",
+             compared with a counter by their prefix and 16 hex digits only; {advice}",
             other.name,
             writer.name,
             other.leaf,
@@ -3246,6 +3249,12 @@ scenarios:
     fn device_eth0(device: &str) -> String {
         format!("    labels:\n      device: {device}\n      ifName: eth0\n")
     }
+    /// A counter dynamic label over `device`: `prefix` followed by `0` to
+    /// `cardinality - 1`; `ifName` set to `eth0`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn counter_device_eth0(prefix: &str, cardinality: u64) -> String {
+        format!("    labels:\n      ifName: eth0\n    dynamic_labels:\n      - key: device\n        prefix: {prefix}\n        cardinality: {cardinality}\n")
+    }
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const POD_SHAPED_ETH0: &str =
         "    labels:\n      device: pod-0123456789abcdef\n      ifName: eth0\n";
@@ -3261,6 +3270,12 @@ scenarios:
     #[cfg(all(feature = "gnmi", feature = "config"))]
     fn leaf_1_ifname(if_name: &str) -> String {
         format!("    labels:\n      device: leaf-1\n      ifName: {if_name}\n")
+    }
+    /// `device` set to `leaf-1`; a counter dynamic label over `ifName`:
+    /// `prefix` followed by `0` to `cardinality - 1`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn leaf_1_counter_ifname(prefix: &str, cardinality: u64) -> String {
+        format!("    labels:\n      device: leaf-1\n    dynamic_labels:\n      - key: ifName\n        prefix: {prefix}\n        cardinality: {cardinality}\n")
     }
     #[cfg(all(feature = "gnmi", feature = "config"))]
     const LEAF_1_ETH_SHAPED: &str =
@@ -3282,11 +3297,14 @@ scenarios:
     #[case::no_target_and_dynamic_leaf_1_leaf_2(NO_TARGET_ETH0, DYNAMIC_LEAF_1_LEAF_2_ETH0, None)]
     #[case::random_spike_target_and_its_first_value(&device_eth0(&random_spike_value("pod-", 0, 0)), &leaf_2_random_spike_eth0(2), Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label, each overwriting the other"))]
     #[case::random_spike_target_and_an_unlisted_value_of_its_shape(POD_SHAPED_ETH0, &leaf_2_random_spike_eth0(2), None)]
-    #[case::random_spike_target_past_the_cap(POD_SHAPED_ETH0, &leaf_2_random_spike_eth0(MAX_ENUMERATED_SPIKE + 1), Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label: the values of `device` of `out_octets` come from a random cardinality spike of more than 65536 values"))]
+    #[case::random_spike_target_of_2_pow_63_values_and_its_value_5(&device_eth0(&random_spike_value("pod-", 0, 5)), &leaf_2_random_spike_eth0(1 << 63), Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label, each overwriting the other"))]
+    #[case::random_spike_target_of_2_pow_63_values_and_a_value_past_it(&device_eth0(&random_spike_value("pod-", 0, (1 << 63) + 5)), &leaf_2_random_spike_eth0(1 << 63), None)]
     #[case::random_spike_target_past_the_cap_and_a_value_of_another_shape(POD_3_ETH0, &leaf_2_random_spike_eth0(MAX_ENUMERATED_SPIKE + 1), None)]
     #[case::random_spike_placeholder_and_its_second_value(&leaf_1_ifname(&random_spike_value("eth", 0, 1)), &leaf_1_random_ifname(2), Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`, each overwriting the other"))]
     #[case::random_spike_placeholder_and_an_unlisted_value_of_its_shape(LEAF_1_ETH_SHAPED, &leaf_1_random_ifname(2), None)]
-    #[case::random_spike_placeholder_past_the_cap(LEAF_1_ETH_SHAPED, &leaf_1_random_ifname(MAX_ENUMERATED_SPIKE + 1), Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`: the values of `ifName` of `out_octets` come from a random cardinality spike of more than 65536 values"))]
+    #[case::counter_target_and_a_random_spike_past_the_cap(&counter_device_eth0("pod-0123456789abcde", 10), &leaf_2_random_spike_eth0(MAX_ENUMERATED_SPIKE + 1), Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `in_octets` takes `device` and `out_octets` takes `device` from dynamic or spike labels: the values of `device` of `out_octets` come from a random cardinality spike of more than 65536 values and are compared with a counter by their prefix and 16 hex digits only"))]
+    #[case::counter_target_and_a_random_spike_at_the_cap(&counter_device_eth0("pod-0123456789abcde", 10), &leaf_2_random_spike_eth0(MAX_ENUMERATED_SPIKE), None)]
+    #[case::counter_placeholder_and_a_random_spike_past_the_cap(&leaf_1_counter_ifname("eth0123456789abcde", 10), &leaf_1_random_ifname(MAX_ENUMERATED_SPIKE + 1), Some("metrics `in_octets` and `out_octets` may collide on the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on target `leaf-1`: the values of `ifName` of `out_octets` come from a random cardinality spike of more than 65536 values and are compared with a counter by their prefix and 16 hex digits only"))]
     #[case::static_leaf_2_and_a_spike_over_leaf_2(LEAF_2_ETH0, LEAF_2_DEFAULT_SPIKE_ETH0, Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` on a target they may share: `out_octets` takes `device` from a dynamic or spike label, each overwriting the other"))]
     fn gnmi_leaves_and_targets_meet_by_label_values(
         #[case] in_octets: &str,
