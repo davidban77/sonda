@@ -1200,6 +1200,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#gnmi_target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gnmi_target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#retry-with-backoff" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2597,6 +2608,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#gnmi_target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gnmi_target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#retry-with-backoff" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3387,18 +3409,189 @@
 </tr>
 </tbody>
 </table>
+<h2 id="gnmi_target">gnmi_target<a class="headerlink" href="#gnmi_target" title="Permanent link">&para;</a></h2>
+<p>Serves the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s metrics as a gNMI target, the way a network device does. Every other <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> connects out to a destination. This one listens: a gNMI client dials the <code>listen</code> address, subscribes to paths, and receives the latest value of every series under them. Clients include <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>inputs.gnmi</code>, gnmic, or a collector.</p>
+<p><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> is the client. It dials Sonda and asks for paths; Sonda never opens a connection.</p>
+<p>Pair this <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> with the <a href="../encoders/#gnmi"><code>gnmi</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr></a>, which renders each series as a gNMI <code>Notification</code> on an openconfig path. Each takes only the other, and it works for <code>metrics</code>, <code>histogram</code> and <code>summary</code> entries. Logs entries take neither.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> requires the <code>gnmi</code> Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: <code>cargo build --features gnmi -p sonda</code>.</p>
+</div>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>listen</code></td>
+<td>string</td>
+<td>yes</td>
+<td>--</td>
+<td>Address to listen on, for example <code>"0.0.0.0:57400"</code>.</td>
+</tr>
+<tr>
+<td><code>max_subscribers</code></td>
+<td>integer</td>
+<td>no</td>
+<td><code>16</code></td>
+<td>Subscriptions served at once, at least 1. One more is refused with <code>RESOURCE_EXHAUSTED</code>.</td>
+</tr>
+<tr>
+<td><code>sample_floor</code></td>
+<td>duration string</td>
+<td>no</td>
+<td><code>1s</code></td>
+<td>Shortest sample interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval.</td>
+</tr>
+<tr>
+<td><code>subscriber_buffer</code></td>
+<td>integer</td>
+<td>no</td>
+<td><code>1024</code></td>
+<td>Capacity of the broadcast that ON_CHANGE subscriptions read, 1 to 65536. The target refuses ON_CHANGE, so the value changes nothing a subscriber receives.</td>
+</tr>
+</tbody>
+</table>
+<p>Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set <code>max_subscribers</code>, <code>sample_floor</code> and <code>subscriber_buffer</code> alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.</p>
+<p>The listener serves plaintext gRPC:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>What the target does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Capabilities</code></td>
+<td>Answers gNMI version <code>0.10.0</code> and the one encoding <code>PROTO</code>.</td>
+</tr>
+<tr>
+<td><code>Subscribe</code>, STREAM with SAMPLE</td>
+<td>Sends the latest value of every matching series, then <code>sync_response</code>. After that it resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. <code>TARGET_DEFINED</code> is served as SAMPLE.</td>
+</tr>
+<tr>
+<td><code>Subscribe</code>, ONCE</td>
+<td>Sends the latest value of every matching series and <code>sync_response</code>, then ends the <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr>.</td>
+</tr>
+<tr>
+<td><code>updates_only: true</code></td>
+<td>Skips the initial values; the first message is <code>sync_response</code>.</td>
+</tr>
+<tr>
+<td>POLL, ON_CHANGE</td>
+<td>Refused with <code>UNIMPLEMENTED</code>, naming the mode.</td>
+</tr>
+<tr>
+<td>Encoding <code>PROTO</code> or <code>JSON</code></td>
+<td>Served in <code>PROTO</code>. <code>JSON</code> is also what a request that sets no encoding carries.</td>
+</tr>
+<tr>
+<td>Encoding <code>JSON_IETF</code>, <code>BYTES</code> or <code>ASCII</code></td>
+<td>Refused with <code>UNIMPLEMENTED</code>, naming the encoding and <code>PROTO</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of <code>*</code>, or a key the subscription leaves out, matches any value: <code>/interfaces/interface/state/counters</code> matches every interface's counters. An empty origin or target in the subscription matches any. Element wildcards (<code>*</code> or <code>...</code> as an element name) are refused with <code>UNIMPLEMENTED</code>.</p>
+<p>A subscription ends with <code>UNAVAILABLE</code> when:</p>
+<ul>
+<li><strong>The run stops.</strong> The status follows the updates already queued, and the listener closes.</li>
+<li><strong>The client stalls.</strong> The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.</li>
+</ul>
+<p>The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.</p>
+<p>The example below is a router with four interfaces, served to <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>. Only the first interface is shown here; the complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <a href="https://github.com/davidban77/sonda/blob/main/examples/gnmi-telegraf.yaml"><code>examples/gnmi-telegraf.yaml</code></a>:</p>
+<div class="language-yaml highlight"><span class="filename">examples/gnmi-telegraf.yaml (excerpt)</span><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># sonda:static - excerpt only; a gnmi_target listens for a client, which the browser playground cannot provide</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gnmi</span>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">    </span><span class="nt">origin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openconfig-interfaces</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="w">    </span><span class="nt">target_label</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">device</span>
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">"/interfaces/interface[name={ifName}]/state/counters/{name}"</span>
+</span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a><span class="w">    </span><span class="nt">values</span><span class="p">:</span>
+</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a><span class="w">      </span><span class="nt">in_octets</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uint</span>
+</span><span id="__span-27-14"><a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a><span class="w">      </span><span class="nt">out_octets</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uint</span>
+</span><span id="__span-27-15"><a id="__codelineno-27-15" name="__codelineno-27-15" href="#__codelineno-27-15"></a><span class="w">      </span><span class="nt">oper_status</span><span class="p">:</span>
+</span><span id="__span-27-16"><a id="__codelineno-27-16" name="__codelineno-27-16" href="#__codelineno-27-16"></a><span class="w">        </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> 1</span><span class="p">:</span><span class="w"> </span><span class="nv">UP</span><span class="p p-Indicator">,</span><span class="nt"> 2</span><span class="p">:</span><span class="w"> </span><span class="nv">DOWN</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-17"><a id="__codelineno-27-17" name="__codelineno-27-17" href="#__codelineno-27-17"></a><span class="w">    </span><span class="nt">paths</span><span class="p">:</span>
+</span><span id="__span-27-18"><a id="__codelineno-27-18" name="__codelineno-27-18" href="#__codelineno-27-18"></a><span class="w">      </span><span class="nt">oper_status</span><span class="p">:</span><span class="w"> </span><span class="s">"/interfaces/interface[name={ifName}]/state/oper-status"</span>
+</span><span id="__span-27-19"><a id="__codelineno-27-19" name="__codelineno-27-19" href="#__codelineno-27-19"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-27-20"><a id="__codelineno-27-20" name="__codelineno-27-20" href="#__codelineno-27-20"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gnmi_target</span>
+</span><span id="__span-27-21"><a id="__codelineno-27-21" name="__codelineno-27-21" href="#__codelineno-27-21"></a><span class="w">    </span><span class="nt">listen</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0:57400</span>
+</span><span id="__span-27-22"><a id="__codelineno-27-22" name="__codelineno-27-22" href="#__codelineno-27-22"></a>
+</span><span id="__span-27-23"><a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-27-24"><a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">in_octets</span>
+</span><span id="__span-27-26"><a id="__codelineno-27-26" name="__codelineno-27-26" href="#__codelineno-27-26"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">step</span><span class="p p-Indicator">,</span><span class="nt"> start</span><span class="p">:</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="nt"> step_size</span><span class="p">:</span><span class="w"> </span><span class="nv">125000</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-27"><a id="__codelineno-27-27" name="__codelineno-27-27" href="#__codelineno-27-27"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-core-01</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-28"><a id="__codelineno-27-28" name="__codelineno-27-28" href="#__codelineno-27-28"></a>
+</span><span id="__span-27-29"><a id="__codelineno-27-29" name="__codelineno-27-29" href="#__codelineno-27-29"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-27-30"><a id="__codelineno-27-30" name="__codelineno-27-30" href="#__codelineno-27-30"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">out_octets</span>
+</span><span id="__span-27-31"><a id="__codelineno-27-31" name="__codelineno-27-31" href="#__codelineno-27-31"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">step</span><span class="p p-Indicator">,</span><span class="nt"> start</span><span class="p">:</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="nt"> step_size</span><span class="p">:</span><span class="w"> </span><span class="nv">62500</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-32"><a id="__codelineno-27-32" name="__codelineno-27-32" href="#__codelineno-27-32"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-core-01</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-33"><a id="__codelineno-27-33" name="__codelineno-27-33" href="#__codelineno-27-33"></a>
+</span><span id="__span-27-34"><a id="__codelineno-27-34" name="__codelineno-27-34" href="#__codelineno-27-34"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-27-35"><a id="__codelineno-27-35" name="__codelineno-27-35" href="#__codelineno-27-35"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oper_status</span>
+</span><span id="__span-27-36"><a id="__codelineno-27-36" name="__codelineno-27-36" href="#__codelineno-27-36"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-27-37"><a id="__codelineno-27-37" name="__codelineno-27-37" href="#__codelineno-27-37"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flap</span>
+</span><span id="__span-27-38"><a id="__codelineno-27-38" name="__codelineno-27-38" href="#__codelineno-27-38"></a><span class="w">      </span><span class="nt">up_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60s</span>
+</span><span id="__span-27-39"><a id="__codelineno-27-39" name="__codelineno-27-39" href="#__codelineno-27-39"></a><span class="w">      </span><span class="nt">down_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span>
+</span><span id="__span-27-40"><a id="__codelineno-27-40" name="__codelineno-27-40" href="#__codelineno-27-40"></a><span class="w">      </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oper_state</span>
+</span><span id="__span-27-41"><a id="__codelineno-27-41" name="__codelineno-27-41" href="#__codelineno-27-41"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-core-01</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span></code></pre></div>
+<p>The <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> side subscribes to the counters and the oper-status. Both subscriptions use SAMPLE mode:</p>
+<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf.conf (excerpt)</span><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="k">[[inputs.gnmi]]</span>
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span><span class="n">addresses</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"sonda:57400"</span><span class="p">]</span>
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">  </span><span class="n">encoding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"proto"</span>
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="w">  </span><span class="n">redial</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"10s"</span>
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>
+</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="w">  </span><span class="k">[[inputs.gnmi.subscription]]</span>
+</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifcounters"</span>
+</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a><span class="w">    </span><span class="n">origin</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"openconfig-interfaces"</span>
+</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="w">    </span><span class="n">path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/interfaces/interface/state/counters"</span>
+</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a><span class="w">    </span><span class="n">subscription_mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"sample"</span>
+</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a><span class="w">    </span><span class="n">sample_interval</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"10s"</span>
+</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a>
+</span><span id="__span-28-13"><a id="__codelineno-28-13" name="__codelineno-28-13" href="#__codelineno-28-13"></a><span class="w">  </span><span class="k">[[inputs.gnmi.subscription]]</span>
+</span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifstate"</span>
+</span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a><span class="w">    </span><span class="n">origin</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"openconfig-interfaces"</span>
+</span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16" href="#__codelineno-28-16"></a><span class="w">    </span><span class="n">path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/interfaces/interface/state/oper-status"</span>
+</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a><span class="w">    </span><span class="n">subscription_mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"sample"</span>
+</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18" href="#__codelineno-28-18"></a><span class="w">    </span><span class="n">sample_interval</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1s"</span>
+</span></code></pre></div>
+<p>Each subscription's <code>name</code> becomes the measurement, the interface key becomes the <code>name</code> tag, and the address <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> dialed becomes <code>source</code>. The full <code>telegraf.conf</code> maps oper-status <code>UP</code>/<code>DOWN</code> to <code>1</code>/<code>2</code> with <code>processors.enum</code>, so <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> writes these lines:</p>
+<div class="language-text highlight"><span class="filename">What Telegraf emits</span><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>ifcounters,name=GigabitEthernet0/0/0,source=sonda in_octets=1250000i 1792339482653260154
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>ifcounters,name=GigabitEthernet0/0/0,source=sonda out_octets=625000i 1792339482653530936
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>ifstate,name=GigabitEthernet0/0/0,source=sonda oper_status=1i 1792339473653348313
+</span></code></pre></div>
+<p>To run the pair, start the compose stack's <code>gnmi</code> profile. It runs <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> with that config and writes to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr>. Then start the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> on the host:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>gnmi<span class="w"> </span>up<span class="w"> </span>-d
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/gnmi-telegraf.yaml
+</span></code></pre></div>
+<p>Without <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>, gnmic reads the same target directly:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces<span class="w"> </span>--mode<span class="w"> </span>once
+</span></code></pre></div>
 <h2 id="retry-with-backoff">Retry with backoff<a class="headerlink" href="#retry-with-backoff" title="Permanent link">&para;</a></h2>
 <p>Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does <strong>not</strong> retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a <code>retry:</code> block to any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
 <p>Retry applies to these sinks: <code>http_push</code>, <code>remote_write</code>, <code>loki</code>, <code>otlp_grpc</code>, <code>kafka</code>, <code>tcp</code>. It does <strong>not</strong> apply to <code>stdout</code>, <code>file</code>, or <code>udp</code>.</p>
 <h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
 <p>Add the <code>retry:</code> block inside any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> definition:</p>
-<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
-</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
-</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
-</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
-</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
+<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
+</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
+</span><span id="__span-32-5"><a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
+</span><span id="__span-32-6"><a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
+</span><span id="__span-32-7"><a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
 </span></code></pre></div>
 <p>All three fields are required when <code>retry:</code> is present:</p>
 <table>
@@ -3429,13 +3622,13 @@
 </table>
 <h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
 <p>Sonda uses <strong>exponential backoff with full jitter</strong>:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
-</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>sleep = random(0, base)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
+</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>sleep = random(0, base)
 </span></code></pre></div>
 <p>The jitter prevents synchronized retries when several sinks retry at the same time ("thundering herd"). Each retry attempt is logged to stderr:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
-</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
+</span><span id="__span-34-2"><a id="__codelineno-34-2" name="__codelineno-34-2" href="#__codelineno-34-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
+</span><span id="__span-34-3"><a id="__codelineno-34-3" name="__codelineno-34-3" href="#__codelineno-34-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
 </span></code></pre></div>
 <p>If every retry is exhausted, the batch is <strong>discarded</strong>. Sonda generates synthetic data, so losing a batch is acceptable and prevents unbounded buffer growth.</p>
 <h3 id="error-classification">Error classification<a class="headerlink" href="#error-classification" title="Permanent link">&para;</a></h3>
@@ -3496,7 +3689,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 2, 2026 19:01:30 UTC">September 2, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 18, 2026 18:47:21 UTC">October 18, 2026</span>
   </span>
 
     

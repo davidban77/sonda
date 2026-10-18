@@ -1061,6 +1061,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#gnmi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gnmi
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="gnmi">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-templates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path templates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#value-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Value types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#value-precision" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2347,6 +2386,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#gnmi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gnmi
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="gnmi">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-templates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path templates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#value-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Value types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#value-precision" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2393,7 +2471,7 @@
 <p>Switch the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> below to see the same <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> — one sine metric with two labels — come out in each format. The bytes are produced by the real engine, in your browser, not pasted in.</p>
 <div class="sonda-livegen" data-gen="encoders" markdown="0"></div>
 
-<p>The three formats offered here are the ones compiled into the browser build. <code>remote_write</code> and <code>otlp</code> are feature-gated and are documented below with static examples for that reason; the sections that follow cover every <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, including those.</p>
+<p>The three formats offered here are the ones compiled into the browser build. <code>remote_write</code>, <code>otlp</code> and <code>gnmi</code> are feature-gated and are documented below with static examples for that reason; the sections that follow cover every <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, including those.</p>
 <h2 id="prometheus_text">prometheus_text<a class="headerlink" href="#prometheus_text" title="Permanent link">&para;</a></h2>
 <p><abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> text <abbr title="Prometheus text format for metrics scraped from an HTTP endpoint (`# HELP`, `# TYPE`, `name{label=&quot;v&quot;} value`).">exposition format</abbr> (v0.0.4). Each event becomes one line:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>metric_name{label="value"} 42.0 1700000000000
@@ -2578,6 +2656,160 @@
 </span></code></pre></div>
 <p>Pair this <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> with the <code>otlp_grpc</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>. The <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> handles batching and gRPC delivery to an <abbr title="CNCF observability framework for traces, metrics, and logs.">OpenTelemetry</abbr> Collector. See <a href="../sinks/#otlp_grpc">Sinks — otlp_grpc</a> for details.</p>
 <p>The <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> supports both metrics and logs. Set the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>'s <code>signal_type</code> to match your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> type (<code>metrics</code> or <code>logs</code>).</p>
+<h2 id="gnmi">gnmi<a class="headerlink" href="#gnmi" title="Permanent link">&para;</a></h2>
+<p>gNMI <code>Notification</code> protobuf. Each metric event becomes one <code>Notification</code> holding one <code>Update</code>, and the notification carries the event timestamp in nanoseconds:</p>
+<ul>
+<li><strong>Path:</strong> rendered from a template for that series.</li>
+<li><strong>Value:</strong> a <code>TypedValue</code> of the metric's value type.</li>
+<li><strong>Prefix:</strong> the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>'s <code>origin</code> and a <code>target</code> taken from one label.</li>
+</ul>
+<p>Pair this <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> with the <code>gnmi_target</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>, which serves the notifications to gNMI clients such as <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>. Each takes only the other. See <a href="../sinks/#gnmi_target">Sinks — gnmi_target</a> for details.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> requires the <code>gnmi</code> Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: <code>cargo build --features gnmi -p sonda</code>.</p>
+</div>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>string</td>
+<td>yes, unless every metric has a <code>paths:</code> entry</td>
+<td>--</td>
+<td>Path template every series is rendered from. See <a href="#path-templates">Path templates</a>.</td>
+</tr>
+<tr>
+<td><code>paths</code></td>
+<td>map</td>
+<td>no</td>
+<td><code>{}</code></td>
+<td>Per-metric templates keyed by exact metric name. A metric listed here is rendered from its own template instead of <code>path</code>.</td>
+</tr>
+<tr>
+<td><code>values</code></td>
+<td>map</td>
+<td>no</td>
+<td><code>{}</code></td>
+<td>Per-metric value type keyed by exact metric name. Unlisted metrics are <code>double</code>. See <a href="#value-types">Value types</a>.</td>
+</tr>
+<tr>
+<td><code>origin</code></td>
+<td>string</td>
+<td>no</td>
+<td><code>"openconfig"</code></td>
+<td><code>Path.origin</code> on every notification's prefix.</td>
+</tr>
+<tr>
+<td><code>target_label</code></td>
+<td>string</td>
+<td>no</td>
+<td><code>"device"</code></td>
+<td>Label whose value becomes <code>Path.target</code> on the prefix.</td>
+</tr>
+<tr>
+<td><code>drop_labels</code></td>
+<td>list of strings</td>
+<td>no</td>
+<td><code>[]</code></td>
+<td>Labels deliberately left out of the path.</td>
+</tr>
+</tbody>
+</table>
+<div class="language-yaml highlight"><span class="filename">gNMI encoder</span><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gnmi</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span><span class="nt">origin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openconfig-interfaces</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="w">  </span><span class="nt">target_label</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">device</span>
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="w">  </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">"/interfaces/interface[name={ifName}]/state/counters/{name}"</span>
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="w">  </span><span class="nt">values</span><span class="p">:</span>
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="w">    </span><span class="nt">in_octets</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uint</span>
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="w">    </span><span class="nt">out_octets</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uint</span>
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="w">    </span><span class="nt">oper_status</span><span class="p">:</span>
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a><span class="w">      </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> 1</span><span class="p">:</span><span class="w"> </span><span class="nv">UP</span><span class="p p-Indicator">,</span><span class="nt"> 2</span><span class="p">:</span><span class="w"> </span><span class="nv">DOWN</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a><span class="w">  </span><span class="nt">paths</span><span class="p">:</span>
+</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a><span class="w">    </span><span class="nt">oper_status</span><span class="p">:</span><span class="w"> </span><span class="s">"/interfaces/interface[name={ifName}]/state/oper-status"</span>
+</span></code></pre></div>
+<p>With that block, <code>in_octets{device="rtr-core-01", ifName="GigabitEthernet0/0/0"}</code> is sent with:</p>
+<ul>
+<li><strong>Path:</strong> <code>/interfaces/interface[name=GigabitEthernet0/0/0]/state/counters/in-octets</code>.</li>
+<li><strong>Prefix:</strong> origin <code>openconfig-interfaces</code> and target <code>rtr-core-01</code>.</li>
+<li><strong>Value:</strong> a <code>uint_val</code>.</li>
+</ul>
+<p><code>oper_status</code> uses its own path from <code>paths:</code> and is sent as the string <code>UP</code> or <code>DOWN</code>.</p>
+<h3 id="path-templates">Path templates<a class="headerlink" href="#path-templates" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Segments are separated by <code>/</code>. A leading <code>/</code> is optional.</li>
+<li>A segment is an element name, optionally followed by one or more <code>[key=value]</code> groups. Key names are literal, and a key appears at most once per segment.</li>
+<li>An element name or a key value is either literal text or exactly one placeholder. A brace anywhere else is an error.</li>
+<li><code>{name}</code> renders the metric name with <code>_</code> replaced by <code>-</code>, so <code>in_octets</code> becomes <code>in-octets</code>. Any other <code>{label}</code> renders that label's value as it is.</li>
+<li>A template has no <code>origin:</code> prefix; the origin comes from <code>origin</code>. A colon anywhere else, in a module-prefixed element name or in a key value, is literal text.</li>
+<li>A rendered element name must be non-empty and contain no <code>/</code>, <code>[</code> or <code>]</code>. Key values may contain <code>/</code>, as in <code>GigabitEthernet0/0/0</code>.</li>
+</ul>
+<p>Every label must be accounted for, so that two series never share a path. This covers each key in an entry's <code>labels</code> and <code>dynamic_labels</code>, and every <code>cardinality_spikes</code> label. Each one must be either:</p>
+<ul>
+<li>referenced by the entry's template,</li>
+<li>the <code>target_label</code>, or</li>
+<li>listed in <code>drop_labels</code>.</li>
+</ul>
+<p>A file that breaks this is refused with the label named. A <code>cardinality_spikes</code> label exists only inside its window, so it cannot be a placeholder. Unless it is the <code>target_label</code>, or shares its key with a label the template references, it goes in <code>drop_labels</code>.</p>
+<p>Histogram and <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> entries take the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> too:</p>
+<ul>
+<li><strong>Histogram:</strong> emits <code>&lt;name&gt;_bucket</code> with an <code>le</code> label, plus <code>&lt;name&gt;_sum</code> and <code>&lt;name&gt;_count</code>. The bucket template must reference <code>{le}</code>, and <code>le</code> may not be dropped.</li>
+<li><strong>Summary:</strong> emits <code>&lt;name&gt;</code> with a <code>quantile</code> label, plus <code>&lt;name&gt;_sum</code> and <code>&lt;name&gt;_count</code>. The template must reference <code>{quantile}</code>, and <code>quantile</code> may not be dropped.</li>
+<li><strong><code>_sum</code> and <code>_count</code>:</strong> these series carry no <code>le</code> or <code>quantile</code>, so they need a template without <code>{le}</code> or <code>{quantile}</code>. That is either their own <code>paths:</code> entries (<code>&lt;name&gt;_sum</code>, <code>&lt;name&gt;_count</code>), or <code>path</code> when the bucket or quantile series has a <code>paths:</code> entry of its own. Validation names any series whose template uses a key it does not carry.</li>
+</ul>
+<h3 id="value-types">Value types<a class="headerlink" href="#value-types" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th><code>values:</code> entry</th>
+<th><code>TypedValue</code> field</th>
+<th>Encoding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>double</code> (default)</td>
+<td><code>double_val</code></td>
+<td>The value as it is.</td>
+</tr>
+<tr>
+<td><code>uint</code></td>
+<td><code>uint_val</code></td>
+<td>Rounded to the nearest integer, halves away from zero. A non-finite value, or one that rounds below 0 or above the unsigned 64-bit range, is rejected.</td>
+</tr>
+<tr>
+<td><code>int</code></td>
+<td><code>int_val</code></td>
+<td>Rounded the same way. A non-finite value or one outside the 64-bit range is rejected.</td>
+</tr>
+<tr>
+<td><code>bool</code></td>
+<td><code>bool_val</code></td>
+<td><code>true</code> when the rounded value is not 0. A non-finite value is rejected.</td>
+</tr>
+<tr>
+<td><code>string</code></td>
+<td><code>string_val</code></td>
+<td>The shortest decimal text that reads back as the same value.</td>
+</tr>
+<tr>
+<td><code>enum: { 1: UP, 2: DOWN }</code></td>
+<td><code>string_val</code></td>
+<td>The label for the rounded value. A value with no entry, or a non-finite value, is rejected.</td>
+</tr>
+</tbody>
+</table>
+<p><code>enum</code> keys are integers (<code>1</code> or <code>"1"</code>). Generators that emit gNMI states, such as <code>flap</code> with <code>enum: oper_state</code> (UP = 1, DOWN = 2), pair with an <code>enum</code> map of the same codes.</p>
+<p>A rejected event is skipped and counted in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s errors, and the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> keeps running.</p>
+<p>This <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> accepts metrics only. Log events are not supported.</p>
 <h2 id="value-precision">Value precision<a class="headerlink" href="#value-precision" title="Permanent link">&para;</a></h2>
 <p>The <code>prometheus_text</code>, <code>influx_lp</code>, and <code>json_lines</code> encoders accept an optional <code>precision</code> field that controls how many decimal places appear in metric values.</p>
 <ul>
@@ -2586,11 +2818,11 @@
 <li><strong>Effect</strong>: values are rounded to the specified number of decimal places using standard rounding.</li>
 </ul>
 <p>Set <code>precision</code> on the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> block in your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML:</p>
-<div class="language-yaml highlight"><span class="filename">precision-formatting.yaml (encoder fragment)</span><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nt">encoder</span><span class="p">:</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">    </span><span class="c1"># 99.60573 becomes 99.61</span>
+<div class="language-yaml highlight"><span class="filename">precision-formatting.yaml (encoder fragment)</span><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">    </span><span class="c1"># 99.60573 becomes 99.61</span>
 </span></code></pre></div>
-<p>The <code>syslog</code>, <code>remote_write</code>, and <code>otlp</code> encoders do not support <code>precision</code>. Syslog encodes log events only, with no numeric values; remote write and <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> use binary protobuf encoding.</p>
+<p>The <code>syslog</code>, <code>remote_write</code>, <code>otlp</code>, and <code>gnmi</code> encoders do not support <code>precision</code>. Syslog encodes log events only, with no numeric values; remote write, <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> and gNMI use binary protobuf encoding.</p>
 <p>See <a href="https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml"><code>examples/precision-formatting.yaml</code></a> for a complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> that uses precision with several encoders.</p>
 <h2 id="encoder-compatibility">Encoder compatibility<a class="headerlink" href="#encoder-compatibility" title="Permanent link">&para;</a></h2>
 <table>
@@ -2646,6 +2878,13 @@
 <td>--</td>
 <td><code>otlp</code></td>
 </tr>
+<tr>
+<td><code>gnmi</code></td>
+<td>yes</td>
+<td>no</td>
+<td>--</td>
+<td><code>gnmi</code></td>
+</tr>
 </tbody>
 </table>
 
@@ -2668,7 +2907,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 2, 2026 19:01:30 UTC">September 2, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 18, 2026 18:47:21 UTC">October 18, 2026</span>
   </span>
 
     

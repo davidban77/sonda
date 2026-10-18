@@ -1512,6 +1512,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#gnmi-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gNMI target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#encoding-formats" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2413,6 +2424,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#gnmi-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gNMI target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#encoding-formats" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2807,6 +2829,32 @@
 </ul>
 <p>Both scenarios above run unchanged once you have a build that includes <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>. See <a href="../../build/encoders/#otlp">Encoders — <code>otlp</code></a> for the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> reference.</p>
 </div>
+<h2 id="gnmi-target">gNMI target<a class="headerlink" href="#gnmi-target" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Generator</th>
+<th>Encoder</th>
+<th>Sink</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gnmi-telegraf.yaml</code></td>
+<td>step + flap</td>
+<td>gnmi</td>
+<td>gnmi_target</td>
+<td>Router with four interfaces on <code>0.0.0.0:57400</code>: counters and oper-status for <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>inputs.gnmi</code></td>
+</tr>
+</tbody>
+</table>
+<p><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> is the client here. Start it with the Compose stack's <code>gnmi</code> profile, which uses <code>examples/telegraf/telegraf.conf</code>, then run the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> on your host:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>gnmi<span class="w"> </span>up<span class="w"> </span>-d
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/gnmi-telegraf.yaml
+</span></code></pre></div>
+<p>See <a href="../../build/sinks/#gnmi_target">Sinks — <code>gnmi_target</code></a> for what the target serves and <a href="../../build/encoders/#gnmi">Encoders — <code>gnmi</code></a> for the path templates.</p>
 <h2 id="encoding-formats">Encoding formats<a class="headerlink" href="#encoding-formats" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2992,8 +3040,8 @@
 </div>
 
 <p>Run them with <code>sonda run</code>. Histograms and summaries are <code>signal_type:</code> variants in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/histogram.yaml
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/summary.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/histogram.yaml
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/summary.yaml
 </span></code></pre></div>
 <p>See <a href="../../build/generators/">Generators</a> for distribution options.</p>
 <h2 id="metric-packs">Metric packs<a class="headerlink" href="#metric-packs" title="Permanent link">&para;</a></h2>
@@ -3208,7 +3256,7 @@
 </div>
 
 <p>Run log scenarios with <code>sonda run</code>. Log entries are <code>signal_type: logs</code> in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/log-template.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/log-template.yaml
 </span></code></pre></div>
 <h2 id="docker-and-victoriametrics">Docker and <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr><a class="headerlink" href="#docker-and-victoriametrics" title="Permanent link">&para;</a></h2>
 <table>
@@ -3606,8 +3654,8 @@
 </div>
 
 <p>Run with <code>sonda run</code>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/network-device-baseline.yaml
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/network-link-failure.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/network-device-baseline.yaml
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/network-link-failure.yaml
 </span></code></pre></div>
 <p>See <a href="../network-device-telemetry/">Network Device Telemetry</a> for the full walkthrough, including a 3-signal cascade using <code>after:</code> that you can write from scratch.</p>
 <h2 id="multi-scenario">Multi-<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr><a class="headerlink" href="#multi-scenario" title="Permanent link">&para;</a></h2>
@@ -3656,7 +3704,7 @@
 </div>
 
 <p>Run multi-<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> files with <code>sonda run</code>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/multi-scenario.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/multi-scenario.yaml
 </span></code></pre></div>
 <div class="admonition tip">
 <p class="admonition-title">Tip</p>
@@ -3682,7 +3730,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 2, 2026 19:01:30 UTC">September 2, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 18, 2026 18:47:21 UTC">October 18, 2026</span>
   </span>
 
     

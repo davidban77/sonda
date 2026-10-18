@@ -618,7 +618,7 @@
       ]
     },
     "EncoderConfig": {
-      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, or `otlp`.\n\nFeature-gated encoders (`remote_write`, `otlp`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
+      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, `otlp`, or `gnmi`.\n\nFeature-gated encoders (`remote_write`, `otlp`, `gnmi`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Prometheus text exposition format (version 0.0.4).\n\n`precision` optionally limits the number of decimal places in metric values.",
@@ -754,6 +754,80 @@
               "const": "otlp"
             }
           },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "gNMI `Notification` protobuf format.\n\nEncodes each metric event as one `Notification` with one `Update`\nwhose path is rendered from a template. See\n[`gnmi::GnmiEncoderConfig`] for the fields. Requires the `gnmi`\nfeature flag.",
+          "type": "object",
+          "properties": {
+            "drop_labels": {
+              "description": "Labels deliberately left out of the path.\n\nValidation requires every key in an entry's `labels` and\n`dynamic_labels`, and every `cardinality_spikes` label, to be\nreferenced by its template, be the `target_label`, or be listed here;\nseries that differ only in an unlisted, unreferenced label would\notherwise share one path. A `cardinality_spikes` label cannot be a\ntemplate placeholder, so unless it is the `target_label` or shares a\nkey with a referenced label, it must be listed here.",
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "origin": {
+              "description": "`Path.origin` on every notification prefix. Default `\"openconfig\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "openconfig"
+            },
+            "path": {
+              "description": "Path template; `{name}` and `{<label>}` placeholders. Required unless every metric has a `paths:` entry.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "paths": {
+              "description": "Exact per-metric path overrides, keyed by metric name.",
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "default": {}
+            },
+            "target_label": {
+              "description": "Label whose value becomes `Path.target` on the notification prefix. Default `\"device\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "device"
+            },
+            "type": {
+              "type": "string",
+              "const": "gnmi"
+            },
+            "values": {
+              "description": "Per-metric typed value; default `double`.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/GnmiValueType"
+              },
+              "default": {}
+            }
+          },
+          "additionalProperties": false,
           "required": [
             "type"
           ]
@@ -2201,6 +2275,51 @@
         }
       ]
     },
+    "GnmiEnumWire": {
+      "description": "`{ enum: { <i64>: <string>, ... } }`.",
+      "type": "object",
+      "properties": {
+        "enum": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^-?\\d+$": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enum"
+      ]
+    },
+    "GnmiScalarName": {
+      "description": "The scalar value type names.",
+      "type": "string",
+      "enum": [
+        "uint",
+        "int",
+        "double",
+        "bool",
+        "string"
+      ]
+    },
+    "GnmiValueType": {
+      "description": "The `TypedValue` variant a metric's value is encoded as.\n\nYAML forms: `uint`, `int`, `double`, `bool`, `string`, and\n`{ enum: { 1: UP, 2: DOWN } }`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GnmiScalarName"
+        },
+        {
+          "$ref": "#/$defs/GnmiEnumWire"
+        }
+      ]
+    },
     "KafkaSaslConfig": {
       "description": "SASL authentication configuration for Kafka broker connections.\n\nSupported mechanisms are `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.",
       "type": "object",
@@ -2813,7 +2932,7 @@
       ]
     },
     "SinkConfig": {
-      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, or `otlp_grpc`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
+      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, or `gnmi_target`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).",
@@ -3263,6 +3382,60 @@
             "type",
             "endpoint",
             "signal_type"
+          ]
+        },
+        {
+          "description": "Serve metric events to gNMI clients from a listener on `listen`.\n\nSinks naming the same address share one target. Pairs only with the\n`gnmi` encoder. See [`gnmi::GnmiTargetConfig`] for the fields.\nRequires the `gnmi` feature flag.",
+          "type": "object",
+          "properties": {
+            "listen": {
+              "description": "Address to listen on, e.g. `\"0.0.0.0:57400\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`GnmiTarget::local_addr`].",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "max_subscribers": {
+              "description": "Subscriptions the target serves at once, at least 1; one more is\nrefused with `RESOURCE_EXHAUSTED`. Default 16. Every sink on one\naddress must use the same value.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "minimum": 1
+            },
+            "sample_floor": {
+              "description": "Shortest sample interval the target serves, a duration of at least\none microsecond such as `\"1s\"`: a SAMPLE subscription asking for less,\nor for 0, is sampled at this interval. Default `\"1s\"`. Every sink on\none address must use the same value.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
+              ],
+              "default": null
+            },
+            "subscriber_buffer": {
+              "description": "Broadcast capacity per target, 1 to 65536. Only ON_CHANGE\nsubscriptions read the broadcast, and the target refuses them, so the\nvalue changes nothing a subscriber receives. Default 1024. Every sink\non one address must use the same value.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "default": null,
+              "maximum": 65536,
+              "minimum": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "gnmi_target"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "listen"
           ]
         }
       ]
