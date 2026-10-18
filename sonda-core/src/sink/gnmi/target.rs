@@ -14,7 +14,7 @@ use bytes::Bytes;
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::transport::server::{Connected, TcpConnectInfo};
 
@@ -27,6 +27,13 @@ use crate::{ConfigError, SondaError};
 /// How long a connection still open when its target stops may stay open
 /// before the target closes it.
 pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// How long an HTTP/2 connection may be silent before the server pings it.
+pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long the server waits for a ping's answer before it closes the
+/// connection, which ends that connection's subscriptions.
+pub(crate) const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long the listener waits before accepting again after an accept
 /// error that is not about one connection, such as running out of file
@@ -70,13 +77,34 @@ pub struct SeriesUpdate {
 
 /// The gNMI identity of a series: its full path, with the origin and target
 /// name. Two events whose notifications carry one path are one series.
+///
+/// The key's hash is computed once, when the key is made, and stored with
+/// the path: hashing the key writes that one value, so a table holding the
+/// key grows without hashing any path again. Keys compare by hash, then by
+/// path.
 #[derive(Clone, Debug)]
-pub(crate) struct PathKey(Arc<proto::Path>);
+pub(crate) struct PathKey(Arc<Keyed>);
+
+/// A path and its hash.
+#[derive(Debug)]
+struct Keyed {
+    path: proto::Path,
+    hash: u64,
+}
 
 impl PathKey {
     /// A key for `path`.
     pub(crate) fn new(path: proto::Path) -> Self {
-        Self(Arc::new(path))
+        let mut hasher = std::hash::DefaultHasher::new();
+        path.origin.hash(&mut hasher);
+        path.target.hash(&mut hasher);
+        path.elem.len().hash(&mut hasher);
+        for elem in &path.elem {
+            elem.name.hash(&mut hasher);
+            elem.key.hash(&mut hasher);
+        }
+        let hash = hasher.finish();
+        Self(Arc::new(Keyed { path, hash }))
     }
 
     /// The path of the first update in an encoded `gnmi.Notification`: the
@@ -115,7 +143,13 @@ impl PathKey {
 
     /// The path.
     pub(crate) fn path(&self) -> &proto::Path {
-        &self.0
+        &self.0.path
+    }
+
+    /// A key for `path` carrying `hash` instead of the path's own.
+    #[cfg(test)]
+    fn with_hash(path: proto::Path, hash: u64) -> Self {
+        Self(Arc::new(Keyed { path, hash }))
     }
 
     /// Whether `self` and `other` are one key, not just equal ones.
@@ -127,7 +161,8 @@ impl PathKey {
 
 impl PartialEq for PathKey {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.hash == other.0.hash && self.0.path == other.0.path)
     }
 }
 
@@ -135,13 +170,7 @@ impl Eq for PathKey {}
 
 impl Hash for PathKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.origin.hash(state);
-        self.0.target.hash(state);
-        self.0.elem.len().hash(state);
-        for elem in &self.0.elem {
-            elem.name.hash(state);
-            elem.key.hash(state);
-        }
+        state.write_u64(self.0.hash);
     }
 }
 
@@ -151,8 +180,8 @@ impl Hash for PathKey {
 pub(crate) struct SeriesSnapshot {
     pub(crate) series_id: SeriesId,
     /// The series' full path: the notification prefix's origin and target
-    /// with the update's elements.
-    pub(crate) path: proto::Path,
+    /// with the update's elements. Shared with the table, not copied.
+    pub(crate) path: PathKey,
     /// The latest encoded `gnmi.Notification`.
     pub(crate) latest: Bytes,
 }
@@ -207,6 +236,10 @@ pub struct GnmiTarget {
     settings: TargetSettings,
     table: RwLock<SeriesTable>,
     tx: broadcast::Sender<SeriesUpdate>,
+    /// One permit per subscription the target may serve at once.
+    subscribers: Arc<Semaphore>,
+    /// The permits `subscribers` started with.
+    subscriber_limit: usize,
     token: CancellationToken,
     state: watch::Receiver<TargetState>,
     error: ServeError,
@@ -229,6 +262,9 @@ impl GnmiTarget {
             tracing::info!(addr = %local_addr, "gnmi_target listening");
         }
         let (tx, _) = broadcast::channel(settings.subscriber_buffer);
+        // A limit beyond what a semaphore holds is no limit in practice.
+        let subscriber_limit = settings.max_subscribers.min(Semaphore::MAX_PERMITS);
+        let keepalive = (settings.keepalive_interval, settings.keepalive_timeout);
         let token = CancellationToken::new();
         let (state_tx, state) = watch::channel(TargetState::Listening);
         let error = ServeError::default();
@@ -238,6 +274,7 @@ impl GnmiTarget {
             tokio::spawn(serve(
                 service,
                 listener,
+                keepalive,
                 token.clone(),
                 StoppedOnDrop(state_tx),
                 Arc::clone(&error),
@@ -247,6 +284,8 @@ impl GnmiTarget {
                 settings,
                 table: RwLock::new(SeriesTable::default()),
                 tx,
+                subscribers: Arc::new(Semaphore::new(subscriber_limit)),
+                subscriber_limit,
                 token,
                 state,
                 error,
@@ -259,9 +298,16 @@ impl GnmiTarget {
         self.local_addr
     }
 
-    /// Receivers currently subscribed to the broadcast.
+    /// Subscriptions the target is serving: the places taken through
+    /// [`admit`](Self::admit) and not yet given back.
     pub fn subscriber_count(&self) -> usize {
-        self.tx.receiver_count()
+        self.subscriber_limit - self.subscribers.available_permits()
+    }
+
+    /// A place for one more subscription, given back when the permit drops;
+    /// `None` when the target already serves `max_subscribers`.
+    pub(crate) fn admit(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.subscribers).try_acquire_owned().ok()
     }
 
     /// Distinct series paths in the table.
@@ -402,20 +448,20 @@ impl GnmiTarget {
     /// A receiver for every update published from now on. Subscribe before
     /// taking a [`snapshot`](Self::snapshot): every value the snapshot does
     /// not hold then arrives on the receiver.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // read by ON_CHANGE subscriptions
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesUpdate> {
         self.tx.subscribe()
     }
 
     /// Every series with its path and latest value, in no particular order.
-    #[allow(dead_code)]
+    /// Each entry shares the table's path and value; nothing is deep-copied.
     pub(crate) fn snapshot(&self) -> Vec<SeriesSnapshot> {
         self.read()
             .slots
             .iter()
             .map(|(id, slot)| SeriesSnapshot {
                 series_id: *id,
-                path: slot.path.path().clone(),
+                path: slot.path.clone(),
                 latest: lock(&slot.latest).clone(),
             })
             .collect()
@@ -520,10 +566,13 @@ impl Drop for GnmiTarget {
 
 /// Serve `service` on `listener` until `token` is cancelled, then close the
 /// listening socket, give open connections [`DRAIN_GRACE`] to finish, and
-/// close the rest. Reports each step on `state`.
+/// close the rest. Reports each step on `state`. A connection silent for
+/// the keepalive interval is pinged and closed when the ping goes
+/// unanswered for the keepalive timeout.
 async fn serve(
     service: GnmiService,
     listener: TcpListener,
+    (keepalive_interval, keepalive_timeout): (Duration, Duration),
     token: CancellationToken,
     state: StoppedOnDrop,
     error: ServeError,
@@ -542,6 +591,8 @@ async fn serve(
     };
     // Returns once `incoming` ends, which drops the listening socket.
     let served = tonic::transport::Server::builder()
+        .http2_keepalive_interval(Some(keepalive_interval))
+        .http2_keepalive_timeout(Some(keepalive_timeout))
         .serve_with_incoming(service, incoming)
         .await;
     if let Err(e) = served {
@@ -855,6 +906,35 @@ mod tests {
         }
     }
 
+    fn hash_of(key: &PathKey) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Two keys for one path are equal and hash alike, however each was
+    /// made; keys whose hashes match but whose paths differ are not equal.
+    #[test]
+    fn path_keys_compare_by_hash_then_path() {
+        let a = path("Gi0", "in-octets");
+        let same = path("Gi0", "in-octets");
+        assert!(!a.is_same_key(&same), "two keys, not one");
+        assert_eq!(a, same);
+        assert_eq!(hash_of(&a), hash_of(&same));
+
+        let buf = encoded(&[("ifName", "Gi0")], 1.0);
+        let decoded = PathKey::decode(&buf).expect("a notification with an update");
+        let built = PathKey::new(decoded.path().clone());
+        assert_eq!(decoded, built);
+        assert_eq!(hash_of(&decoded), hash_of(&built));
+
+        let other = path("Gi1", "in-octets");
+        assert_ne!(a, other);
+        let collided = PathKey::with_hash(other.path().clone(), a.0.hash);
+        assert_eq!(hash_of(&collided), hash_of(&a), "the forced hash is used");
+        assert_ne!(collided, a, "an equal hash is not an equal path");
+    }
+
     #[tokio::test]
     async fn snapshot_carries_the_decoded_series_path() {
         let buf = encoded(&[("device", "rtr1"), ("ifName", "Gi0")], 1.0);
@@ -865,10 +945,10 @@ mod tests {
         let snapshot = target.snapshot();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
-            snapshot[0].path.to_string(),
+            snapshot[0].path.path().to_string(),
             "openconfig:/interfaces/interface[name=Gi0]/in-octets"
         );
-        assert_eq!(snapshot[0].path.target, "rtr1");
+        assert_eq!(snapshot[0].path.path().target, "rtr1");
     }
 
     /// Label sets that render to one path are one series, holding the
@@ -1269,7 +1349,7 @@ mod tests {
                 barrier.wait();
             }
         });
-        assert_eq!(target.subscriber_count(), 0, "every round's receiver left");
+        assert_eq!(target.tx.receiver_count(), 0, "every round's receiver left");
         assert_eq!(
             missed.load(Ordering::Relaxed),
             0,

@@ -3397,7 +3397,7 @@
               ]
             },
             "max_subscribers": {
-              "description": "Subscription stream limit stored with the target, at least 1. Default\n16. Every sink on one address must use the same value.",
+              "description": "Subscriptions the target serves at once, at least 1; one more is\nrefused with `RESOURCE_EXHAUSTED`. Default 16. Every sink on one\naddress must use the same value.",
               "type": [
                 "integer",
                 "null"
@@ -3407,7 +3407,7 @@
               "minimum": 1
             },
             "sample_floor": {
-              "description": "Sample-interval floor stored with the target, a duration of at least\none microsecond such as `\"1s\"`. Default `\"1s\"`. Every sink on one\naddress must use the same value.",
+              "description": "Shortest sample interval the target serves, a duration of at least\none microsecond such as `\"1s\"`: a SAMPLE subscription asking for less,\nor for 0, is sampled at this interval. Default `\"1s\"`. Every sink on\none address must use the same value.",
               "type": [
                 "string",
                 "null",
@@ -3417,7 +3417,7 @@
               "default": null
             },
             "subscriber_buffer": {
-              "description": "Broadcast capacity per target, 1 to 65536. Default 1024. Every sink\non one address must use the same value.",
+              "description": "Broadcast capacity per target, 1 to 65536. Only ON_CHANGE\nsubscriptions read the broadcast, and the target refuses them, so the\nvalue changes nothing a subscriber receives. Default 1024. Every sink\non one address must use the same value.",
               "type": [
                 "integer",
                 "null"
