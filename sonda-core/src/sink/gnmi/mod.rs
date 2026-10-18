@@ -52,10 +52,11 @@ pub const DEFAULT_SAMPLE_FLOOR: Duration = Duration::from_secs(1);
 /// error rather than a silent fallback to the defaults.
 ///
 /// Histogram and summary entries emit `_sum` and `_count` series that carry
-/// no `le` or `quantile` label. The encoder renders each series from its own
-/// template, so when the bucket or quantile template references `{le}` or
-/// `{quantile}`, those two series need `paths:` entries of their own
-/// (`<name>_sum`, `<name>_count`); validation names any that are missing.
+/// no `le` or `quantile` label, so they need a template without `{le}` or
+/// `{quantile}`: either their own `paths:` entries (`<name>_sum`,
+/// `<name>_count`), or `path` when the bucket or quantile series has a
+/// `paths:` entry of its own. Validation names any series whose template uses
+/// a key it does not carry.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(deny_unknown_fields))]
