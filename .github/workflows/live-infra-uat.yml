@@ -1,7 +1,7 @@
 # Informational gate — failures show in PR checks but do not block merge.
 # Promote to required after measured stability (2-4 weeks of green runs).
 #
-# Runs the e2e coverage matrix from docs/site/docs/guides/e2e-testing.md
+# Runs the e2e coverage matrix from docs/site/docs/test/end-to-end-pipelines.md
 # against live container backends. Catches the bug class the dry-run
 # docs-drift catcher cannot: did the encoder/sink actually deliver data
 # to the backend image we're pinned to?
@@ -30,7 +30,7 @@ name: Live Infra UAT
 # runtime file breaks while still building clean. (#569 review W1: this was
 # the one input the derivation missed.)
 #
-# Deliberately NOT listed: docs/site/docs/guides/e2e-testing.md. The matrix is
+# Deliberately NOT listed: docs/site/docs/test/end-to-end-pipelines.md. The matrix is
 # hardcoded in live_infra_uat.py and that page is a hand-maintained parallel
 # copy, so editing the page cannot change what this job does.
 on:

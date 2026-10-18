@@ -334,6 +334,7 @@ Pick the tab that matches your scenario.
     | Metrics | `remote_write` | `remote_write` (VM + vmalert, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `sonda test` shape — must exit 1 with `did not fire within`, proving the failure path fails |
     | Metrics | `remote_write` | `remote_write` (VM + vmalert → Alertmanager) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --alertmanager-url http://localhost:9093 --interval 5s` — same scenario one hop further: exit 0 means the *notification* reached Alertmanager and cleared |
     | Metrics | `remote_write` | `remote_write` (Alertmanager, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `--alertmanager-url` shape — must exit 1 with `did not fire within` |
+    | Metrics | `gnmi` | `gnmi_target` (Telegraf → VM) | `examples/gnmi-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=ifcounters_in_octets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has subscribed |
 
     † These two rows need OTLP, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see [What the pre-built binaries include](#prebuilt-binaries) below.
 
@@ -345,10 +346,12 @@ Pick the tab that matches your scenario.
         ```
         The OTLP-logs row needs both `--profile otel-collector` and `--profile loki` so the collector has somewhere to forward log records.
 
+        The gNMI row needs `--profile gnmi`. Here the direction is reversed: Sonda runs on your host as the gNMI target, and the profile's Telegraf dials it at `sonda:57400` (mapped to the host) and writes what it receives to VictoriaMetrics.
+
     <a id="prebuilt-binaries"></a>
 
     !!! tip "What the pre-built binaries include"
-        The `remote_write` and `kafka` sinks are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
+        The `remote_write`, `kafka` and `gnmi_target` sinks, and the `gnmi` encoder, are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
 
         The two OTLP rows still work. How much setup they need depends on where Sonda runs:
 

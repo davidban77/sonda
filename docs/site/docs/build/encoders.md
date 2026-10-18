@@ -242,7 +242,7 @@ Histogram and summary entries take the encoder too:
 
 - **Histogram:** emits `<name>_bucket` with an `le` label, plus `<name>_sum` and `<name>_count`. The bucket template must reference `{le}`, and `le` may not be dropped.
 - **Summary:** emits `<name>` with a `quantile` label, plus `<name>_sum` and `<name>_count`. The template must reference `{quantile}`, and `quantile` may not be dropped.
-- **`_sum` and `_count`:** these series carry no `le` or `quantile`, so they need `paths:` entries of their own (`<name>_sum`, `<name>_count`). Validation names any that are missing.
+- **`_sum` and `_count`:** these series carry no `le` or `quantile`, so they need a template without `{le}` or `{quantile}`. That is either their own `paths:` entries (`<name>_sum`, `<name>_count`), or `path` when the bucket or quantile series has a `paths:` entry of its own. Validation names any series whose template uses a key it does not carry.
 
 ### Value types
 

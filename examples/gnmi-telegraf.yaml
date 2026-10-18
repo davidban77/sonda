@@ -17,6 +17,8 @@
 # Verify what Telegraf wrote to VictoriaMetrics:
 #   curl -s 'http://localhost:8428/api/v1/series' \
 #     --data-urlencode 'match[]={__name__=~"ifcounters_.*|ifstate_.*"}'
+#
+# sonda:static - a gnmi_target listens for a client, which the browser playground cannot provide
 
 version: 2
 kind: runnable

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Live-infra UAT harness for the e2e coverage matrix in
-``docs/site/docs/guides/e2e-testing.md``.
+``docs/site/docs/test/end-to-end-pipelines.md``.
 
 For each matrix row the harness:
 
@@ -232,7 +232,7 @@ def verify_gnmi_row(repo_root: Path, started_s: float, ended_s: float) -> str:
 # --- Matrix ------------------------------------------------------------------
 
 # Hardcoded against the current matrix in
-# docs/site/docs/guides/e2e-testing.md (rows added in PR #248). Update both
+# docs/site/docs/test/end-to-end-pipelines.md (rows added in PR #248). Update both
 # the table and this list together when adding rows.
 #
 # Container names (suspect_logs) are the compose project's default service
@@ -955,7 +955,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Run the e2e coverage matrix from "
-            "docs/site/docs/guides/e2e-testing.md against live containers."
+            "docs/site/docs/test/end-to-end-pipelines.md against live containers."
         ),
     )
     parser.add_argument(
