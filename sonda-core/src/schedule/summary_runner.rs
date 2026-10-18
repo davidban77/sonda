@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::SummaryScenarioConfig;
 use crate::encoder::create_encoder;
-use crate::generator::summary::SummaryGenerator;
+use crate::generator::summary::{format_quantile_value, SummaryGenerator};
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use crate::schedule::core_loop::{self, GateContext, TickContext, TickOutput, TickResult};
 use crate::schedule::is_in_spike;
@@ -71,7 +71,10 @@ pub async fn run_with_sink_gated(
     let sum_name = ValidatedMetricName::new(&format!("{}_sum", config.name))?;
 
     // Pre-build quantile label strings.
-    let quantile_strings: Vec<String> = quantiles.iter().map(|q| format!("{}", q)).collect();
+    let quantile_strings: Vec<String> = quantiles
+        .iter()
+        .map(|q| format_quantile_value(*q))
+        .collect();
 
     // Pre-build Arc<Labels> for each quantile (base labels + quantile="{q}"),
     // _count, and _sum before the hot loop. In steady state (no spikes or
@@ -277,6 +280,51 @@ mod tests {
     }
 
     // ---- Routing through the metric-event hook ------------------------------
+
+    /// The leaf check's `quantile` values for a summary are exactly the
+    /// `quantile` labels this runner emits for the same config.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn leaf_check_quantile_values_are_the_quantile_labels_the_runner_emits() {
+        use std::collections::BTreeSet;
+
+        use crate::config::validate::gnmi_series;
+        use crate::config::{LabelValueSet, ScenarioEntry};
+        use crate::schedule::core_loop::routing_probe::routing_probe;
+
+        let config = make_config(50.0, "200ms", Some(vec![0.25, 0.5, 0.999]));
+        let (mut sink, seen) = routing_probe(true);
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+            .await
+            .expect("summary run must succeed");
+        let emitted: BTreeSet<String> = seen
+            .lock()
+            .expect("probe mutex poisoned")
+            .events
+            .iter()
+            .filter(|e| e.name == "rpc_duration_seconds")
+            .filter_map(|e| e.label("quantile").map(str::to_string))
+            .collect();
+        assert_eq!(emitted.len(), 3, "three quantiles: {emitted:?}");
+
+        let mut gnmi = config.clone();
+        gnmi.encoder = EncoderConfig::Gnmi(Default::default());
+        let (_, _, series) =
+            gnmi_series(&ScenarioEntry::Summary(gnmi)).expect("a gnmi summary has series");
+        let quantile = series
+            .iter()
+            .find(|s| s.name == "rpc_duration_seconds")
+            .expect("the quantile series is checked");
+        let Some((key, LabelValueSet::Values(values))) = &quantile.injected else {
+            panic!(
+                "the quantile series carries its quantile values: {:?}",
+                quantile.injected
+            );
+        };
+        assert_eq!(*key, "quantile");
+        let checked: BTreeSet<String> = values.iter().cloned().collect();
+        assert_eq!(checked, emitted);
+    }
 
     /// Every series a summary tick emits reaches an opt-in sink with its
     /// identity: each quantile, `_sum` and `_count`.

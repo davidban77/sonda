@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::config::{DynamicLabelStrategy, OnSinkError, SpikeStrategy};
-use crate::util::splitmix64;
+use crate::util::random_spike_value;
 
 /// One launch: the scenarios one call starts together. A file run through
 /// `run_multi` or `launch_multi_compiled` is one launch; a scenario started on
@@ -259,18 +259,16 @@ impl CardinalitySpikeWindow {
     /// For the `Counter` strategy, returns `"{prefix}{tick % cardinality}"`.
     /// For the `Random` strategy, computes an index as `tick % cardinality`,
     /// then deterministically maps that index to a 16-char hex string via
-    /// `splitmix64(seed ^ index)`. This ensures exactly `cardinality` unique
-    /// values while keeping them hash-like rather than sequential.
+    /// [`random_spike_value`](crate::util::random_spike_value). This ensures
+    /// exactly `cardinality` unique values while keeping them hash-like rather
+    /// than sequential.
     pub fn label_value_for_tick(&self, tick: u64) -> String {
         let index = tick % self.cardinality;
         match self.strategy {
             SpikeStrategy::Counter => {
                 format!("{}{}", self.prefix, index)
             }
-            SpikeStrategy::Random => {
-                let mixed = splitmix64(self.seed ^ index);
-                format!("{}{:016x}", self.prefix, mixed)
-            }
+            SpikeStrategy::Random => random_spike_value(&self.prefix, self.seed, index),
         }
     }
 }
@@ -1462,17 +1460,17 @@ mod tests {
     #[test]
     fn splitmix64_produces_known_output() {
         assert_eq!(
-            super::splitmix64(42),
+            crate::util::splitmix64(42),
             0xbdd732262feb6e95,
             "splitmix64(42) must return the known constant"
         );
         assert_eq!(
-            super::splitmix64(0),
+            crate::util::splitmix64(0),
             0xe220a8397b1dcdaf,
             "splitmix64(0) must return the known constant"
         );
         // Different inputs produce different outputs.
-        assert_ne!(super::splitmix64(0), super::splitmix64(1));
+        assert_ne!(crate::util::splitmix64(0), crate::util::splitmix64(1));
     }
 
     // ---- DynamicLabel: counter strategy -----------------------------------------
