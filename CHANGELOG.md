@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.24.0](https://github.com/davidban77/sonda/compare/v1.23.1...v1.24.0) (2026-10-18)
+
+
+### Features
+
+* **core:** pass the metric event to sinks alongside its encoded bytes ([#647](https://github.com/davidban77/sonda/issues/647)) ([e4035d3](https://github.com/davidban77/sonda/commit/e4035d317eafddcd76e05b2662d3eee73237816e))
+* **gnmi:** gnmi encoder with openconfig path templates ([#655](https://github.com/davidban77/sonda/issues/655)) ([777d3c8](https://github.com/davidban77/sonda/commit/777d3c8f026862c97b398d331a589a04ebdee79a))
+* **gnmi:** gnmi_target sink with a shared per-address target ([#658](https://github.com/davidban77/sonda/issues/658)) ([a52a7af](https://github.com/davidban77/sonda/commit/a52a7af1b3e0252a1aade40af89c984c1a26d20a))
+* **gnmi:** serve Capabilities and Subscribe (sample, once) from the target ([#665](https://github.com/davidban77/sonda/issues/665)) ([d3706a6](https://github.com/davidban77/sonda/commit/d3706a6f457af4b2fec717b5512a49be9b353786))
+* **gnmi:** telegraf example, live UAT and the sinks page entry ([#669](https://github.com/davidban77/sonda/issues/669)) ([f45af56](https://github.com/davidban77/sonda/commit/f45af56e6a2c0f8a6e145e28e1d589baf7810779))
+
+
+### Bug Fixes
+
+* **ci:** rustls 0.23.45 for RUSTSEC-2026-0285 and full history for the strict docs build ([#650](https://github.com/davidban77/sonda/issues/650)) ([576efc2](https://github.com/davidban77/sonda/commit/576efc28c63d2dde4a67a5852d6efa221870df9a))
+* **gnmi:** compare leaves and targets by the values a label can take ([#664](https://github.com/davidban77/sonda/issues/664)) ([c2f9345](https://github.com/davidban77/sonda/commit/c2f934526d7eee19fab9203e608b3d417b2c67d7))
+* **gnmi:** compare random spike values and histogram bounds exactly in the leaf check ([#667](https://github.com/davidban77/sonda/issues/667)) ([3c5443e](https://github.com/davidban77/sonda/commit/3c5443ec32a33c01f69ae4a87a61dee71f1ba7c2))
+* **gnmi:** validate values and paths keys against the file, and share the runner's label sources with validation ([#659](https://github.com/davidban77/sonda/issues/659)) ([5560dfc](https://github.com/davidban77/sonda/commit/5560dfc23de95ace1b3101a90ef9a6bff3cec8e9))
+
+
+### Refactoring
+
+* **core:** one definition of each sink and encoder kind name ([#663](https://github.com/davidban77/sonda/issues/663)) ([aa01f53](https://github.com/davidban77/sonda/commit/aa01f534adb448e234a923297b156ebb3a086f4c))
+* **core:** recycle encode buffers through the write queue instead of regrowing them ([#654](https://github.com/davidban77/sonda/issues/654)) ([2d16c2b](https://github.com/davidban77/sonda/commit/2d16c2b82833b52ef87d61713cb07a09af8ba59d))
+
 ## [1.23.1](https://github.com/davidban77/sonda/compare/v1.23.0...v1.23.1) (2026-09-04)
 
 
