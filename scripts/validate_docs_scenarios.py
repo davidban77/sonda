@@ -31,7 +31,7 @@ as a SKIP line:
   is reported as SKIP with the offending path.
 
 One assumption is load-bearing enough to state. This gate compiles a fence with
-the NATIVE binary, built with ``http,kafka,remote-write,otlp`` — but the button
+the NATIVE binary, built with ``http,kafka,remote-write,otlp,gnmi`` — but the button
 it certifies opens that fence in the WASM build, which has none of those
 features, and ``SinkConfig`` gates its variants with ``#[cfg(feature = ...)]``
 at the enum level rather than only at construction. If a gated variant were

@@ -49,6 +49,21 @@ See [Sinks](../build/sinks.md) for configuration details on each sink type.
 
     Both scenarios above run unchanged once you have a build that includes OTLP. See [Encoders — `otlp`](../build/encoders.md#otlp) for the encoder reference.
 
+## gNMI target
+
+| File | Generator | Encoder | Sink | Description |
+|------|-----------|---------|------|-------------|
+| `gnmi-telegraf.yaml` | step + flap | gnmi | gnmi_target | Router with four interfaces on `0.0.0.0:57400`: counters and oper-status for Telegraf's `inputs.gnmi` |
+
+Telegraf is the client here. Start it with the Compose stack's `gnmi` profile, which uses `examples/telegraf/telegraf.conf`, then run the scenario on your host:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up -d
+sonda run examples/gnmi-telegraf.yaml
+```
+
+See [Sinks — `gnmi_target`](../build/sinks.md#gnmi_target) for what the target serves and [Encoders — `gnmi`](../build/encoders.md#gnmi) for the path templates.
+
 ## Encoding formats
 
 | File | Generator | Encoder | Sink | Description |

@@ -1,7 +1,7 @@
 # Informational gate — failures show in PR checks but do not block merge.
 # Promote to required after measured stability (2-4 weeks of green runs).
 #
-# Runs the e2e coverage matrix from docs/site/docs/guides/e2e-testing.md
+# Runs the e2e coverage matrix from docs/site/docs/test/end-to-end-pipelines.md
 # against live container backends. Catches the bug class the dry-run
 # docs-drift catcher cannot: did the encoder/sink actually deliver data
 # to the backend image we're pinned to?
@@ -30,7 +30,7 @@ name: Live Infra UAT
 # runtime file breaks while still building clean. (#569 review W1: this was
 # the one input the derivation missed.)
 #
-# Deliberately NOT listed: docs/site/docs/guides/e2e-testing.md. The matrix is
+# Deliberately NOT listed: docs/site/docs/test/end-to-end-pipelines.md. The matrix is
 # hardcoded in live_infra_uat.py and that page is a hand-maintained parallel
 # copy, so editing the page cannot change what this job does.
 on:
@@ -88,7 +88,7 @@ jobs:
       # Union of features required across every matrix row. Mirrors the
       # docs-commands job's pattern so feature drift between gates is loud.
       - name: Build sonda release
-        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp
+        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi
 
       # Stdlib-only Python harness — no requirements.txt, no pip install.
       - name: Run live-infra UAT harness
@@ -103,12 +103,12 @@ jobs:
           mkdir -p compose-logs
           docker compose -f examples/docker-compose-victoriametrics.yml \
             --profile loki --profile otel-collector --profile prometheus \
-            --profile alerting \
+            --profile alerting --profile gnmi \
             ps > compose-logs/ps.txt 2>&1 || true
-          for svc in victoriametrics vmagent prometheus loki otel-collector vmalert alertmanager; do
+          for svc in victoriametrics vmagent prometheus loki otel-collector vmalert alertmanager telegraf; do
             docker compose -f examples/docker-compose-victoriametrics.yml \
               --profile loki --profile otel-collector --profile prometheus \
-              --profile alerting \
+              --profile alerting --profile gnmi \
               logs --no-color --tail 500 "$svc" \
               > "compose-logs/${svc}.log" 2>&1 || true
           done

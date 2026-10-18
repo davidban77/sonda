@@ -393,12 +393,12 @@ For multi-arch builds (linux/amd64 and linux/arm64) using Docker Buildx:
 docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
 ```
 
-By default the build compiles two optional features: Prometheus remote write and Kafka. That is the same set as the published image and the release archives. You need no extra flags to match it.
+By default the build compiles three optional features: Prometheus remote write, Kafka and gNMI. That is the same set as the published image and the release archives. You need no extra flags to match it.
 
 OTLP is not in that set. To add it, use the `FEATURES` build argument. It lists the optional features to compile:
 
 ```bash
-docker build --build-arg FEATURES=remote-write,kafka,otlp -t sonda .
+docker build --build-arg FEATURES=remote-write,kafka,gnmi,otlp -t sonda .
 ```
 
 The argument works the same way with `docker buildx build`. See [Encoders — otlp](../build/encoders.md#otlp) and [Sinks — otlp_grpc](../build/sinks.md#otlp_grpc) for the encoder and sink that feature enables.

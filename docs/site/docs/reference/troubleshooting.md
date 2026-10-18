@@ -199,7 +199,7 @@ Data arrives in groups, or only appears when the scenario ends.
 
 ### Feature flag errors
 
-Some sinks and encoders are optional features, selected when the binary is built. The pre-built release binaries and the published Docker image include `http`, `remote-write`, and `kafka`. They do not include `otlp`.
+Some sinks and encoders are optional features, selected when the binary is built. The pre-built release binaries and the published Docker image include `http`, `remote-write`, `kafka`, and `gnmi`. They do not include `otlp`.
 
 | Feature | Required for | Build command |
 |---------|-------------|---------------|
@@ -207,9 +207,10 @@ Some sinks and encoders are optional features, selected when the binary is built
 | `remote-write` | `remote_write` encoder and sink | `cargo build --features remote-write -p sonda` |
 | `otlp` | `otlp` encoder, `otlp_grpc` sink | `cargo build --features otlp -p sonda` |
 | `kafka` | `kafka` sink | `cargo build --features kafka -p sonda` |
+| `gnmi` | `gnmi` encoder, `gnmi_target` sink | `cargo build --features gnmi -p sonda` |
 
 !!! tip
-    Build with all features at once: `cargo build --features http,remote-write,otlp,kafka -p sonda`
+    Build with all features at once: `cargo build --features http,remote-write,otlp,kafka,gnmi -p sonda`
 
     To get OTLP in a container, build the image yourself with OTLP compiled in. See [Building the image](../deploy/docker.md#building-the-image).
 

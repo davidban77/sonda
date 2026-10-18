@@ -471,6 +471,137 @@ Compatible receivers:
 | Datadog Agent (OTLP) | `4317` |
 | Elastic APM Server | `8200` |
 
+## gnmi_target
+
+Serves the scenario's metrics as a gNMI target, the way a network device does. Every other sink connects out to a destination. This one listens: a gNMI client dials the `listen` address, subscribes to paths, and receives the latest value of every series under them. Clients include Telegraf's `inputs.gnmi`, gnmic, or a collector.
+
+Telegraf is the client. It dials Sonda and asks for paths; Sonda never opens a connection.
+
+Pair this sink with the [`gnmi` encoder](encoders.md#gnmi), which renders each series as a gNMI `Notification` on an openconfig path. Each takes only the other, and it works for `metrics`, `histogram` and `summary` entries. Logs entries take neither.
+
+!!! note
+    This sink requires the `gnmi` Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: `cargo build --features gnmi -p sonda`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `listen` | string | yes | -- | Address to listen on, for example `"0.0.0.0:57400"`. |
+| `max_subscribers` | integer | no | `16` | Subscriptions served at once, at least 1. One more is refused with `RESOURCE_EXHAUSTED`. |
+| `sample_floor` | duration string | no | `1s` | Shortest sample interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval. |
+| `subscriber_buffer` | integer | no | `1024` | Capacity of the broadcast that ON_CHANGE subscriptions read, 1 to 65536. The target refuses ON_CHANGE, so the value changes nothing a subscriber receives. |
+
+Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set `max_subscribers`, `sample_floor` and `subscriber_buffer` alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.
+
+The listener serves plaintext gRPC:
+
+| Request | What the target does |
+|---------|----------------------|
+| `Capabilities` | Answers gNMI version `0.10.0` and the one encoding `PROTO`. |
+| `Subscribe`, STREAM with SAMPLE | Sends the latest value of every matching series, then `sync_response`. After that it resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. `TARGET_DEFINED` is served as SAMPLE. |
+| `Subscribe`, ONCE | Sends the latest value of every matching series and `sync_response`, then ends the stream. |
+| `updates_only: true` | Skips the initial values; the first message is `sync_response`. |
+| POLL, ON_CHANGE | Refused with `UNIMPLEMENTED`, naming the mode. |
+| Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
+| Encoding `JSON_IETF`, `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding and `PROTO`. |
+
+A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of `*`, or a key the subscription leaves out, matches any value: `/interfaces/interface/state/counters` matches every interface's counters. An empty origin or target in the subscription matches any. Element wildcards (`*` or `...` as an element name) are refused with `UNIMPLEMENTED`.
+
+A subscription ends with `UNAVAILABLE` when:
+
+- **The run stops.** The status follows the updates already queued, and the listener closes.
+- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
+
+The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.
+
+The example below is a router with four interfaces, served to Telegraf. Only the first interface is shown here; the complete scenario is [`examples/gnmi-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/gnmi-telegraf.yaml):
+
+```yaml title="examples/gnmi-telegraf.yaml (excerpt)"
+# sonda:static - excerpt only; a gnmi_target listens for a client, which the browser playground cannot provide
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+    path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+    values:
+      in_octets: uint
+      out_octets: uint
+      oper_status:
+        enum: { 1: UP, 2: DOWN }
+    paths:
+      oper_status: "/interfaces/interface[name={ifName}]/state/oper-status"
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: { type: step, start: 0, step_size: 125000 }
+    labels: { device: rtr-core-01, ifName: GigabitEthernet0/0/0 }
+
+  - signal_type: metrics
+    name: out_octets
+    generator: { type: step, start: 0, step_size: 62500 }
+    labels: { device: rtr-core-01, ifName: GigabitEthernet0/0/0 }
+
+  - signal_type: metrics
+    name: oper_status
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 5s
+      enum: oper_state
+    labels: { device: rtr-core-01, ifName: GigabitEthernet0/0/0 }
+```
+
+The Telegraf side subscribes to the counters and the oper-status. Both subscriptions use SAMPLE mode:
+
+```toml title="examples/telegraf/telegraf.conf (excerpt)"
+[[inputs.gnmi]]
+  addresses = ["sonda:57400"]
+  encoding = "proto"
+  redial = "10s"
+
+  [[inputs.gnmi.subscription]]
+    name = "ifcounters"
+    origin = "openconfig-interfaces"
+    path = "/interfaces/interface/state/counters"
+    subscription_mode = "sample"
+    sample_interval = "10s"
+
+  [[inputs.gnmi.subscription]]
+    name = "ifstate"
+    origin = "openconfig-interfaces"
+    path = "/interfaces/interface/state/oper-status"
+    subscription_mode = "sample"
+    sample_interval = "1s"
+```
+
+Each subscription's `name` becomes the measurement, the interface key becomes the `name` tag, and the address Telegraf dialed becomes `source`. The full `telegraf.conf` maps oper-status `UP`/`DOWN` to `1`/`2` with `processors.enum`, so Telegraf writes these lines:
+
+```text title="What Telegraf emits"
+ifcounters,name=GigabitEthernet0/0/0,source=sonda in_octets=1250000i 1792339482653260154
+ifcounters,name=GigabitEthernet0/0/0,source=sonda out_octets=625000i 1792339482653530936
+ifstate,name=GigabitEthernet0/0/0,source=sonda oper_status=1i 1792339473653348313
+```
+
+To run the pair, start the compose stack's `gnmi` profile. It runs Telegraf with that config and writes to VictoriaMetrics. Then start the scenario on the host:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up -d
+sonda run examples/gnmi-telegraf.yaml
+```
+
+Without Telegraf, gnmic reads the same target directly:
+
+```bash
+gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode once
+```
+
 ## Retry with backoff
 
 Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does **not** retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a `retry:` block to any network sink.
