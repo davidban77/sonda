@@ -265,7 +265,11 @@ src/
 │   │                       ("subscriber stalled: no data drained for ..."), logged at warn
 │   │                       with the peer address (or "unknown"). Responses leave the queue
 │   │                       only as the client grants HTTP/2 flow-control credit, so a
-│   │                       reader that grants some within the limit is not ended.
+│   │                       reader that grants some within the limit is not ended. The
+│   │                       limit runs from when the client's receive window is spent:
+│   │                       until then its HTTP/2 layer accepts data whether or not the
+│   │                       application reads it, so the server cannot see a reader that
+│   │                       stopped. max_subscribers is the lever.
 │   │                       STREAM runs until the client goes, stalls or the target stops;
 │   │                       ONCE ends with OK after the sync marker. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the

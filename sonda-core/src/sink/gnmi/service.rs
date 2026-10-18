@@ -312,6 +312,11 @@ fn sample_groups(
 /// How long a subscription with responses waiting may go without its client
 /// draining one: three of its longest sample periods, and never less than
 /// `floor`. A ONCE list has no periods, so its limit is `floor`.
+///
+/// The limit runs from when the client's receive window is spent. Until then
+/// the client's HTTP/2 layer accepts data whether or not the application
+/// reads it, so the server cannot see a reader that stopped;
+/// `max_subscribers` caps how many such clients hold a place.
 fn stall_limit(periods: impl Iterator<Item = Duration>, floor: Duration) -> Duration {
     periods
         .max()
