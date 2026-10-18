@@ -30,6 +30,7 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile prometheus up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile otel-collector up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile otel-collector --profile loki up -d
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up -d
 #
 # Tear down:
 #
@@ -49,7 +50,7 @@ services:
       dockerfile: Dockerfile
       args:
         # Named, not inherited: this stack's own profiles need the otlp sink, which the image default does not carry.
-        FEATURES: remote-write,kafka,otlp
+        FEATURES: remote-write,kafka,otlp,gnmi
     # Rebuilt on every `up`: an image cached from before those args changed keeps the feature set it was built with.
     pull_policy: build
     ports:
@@ -418,6 +419,33 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Telegraf: gNMI client of a Sonda gnmi_target sink.
+  #
+  # Dials sonda:57400, subscribes to the interface counters and oper-status
+  # that examples/gnmi-telegraf.yaml serves, and writes the updates to
+  # VictoriaMetrics. Sonda runs on the host:
+  #
+  #   sonda run examples/gnmi-telegraf.yaml
+  #
+  # extra_hosts maps the name `sonda` to the host. Telegraf redials every 10s
+  # until the target is listening. Its health endpoint is on port 8095.
+  #
+  # This service is only started with --profile gnmi.
+  # ---------------------------------------------------------------------------
+  telegraf:
+    image: telegraf:1.40.2
+    profiles: [gnmi]
+    ports:
+      - "8095:8095"
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    extra_hosts:
+      - "sonda:host-gateway"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
 
 volumes:
   vm-data:

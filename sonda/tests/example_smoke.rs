@@ -25,6 +25,98 @@ fn packs_dir() -> PathBuf {
     workspace_root().join("packs")
 }
 
+/// Every `.yaml`/`.yml` file under `dir`, at any depth, sorted, with its text.
+fn yaml_files(dir: &std::path::Path) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(yaml_files(&path));
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("yaml" | "yml")
+        ) {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            found.push((path, text));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Whether `text` is a YAML mapping with a top-level `scenarios:` or `kind:`
+/// key, the keys a scenario file has. Panics when `text` is not YAML.
+fn has_scenario_keys(path: &std::path::Path, text: &str) -> bool {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(text)
+        .unwrap_or_else(|e| panic!("{} is not YAML: {e}", path.display()));
+    value
+        .as_mapping()
+        .is_some_and(|map| map.contains_key("scenarios") || map.contains_key("kind"))
+}
+
+// ---- every example ------------------------------------------------------------
+
+/// Every scenario in `examples/` passes `--dry-run`, and its display names
+/// each generator, encoder and sink: no field falls back to `unknown (...)`.
+///
+/// A scenario is a YAML file whose top level declares `version: 2`.
+/// `examples/` also holds Compose files, alert rules and collector configs,
+/// which declare none; a file without it that has a top-level `scenarios:`
+/// or `kind:` key fails here instead of being left out.
+#[test]
+fn every_example_dry_runs_and_names_each_kind() {
+    let (scenarios, others): (Vec<_>, Vec<_>) = yaml_files(&workspace_root().join("examples"))
+        .into_iter()
+        .partition(|(_, text)| sonda_core::compiler::parse::detect_version(text) == Some(2));
+    for (path, text) in &others {
+        assert!(
+            !has_scenario_keys(path, text),
+            "{} has scenario keys but no `version: 2`, so it would not be dry-run",
+            path.display()
+        );
+    }
+    let examples: Vec<PathBuf> = scenarios.into_iter().map(|(path, _)| path).collect();
+    assert!(!examples.is_empty(), "no v2 scenario files under examples/");
+    assert!(
+        examples.contains(&example("gnmi-telegraf.yaml")),
+        "gnmi-telegraf.yaml is not among the scenarios found: {examples:?}"
+    );
+
+    for path in &examples {
+        let output = Command::new(sonda_bin())
+            .current_dir(workspace_root())
+            .arg("--catalog")
+            .arg(packs_dir())
+            .args(["--dry-run", "run"])
+            .arg(path)
+            .output()
+            .expect("sonda binary must launch");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "{} must dry-run clean; output: {shown}",
+            path.display()
+        );
+        assert!(
+            shown.contains("[config] file:"),
+            "{} printed no dry-run display; output: {shown}",
+            path.display()
+        );
+        assert!(
+            !shown.contains("unknown ("),
+            "{} has a field displayed as unknown: {shown}",
+            path.display()
+        );
+    }
+}
+
 // ---- basic-metrics.yaml -------------------------------------------------------
 
 #[test]

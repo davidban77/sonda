@@ -142,8 +142,10 @@ src/
 │   │   │                   checks each series an entry emits (histogram: <name>_bucket
 │   │   │                   with `le`, _sum, _count; summary: <name> with `quantile`,
 │   │   │                   _sum, _count). The `le`/`quantile` template must reference
-│   │   │                   the key and may not drop it; _sum/_count need paths: entries
-│   │   │                   without it. Logs entries refuse both encoder and sink.
+│   │   │                   the key and may not drop it; _sum/_count need a template
+│   │   │                   without it: their own paths: entries, or path when the
+│   │   │                   bucket/quantile series has its own paths: entry. Logs
+│   │   │                   entries refuse both encoder and sink.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike

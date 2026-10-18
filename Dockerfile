@@ -21,7 +21,7 @@
 #   docker build -t sonda .                                              # native arch
 #   docker buildx build --platform linux/amd64,linux/arm64 -t sonda .   # multi-arch
 #   docker buildx build --build-arg BUILD_SOURCE=prebuilt -t sonda .    # released binaries
-#   docker build --build-arg FEATURES=remote-write,kafka,otlp -t sonda . # plus OTLP
+#   docker build --build-arg FEATURES=remote-write,kafka,gnmi,otlp -t sonda . # plus OTLP
 
 ARG BUILD_SOURCE=builder
 
@@ -36,7 +36,7 @@ FROM --platform=$BUILDPLATFORM rust:latest AS builder
 # TARGETARCH and BUILDARCH are set by docker buildx (amd64, arm64, etc.)
 ARG TARGETARCH
 ARG BUILDARCH
-ARG FEATURES=remote-write,kafka
+ARG FEATURES=remote-write,kafka,gnmi
 
 # Install cross-compilation toolchain based on target architecture.
 # For amd64: musl-tools provides the native musl-gcc wrapper.

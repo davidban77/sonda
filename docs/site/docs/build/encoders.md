@@ -11,7 +11,7 @@ Switch the encoder below to see the same scenario — one sine metric with two l
 
 <div class="sonda-livegen" data-gen="encoders" markdown="0"></div>
 
-The three formats offered here are the ones compiled into the browser build. `remote_write` and `otlp` are feature-gated and are documented below with static examples for that reason; the sections that follow cover every encoder, including those.
+The three formats offered here are the ones compiled into the browser build. `remote_write`, `otlp` and `gnmi` are feature-gated and are documented below with static examples for that reason; the sections that follow cover every encoder, including those.
 
 ## prometheus_text
 
@@ -176,6 +176,91 @@ Pair this encoder with the `otlp_grpc` sink. The sink handles batching and gRPC 
 
 The encoder supports both metrics and logs. Set the sink's `signal_type` to match your scenario type (`metrics` or `logs`).
 
+## gnmi
+
+gNMI `Notification` protobuf. Each metric event becomes one `Notification` holding one `Update`, and the notification carries the event timestamp in nanoseconds:
+
+- **Path:** rendered from a template for that series.
+- **Value:** a `TypedValue` of the metric's value type.
+- **Prefix:** the encoder's `origin` and a `target` taken from one label.
+
+Pair this encoder with the `gnmi_target` sink, which serves the notifications to gNMI clients such as Telegraf. Each takes only the other. See [Sinks — gnmi_target](sinks.md#gnmi_target) for details.
+
+!!! note
+    This encoder requires the `gnmi` Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: `cargo build --features gnmi -p sonda`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `path` | string | yes, unless every metric has a `paths:` entry | -- | Path template every series is rendered from. See [Path templates](#path-templates). |
+| `paths` | map | no | `{}` | Per-metric templates keyed by exact metric name. A metric listed here is rendered from its own template instead of `path`. |
+| `values` | map | no | `{}` | Per-metric value type keyed by exact metric name. Unlisted metrics are `double`. See [Value types](#value-types). |
+| `origin` | string | no | `"openconfig"` | `Path.origin` on every notification's prefix. |
+| `target_label` | string | no | `"device"` | Label whose value becomes `Path.target` on the prefix. |
+| `drop_labels` | list of strings | no | `[]` | Labels deliberately left out of the path. |
+
+```yaml title="gNMI encoder"
+encoder:
+  type: gnmi
+  origin: openconfig-interfaces
+  target_label: device
+  path: "/interfaces/interface[name={ifName}]/state/counters/{name}"
+  values:
+    in_octets: uint
+    out_octets: uint
+    oper_status:
+      enum: { 1: UP, 2: DOWN }
+  paths:
+    oper_status: "/interfaces/interface[name={ifName}]/state/oper-status"
+```
+
+With that block, `in_octets{device="rtr-core-01", ifName="GigabitEthernet0/0/0"}` is sent with:
+
+- **Path:** `/interfaces/interface[name=GigabitEthernet0/0/0]/state/counters/in-octets`.
+- **Prefix:** origin `openconfig-interfaces` and target `rtr-core-01`.
+- **Value:** a `uint_val`.
+
+`oper_status` uses its own path from `paths:` and is sent as the string `UP` or `DOWN`.
+
+### Path templates
+
+- Segments are separated by `/`. A leading `/` is optional.
+- A segment is an element name, optionally followed by one or more `[key=value]` groups. Key names are literal, and a key appears at most once per segment.
+- An element name or a key value is either literal text or exactly one placeholder. A brace anywhere else is an error.
+- `{name}` renders the metric name with `_` replaced by `-`, so `in_octets` becomes `in-octets`. Any other `{label}` renders that label's value as it is.
+- A template has no `origin:` prefix; the origin comes from `origin`. A colon anywhere else, in a module-prefixed element name or in a key value, is literal text.
+- A rendered element name must be non-empty and contain no `/`, `[` or `]`. Key values may contain `/`, as in `GigabitEthernet0/0/0`.
+
+Every label must be accounted for, so that two series never share a path. This covers each key in an entry's `labels` and `dynamic_labels`, and every `cardinality_spikes` label. Each one must be either:
+
+- referenced by the entry's template,
+- the `target_label`, or
+- listed in `drop_labels`.
+
+A file that breaks this is refused with the label named. A `cardinality_spikes` label exists only inside its window, so it cannot be a placeholder. Unless it is the `target_label`, or shares its key with a label the template references, it goes in `drop_labels`.
+
+Histogram and summary entries take the encoder too:
+
+- **Histogram:** emits `<name>_bucket` with an `le` label, plus `<name>_sum` and `<name>_count`. The bucket template must reference `{le}`, and `le` may not be dropped.
+- **Summary:** emits `<name>` with a `quantile` label, plus `<name>_sum` and `<name>_count`. The template must reference `{quantile}`, and `quantile` may not be dropped.
+- **`_sum` and `_count`:** these series carry no `le` or `quantile`, so they need a template without `{le}` or `{quantile}`. That is either their own `paths:` entries (`<name>_sum`, `<name>_count`), or `path` when the bucket or quantile series has a `paths:` entry of its own. Validation names any series whose template uses a key it does not carry.
+
+### Value types
+
+| `values:` entry | `TypedValue` field | Encoding |
+|-----------------|--------------------|----------|
+| `double` (default) | `double_val` | The value as it is. |
+| `uint` | `uint_val` | Rounded to the nearest integer, halves away from zero. A non-finite value, or one that rounds below 0 or above the unsigned 64-bit range, is rejected. |
+| `int` | `int_val` | Rounded the same way. A non-finite value or one outside the 64-bit range is rejected. |
+| `bool` | `bool_val` | `true` when the rounded value is not 0. A non-finite value is rejected. |
+| `string` | `string_val` | The shortest decimal text that reads back as the same value. |
+| `enum: { 1: UP, 2: DOWN }` | `string_val` | The label for the rounded value. A value with no entry, or a non-finite value, is rejected. |
+
+`enum` keys are integers (`1` or `"1"`). Generators that emit gNMI states, such as `flap` with `enum: oper_state` (UP = 1, DOWN = 2), pair with an `enum` map of the same codes.
+
+A rejected event is skipped and counted in the scenario's errors, and the scenario keeps running.
+
+This encoder accepts metrics only. Log events are not supported.
+
 ## Value precision
 
 The `prometheus_text`, `influx_lp`, and `json_lines` encoders accept an optional `precision` field that controls how many decimal places appear in metric values.
@@ -192,7 +277,7 @@ encoder:
   precision: 2    # 99.60573 becomes 99.61
 ```
 
-The `syslog`, `remote_write`, and `otlp` encoders do not support `precision`. Syslog encodes log events only, with no numeric values; remote write and OTLP use binary protobuf encoding.
+The `syslog`, `remote_write`, `otlp`, and `gnmi` encoders do not support `precision`. Syslog encodes log events only, with no numeric values; remote write, OTLP and gNMI use binary protobuf encoding.
 
 See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml) for a complete scenario that uses precision with several encoders.
 
@@ -206,3 +291,4 @@ See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/b
 | `syslog` | no | yes | -- | -- |
 | `remote_write` | yes | no | -- | `remote-write` |
 | `otlp` | yes | yes | -- | `otlp` |
+| `gnmi` | yes | no | -- | `gnmi` |
