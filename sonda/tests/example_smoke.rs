@@ -25,6 +25,77 @@ fn packs_dir() -> PathBuf {
     workspace_root().join("packs")
 }
 
+/// Every `.yaml`/`.yml` file under `dir`, at any depth, whose top level
+/// declares `version: 2`, sorted. `examples/` also holds Compose files,
+/// alert rules and collector configs; those declare no version.
+fn scenario_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(scenario_files(&path));
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("yaml" | "yml")
+        ) {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            if sonda_core::compiler::parse::detect_version(&text) == Some(2) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+// ---- every example ------------------------------------------------------------
+
+/// Every scenario in `examples/` passes `--dry-run`, and its display names
+/// each generator, encoder and sink: no field falls back to `unknown (...)`.
+#[test]
+fn every_example_dry_runs_and_names_each_kind() {
+    let examples = scenario_files(&workspace_root().join("examples"));
+    assert!(!examples.is_empty(), "no v2 scenario files under examples/");
+    assert!(
+        examples.contains(&example("gnmi-telegraf.yaml")),
+        "gnmi-telegraf.yaml is not among the scenarios found: {examples:?}"
+    );
+
+    for path in &examples {
+        let output = Command::new(sonda_bin())
+            .current_dir(workspace_root())
+            .arg("--catalog")
+            .arg(packs_dir())
+            .args(["--dry-run", "run"])
+            .arg(path)
+            .output()
+            .expect("sonda binary must launch");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "{} must dry-run clean; output: {shown}",
+            path.display()
+        );
+        assert!(
+            shown.contains("[config] file:"),
+            "{} printed no dry-run display; output: {shown}",
+            path.display()
+        );
+        assert!(
+            !shown.contains("unknown ("),
+            "{} has a field displayed as unknown: {shown}",
+            path.display()
+        );
+    }
+}
+
 // ---- basic-metrics.yaml -------------------------------------------------------
 
 #[test]

@@ -88,7 +88,7 @@ jobs:
       # Union of features required across every matrix row. Mirrors the
       # docs-commands job's pattern so feature drift between gates is loud.
       - name: Build sonda release
-        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp
+        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi
 
       # Stdlib-only Python harness — no requirements.txt, no pip install.
       - name: Run live-infra UAT harness
@@ -103,12 +103,12 @@ jobs:
           mkdir -p compose-logs
           docker compose -f examples/docker-compose-victoriametrics.yml \
             --profile loki --profile otel-collector --profile prometheus \
-            --profile alerting \
+            --profile alerting --profile gnmi \
             ps > compose-logs/ps.txt 2>&1 || true
-          for svc in victoriametrics vmagent prometheus loki otel-collector vmalert alertmanager; do
+          for svc in victoriametrics vmagent prometheus loki otel-collector vmalert alertmanager telegraf; do
             docker compose -f examples/docker-compose-victoriametrics.yml \
               --profile loki --profile otel-collector --profile prometheus \
-              --profile alerting \
+              --profile alerting --profile gnmi \
               logs --no-color --tail 500 "$svc" \
               > "compose-logs/${svc}.log" 2>&1 || true
           done

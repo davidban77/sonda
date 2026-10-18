@@ -28,6 +28,7 @@ import sys
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -87,6 +88,10 @@ class MatrixRow:
     expect_stderr: str = ""
     # Per-row wall-clock budget. Alert-lifecycle rows outlive the default.
     timeout_s: float = SCENARIO_TIMEOUT_S
+    # Called after verify_url passes with (repo_root, started_s, ended_s),
+    # the wall-clock bounds of the sonda run. Returns "" when every check
+    # holds, otherwise the failures, one per line.
+    post_verify: Callable[[Path, float, float], str] | None = None
 
 
 @dataclasses.dataclass
@@ -97,6 +102,131 @@ class RowResult:
     ok: bool
     message: str = ""
     duration_s: float = 0.0
+
+
+# --- gNMI row checks ---------------------------------------------------------
+
+# How long the gnmi row's `sonda run` serves (its --duration).
+GNMI_RUN_S = 90.0
+# Telegraf's debug line once its Subscribe stream is open and the request sent.
+GNMI_CONNECTED_LINE = "Connection to gNMI device sonda:57400 established"
+# The series Telegraf's influx output produces, as VictoriaMetrics names them:
+# measurement (the subscription name) + "_" + field, one per interface.
+GNMI_SERIES = (
+    "ifcounters_in_octets",
+    "ifcounters_out_octets",
+    "ifstate_oper_status",
+)
+GNMI_INTERFACES = tuple(f"GigabitEthernet0/0/{i}" for i in range(4))
+GNMI_MIN_SAMPLES = 3
+# The first sample must arrive this soon after sonda starts.
+GNMI_FIRST_SAMPLE_WITHIN_S = 60.0
+# examples/telegraf/telegraf.conf writes oper-status as its enum code.
+GNMI_OPER_STATUS_CODES = {"UP": 1.0, "DOWN": 2.0}
+# The interface whose oper_status flaps (up 60s / down 5s) in the example.
+GNMI_FLAPPING_INTERFACE = GNMI_INTERFACES[0]
+GNMI_EXPORT_MATCH = '{__name__=~"ifcounters_.*|ifstate_.*",source="sonda"}'
+
+
+def parse_vm_export(body: bytes) -> dict[tuple[str, str], list[tuple[int, float]]]:
+    """Group a VictoriaMetrics ``/api/v1/export`` body by (series name, interface).
+
+    The body is one JSON object per line, each with ``metric``, ``values`` and
+    ``timestamps`` (milliseconds). Samples are returned as (timestamp, value)
+    pairs; a line that does not parse is skipped.
+    """
+    out: dict[tuple[str, str], list[tuple[int, float]]] = {}
+    for line in body.splitlines():
+        try:
+            entry = json.loads(line)
+            key = (entry["metric"]["__name__"], entry["metric"].get("name", ""))
+            pairs = zip(entry["timestamps"], entry["values"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        out.setdefault(key, []).extend((int(ts), float(v)) for ts, v in pairs)
+    return out
+
+
+def gnmi_findings(
+    telegraf_log: str,
+    samples: dict[tuple[str, str], list[tuple[int, float]]],
+    started_s: float,
+    ended_s: float,
+) -> list[str]:
+    """Every way the gnmi row's evidence falls short, in check order; empty
+    when all hold.
+
+    Only samples timestamped within [started_s, ended_s] count. In order:
+    Telegraf logged GNMI_CONNECTED_LINE; some sample exists, the earliest no
+    later than GNMI_FIRST_SAMPLE_WITHIN_S after started_s (with none, the
+    checks after this one do not run); each series in GNMI_SERIES has at
+    least GNMI_MIN_SAMPLES samples for each interface, each shortfall named;
+    and the flapping interface's oper_status takes both UP and DOWN within
+    GNMI_RUN_S of started_s.
+    """
+    findings: list[str] = []
+    if GNMI_CONNECTED_LINE not in telegraf_log:
+        findings.append(f"telegraf log has no {GNMI_CONNECTED_LINE!r}")
+
+    start_ms, end_ms = int(started_s * 1000), int(ended_s * 1000)
+    in_window = {
+        key: [(ts, v) for ts, v in pairs if start_ms <= ts <= end_ms]
+        for key, pairs in samples.items()
+    }
+    timestamps = [ts for pairs in in_window.values() for ts, _ in pairs]
+    if not timestamps:
+        findings.append(
+            f"no sample matching {GNMI_EXPORT_MATCH} within the run's window"
+        )
+        return findings
+    first_after_s = (min(timestamps) - start_ms) / 1000
+    if first_after_s > GNMI_FIRST_SAMPLE_WITHIN_S:
+        findings.append(
+            f"first sample arrived {first_after_s:.1f}s after sonda started "
+            f"(bound {GNMI_FIRST_SAMPLE_WITHIN_S:.0f}s)"
+        )
+
+    for series in GNMI_SERIES:
+        for interface in GNMI_INTERFACES:
+            count = len(in_window.get((series, interface), []))
+            if count < GNMI_MIN_SAMPLES:
+                findings.append(
+                    f'{series}{{name="{interface}"}}: {count} sample(s), '
+                    f"want >= {GNMI_MIN_SAMPLES}"
+                )
+
+    flap_end_ms = start_ms + int(GNMI_RUN_S * 1000)
+    seen = {
+        v
+        for ts, v in in_window.get(("ifstate_oper_status", GNMI_FLAPPING_INTERFACE), [])
+        if ts <= flap_end_ms
+    }
+    for state, code in GNMI_OPER_STATUS_CODES.items():
+        if code not in seen:
+            findings.append(
+                f'ifstate_oper_status{{name="{GNMI_FLAPPING_INTERFACE}"}} never '
+                f"took {state} ({code:g}) within {GNMI_RUN_S:.0f}s; saw "
+                f"{sorted(seen)}"
+            )
+    return findings
+
+
+def verify_gnmi_row(repo_root: Path, started_s: float, ended_s: float) -> str:
+    """Collect Telegraf's log and the run's samples, then apply :func:`gnmi_findings`."""
+    telegraf_log = compose_logs_tail(repo_root, "telegraf", tail_lines=None)
+    query = urllib.parse.urlencode(
+        {
+            "match[]": GNMI_EXPORT_MATCH,
+            "start": f"{started_s:.3f}",
+            "end": f"{ended_s:.3f}",
+        }
+    )
+    status, body = http_get(f"http://localhost:8428/api/v1/export?{query}")
+    if status != 200:
+        return f"VictoriaMetrics export answered {status}: {body[:200]!r}"
+    return "\n".join(
+        gnmi_findings(telegraf_log, parse_vm_export(body), started_s, ended_s)
+    )
 
 
 # --- Matrix ------------------------------------------------------------------
@@ -239,6 +369,23 @@ MATRIX: tuple[MatrixRow, ...] = (
         expect_stderr="resolved after",
         timeout_s=300.0,
     ),
+    # -- gNMI: sonda is the target and Telegraf (profile gnmi) the client.
+    # `sonda run` serves for GNMI_RUN_S while Telegraf subscribes and writes
+    # to VictoriaMetrics. The verify URL proves some series arrived at all;
+    # verify_gnmi_row then checks every expected series and the flap by name.
+    MatrixRow(
+        name="gnmi",
+        profiles=("gnmi",),
+        subcommand="metrics",
+        scenario=Path("examples/gnmi-telegraf.yaml"),
+        verify_url=(
+            "http://localhost:8428/api/v1/query?query={source=~\"sonda.*\"}"
+        ),
+        failure_log_containers=("telegraf", "victoriametrics"),
+        extra_args=("--duration", f"{GNMI_RUN_S:.0f}s"),
+        timeout_s=GNMI_RUN_S + 60.0,
+        post_verify=verify_gnmi_row,
+    ),
 )
 
 # Backends keyed by compose profile. The empty-tuple key is for the default
@@ -260,6 +407,9 @@ BACKENDS_BY_PROFILE: dict[str, tuple[Backend, ...]] = {
     "alerting": (
         Backend(name="vmalert", health_url="http://localhost:8880/health"),
         Backend(name="alertmanager", health_url="http://localhost:9093/-/healthy"),
+    ),
+    "gnmi": (
+        Backend(name="telegraf", health_url="http://localhost:8095/"),
     ),
 }
 
@@ -469,10 +619,11 @@ def compose_logs_tail(
     repo_root: Path,
     service: str,
     *,
-    tail_lines: int = DOCKER_LOG_TAIL_LINES,
+    tail_lines: int | None = DOCKER_LOG_TAIL_LINES,
     timeout_s: float = 30.0,
 ) -> str:
-    """Return the last ``tail_lines`` lines of the named service's logs.
+    """Return the last ``tail_lines`` lines of the named service's logs, or
+    all of them when ``tail_lines`` is None.
 
     Returns a placeholder string on failure rather than raising — log
     collection is best-effort diagnostic output.
@@ -484,7 +635,7 @@ def compose_logs_tail(
                 "logs",
                 "--no-color",
                 "--tail",
-                str(tail_lines),
+                "all" if tail_lines is None else str(tail_lines),
                 service,
             ),
             capture_output=True,
@@ -543,6 +694,7 @@ def run_row(
             duration_s=_now_s() - start,
         )
 
+    started_wall_s = time.time()
     try:
         proc = run_scenario(
             sonda_bin,
@@ -567,6 +719,8 @@ def run_row(
             message=f"sonda binary not found: {sonda_bin}",
             duration_s=_now_s() - start,
         )
+
+    ended_wall_s = time.time()
 
     if proc.returncode != row.expect_exit:
         stderr_tail = (proc.stderr or "").strip().splitlines()[-20:]
@@ -602,6 +756,17 @@ def run_row(
                     f"verify URL did not return non-empty data.result within "
                     f"{VERIFY_TIMEOUT_S:.0f}s: {verify_url}"
                 ),
+                duration_s=_now_s() - start,
+            )
+
+    if row.post_verify is not None:
+        problems = row.post_verify(repo_root, started_wall_s, ended_wall_s)
+        if problems:
+            return RowResult(
+                row=row,
+                ok=False,
+                message="post-verify failed:\n"
+                + "\n".join(f"    {line}" for line in problems.splitlines()),
                 duration_s=_now_s() - start,
             )
 
@@ -848,7 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"sonda binary not found at {raw_bin}. Build it first "
             "(cargo build --release -p sonda --features "
-            "http,kafka,remote-write,otlp).",
+            "http,kafka,remote-write,otlp,gnmi).",
             file=sys.stderr,
         )
         return 2
@@ -1176,6 +1341,115 @@ class _AttributeFailureTests(unittest.TestCase):
         self.assertIn("1.5s", out)
 
 
+class _ParseVmExportTests(unittest.TestCase):
+    def test_groups_samples_by_series_and_interface(self) -> None:
+        body = (
+            b'{"metric":{"__name__":"ifstate_oper_status","name":"Gi0"},'
+            b'"values":[1,2],"timestamps":[1000,2000]}\n'
+            b'{"metric":{"__name__":"ifstate_oper_status","name":"Gi1"},'
+            b'"values":[1],"timestamps":[1500]}\n'
+        )
+        self.assertEqual(
+            parse_vm_export(body),
+            {
+                ("ifstate_oper_status", "Gi0"): [(1000, 1.0), (2000, 2.0)],
+                ("ifstate_oper_status", "Gi1"): [(1500, 1.0)],
+            },
+        )
+
+    def test_skips_lines_that_do_not_parse(self) -> None:
+        self.assertEqual(parse_vm_export(b"not json\n{}\n"), {})
+
+
+class _GnmiFindingsTests(unittest.TestCase):
+    STARTED_S = 1_000.0
+    ENDED_S = STARTED_S + GNMI_RUN_S
+    LOG = f"... D! [inputs.gnmi] {GNMI_CONNECTED_LINE}\n"
+
+    def _passing(self) -> dict[tuple[str, str], list[tuple[int, float]]]:
+        start_ms = int(self.STARTED_S * 1000)
+        samples = {
+            (series, interface): [
+                (start_ms + 5_000 + i * 10_000, float(i)) for i in range(5)
+            ]
+            for series in GNMI_SERIES
+            for interface in GNMI_INTERFACES
+        }
+        samples[("ifstate_oper_status", GNMI_FLAPPING_INTERFACE)] = [
+            (start_ms + 5_000, 1.0),
+            (start_ms + 61_000, 2.0),
+            (start_ms + 66_000, 1.0),
+        ]
+        return samples
+
+    def _findings(self, samples, log: str | None = None) -> list[str]:
+        return gnmi_findings(
+            self.LOG if log is None else log, samples, self.STARTED_S, self.ENDED_S
+        )
+
+    def test_passing_evidence_has_no_findings(self) -> None:
+        self.assertEqual(self._findings(self._passing()), [])
+
+    def test_missing_connection_line_is_named(self) -> None:
+        findings = self._findings(self._passing(), log="nothing here\n")
+        self.assertEqual(len(findings), 1)
+        self.assertIn(GNMI_CONNECTED_LINE, findings[0])
+
+    def test_no_samples_fails_on_that_alone(self) -> None:
+        findings = self._findings({})
+        self.assertEqual(len(findings), 1)
+        self.assertIn("no sample", findings[0])
+
+    def test_samples_outside_the_window_do_not_count(self) -> None:
+        late = {
+            key: [(ts + int(GNMI_RUN_S * 1000) * 2, v) for ts, v in pairs]
+            for key, pairs in self._passing().items()
+        }
+        self.assertIn("no sample", self._findings(late)[0])
+
+    def test_a_series_short_of_samples_is_named(self) -> None:
+        samples = self._passing()
+        samples[("ifcounters_out_octets", "GigabitEthernet0/0/2")] = samples[
+            ("ifcounters_out_octets", "GigabitEthernet0/0/2")
+        ][:2]
+        findings = self._findings(samples)
+        self.assertEqual(
+            findings,
+            [
+                'ifcounters_out_octets{name="GigabitEthernet0/0/2"}: 2 sample(s), '
+                f"want >= {GNMI_MIN_SAMPLES}"
+            ],
+        )
+
+    def test_a_missing_series_is_named(self) -> None:
+        samples = {
+            key: pairs
+            for key, pairs in self._passing().items()
+            if key[0] != "ifcounters_in_octets"
+        }
+        findings = self._findings(samples)
+        self.assertEqual(len(findings), len(GNMI_INTERFACES))
+        for finding, interface in zip(findings, GNMI_INTERFACES):
+            self.assertIn(f'ifcounters_in_octets{{name="{interface}"}}: 0', finding)
+
+    def test_a_flap_that_never_goes_down_is_named(self) -> None:
+        samples = self._passing()
+        samples[("ifstate_oper_status", GNMI_FLAPPING_INTERFACE)] = [
+            (ts, 1.0) for ts, _ in samples[("ifstate_oper_status", GNMI_FLAPPING_INTERFACE)]
+        ]
+        findings = self._findings(samples)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("never took DOWN (2)", findings[0])
+
+    def test_a_late_first_sample_is_named(self) -> None:
+        start_ms = int(self.STARTED_S * 1000)
+        samples = {
+            key: [(ts, v) for ts, v in pairs if ts >= start_ms + 61_000]
+            for key, pairs in self._passing().items()
+        }
+        self.assertIn("first sample arrived", self._findings(samples)[0])
+
+
 def _run_self_tests() -> int:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -1188,6 +1462,8 @@ def _run_self_tests() -> int:
         _FilterSkippedTests,
         _MatrixIntegrityTests,
         _AttributeFailureTests,
+        _ParseVmExportTests,
+        _GnmiFindingsTests,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     runner = unittest.TextTestRunner(verbosity=2)

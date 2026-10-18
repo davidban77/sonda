@@ -399,7 +399,7 @@ Whether `sonda-server` needs clustering support is an open question. A single `s
 
 ### Protobuf / gNMI Encoder
 
-A gNMI-compatible JSON encoder is on the roadmap. Full protobuf support (for Prometheus remote-write and gNMI) will require `prost` as a dependency. Evaluated at Expansion A time.
+gNMI shipped as the `gnmi` encoder and the `gnmi_target` sink; see the [sinks page](site/docs/build/sinks.md#gnmi_target).
 
 ### Trace and Flow Signal Types
 
