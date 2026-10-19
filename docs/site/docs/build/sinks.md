@@ -507,7 +507,7 @@ The listener serves plaintext gRPC:
 | Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
 | Encoding `JSON_IETF`, `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding and `PROTO`. |
 
-A change is a new value: the update's encoded `TypedValue` differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than `subscriber_buffer` changes behind is resynced with the latest value of every series it matches, without a second `sync_response`.
+A change is a new value: the update's encoded `TypedValue` differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than `subscriber_buffer` changes behind is resynced with the latest value of every series it matches, without a second `sync_response`. A change the initial values, a resync or a heartbeat already sent is not sent again.
 
 A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of `*`, or a key the subscription leaves out, matches any value: `/interfaces/interface/state/counters` matches every interface's counters. An empty origin or target in the subscription matches any. Element wildcards (`*` or `...` as an element name) are refused with `UNIMPLEMENTED`.
 

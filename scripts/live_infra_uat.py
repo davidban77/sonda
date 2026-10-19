@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import json
 import math
+import re
 import subprocess
 import sys
 import time
@@ -111,6 +113,8 @@ class RowResult:
 GNMI_RUN_S = 90.0
 # Telegraf's debug line once its Subscribe stream is open and the request sent.
 GNMI_CONNECTED_LINE = "Connection to gNMI device sonda:57400 established"
+# The UTC timestamp, to the second, that begins each Telegraf log line.
+TELEGRAF_LOG_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z ")
 # The series Telegraf's influx output produces, as VictoriaMetrics names them:
 # measurement (the subscription name) + "_" + field, one per interface. The
 # counters are subscribed SAMPLE; the oper-status ON_CHANGE.
@@ -153,6 +157,29 @@ def parse_vm_export(body: bytes) -> dict[tuple[str, str], list[tuple[int, float]
     return out
 
 
+def telegraf_connected_at(
+    telegraf_log: str, started_s: float, ended_s: float
+) -> float | None:
+    """The time, in seconds since the epoch, on the first line of
+    ``telegraf_log`` that carries GNMI_CONNECTED_LINE and is stamped within
+    [started_s - 1, ended_s]; the second's slack is the log's precision.
+    None when no such line has a timestamp that parses.
+    """
+    for line in telegraf_log.splitlines():
+        if GNMI_CONNECTED_LINE not in line:
+            continue
+        match = TELEGRAF_LOG_TIME.search(line)
+        if match is None:
+            continue
+        stamped = datetime.datetime.strptime(
+            match.group(1), "%Y-%m-%dT%H:%M:%S"
+        ).replace(tzinfo=datetime.timezone.utc)
+        at_s = stamped.timestamp()
+        if started_s - 1 <= at_s <= ended_s:
+            return at_s
+    return None
+
+
 def gnmi_findings(
     telegraf_log: str,
     samples: dict[tuple[str, str], list[tuple[int, float]]],
@@ -163,19 +190,30 @@ def gnmi_findings(
     when all hold.
 
     Only samples timestamped within [started_s, ended_s] count. In order:
-    Telegraf logged GNMI_CONNECTED_LINE; some sample exists, the earliest no
-    later than GNMI_FIRST_SAMPLE_WITHIN_S after started_s (with none, the
-    checks after this one do not run); each series in GNMI_COUNTER_SERIES has
-    at least GNMI_MIN_SAMPLES samples for each interface, and
-    GNMI_STATE_SERIES at least one, each shortfall named; the flapping
-    interface's oper_status takes both UP and DOWN within GNMI_RUN_S of
-    started_s; and, when it has any sample, it has at most one per value
-    change between consecutive samples, plus one per started GNMI_HEARTBEAT_S
-    of the window, plus two.
+    Telegraf logged GNMI_CONNECTED_LINE, and the line carries a timestamp
+    within the window (:func:`telegraf_connected_at`); some sample exists, the
+    earliest no later than GNMI_FIRST_SAMPLE_WITHIN_S after started_s (with
+    none, the checks after this one do not run); each series in
+    GNMI_COUNTER_SERIES has at least GNMI_MIN_SAMPLES samples for each
+    interface; GNMI_STATE_SERIES has at least one for the flapping interface
+    and, for each steady interface, at least one and at least one fewer than
+    its expected count: the initial value plus one heartbeat per whole
+    GNMI_HEARTBEAT_S from the connection to ended_s (one when the connection
+    time is unknown); each shortfall named; the flapping interface's
+    oper_status takes both UP and DOWN within GNMI_RUN_S of started_s; and,
+    when it has any sample, it has at most one per value change between
+    consecutive samples, plus one per started GNMI_HEARTBEAT_S of the window,
+    plus two.
     """
     findings: list[str] = []
+    connected_s = telegraf_connected_at(telegraf_log, started_s, ended_s)
     if GNMI_CONNECTED_LINE not in telegraf_log:
         findings.append(f"telegraf log has no {GNMI_CONNECTED_LINE!r}")
+    elif connected_s is None:
+        findings.append(
+            f"telegraf log has no {GNMI_CONNECTED_LINE!r} line stamped within "
+            "the run's window, so its heartbeats cannot be counted"
+        )
 
     start_ms, end_ms = int(started_s * 1000), int(ended_s * 1000)
     in_window = {
@@ -196,13 +234,24 @@ def gnmi_findings(
         )
 
     for series in GNMI_SERIES:
-        least = 1 if series == GNMI_STATE_SERIES else GNMI_MIN_SAMPLES
         for interface in GNMI_INTERFACES:
             count = len(in_window.get((series, interface), []))
+            reason = ""
+            if series != GNMI_STATE_SERIES:
+                least = GNMI_MIN_SAMPLES
+            elif interface == GNMI_FLAPPING_INTERFACE or connected_s is None:
+                least = 1
+            else:
+                heartbeats = math.floor((ended_s - connected_s) / GNMI_HEARTBEAT_S)
+                least = max(heartbeats, 1)
+                reason = (
+                    f" (1 + {heartbeats} heartbeat(s) after telegraf connected "
+                    f"{connected_s - started_s:.0f}s after sonda started, less 1)"
+                )
             if count < least:
                 findings.append(
                     f'{series}{{name="{interface}"}}: {count} sample(s), '
-                    f"want >= {least}"
+                    f"want >= {least}{reason}"
                 )
 
     flap_end_ms = start_ms + int(GNMI_RUN_S * 1000)
@@ -1384,10 +1433,19 @@ class _ParseVmExportTests(unittest.TestCase):
         self.assertEqual(parse_vm_export(b"not json\n{}\n"), {})
 
 
+def _telegraf_line(at_s: float, message: str) -> str:
+    """A Telegraf log line stamped ``at_s`` seconds after the epoch, as
+    ``docker compose logs`` prints it."""
+    stamp = datetime.datetime.fromtimestamp(at_s, datetime.timezone.utc)
+    return f"telegraf-1  | {stamp:%Y-%m-%dT%H:%M:%S}Z D! [inputs.gnmi] {message}\n"
+
+
 class _GnmiFindingsTests(unittest.TestCase):
     STARTED_S = 1_000.0
     ENDED_S = STARTED_S + GNMI_RUN_S
-    LOG = f"... D! [inputs.gnmi] {GNMI_CONNECTED_LINE}\n"
+    # Connected 5 s in: each steady interface expects 1 + floor(85 / 30) = 3.
+    CONNECTED_S = STARTED_S + 5
+    LOG = _telegraf_line(CONNECTED_S, GNMI_CONNECTED_LINE)
 
     def _passing(self) -> dict[tuple[str, str], list[tuple[int, float]]]:
         start_ms = int(self.STARTED_S * 1000)
@@ -1467,18 +1525,78 @@ class _GnmiFindingsTests(unittest.TestCase):
     def test_a_state_series_with_no_sample_is_named(self) -> None:
         samples = self._passing()
         del samples[(GNMI_STATE_SERIES, "GigabitEthernet0/0/2")]
+        del samples[(GNMI_STATE_SERIES, GNMI_FLAPPING_INTERFACE)]
         self.assertEqual(
             self._findings(samples),
-            ['ifstate_oper_status{name="GigabitEthernet0/0/2"}: 0 sample(s), want >= 1'],
+            [
+                f'ifstate_oper_status{{name="{GNMI_FLAPPING_INTERFACE}"}}: 0 sample(s), '
+                "want >= 1",
+                'ifstate_oper_status{name="GigabitEthernet0/0/2"}: 0 sample(s), '
+                "want >= 2 (1 + 2 heartbeat(s) after telegraf connected 5s after "
+                "sonda started, less 1)",
+                f'ifstate_oper_status{{name="{GNMI_FLAPPING_INTERFACE}"}} never took '
+                "UP (1) within 90s; saw []",
+                f'ifstate_oper_status{{name="{GNMI_FLAPPING_INTERFACE}"}} never took '
+                "DOWN (2) within 90s; saw []",
+            ],
         )
 
-    def test_one_state_sample_per_interface_is_enough(self) -> None:
+    def _steady_state_samples(self, count: int):
         samples = self._passing()
         for interface in GNMI_INTERFACES[1:]:
             samples[(GNMI_STATE_SERIES, interface)] = samples[
                 (GNMI_STATE_SERIES, interface)
-            ][:1]
-        self.assertEqual(self._findings(samples), [])
+            ][:count]
+        return samples
+
+    def test_a_steady_interface_one_short_of_its_expected_count_passes(self) -> None:
+        self.assertEqual(self._findings(self._steady_state_samples(2)), [])
+
+    def test_a_steady_interface_two_short_of_its_expected_count_is_named(self) -> None:
+        self.assertEqual(
+            self._findings(self._steady_state_samples(1)),
+            [
+                f'ifstate_oper_status{{name="{interface}"}}: 1 sample(s), want >= 2 '
+                "(1 + 2 heartbeat(s) after telegraf connected 5s after sonda "
+                "started, less 1)"
+                for interface in GNMI_INTERFACES[1:]
+            ],
+        )
+
+    def test_the_expected_count_runs_from_the_connection(self) -> None:
+        # Connected at the start: 1 + floor(90 / 30) = 4, so 3 are needed.
+        early = _telegraf_line(self.STARTED_S, GNMI_CONNECTED_LINE)
+        self.assertEqual(len(self._findings(self._steady_state_samples(2), log=early)), 3)
+        self.assertEqual(self._findings(self._steady_state_samples(3), log=early), [])
+        # Connected 61 s in: 1 + floor(29 / 30) = 1, and never fewer than 1.
+        late = _telegraf_line(self.STARTED_S + 61, GNMI_CONNECTED_LINE)
+        self.assertEqual(self._findings(self._steady_state_samples(1), log=late), [])
+        self.assertEqual(len(self._findings(self._steady_state_samples(0), log=late)), 3)
+
+    def test_the_first_connection_in_the_window_counts(self) -> None:
+        log = (
+            _telegraf_line(self.STARTED_S - 30, GNMI_CONNECTED_LINE)
+            + _telegraf_line(self.STARTED_S + 61, GNMI_CONNECTED_LINE)
+            + _telegraf_line(self.STARTED_S + 80, GNMI_CONNECTED_LINE)
+        )
+        self.assertEqual(
+            telegraf_connected_at(log, self.STARTED_S, self.ENDED_S), self.STARTED_S + 61
+        )
+
+    def test_a_connection_line_without_a_timestamp_is_named(self) -> None:
+        log = f"... D! [inputs.gnmi] {GNMI_CONNECTED_LINE}\n"
+        self.assertEqual(
+            self._findings(self._steady_state_samples(1), log=log),
+            [
+                f"telegraf log has no {GNMI_CONNECTED_LINE!r} line stamped within the "
+                "run's window, so its heartbeats cannot be counted"
+            ],
+        )
+
+    def test_a_connection_line_stamped_outside_the_window_is_named(self) -> None:
+        log = _telegraf_line(self.STARTED_S - 30, GNMI_CONNECTED_LINE)
+        self.assertEqual(len(self._findings(self._passing(), log=log)), 1)
+        self.assertIn("stamped within the run's window", self._findings(self._passing(), log=log)[0])
 
     def test_a_flap_sent_on_every_publish_is_named(self) -> None:
         samples = self._passing()

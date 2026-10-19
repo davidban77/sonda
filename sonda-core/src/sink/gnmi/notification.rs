@@ -13,6 +13,7 @@ const VAL: u32 = 3;
 /// The `TypedValue` variant a series' value carries, named by the field
 /// number of the value's oneof member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ValueKind {
     /// `string_val` (field 1): the gnmi encoder's `string` and `enum` values.
     String,

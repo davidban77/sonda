@@ -70,11 +70,16 @@ pub type SeriesId = u32;
 
 /// A changed value for one series, as broadcast to subscribers.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SeriesUpdate {
     /// The series the value belongs to.
     pub series_id: SeriesId,
     /// The kind of value the series carries, fixed at its first publish.
     pub kind: ValueKind,
+    /// The series' version with this value: 1 for its first value, one more
+    /// for each change. Set under the series' lock, so one series' updates
+    /// are broadcast in the order of their versions.
+    pub version: u64,
     /// One encoded `gnmi.Notification`.
     pub bytes: Bytes,
 }
@@ -192,6 +197,7 @@ impl Hash for PathKey {
 
 /// One series as held by the target, returned by [`GnmiTarget::snapshot`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub(crate) struct SeriesSnapshot {
     pub(crate) series_id: SeriesId,
     /// The series' full path: the notification prefix's origin and target
@@ -199,6 +205,8 @@ pub(crate) struct SeriesSnapshot {
     pub(crate) path: PathKey,
     /// The kind of value the series carries, fixed at its first publish.
     pub(crate) kind: ValueKind,
+    /// The series' version with `latest`, as [`SeriesUpdate::version`].
+    pub(crate) version: u64,
     /// The latest encoded `gnmi.Notification`.
     pub(crate) latest: Bytes,
 }
@@ -226,13 +234,15 @@ struct Slot {
     publishers: usize,
 }
 
-/// A series' latest encoded `gnmi.Notification` and where its value lies in
-/// it.
+/// A series' latest encoded `gnmi.Notification`, where its value lies in
+/// it, and the series' version.
 #[derive(Default)]
 struct Latest {
     bytes: Bytes,
     /// The range of the update's encoded `TypedValue` in `bytes`.
     value: Range<usize>,
+    /// How many times the series' value has changed; 0 before its first.
+    version: u64,
 }
 
 impl Latest {
@@ -516,11 +526,15 @@ impl GnmiTarget {
         self.read()
             .slots
             .iter()
-            .map(|(id, slot)| SeriesSnapshot {
-                series_id: *id,
-                path: slot.path.clone(),
-                kind: slot.kind,
-                latest: lock(&slot.latest).bytes.clone(),
+            .map(|(id, slot)| {
+                let latest = lock(&slot.latest);
+                SeriesSnapshot {
+                    series_id: *id,
+                    path: slot.path.clone(),
+                    kind: slot.kind,
+                    version: latest.version,
+                    latest: latest.bytes.clone(),
+                }
             })
             .collect()
     }
@@ -590,11 +604,13 @@ impl GnmiTarget {
     }
 
     /// Store `latest` in `current` and, when its value differs from the one
-    /// it replaces and anyone is subscribed, broadcast it. A series' first
-    /// value differs from the empty one its slot starts with. The caller
-    /// holds the series' lock, so the store, the check for receivers and the
-    /// broadcast are one step: a subscriber that takes a snapshot after
-    /// subscribing sees the stored value or receives it.
+    /// it replaces, raise the series' version by one and, when anyone is
+    /// subscribed, broadcast it with that version. A series' first value
+    /// differs from the empty one its slot starts with. The caller holds the
+    /// series' lock, so the store, the version, the check for receivers and
+    /// the broadcast are one step: a subscriber that takes a snapshot after
+    /// subscribing sees the stored value or receives it, and a snapshot's
+    /// version is that of the value it holds.
     fn replace(
         &self,
         id: SeriesId,
@@ -603,16 +619,18 @@ impl GnmiTarget {
         latest: Latest,
     ) -> Published {
         let changed = current.value() != latest.value();
+        let version = current.version + u64::from(changed);
         let receivers = self.tx.receiver_count() > 0;
         // A clone shares the buffer but allocates its refcount on first use,
         // so it is made only when someone will receive it.
         let update = (changed && receivers).then(|| latest.bytes.clone());
-        *current = latest;
+        *current = Latest { version, ..latest };
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
             let _ = self.tx.send(SeriesUpdate {
                 series_id: id,
                 kind,
+                version,
                 bytes,
             });
         }
@@ -846,6 +864,8 @@ fn latest(encoded: &[u8]) -> Result<(Latest, ValueKind), SondaError> {
     let latest = Latest {
         bytes: Bytes::copy_from_slice(encoded),
         value,
+        // Set when the value is stored.
+        version: 0,
     };
     Ok((latest, kind))
 }
@@ -1258,6 +1278,48 @@ mod tests {
                 changed: true
             }
         );
+    }
+
+    /// A series' version is 1 after its first value and rises by one with
+    /// each change, through a publish or an overwrite, with or without a
+    /// receiver; an unchanged value keeps it. A broadcast update carries the
+    /// version the snapshot then shows.
+    #[tokio::test]
+    async fn the_version_rises_by_one_with_each_change() {
+        let target = bind(16).await;
+        let mut receiver = target.subscribe();
+        let series = path("Gi0", "in-octets");
+        let version = || target.snapshot()[0].version;
+
+        let (id, _) = target
+            .publish(OWNER, None, &series, &note_at(1.0, 1_000))
+            .expect("one owner");
+        assert_eq!(receiver.try_recv().expect("broadcast").version, 1);
+        assert_eq!(version(), 1, "the first value");
+
+        target
+            .publish(OWNER, Some(id), &series, &note_at(1.0, 2_000))
+            .expect("one owner");
+        assert_eq!(version(), 1, "an unchanged value keeps the version");
+
+        target
+            .publish(OWNER, Some(id), &series, &note_at(2.0, 3_000))
+            .expect("one owner");
+        assert_eq!(receiver.try_recv().expect("broadcast").version, 2);
+        assert_eq!(version(), 2, "a published change");
+
+        target
+            .overwrite(&series, &note_at(3.0, 4_000))
+            .expect("a notification")
+            .expect("a served path");
+        assert_eq!(receiver.try_recv().expect("broadcast").version, 3);
+        assert_eq!(version(), 3, "an overwritten change");
+
+        drop(receiver);
+        target
+            .publish(OWNER, Some(id), &series, &note_at(4.0, 5_000))
+            .expect("one owner");
+        assert_eq!(version(), 4, "a change with no receiver");
     }
 
     /// The value a series is compared by lies inside its stored

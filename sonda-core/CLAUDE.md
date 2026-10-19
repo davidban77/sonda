@@ -204,6 +204,10 @@ src/
 │   │   │                   the value; a first publish is a change) is the one definition
 │   │   │                   of "changed". Only a change with a receiver is broadcast (the
 │   │   │                   one Bytes clone). A slot's ValueKind is its first publish's.
+│   │   │                   Each change raises the series' version by one (1 for its
+│   │   │                   first value), set with the value under the series' lock;
+│   │   │                   SeriesUpdate and SeriesSnapshot carry it (both
+│   │   │                   #[non_exhaustive], as is ValueKind).
 │   │   │                   Never awaits. Store and broadcast happen under the series'
 │   │   │                   lock, so receivers see a series' updates in table order.
 │   │   │                   Only ON_CHANGE (and TARGET_DEFINED) lists hold a receiver
@@ -255,9 +259,11 @@ src/
 │   │                       WEAKLY (so does every handler and subscription task): nothing a
 │   │                       client does keeps a target alive; a request after it is gone is
 │   │                       UNAVAILABLE. Capabilities: 0.10.0, [PROTO], no models.
-│   │                       Subscribe: first message must be a SubscriptionList; a place is
-│   │                       taken with target.admit() or the request is RESOURCE_EXHAUSTED,
-│   │                       and the producer holds it until it returns. One task reads and
+│   │                       Subscribe: first message must be a SubscriptionList; start()
+│   │                       plans it, takes a place with target.admit() (or the request
+│   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns)
+│   │                       and the broadcast receiver, and builds the producer, which
+│   │                       subscribe() then spawns. One task reads and
 │   │                       ignores the rest of the inbound stream (never polled in a
 │   │                       select!); its end does not end the subscription. A producer
 │   │                       task sends the initial sync (matching snapshot, none with
@@ -271,8 +277,13 @@ src/
 │   │                       SAMPLE's heartbeat_interval is not read. The set's broadcast
 │   │                       receiver is taken before the initial snapshot; a series is
 │   │                       matched once, when first seen (snapshot path, or PathKey::decode
-│   │                       of the update), cached by SeriesId and pruned to the table past
-│   │                       2 x its live size (at least 1024). Lagged(n) moves the set to a
+│   │                       of the update), cached by SeriesId (Seen { matches, queued })
+│   │                       and pruned to the table past 2 x its live size (at least
+│   │                       1024). queued is the version of the value last queued for the
+│   │                       series, by the initial sync, a resync, a heartbeat or a change;
+│   │                       offer() drops a change whose version is not newer, so a change
+│   │                       racing a snapshot is sent once. Heartbeats are never filtered
+│   │                       and set queued. Lagged(n) moves the set to a
 │   │                       receiver at the broadcast's tail (resubscribe(), dropping the
 │   │                       backlog it fell behind on), then re-queues the latest
 │   │                       of every matched series (no second sync marker; debug log with
@@ -298,6 +309,8 @@ src/
 │   │                       until then its HTTP/2 layer accepts data whether or not the
 │   │                       application reads it, so the server cannot see a reader that
 │   │                       stopped. max_subscribers is the lever.
+│   │                       Probe (cfg(test)) carries the after_resubscribe and
+│   │                       before_heartbeat hooks the window tests publish from.
 │   │                       STREAM runs until the client goes, stalls or the target stops;
 │   │                       ONCE ends with OK after the sync marker. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the
