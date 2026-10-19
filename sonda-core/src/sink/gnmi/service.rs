@@ -2,11 +2,13 @@
 //! `http::Request` in place of generated server code.
 //!
 //! `Capabilities` answers with the target's static capabilities.
-//! `Subscribe` serves STREAM subscriptions in SAMPLE mode (TARGET_DEFINED is
-//! served as SAMPLE) and ONCE subscriptions, from the target's latest-value
-//! table. Every other method answers `UNIMPLEMENTED`.
+//! `Subscribe` serves STREAM subscriptions in SAMPLE, ON_CHANGE and
+//! TARGET_DEFINED mode, and ONCE subscriptions, from the target's
+//! latest-value table and its broadcast of changed values. Every other
+//! method answers `UNIMPLEMENTED`.
 
-use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -16,6 +18,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -25,8 +28,9 @@ use tonic::Status;
 use tower::Service;
 
 use super::matcher::SubscriptionMatcher;
-use super::target::{GnmiTarget, TargetState};
-use crate::encoder::gnmi::proto::{self, subscribe_request, subscription_list};
+use super::notification::ValueKind;
+use super::target::{GnmiTarget, PathKey, SeriesId, SeriesSnapshot, SeriesUpdate, TargetState};
+use crate::encoder::gnmi::proto::{self, subscribe_request, subscription_list, SubscriptionMode};
 use crate::sink::grpc_codec::{PreEncoded, PreEncodedCodec, ProstCodec};
 
 /// The gRPC service name of gNMI.
@@ -42,6 +46,10 @@ pub const OUTBOUND_CAPACITY: usize = 64;
 /// The least time a subscription with responses waiting may go without its
 /// client draining one before it is ended as stalled.
 pub(crate) const STALL_FLOOR: Duration = Duration::from_secs(10);
+
+/// Series an ON_CHANGE set's match cache holds, at least, before it is
+/// pruned to the series in the table.
+const MATCHED_PRUNE_FLOOR: usize = 1024;
 
 /// The HTTP/2 path of `gNMI.Capabilities`.
 const CAPABILITIES_PATH: &str = "/gnmi.gNMI/Capabilities";
@@ -199,12 +207,10 @@ impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHa
 
 /// Start one subscription.
 ///
-/// Reads the first request, which must carry a `SubscriptionList`; refuses
-/// the list as [`SubscriptionMatcher::new`] does, and with
-/// `RESOURCE_EXHAUSTED` when the target already serves `max_subscribers`
-/// subscribers. Otherwise takes one of the target's subscriber places,
-/// spawns a task reading the rest of `inbound` and a producer task holding
-/// the place, and returns the producer's response stream.
+/// Reads the first request, which must carry a `SubscriptionList`, and
+/// refuses or [starts](start) it. Spawns a task reading the rest of
+/// `inbound` and the producer task, and returns the producer's response
+/// stream.
 async fn subscribe(
     target: Weak<GnmiTarget>,
     peer: Option<SocketAddr>,
@@ -225,15 +231,36 @@ async fn subscribe(
             ))
         }
     };
-    let matcher = SubscriptionMatcher::new(&list)?;
+    let (producer, responses) = start(target, peer, &list)?;
+    // Further requests are read and ignored, outside any `select!`. The
+    // request stream ending does not end the subscription.
+    let draining = tokio::spawn(async move { while let Ok(Some(_)) = inbound.message().await {} });
+    tokio::spawn(producer.run(draining));
+    Ok(tonic::Response::new(responses))
+}
+
+/// The producer serving `list` and the response stream it feeds.
+///
+/// Refuses `list` as [`SubscriptionMatcher::new`] and [`plan_groups`] do,
+/// and with `RESOURCE_EXHAUSTED` when the target already serves
+/// `max_subscribers` subscribers. Otherwise takes one of the target's
+/// subscriber places, which the producer holds, and, when the list has
+/// ON_CHANGE subscriptions, subscribes to the target's broadcast before the
+/// producer takes its snapshot.
+fn start(
+    target: Weak<GnmiTarget>,
+    peer: Option<SocketAddr>,
+    list: &proto::SubscriptionList,
+) -> Result<(Producer, Responses), Status> {
+    let matcher = SubscriptionMatcher::new(list)?;
     let once = list.mode == subscription_list::Mode::Once as i32;
 
     let held = target.upgrade().ok_or_else(target_stopped)?;
     let settings = held.settings();
-    let samples = if once {
-        Vec::new()
+    let plan = if once {
+        Plan::default()
     } else {
-        sample_groups(&list, settings.sample_floor)?
+        plan_groups(list, settings.sample_floor)?
     };
     let place = held.admit().ok_or_else(|| {
         Status::resource_exhausted(format!(
@@ -242,76 +269,318 @@ async fn subscribe(
             settings.max_subscribers
         ))
     })?;
-    let stall_limit = stall_limit(samples.iter().map(|g| g.period), settings.stall_floor);
+    let stall_limit = stall_limit(plan.samples.iter().map(|g| g.period), settings.stall_floor);
+    // Subscribed before the initial sync takes its snapshot, so every
+    // change the snapshot does not hold arrives on the receiver.
+    let on_change = (!plan.on_change.is_empty()).then(|| OnChangeSet {
+        selectors: plan.on_change,
+        rx: held.subscribe(),
+        matched: HashMap::new(),
+        prune_at: MATCHED_PRUNE_FLOOR,
+    });
+    #[cfg(test)]
+    let probe = std::sync::Arc::clone(&settings.probe);
     let state = held.state();
     drop(held);
 
     let (tx, rx) = mpsc::channel(OUTBOUND_CAPACITY);
     let (ending, ended) = oneshot::channel();
-    // Further requests are read and ignored, outside any `select!`. The
-    // request stream ending does not end the subscription.
-    let draining = tokio::spawn(async move { while let Ok(Some(_)) = inbound.message().await {} });
     let producer = Producer {
         target,
         matcher,
         once,
         updates_only: list.updates_only,
-        samples,
+        samples: plan.samples,
+        heartbeats: plan.heartbeats,
+        on_change,
         stall_limit,
         peer,
         _place: place,
+        state,
         tx,
         ending,
+        #[cfg(test)]
+        probe,
     };
-    tokio::spawn(producer.run(draining, state));
-    Ok(tonic::Response::new(Responses {
+    let responses = Responses {
         rx,
         ended: Some(ended),
-    }))
+    };
+    Ok((producer, responses))
 }
 
-/// The subscriptions of a STREAM list that share one sample period.
-struct SampleGroup {
-    period: Duration,
+/// The kinds of value a group of subscriptions serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KindFilter {
+    /// Every kind.
+    Any,
+    /// `string_val` only.
+    Strings,
+    /// Every kind but `string_val`.
+    NonStrings,
+}
+
+impl KindFilter {
+    /// Whether a series whose values are of `kind` is served.
+    fn admits(self, kind: ValueKind) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Strings => kind == ValueKind::String,
+            Self::NonStrings => kind != ValueKind::String,
+        }
+    }
+}
+
+/// Subscriptions of one list that are served alike, and the kinds of value
+/// they serve.
+struct Selector {
     matcher: SubscriptionMatcher,
+    kinds: KindFilter,
+}
+
+impl Selector {
+    /// Whether the series at `path`, whose values are of `kind`, is served.
+    fn selects(&self, path: &PathKey, kind: ValueKind) -> bool {
+        self.kinds.admits(kind) && self.matcher.matches(path.path())
+    }
+}
+
+/// Subscriptions of a STREAM list served on one timer: sampled, or sent as
+/// heartbeats.
+struct Group {
+    period: Duration,
+    selector: Selector,
     next: Instant,
 }
 
-/// One [`SampleGroup`] per distinct period in `list`, each due one period
-/// from now. A subscription's period is its `sample_interval`, raised to
-/// `floor`; an interval of 0 is the floor.
-fn sample_groups(
-    list: &proto::SubscriptionList,
-    floor: Duration,
-) -> Result<Vec<SampleGroup>, Status> {
-    let mut periods: Vec<(Duration, Vec<proto::Subscription>)> = Vec::new();
+/// How a STREAM list is served.
+#[derive(Default)]
+struct Plan {
+    samples: Vec<Group>,
+    heartbeats: Vec<Group>,
+    /// The selectors of the ON_CHANGE set; empty when the list has no
+    /// ON_CHANGE or TARGET_DEFINED subscription.
+    on_change: Vec<Selector>,
+}
+
+/// Split a STREAM `list` into sample groups, heartbeat groups and the
+/// ON_CHANGE set:
+///
+/// - SAMPLE: a sample group at its `sample_interval`. Its
+///   `heartbeat_interval` is not read.
+/// - ON_CHANGE: the ON_CHANGE set, and a heartbeat group at its
+///   `heartbeat_interval` unless that is 0.
+/// - TARGET_DEFINED: for `string_val` series, the ON_CHANGE set and a
+///   heartbeat group as for ON_CHANGE; for every other kind, a sample group
+///   at its `sample_interval`.
+///
+/// Every interval is raised to `floor`, so a sample interval of 0 is the
+/// floor. Subscriptions with the same period and kinds share a group, due one
+/// period from now.
+fn plan_groups(list: &proto::SubscriptionList, floor: Duration) -> Result<Plan, Status> {
+    type Timed = Vec<((Duration, KindFilter), Vec<proto::Subscription>)>;
+    let (mut samples, mut heartbeats): (Timed, Timed) = (Vec::new(), Vec::new());
+    let mut on_change: Vec<(KindFilter, Vec<proto::Subscription>)> = Vec::new();
     for subscription in &list.subscription {
-        let period = Duration::from_nanos(subscription.sample_interval).max(floor);
-        match periods.iter_mut().find(|(p, _)| *p == period) {
-            Some((_, subscriptions)) => subscriptions.push(subscription.clone()),
-            None => periods.push((period, vec![subscription.clone()])),
+        let sample = Duration::from_nanos(subscription.sample_interval).max(floor);
+        let heartbeat = (subscription.heartbeat_interval > 0)
+            .then(|| Duration::from_nanos(subscription.heartbeat_interval).max(floor));
+        let mut changes = |kinds: KindFilter| {
+            add(&mut on_change, kinds, subscription);
+            if let Some(period) = heartbeat {
+                add(&mut heartbeats, (period, kinds), subscription);
+            }
+        };
+        // The matcher has refused every mode but these in a STREAM list.
+        match SubscriptionMode::try_from(subscription.mode) {
+            Ok(SubscriptionMode::OnChange) => changes(KindFilter::Any),
+            Ok(SubscriptionMode::TargetDefined) => {
+                changes(KindFilter::Strings);
+                add(&mut samples, (sample, KindFilter::NonStrings), subscription);
+            }
+            _ => add(&mut samples, (sample, KindFilter::Any), subscription),
         }
     }
-    let now = Instant::now();
-    periods
-        .into_iter()
-        .map(|(period, subscription)| {
-            let group = proto::SubscriptionList {
-                subscription,
-                ..list.clone()
-            };
-            Ok(SampleGroup {
-                period,
-                matcher: SubscriptionMatcher::new(&group)?,
-                next: now + period,
-            })
+    let selector = |kinds: KindFilter, subscription: Vec<proto::Subscription>| {
+        let group = proto::SubscriptionList {
+            subscription,
+            ..list.clone()
+        };
+        Ok::<_, Status>(Selector {
+            matcher: SubscriptionMatcher::new(&group)?,
+            kinds,
         })
-        .collect()
+    };
+    let now = Instant::now();
+    let groups = |timed: Timed| {
+        timed
+            .into_iter()
+            .map(|((period, kinds), subscription)| {
+                Ok(Group {
+                    period,
+                    selector: selector(kinds, subscription)?,
+                    next: now + period,
+                })
+            })
+            .collect::<Result<Vec<_>, Status>>()
+    };
+    Ok(Plan {
+        samples: groups(samples)?,
+        heartbeats: groups(heartbeats)?,
+        on_change: on_change
+            .into_iter()
+            .map(|(kinds, subscription)| selector(kinds, subscription))
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+/// Add `subscription` to the entry of `groups` keyed `key`, adding the entry
+/// when there is none.
+fn add<K: PartialEq>(
+    groups: &mut Vec<(K, Vec<proto::Subscription>)>,
+    key: K,
+    subscription: &proto::Subscription,
+) {
+    match groups.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, subscriptions)) => subscriptions.push(subscription.clone()),
+        None => groups.push((key, vec![subscription.clone()])),
+    }
+}
+
+/// The ON_CHANGE subscriptions of a list: the receiver of the target's
+/// broadcast of changed values, which series they match, and which version
+/// of each was last queued.
+struct OnChangeSet {
+    selectors: Vec<Selector>,
+    rx: broadcast::Receiver<SeriesUpdate>,
+    /// What the set knows of each series seen so far.
+    matched: HashMap<SeriesId, Seen>,
+    /// The size of `matched` past which it is pruned.
+    prune_at: usize,
+}
+
+/// What an [`OnChangeSet`] knows of one series.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    /// Whether the series matches, decided when it is first seen.
+    matches: bool,
+    /// The version of the series' value last queued, by the initial sync, a
+    /// resync, a heartbeat or a change; 0 before any.
+    queued: u64,
+}
+
+impl OnChangeSet {
+    /// What the set knows of series `id`, whose values are of `kind`.
+    /// Whether it matches is decided the first time the series is seen,
+    /// from the path `path` returns; a series without a path does not
+    /// match.
+    fn seen(
+        &mut self,
+        id: SeriesId,
+        kind: ValueKind,
+        path: impl FnOnce() -> Option<PathKey>,
+    ) -> &mut Seen {
+        let selectors = &self.selectors;
+        self.matched.entry(id).or_insert_with(|| Seen {
+            matches: path().is_some_and(|path| selectors.iter().any(|s| s.selects(&path, kind))),
+            queued: 0,
+        })
+    }
+
+    /// Forget the series that are not in `snapshot`. `matched` may then grow
+    /// to twice what is left, and at least [`MATCHED_PRUNE_FLOOR`], before it
+    /// is pruned again.
+    fn prune(&mut self, snapshot: &[SeriesSnapshot]) {
+        let live: HashSet<SeriesId> = snapshot.iter().map(|s| s.series_id).collect();
+        self.matched.retain(|id, _| live.contains(id));
+        self.prune_at = self
+            .matched
+            .len()
+            .saturating_mul(2)
+            .max(MATCHED_PRUNE_FLOOR);
+    }
+}
+
+/// The next message on the ON_CHANGE set's broadcast; never resolves when
+/// there is no set.
+async fn next_change(on_change: &mut Option<OnChangeSet>) -> Result<SeriesUpdate, RecvError> {
+    match on_change {
+        Some(set) => set.rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// One entry of a subscription's queue.
+enum Queued {
+    /// A response encoded when it was queued.
+    Response(PreEncoded),
+    /// A series whose latest value [`Pending::values`] holds.
+    Value(SeriesId),
+}
+
+/// The responses a subscription has yet to send, in order. A series has at
+/// most one value queued: queuing another replaces it in place.
+#[derive(Default)]
+struct Pending {
+    queue: VecDeque<Queued>,
+    values: HashMap<SeriesId, Bytes>,
+    /// The [`Queued::Response`] entries in `queue`.
+    responses: usize,
+}
+
+impl Pending {
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// The [`Queued::Value`] entries in the queue.
+    #[cfg(test)]
+    fn queued_values(&self) -> usize {
+        self.queue.len() - self.responses
+    }
+
+    /// Queue `response` last.
+    fn push_response(&mut self, response: PreEncoded) {
+        self.responses += 1;
+        self.queue.push_back(Queued::Response(response));
+    }
+
+    /// Queue `latest`, one encoded notification, as series `id`'s value: in
+    /// place of the value already queued for it, or last.
+    fn push_value(&mut self, id: SeriesId, latest: Bytes) {
+        match self.values.entry(id) {
+            Entry::Occupied(mut queued) => {
+                queued.insert(latest);
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(latest);
+                self.queue.push_back(Queued::Value(id));
+            }
+        }
+    }
+
+    /// Take the first response, encoding a queued value as an update.
+    fn pop(&mut self) -> Option<PreEncoded> {
+        loop {
+            match self.queue.pop_front()? {
+                Queued::Response(response) => {
+                    self.responses -= 1;
+                    return Some(response);
+                }
+                Queued::Value(id) => {
+                    if let Some(latest) = self.values.remove(&id) {
+                        return Some(update_response(&latest));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// How long a subscription with responses waiting may go without its client
 /// draining one: three of its longest sample periods, and never less than
-/// `floor`. A ONCE list has no periods, so its limit is `floor`.
+/// `floor`. A ONCE list, and a list with only ON_CHANGE subscriptions, has no
+/// sample periods, so its limit is `floor`; heartbeat periods do not count.
 ///
 /// The limit runs from when the client's receive window is spent. Until then
 /// the client's HTTP/2 layer accepts data whether or not the application
@@ -346,6 +615,57 @@ async fn listener_stopped(mut state: watch::Receiver<TargetState>) {
     let _ = state.wait_for(|s| *s != TargetState::Listening).await;
 }
 
+/// What the subscriptions of one target did, read by tests.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct Probe {
+    /// The most series values any subscription has held queued at once.
+    pub(crate) max_queued_values: std::sync::atomic::AtomicUsize,
+    /// Resyncs after a subscription's broadcast receiver lagged.
+    pub(crate) resyncs: std::sync::atomic::AtomicUsize,
+    /// Sample groups that fell due.
+    pub(crate) samples: std::sync::atomic::AtomicUsize,
+    /// Run by every resync after it takes its new broadcast receiver and
+    /// before it reads the snapshot.
+    pub(crate) after_resubscribe: Hook,
+    /// Run by every heartbeat before it reads the snapshot.
+    pub(crate) before_heartbeat: Hook,
+}
+
+/// A step a test sets for a subscription to run; nothing until it is set.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Hook(std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>);
+
+#[cfg(test)]
+impl Hook {
+    /// Run `step` each time the hook runs, in place of any earlier step.
+    pub(crate) fn set(&self, step: impl FnMut() + Send + 'static) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(step));
+    }
+
+    fn run(&self) {
+        if let Some(step) = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            step();
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hook")
+    }
+}
+
 /// What one turn of [`Producer::run`] did.
 enum Step {
     /// The client has gone.
@@ -358,6 +678,10 @@ enum Step {
     Sent,
     /// A sample group is due.
     Sample,
+    /// A heartbeat group is due.
+    Heartbeat,
+    /// The ON_CHANGE set's broadcast delivered a change, or reported a lag.
+    Change(Result<SeriesUpdate, RecvError>),
 }
 
 /// The task that sends one subscription's responses.
@@ -367,24 +691,45 @@ struct Producer {
     once: bool,
     /// The initial sync sends only the sync marker.
     updates_only: bool,
-    samples: Vec<SampleGroup>,
+    samples: Vec<Group>,
+    heartbeats: Vec<Group>,
+    on_change: Option<OnChangeSet>,
     /// How long responses may wait without the client draining one.
     stall_limit: Duration,
-    /// The client's address, for the log line when it stalls.
+    /// The client's address, for the log lines when it stalls or lags.
     peer: Option<SocketAddr>,
     /// The subscriber place the subscription holds until the producer
     /// returns.
     _place: OwnedSemaphorePermit,
+    /// The target's listener state.
+    state: watch::Receiver<TargetState>,
     tx: mpsc::Sender<Result<PreEncoded, Status>>,
     /// Takes the status the subscription ends with when the target stopped
     /// or the client stalled.
     ending: oneshot::Sender<Status>,
+    #[cfg(test)]
+    probe: std::sync::Arc<Probe>,
 }
 
 impl Producer {
     /// Send the initial sync — the latest value of every matching series
     /// (none with `updates_only`), then the sync marker — and, for a STREAM
-    /// list, every matching series again each time a sample group is due.
+    /// list: every series a sample group matches each time the group is
+    /// due; every change to a series the ON_CHANGE set matches, including a
+    /// series first published after the subscription started; and the
+    /// latest value of every series a heartbeat group matches each time the
+    /// group is due, changed or not.
+    ///
+    /// A series has at most one value waiting: a newer change or heartbeat
+    /// replaces it in place. A change is queued only when its version is
+    /// newer than that of the series' value last queued, so a change the
+    /// initial sync, a resync or a heartbeat already holds is not sent
+    /// again. Sample
+    /// groups fall due only while no sampled response or sync marker waits.
+    /// When the broadcast reports that the subscription fell more than the
+    /// target's `subscriber_buffer` changes behind, the latest value of
+    /// every series the ON_CHANGE set matches is queued again, without a
+    /// second sync marker.
     ///
     /// Returns when the client stops receiving, after the sync marker for a
     /// ONCE list, and when the target's listener stops or the target is
@@ -397,57 +742,90 @@ impl Producer {
     /// ended. The client's request stream ending does not end a
     /// subscription. Returning gives the subscriber place back, ends the
     /// response stream and aborts `draining`.
-    async fn run(mut self, draining: JoinHandle<()>, state: watch::Receiver<TargetState>) {
-        let stopped = listener_stopped(state);
+    async fn run(mut self, draining: JoinHandle<()>) {
+        let stopped = listener_stopped(self.state.clone());
         tokio::pin!(stopped);
         let ending = match self.initial_sync() {
             None => Some(target_stopped()),
-            Some(mut pending) => loop {
-                if self.once && pending.is_empty() {
-                    break None;
-                }
-                let next_sample = self.samples.iter().map(|g| g.next).min();
-                let step = tokio::select! {
-                    _ = &mut stopped => Step::TargetStopped,
-                    _ = self.tx.closed() => Step::ClientDone,
-                    permit = tokio::time::timeout(self.stall_limit, self.tx.reserve()),
-                        if !pending.is_empty() => match permit {
-                        Ok(Ok(permit)) => {
-                            if let Some(response) = pending.pop_front() {
-                                permit.send(Ok(response));
-                            }
-                            Step::Sent
-                        }
-                        Ok(Err(_)) => Step::ClientDone,
-                        Err(_) => Step::Stalled,
-                    },
-                    _ = tokio::time::sleep_until(next_sample.unwrap_or_else(Instant::now)),
-                        if pending.is_empty() && next_sample.is_some() => Step::Sample,
-                };
-                match step {
-                    Step::ClientDone => break None,
-                    Step::TargetStopped => break Some(target_stopped()),
-                    Step::Stalled => {
-                        let peer = self
-                            .peer
-                            .map_or_else(|| "unknown".to_string(), |peer| peer.to_string());
-                        tracing::warn!(
-                            %peer,
-                            limit = ?self.stall_limit,
-                            "gnmi subscriber stalled; ending its subscription"
-                        );
-                        break Some(Status::unavailable(format!(
-                            "subscriber stalled: no data drained for {:?}",
-                            self.stall_limit
-                        )));
+            Some(mut pending) => {
+                // When the queue last became non-empty or last sent a response.
+                let mut waiting_since = Instant::now();
+                loop {
+                    if self.once && pending.is_empty() {
+                        break None;
                     }
-                    Step::Sent => {}
-                    Step::Sample => match self.sample() {
-                        Some(responses) => pending = responses,
-                        None => break Some(target_stopped()),
-                    },
+                    let next_sample = (pending.responses == 0)
+                        .then(|| self.samples.iter().map(|g| g.next).min())
+                        .flatten();
+                    let next_heartbeat = self.heartbeats.iter().map(|g| g.next).min();
+                    let was_empty = pending.is_empty();
+                    let step = tokio::select! {
+                        _ = &mut stopped => Step::TargetStopped,
+                        _ = self.tx.closed() => Step::ClientDone,
+                        permit = tokio::time::timeout_at(
+                            waiting_since + self.stall_limit,
+                            self.tx.reserve(),
+                        ), if !pending.is_empty() => match permit {
+                            Ok(Ok(permit)) => {
+                                if let Some(response) = pending.pop() {
+                                    permit.send(Ok(response));
+                                }
+                                Step::Sent
+                            }
+                            Ok(Err(_)) => Step::ClientDone,
+                            Err(_) => Step::Stalled,
+                        },
+                        update = next_change(&mut self.on_change),
+                            if self.on_change.is_some() => Step::Change(update),
+                        _ = tokio::time::sleep_until(next_sample.unwrap_or_else(Instant::now)),
+                            if next_sample.is_some() => Step::Sample,
+                        _ = tokio::time::sleep_until(next_heartbeat.unwrap_or_else(Instant::now)),
+                            if next_heartbeat.is_some() => Step::Heartbeat,
+                    };
+                    let served = match step {
+                        Step::ClientDone => break None,
+                        Step::TargetStopped => break Some(target_stopped()),
+                        Step::Stalled => {
+                            tracing::warn!(
+                                peer = %self.peer_name(),
+                                limit = ?self.stall_limit,
+                                "gnmi subscriber stalled; ending its subscription"
+                            );
+                            break Some(Status::unavailable(format!(
+                                "subscriber stalled: no data drained for {:?}",
+                                self.stall_limit
+                            )));
+                        }
+                        Step::Sent => {
+                            waiting_since = Instant::now();
+                            true
+                        }
+                        Step::Sample => self.sample(&mut pending),
+                        Step::Heartbeat => self.heartbeat(&mut pending),
+                        Step::Change(Ok(update)) => self.offer(update, &mut pending),
+                        Step::Change(Err(RecvError::Lagged(skipped))) => {
+                            tracing::debug!(
+                                peer = %self.peer_name(),
+                                skipped,
+                                "gnmi ON_CHANGE subscriber fell behind the broadcast; resyncing"
+                            );
+                            self.resync(&mut pending)
+                        }
+                        Step::Change(Err(RecvError::Closed)) => false,
+                    };
+                    if !served {
+                        break Some(target_stopped());
+                    }
+                    if was_empty && !pending.is_empty() {
+                        waiting_since = Instant::now();
+                    }
+                    #[cfg(test)]
+                    self.probe.max_queued_values.fetch_max(
+                        pending.queued_values(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
-            },
+            }
         };
         draining.abort();
         if let Some(status) = ending {
@@ -455,52 +833,163 @@ impl Producer {
         }
     }
 
-    /// The latest value of every matching series (none with
-    /// `updates_only`), then the sync marker. `None` once the target is
-    /// gone.
-    fn initial_sync(&self) -> Option<VecDeque<PreEncoded>> {
-        let target = self.target.upgrade()?;
-        let mut responses: VecDeque<PreEncoded> = if self.updates_only {
-            VecDeque::new()
-        } else {
-            target
-                .snapshot()
-                .iter()
-                .filter(|series| self.matcher.matches(series.path.path()))
-                .map(|series| update_response(&series.latest))
-                .collect()
-        };
-        drop(target);
-        responses.push_back(sync_response());
-        Some(responses)
+    /// The client's address, or `unknown`.
+    fn peer_name(&self) -> String {
+        self.peer
+            .map_or_else(|| "unknown".to_string(), |peer| peer.to_string())
     }
 
-    /// The latest value of every series a due sample group matches, with
-    /// each due group moved to its next period. `None` once the target is
-    /// gone.
-    fn sample(&mut self) -> Option<VecDeque<PreEncoded>> {
-        let now = Instant::now();
-        let due: Vec<&SubscriptionMatcher> = self
-            .samples
-            .iter()
-            .filter(|g| g.next <= now)
-            .map(|g| &g.matcher)
-            .collect();
-        let target = self.target.upgrade()?;
-        let responses = target
-            .snapshot()
-            .iter()
-            .filter(|series| due.iter().any(|m| m.matches(series.path.path())))
-            .map(|series| update_response(&series.latest))
-            .collect();
-        drop(target);
-        for group in &mut self.samples {
-            if group.next <= now {
-                group.next = next_due(group.next, group.period, now);
+    /// The latest value of every matching series (none with
+    /// `updates_only`), then the sync marker. Each series seen is entered in
+    /// the ON_CHANGE set's match cache, with the version of the value
+    /// queued for it. `None` once the target is gone.
+    fn initial_sync(&mut self) -> Option<Pending> {
+        let mut pending = Pending::default();
+        if !self.updates_only {
+            let target = self.target.upgrade()?;
+            let snapshot = target.snapshot();
+            drop(target);
+            for series in snapshot {
+                let queue = self.matcher.matches(series.path.path());
+                if let Some(set) = self.on_change.as_mut() {
+                    let seen =
+                        set.seen(series.series_id, series.kind, || Some(series.path.clone()));
+                    if queue {
+                        seen.queued = series.version;
+                    }
+                }
+                if queue {
+                    pending.push_value(series.series_id, series.latest);
+                }
             }
         }
-        Some(responses)
+        pending.push_response(sync_response());
+        Some(pending)
     }
+
+    /// Queue the latest value of every series a due sample group matches,
+    /// and move each due group to its next period. `false` once the target
+    /// is gone.
+    fn sample(&mut self, pending: &mut Pending) -> bool {
+        #[cfg(test)]
+        self.probe
+            .samples
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(due) = due(&mut self.samples, &self.target) else {
+            return false;
+        };
+        for series in due {
+            pending.push_response(update_response(&series.latest));
+        }
+        true
+    }
+
+    /// Queue the latest value of every series a due heartbeat group matches,
+    /// changed or not, recording its version in the ON_CHANGE set, and move
+    /// each due group to its next period. `false` once the target is gone.
+    fn heartbeat(&mut self, pending: &mut Pending) -> bool {
+        #[cfg(test)]
+        self.probe.before_heartbeat.run();
+        let Some(due) = due(&mut self.heartbeats, &self.target) else {
+            return false;
+        };
+        for series in due {
+            if let Some(set) = self.on_change.as_mut() {
+                set.seen(series.series_id, series.kind, || Some(series.path.clone()))
+                    .queued = series.version;
+            }
+            pending.push_value(series.series_id, series.latest);
+        }
+        true
+    }
+
+    /// Queue `update` when the ON_CHANGE set matches its series and its
+    /// version is newer than that of the series' value last queued; a series
+    /// not seen before is matched from the path decoded from the update.
+    /// Prunes the match cache when it has outgrown its limit. `false` once
+    /// the target is gone.
+    fn offer(&mut self, update: SeriesUpdate, pending: &mut Pending) -> bool {
+        let Some(set) = self.on_change.as_mut() else {
+            return true;
+        };
+        let SeriesUpdate {
+            series_id,
+            kind,
+            version,
+            bytes,
+        } = update;
+        let seen = set.seen(series_id, kind, || PathKey::decode(&bytes).ok());
+        if seen.matches && version > seen.queued {
+            seen.queued = version;
+            pending.push_value(series_id, bytes);
+        }
+        if set.matched.len() > set.prune_at {
+            let Some(target) = self.target.upgrade() else {
+                return false;
+            };
+            let snapshot = target.snapshot();
+            drop(target);
+            set.prune(&snapshot);
+        }
+        true
+    }
+
+    /// Move the ON_CHANGE set to a receiver at the broadcast's tail, dropping
+    /// the changes it fell behind on, then queue the latest value of every
+    /// series it matches, recording each one's version, and prune its match
+    /// cache to the series in the table. `false` once the target is gone.
+    fn resync(&mut self, pending: &mut Pending) -> bool {
+        #[cfg(test)]
+        self.probe
+            .resyncs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(set) = self.on_change.as_mut() else {
+            return true;
+        };
+        set.rx = set.rx.resubscribe();
+        #[cfg(test)]
+        self.probe.after_resubscribe.run();
+        let Some(target) = self.target.upgrade() else {
+            return false;
+        };
+        let snapshot = target.snapshot();
+        drop(target);
+        set.prune(&snapshot);
+        for series in snapshot {
+            let seen = set.seen(series.series_id, series.kind, || Some(series.path.clone()));
+            if seen.matches {
+                seen.queued = series.version;
+                pending.push_value(series.series_id, series.latest);
+            }
+        }
+        true
+    }
+}
+
+/// Every series a due group of `groups` selects, with each due group moved
+/// to its next period. `None` once the target is gone.
+fn due(groups: &mut [Group], target: &Weak<GnmiTarget>) -> Option<Vec<SeriesSnapshot>> {
+    let now = Instant::now();
+    let target = target.upgrade()?;
+    let snapshot = target.snapshot();
+    drop(target);
+    let selected = {
+        let due: Vec<&Selector> = groups
+            .iter()
+            .filter(|g| g.next <= now)
+            .map(|g| &g.selector)
+            .collect();
+        snapshot
+            .into_iter()
+            .filter(|series| due.iter().any(|s| s.selects(&series.path, series.kind)))
+            .collect()
+    };
+    for group in groups.iter_mut() {
+        if group.next <= now {
+            group.next = next_due(group.next, group.period, now);
+        }
+    }
+    Some(selected)
 }
 
 /// The first instant after `now` that is a whole number of `period`s after
@@ -523,21 +1012,23 @@ mod tests {
     use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::net::{TcpListener, TcpStream};
     use tokio_stream::wrappers::ReceiverStream;
+    use tokio_stream::StreamExt;
     use tokio_util::sync::CancellationToken;
     use tonic::transport::Channel;
 
     use super::*;
     use crate::config::{BaseScheduleConfig, ScenarioConfig};
     use crate::encoder::gnmi::path::parse_client_path;
-    use crate::encoder::gnmi::proto::{subscribe_response, SubscriptionMode};
-    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+    use crate::encoder::gnmi::proto::subscribe_response;
+    use crate::encoder::gnmi::proto::typed_value::Value;
+    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig, GnmiValueType};
     use crate::encoder::{Encoder, EncoderConfig};
     use crate::generator::GeneratorConfig;
     use crate::model::metric::{Labels, MetricEvent};
     use crate::schedule::stats::ScenarioStats;
     use crate::schedule::LaunchId;
-    use crate::sink::gnmi::target::{Owner, PathKey, DRAIN_GRACE};
-    use crate::sink::gnmi::{registry, GnmiTargetConfig, GnmiTargetSink};
+    use crate::sink::gnmi::target::{Owner, PathKey, Published, DRAIN_GRACE};
+    use crate::sink::gnmi::{registry, GnmiTargetConfig, GnmiTargetSink, MAX_SUBSCRIBER_BUFFER};
     use crate::sink::{create_sink, Sink, SinkConfig};
     use crate::{OnSinkError, SondaError};
 
@@ -546,6 +1037,10 @@ mod tests {
 
     /// How long a test waits for one response before failing.
     const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// How long a test reads with nothing arriving before it takes the
+    /// stream to be quiet.
+    const QUIET: Duration = Duration::from_millis(100);
 
     fn encoder_config() -> GnmiEncoderConfig {
         GnmiEncoderConfig {
@@ -565,9 +1060,48 @@ mod tests {
             .expect("bind an ephemeral port")
     }
 
+    /// `encoder_config` with `in_octets` typed `uint` and `oper_status` an
+    /// enum of `UP` (1) and `DOWN` (2).
+    fn typed_config() -> GnmiEncoderConfig {
+        GnmiEncoderConfig {
+            values: HashMap::from([
+                ("in_octets".to_string(), GnmiValueType::Uint),
+                (
+                    "oper_status".to_string(),
+                    GnmiValueType::Enum(std::collections::BTreeMap::from([
+                        (1, "UP".to_string()),
+                        (2, "DOWN".to_string()),
+                    ])),
+                ),
+            ]),
+            ..encoder_config()
+        }
+    }
+
+    /// A sink on its own ephemeral port, with its config adjusted by
+    /// `adjust`.
+    async fn sink_with(adjust: impl FnOnce(&mut GnmiTargetConfig)) -> GnmiTargetSink {
+        let mut cfg = GnmiTargetConfig::new("127.0.0.1:0");
+        adjust(&mut cfg);
+        GnmiTargetSink::new(&cfg)
+            .await
+            .expect("bind an ephemeral port")
+    }
+
     /// The event `name{ifName=if_name}` and its encoded notification.
     fn encoded(name: &str, if_name: &str, value: f64) -> (MetricEvent, Vec<u8>) {
-        let encoder = GnmiEncoder::new(&encoder_config()).expect("valid encoder");
+        encoded_with(&encoder_config(), name, if_name, value)
+    }
+
+    /// The event `name{ifName=if_name}` and its notification encoded with
+    /// `config`.
+    fn encoded_with(
+        config: &GnmiEncoderConfig,
+        name: &str,
+        if_name: &str,
+        value: f64,
+    ) -> (MetricEvent, Vec<u8>) {
+        let encoder = GnmiEncoder::new(config).expect("valid encoder");
         let event = MetricEvent::new(
             name.to_string(),
             value,
@@ -587,15 +1121,40 @@ mod tests {
             .expect("published");
     }
 
+    /// Publish `name` for interface `if_name` through `sink`, encoded with
+    /// [`typed_config`].
+    async fn publish_typed(sink: &mut GnmiTargetSink, name: &str, if_name: &str, value: f64) {
+        let (event, buf) = encoded_with(&typed_config(), name, if_name, value);
+        sink.write_metric_event(&event, &buf)
+            .await
+            .expect("published");
+    }
+
+    /// Publish `in_octets` for interface `eth<i>` at `value` straight into
+    /// `target`, as `owner`, into series `id` when given.
+    fn publish_as(
+        target: &GnmiTarget,
+        owner: Owner,
+        id: Option<SeriesId>,
+        i: usize,
+        value: f64,
+    ) -> (SeriesId, Published) {
+        let (_, buf) = encoded("in_octets", &format!("eth{i}"), value);
+        let key = PathKey::decode(&buf).expect("a notification");
+        target
+            .publish(owner, id, &key, &buf)
+            .expect("the owner's path")
+    }
+
     /// Publish `name` for interface `if_name` straight into `target`, as a
     /// launch of its own. Returns whether any broadcast receiver existed.
     fn publish_into(target: &GnmiTarget, name: &str, if_name: &str) -> bool {
         let (_, buf) = encoded(name, if_name, 1.0);
         let key = PathKey::decode(&buf).expect("a notification");
-        let (_, receivers) = target
+        let (_, published) = target
             .publish(Owner::from(LaunchId::next()), None, &key, &buf)
             .expect("a free path");
-        receivers
+        published.receivers
     }
 
     /// A STREAM list of one SAMPLE subscription to `path`, every
@@ -613,6 +1172,15 @@ mod tests {
             encoding: proto::Encoding::Proto as i32,
             updates_only: false,
         }
+    }
+
+    /// A STREAM list of one ON_CHANGE subscription to `path`, with
+    /// `heartbeat` as its heartbeat interval.
+    fn on_change(path: &str, heartbeat: Duration) -> proto::SubscriptionList {
+        let mut list = stream(path, Duration::ZERO);
+        list.subscription[0].mode = SubscriptionMode::OnChange as i32;
+        list.subscription[0].heartbeat_interval = heartbeat.as_nanos() as u64;
+        list
     }
 
     /// A ONCE list for `path`.
@@ -767,6 +1335,65 @@ mod tests {
 
     fn counter(if_name: &str, leaf: &str) -> String {
         format!("openconfig:/interfaces/interface[name={if_name}]/state/counters/{leaf}")
+    }
+
+    /// The next response: an update's series path and value, or `None` for
+    /// the sync marker.
+    async fn next_value(client: &mut Client) -> Option<(String, Value)> {
+        value_within(client, PATIENCE)
+            .await
+            .expect("a response in time")
+    }
+
+    /// The next response as [`next_value`] reads it, or `None` when none
+    /// arrives within `wait`.
+    async fn value_within(client: &mut Client, wait: Duration) -> Option<Option<(String, Value)>> {
+        let message = tokio::time::timeout(wait, client.responses.message())
+            .await
+            .ok()?
+            .expect("no error on the stream")
+            .expect("the stream is open");
+        Some(match message.response {
+            Some(subscribe_response::Response::SyncResponse(true)) => None,
+            Some(subscribe_response::Response::Update(n)) => Some((series_path(&n), value_of(&n))),
+            other => panic!("unexpected response {other:?}"),
+        })
+    }
+
+    /// The value of a notification's first update.
+    fn value_of(notification: &proto::Notification) -> Value {
+        notification
+            .update
+            .first()
+            .and_then(|u| u.val.clone())
+            .and_then(|v| v.value)
+            .expect("an update with a value")
+    }
+
+    /// Every response received until `deadline`, as [`next_value`] reads
+    /// them.
+    async fn values_until(client: &mut Client, deadline: Instant) -> Vec<Option<(String, Value)>> {
+        let mut values = Vec::new();
+        while let Ok(message) = tokio::time::timeout_at(deadline, client.responses.message()).await
+        {
+            let response = message.expect("no error on the stream").expect("open");
+            values.push(match response.response {
+                Some(subscribe_response::Response::SyncResponse(true)) => None,
+                Some(subscribe_response::Response::Update(n)) => {
+                    Some((series_path(&n), value_of(&n)))
+                }
+                other => panic!("unexpected response {other:?}"),
+            });
+        }
+        values
+    }
+
+    /// How many of `values` are updates for `series`.
+    fn updates_for(values: &[Option<(String, Value)>], series: &str) -> usize {
+        values
+            .iter()
+            .filter(|v| v.as_ref().is_some_and(|(path, _)| path == series))
+            .count()
     }
 
     #[test]
@@ -1197,7 +1824,6 @@ mod tests {
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::poll(subscription_list::Mode::Poll, SubscriptionMode::Sample, "POLL")]
-    #[case::on_change(subscription_list::Mode::Stream, SubscriptionMode::OnChange, "ON_CHANGE")]
     #[tokio::test]
     async fn unsupported_mode_is_unimplemented_with_mode_named(
         #[case] list_mode: subscription_list::Mode,
@@ -1760,6 +2386,807 @@ mod tests {
             due + Duration::from_secs(1),
             "due exactly now moves one period"
         );
+    }
+
+    /// An ON_CHANGE subscription receives the initial sync and the sync
+    /// marker, then one update per change of a series it matches: the first
+    /// response after many publishes of an unchanged value is the next
+    /// change, and an unchanged value sends nothing.
+    #[tokio::test]
+    async fn on_change_sends_the_sync_then_one_update_per_change() {
+        const UNCHANGED: usize = 20;
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        publish(&mut sink, "out_octets", "eth0", 1.0).await;
+        let mut client = open(
+            sink.target().local_addr(),
+            on_change(
+                "/interfaces/interface/state/counters/in-octets",
+                Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("subscribed");
+        let series = counter("eth0", "in-octets");
+        assert_eq!(
+            next_value(&mut client).await,
+            Some((series.clone(), Value::DoubleVal(1.0)))
+        );
+        assert_eq!(next_value(&mut client).await, None, "the sync marker");
+
+        for value in [2.0, 3.0, 4.0] {
+            for _ in 0..UNCHANGED {
+                publish(&mut sink, "in_octets", "eth0", value - 1.0).await;
+                publish(&mut sink, "out_octets", "eth0", value).await;
+            }
+            publish(&mut sink, "in_octets", "eth0", value).await;
+            assert_eq!(
+                next_value(&mut client).await,
+                Some((series.clone(), Value::DoubleVal(value))),
+                "the first response after {UNCHANGED} unchanged publishes is the change"
+            );
+        }
+        for _ in 0..UNCHANGED {
+            publish(&mut sink, "in_octets", "eth0", 4.0).await;
+        }
+        let quiet = values_until(&mut client, Instant::now() + Duration::from_millis(300)).await;
+        assert!(quiet.is_empty(), "an unchanged value sent {quiet:?}");
+    }
+
+    /// A series first published after an ON_CHANGE subscription started is
+    /// delivered when it matches, and never when it does not.
+    #[tokio::test]
+    async fn on_change_delivers_a_new_series_only_when_it_matches() {
+        let mut sink = sink(None, None).await;
+        let mut client = open(
+            sink.target().local_addr(),
+            on_change(
+                "/interfaces/interface/state/counters/in-octets",
+                Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(
+            next_value(&mut client).await,
+            None,
+            "an empty table syncs at once"
+        );
+
+        publish(&mut sink, "out_octets", "eth1", 1.0).await;
+        publish(&mut sink, "in_octets", "eth1", 2.0).await;
+        assert_eq!(
+            next_value(&mut client).await,
+            Some((counter("eth1", "in-octets"), Value::DoubleVal(2.0))),
+            "the new matching series, and not the one published before it"
+        );
+        publish(&mut sink, "out_octets", "eth1", 3.0).await;
+        publish(&mut sink, "in_octets", "eth1", 4.0).await;
+        assert_eq!(
+            next_value(&mut client).await,
+            Some((counter("eth1", "in-octets"), Value::DoubleVal(4.0))),
+            "the unmatched series' change was not sent"
+        );
+    }
+
+    /// `heartbeat_interval` re-sends the latest value on its interval while
+    /// the value holds; an interval below the sample floor is the floor.
+    #[tokio::test]
+    async fn heartbeat_resends_the_latest_value_without_a_change() {
+        let mut sink = sink(None, Some("100ms")).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let addr = sink.target().local_addr();
+        let series = Some((counter("eth0", "in-octets"), Value::DoubleVal(1.0)));
+        let mut beating = open(addr, on_change("/interfaces", Duration::from_millis(250)))
+            .await
+            .expect("subscribed");
+        let mut floored = open(addr, on_change("/interfaces", Duration::from_millis(1)))
+            .await
+            .expect("subscribed");
+        for client in [&mut beating, &mut floored] {
+            assert_eq!(next_value(client).await, series);
+            assert_eq!(next_value(client).await, None, "the sync marker");
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(1_100);
+        let (beats, floor_beats) = tokio::join!(
+            values_until(&mut beating, deadline),
+            values_until(&mut floored, deadline)
+        );
+        assert!(
+            (3..=5).contains(&beats.len()),
+            "{} heartbeats in 1.1 s at 250 ms: {beats:?}",
+            beats.len()
+        );
+        assert!(
+            (8..=12).contains(&floor_beats.len()),
+            "{} heartbeats in 1.1 s at a 1 ms interval and a 100 ms floor",
+            floor_beats.len()
+        );
+        assert!(
+            beats.iter().chain(&floor_beats).all(|b| *b == series),
+            "every heartbeat is the unchanged latest value"
+        );
+    }
+
+    /// TARGET_DEFINED serves an enum (`string_val`) series on change and a
+    /// counter on the sample period: the counter, changing every 10 ms, is
+    /// sent about once per period, and the enum only when it changes.
+    #[tokio::test]
+    async fn target_defined_serves_enums_on_change_and_the_rest_by_sample() {
+        let mut sink = sink(None, Some("200ms")).await;
+        publish_typed(&mut sink, "in_octets", "eth0", 1.0).await;
+        publish_typed(&mut sink, "oper_status", "eth0", 1.0).await;
+        let mut list = stream("/interfaces", Duration::ZERO);
+        list.subscription[0].mode = SubscriptionMode::TargetDefined as i32;
+        let mut client = open(sink.target().local_addr(), list)
+            .await
+            .expect("subscribed");
+        let (octets, status) = (counter("eth0", "in-octets"), counter("eth0", "oper-status"));
+        let mut synced = vec![next_value(&mut client).await, next_value(&mut client).await];
+        synced.sort_by_key(|v| format!("{v:?}"));
+        assert_eq!(
+            synced,
+            [
+                Some((octets.clone(), Value::UintVal(1))),
+                Some((status.clone(), Value::StringVal("UP".to_string()))),
+            ]
+        );
+        assert_eq!(next_value(&mut client).await, None, "the sync marker");
+
+        let started = Instant::now();
+        let mut received = Vec::new();
+        let mut value = 1.0;
+        while started.elapsed() < Duration::from_secs(1) {
+            value += 1.0;
+            publish_typed(&mut sink, "in_octets", "eth0", value).await;
+            received.extend(
+                values_until(&mut client, Instant::now() + Duration::from_millis(10)).await,
+            );
+        }
+        let sampled = updates_for(&received, &octets);
+        assert!(
+            value > 50.0 && (3..=6).contains(&sampled),
+            "{sampled} counter updates in 1 s for {value} changes at a 200 ms period"
+        );
+        assert_eq!(updates_for(&received, &status), 0, "the enum held");
+        assert!(!received.contains(&None), "no second sync marker");
+
+        publish_typed(&mut sink, "oper_status", "eth0", 2.0).await;
+        loop {
+            match next_value(&mut client).await {
+                Some((path, value)) if path == status => {
+                    assert_eq!(value, Value::StringVal("DOWN".to_string()));
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("a second sync marker"),
+            }
+        }
+    }
+
+    /// A list with a SAMPLE and an ON_CHANGE subscription sends one initial
+    /// sync and one sync marker; then the sample group ticks and the
+    /// ON_CHANGE subscription sends changes.
+    #[tokio::test]
+    async fn a_mixed_list_sends_one_sync_marker() {
+        let mut sink = sink(None, Some("100ms")).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        publish(&mut sink, "out_octets", "eth0", 1.0).await;
+        let mut list = stream(
+            "/interfaces/interface/state/counters/in-octets",
+            Duration::ZERO,
+        );
+        list.subscription.push(
+            on_change(
+                "/interfaces/interface/state/counters/out-octets",
+                Duration::ZERO,
+            )
+            .subscription
+            .remove(0),
+        );
+        let mut client = open(sink.target().local_addr(), list)
+            .await
+            .expect("subscribed");
+        let (sampled, changing) = (counter("eth0", "in-octets"), counter("eth0", "out-octets"));
+        let mut synced = vec![next_value(&mut client).await, next_value(&mut client).await];
+        synced.sort_by_key(|v| format!("{v:?}"));
+        assert_eq!(
+            synced,
+            [
+                Some((sampled.clone(), Value::DoubleVal(1.0))),
+                Some((changing.clone(), Value::DoubleVal(1.0))),
+            ]
+        );
+        assert_eq!(next_value(&mut client).await, None, "the sync marker");
+
+        let rest = values_until(&mut client, Instant::now() + Duration::from_millis(550)).await;
+        assert!(!rest.contains(&None), "one sync marker: {rest:?}");
+        assert!(
+            updates_for(&rest, &sampled) >= 3,
+            "the sample group ticks: {rest:?}"
+        );
+        assert_eq!(updates_for(&rest, &changing), 0, "out-octets held");
+
+        publish(&mut sink, "out_octets", "eth0", 2.0).await;
+        loop {
+            match next_value(&mut client).await {
+                Some((path, value)) if path == changing => {
+                    assert_eq!(value, Value::DoubleVal(2.0));
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("a second sync marker"),
+            }
+        }
+    }
+
+    /// An ON_CHANGE subscription that falls more than `subscriber_buffer`
+    /// changes behind is resynced: the client ends with the latest value of
+    /// every matched series, no series' value ever goes back, and no second
+    /// sync marker is sent. Each burst changes `eth0` once, first, and then
+    /// every other series many times, so the broadcast's backlog holds older
+    /// values of the other series and none of `eth0`'s: a resync that
+    /// replayed the backlog would send older values after the latest, and
+    /// one that queued nothing would leave `eth0` behind. Each burst is
+    /// published without yielding to the single-threaded runtime, so the
+    /// subscription cannot read the broadcast until it is over; the client
+    /// then reads until nothing has arrived for [`QUIET`] after the latest.
+    /// Three bursts each cause a resync.
+    #[tokio::test]
+    async fn a_lagged_on_change_subscriber_is_resynced_to_the_latest() {
+        const SERIES: usize = 5;
+        const ROUNDS: usize = 20;
+        const BURSTS: usize = 3;
+        let mut sink = sink_with(|cfg| cfg.subscriber_buffer = Some(8)).await;
+        for i in 0..SERIES {
+            publish(&mut sink, "in_octets", &format!("eth{i}"), 0.0).await;
+        }
+        let mut client = open(
+            sink.target().local_addr(),
+            on_change("/interfaces", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        let mut seen: HashMap<String, f64> = HashMap::new();
+        for i in 0..SERIES {
+            let (path, value) = next_value(&mut client).await.expect("a sync update");
+            assert_eq!(value, Value::DoubleVal(0.0), "sync update {i}");
+            seen.insert(path, 0.0);
+        }
+        assert_eq!(next_value(&mut client).await, None, "the sync marker");
+
+        let probe = Arc::clone(&sink.target().settings().probe);
+        for burst in 0..BURSTS {
+            let resyncs = probe.resyncs.load(std::sync::atomic::Ordering::Relaxed);
+            let last = ((burst + 1) * ROUNDS) as f64;
+            publish(&mut sink, "in_octets", "eth0", last).await;
+            for round in 1..=ROUNDS {
+                let value = (burst * ROUNDS + round) as f64;
+                for i in 1..SERIES {
+                    publish(&mut sink, "in_octets", &format!("eth{i}"), value).await;
+                }
+            }
+            loop {
+                let at_last = seen.values().all(|v| *v == last);
+                let wait = if at_last { QUIET } else { PATIENCE };
+                let Some(received) = value_within(&mut client, wait).await else {
+                    assert!(at_last, "burst {burst}: no response in time, at {seen:?}");
+                    break;
+                };
+                let Some((path, Value::DoubleVal(value))) = received else {
+                    panic!(
+                        "burst {burst}: a second sync marker or a non-double value, at {seen:?}"
+                    );
+                };
+                let previous = seen.insert(path.clone(), value).expect("a matched series");
+                assert!(
+                    value >= previous,
+                    "burst {burst}: {path} went back from {previous} to {value}"
+                );
+            }
+            assert!(
+                probe.resyncs.load(std::sync::atomic::Ordering::Relaxed) > resyncs,
+                "burst {burst}: the subscription lagged and was resynced"
+            );
+        }
+    }
+
+    /// Every response `responses` yields until none arrives for [`QUIET`]:
+    /// an update's value, or `None` for the sync marker.
+    async fn responses_until_quiet(responses: &mut Responses) -> Vec<Option<Value>> {
+        let mut received = Vec::new();
+        while let Ok(Some(response)) = tokio::time::timeout(QUIET, responses.next()).await {
+            let response = response.expect("no error on the stream");
+            let decoded =
+                proto::SubscribeResponse::decode(response.0).expect("a subscribe response");
+            received.push(match decoded.response {
+                Some(subscribe_response::Response::SyncResponse(true)) => None,
+                Some(subscribe_response::Response::Update(n)) => Some(value_of(&n)),
+                other => panic!("unexpected response {other:?}"),
+            });
+        }
+        received
+    }
+
+    /// Sets a flag when dropped, so a thread polling it stops however the
+    /// test ends.
+    struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Subscriptions opened one after another while a series changes about
+    /// every 20 µs, from another thread, receive no value twice and never an
+    /// older value after a newer one. A change published between a
+    /// subscription taking its broadcast receiver and reading its snapshot
+    /// is in both, and is sent once. The buffer holds every change, so no
+    /// subscription lags and no resync is involved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_change_racing_the_initial_sync_is_sent_once() {
+        const SUBSCRIPTIONS: usize = 60;
+        const UPDATES: usize = 20;
+        let target = target_with(SUBSCRIPTIONS, |settings| {
+            settings.subscriber_buffer = MAX_SUBSCRIBER_BUFFER;
+        })
+        .await;
+        let owner = Owner::from(LaunchId::next());
+        let (id, _) = publish_as(&target, owner, None, 0, 0.0);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let publisher = {
+            let (target, stop) = (Arc::clone(&target), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let encoder = GnmiEncoder::new(&encoder_config()).expect("valid encoder");
+                let labels = Labels::from_pairs(&[("ifName", "eth0")]).expect("valid labels");
+                let mut buf = Vec::new();
+                let mut published = 0_u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    published += 1;
+                    let event =
+                        MetricEvent::new("in_octets".to_string(), published as f64, labels.clone())
+                            .expect("valid event");
+                    buf.clear();
+                    encoder.encode_metric(&event, &mut buf).expect("encodes");
+                    let key = PathKey::decode(&buf).expect("a notification");
+                    target
+                        .publish(owner, Some(id), &key, &buf)
+                        .expect("the owner's path");
+                    let next = std::time::Instant::now() + Duration::from_micros(20);
+                    while std::time::Instant::now() < next {
+                        std::hint::spin_loop();
+                    }
+                }
+                published
+            })
+        };
+        let stopping = SetOnDrop(stop);
+
+        let mut duplicates = Vec::new();
+        let mut regressions = Vec::new();
+        for n in 0..SUBSCRIPTIONS {
+            let mut client = open(
+                target.local_addr(),
+                on_change("/interfaces", Duration::ZERO),
+            )
+            .await
+            .expect("subscribed");
+            let Some((_, Value::DoubleVal(mut highest))) = next_value(&mut client).await else {
+                panic!("subscription {n}: a sync update with a double");
+            };
+            assert_eq!(
+                next_value(&mut client).await,
+                None,
+                "subscription {n}: the sync marker"
+            );
+            for _ in 0..UPDATES {
+                let Some((_, Value::DoubleVal(value))) = next_value(&mut client).await else {
+                    panic!("subscription {n}: an update with a double");
+                };
+                if value == highest {
+                    duplicates.push((n, value));
+                } else if value < highest {
+                    regressions.push((n, highest, value));
+                }
+                highest = highest.max(value);
+            }
+        }
+        drop(stopping);
+        let published = publisher.join().expect("the publisher ran");
+        assert!(
+            published > (SUBSCRIPTIONS * UPDATES) as u64,
+            "the premise: the series changed throughout ({published} changes)"
+        );
+        assert_eq!(
+            target
+                .settings()
+                .probe
+                .resyncs
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the premise: no subscription lagged"
+        );
+        assert!(
+            duplicates.is_empty() && regressions.is_empty(),
+            "sent again: {duplicates:?}; older after newer: {regressions:?}"
+        );
+    }
+
+    /// A change published after a subscription takes its broadcast receiver
+    /// and before its producer reads the snapshot is in both; it is sent
+    /// once, in the initial sync. Each of ten subscriptions receives exactly
+    /// the changed value, then the sync marker, then nothing. The clock is
+    /// paused, so the quiet wait ends as soon as the subscription has
+    /// nothing left to do.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_between_subscribe_and_the_snapshot_is_sent_once() {
+        const SUBSCRIPTIONS: usize = 10;
+        let target = target_with(SUBSCRIPTIONS, |_| {}).await;
+        let owner = Owner::from(LaunchId::next());
+        let (id, _) = publish_as(&target, owner, None, 0, 0.0);
+        let list = on_change("/interfaces", Duration::ZERO);
+        for n in 1..=SUBSCRIPTIONS {
+            let (producer, mut responses) =
+                start(Arc::downgrade(&target), None, &list).expect("started");
+            publish_as(&target, owner, Some(id), 0, n as f64);
+            tokio::spawn(producer.run(tokio::spawn(async {})));
+            assert_eq!(
+                responses_until_quiet(&mut responses).await,
+                [Some(Value::DoubleVal(n as f64)), None],
+                "subscription {n}: the changed value once, then the sync marker"
+            );
+        }
+    }
+
+    /// A change published after a resync takes its new broadcast receiver
+    /// and before it reads the snapshot is in both; it is sent once. Each of
+    /// ten bursts of 20 changes, published without yielding, lags the
+    /// subscription (a buffer of 8). The resync's hook publishes one more
+    /// change between the two steps, and the client receives exactly that
+    /// value. The clock is paused, as above.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_between_a_resyncs_receiver_and_its_snapshot_is_sent_once() {
+        const BURSTS: usize = 10;
+        const BURST: usize = 20;
+        let target = target_with(1, |settings| settings.subscriber_buffer = 8).await;
+        let owner = Owner::from(LaunchId::next());
+        let (id, _) = publish_as(&target, owner, None, 0, 0.0);
+        let inside = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = Arc::clone(&target.settings().probe);
+        probe.after_resubscribe.set({
+            let (target, inside) = (Arc::downgrade(&target), Arc::clone(&inside));
+            move || {
+                if let Some(target) = target.upgrade() {
+                    let value = inside.load(std::sync::atomic::Ordering::Relaxed);
+                    publish_as(&target, owner, Some(id), 0, value as f64);
+                }
+            }
+        });
+        let (producer, mut responses) = start(
+            Arc::downgrade(&target),
+            None,
+            &on_change("/interfaces", Duration::ZERO),
+        )
+        .expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        assert_eq!(
+            responses_until_quiet(&mut responses).await,
+            [Some(Value::DoubleVal(0.0)), None],
+            "the initial sync"
+        );
+        for burst in 1..=BURSTS {
+            let base = burst * 100;
+            let resyncs = probe.resyncs.load(std::sync::atomic::Ordering::Relaxed);
+            inside.store(base + BURST + 1, std::sync::atomic::Ordering::Relaxed);
+            for k in 1..=BURST {
+                publish_as(&target, owner, Some(id), 0, (base + k) as f64);
+            }
+            assert_eq!(
+                responses_until_quiet(&mut responses).await,
+                [Some(Value::DoubleVal((base + BURST + 1) as f64))],
+                "burst {burst}: the value published inside the resync, once"
+            );
+            assert_eq!(
+                probe.resyncs.load(std::sync::atomic::Ordering::Relaxed),
+                resyncs + 1,
+                "burst {burst}: the premise: one resync"
+            );
+        }
+    }
+
+    /// A heartbeat records the version it sends, so a change still on the
+    /// broadcast whose version is not newer than the heartbeat's value is
+    /// not sent after it. In each of 40 rounds the paused clock is moved to
+    /// the heartbeat, and the heartbeat's hook publishes two changes before
+    /// the heartbeat reads the snapshot: the snapshot holds the newer one,
+    /// and both are still on the broadcast. The client receives exactly the
+    /// newer value, once. A last round with no change receives the
+    /// heartbeat alone.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_a_heartbeat_already_holds_is_not_sent_again() {
+        const ROUNDS: usize = 40;
+        const HEARTBEAT: Duration = Duration::from_secs(10);
+        let target = target_with(1, |_| {}).await;
+        let owner = Owner::from(LaunchId::next());
+        let (id, _) = publish_as(&target, owner, None, 0, 0.0);
+        let round = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        target.settings().probe.before_heartbeat.set({
+            let (target, round) = (Arc::downgrade(&target), Arc::clone(&round));
+            move || {
+                let round = round.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some(target) = target.upgrade().filter(|_| round > 0) {
+                    publish_as(&target, owner, Some(id), 0, (round * 10 + 1) as f64);
+                    publish_as(&target, owner, Some(id), 0, (round * 10 + 2) as f64);
+                }
+            }
+        });
+        let (producer, mut responses) = start(
+            Arc::downgrade(&target),
+            None,
+            &on_change("/interfaces", HEARTBEAT),
+        )
+        .expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        assert_eq!(
+            responses_until_quiet(&mut responses).await,
+            [Some(Value::DoubleVal(0.0)), None],
+            "the initial sync"
+        );
+        for n in 1..=ROUNDS {
+            round.store(n, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::advance(HEARTBEAT).await;
+            assert_eq!(
+                responses_until_quiet(&mut responses).await,
+                [Some(Value::DoubleVal((n * 10 + 2) as f64))],
+                "round {n}: the newer change, once"
+            );
+        }
+        round.store(0, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::advance(HEARTBEAT).await;
+        assert_eq!(
+            responses_until_quiet(&mut responses).await,
+            [Some(Value::DoubleVal((ROUNDS * 10 + 2) as f64))],
+            "the premise: a heartbeat falls due each period"
+        );
+    }
+
+    /// A client that reads nothing while every matched series changes many
+    /// times holds at most one queued value per series: a newer change
+    /// replaces the queued one. When it reads, it receives the latest value
+    /// of every series, and fewer updates than two per series.
+    #[tokio::test]
+    async fn a_slow_on_change_client_queues_at_most_one_value_per_series() {
+        const ROUNDS: usize = 10;
+        let target = target_with(1, |settings| {
+            settings.subscriber_buffer = MAX_SUBSCRIBER_BUFFER;
+        })
+        .await;
+        let owner = Owner::from(LaunchId::next());
+        let ids: Vec<SeriesId> = (0..STALL_SERIES)
+            .map(|i| publish_as(&target, owner, None, i, 0.0).0)
+            .collect();
+        let mut client = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            on_change("/interfaces", Duration::ZERO),
+            true,
+        )
+        .await
+        .expect("subscribed");
+        for round in 1..=ROUNDS {
+            for (i, id) in ids.iter().enumerate() {
+                publish_as(&target, owner, Some(*id), i, round as f64);
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            eventually(|| target.broadcast_backlog() == 0).await,
+            "the subscription read every change while its client read nothing"
+        );
+        let probe = &target.settings().probe;
+        let queued = probe
+            .max_queued_values
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            queued <= STALL_SERIES,
+            "{queued} values queued for {STALL_SERIES} series"
+        );
+        assert!(
+            queued > STALL_SERIES / 2,
+            "the premise: the queue backed up ({queued} at most)"
+        );
+        assert_eq!(probe.resyncs.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        let last = Value::DoubleVal(ROUNDS as f64);
+        let mut latest: HashMap<String, Value> = HashMap::new();
+        let mut updates = 0usize;
+        while latest.len() < STALL_SERIES || latest.values().any(|v| *v != last) {
+            if let Some((path, value)) = next_value(&mut client).await {
+                updates += 1;
+                latest.insert(path, value);
+            }
+        }
+        assert!(
+            updates <= 2 * STALL_SERIES,
+            "{updates} updates for {STALL_SERIES} series changed {ROUNDS} times each"
+        );
+    }
+
+    /// In a list mixing SAMPLE and ON_CHANGE, a sample group falls due while
+    /// only changes wait for a client that reads nothing, and queues one
+    /// sample, not one per period.
+    #[tokio::test]
+    async fn a_sample_group_falls_due_while_only_changes_wait() {
+        let period = Duration::from_millis(400);
+        let target = target_with(1, |settings| {
+            settings.sample_floor = period;
+            settings.subscriber_buffer = MAX_SUBSCRIBER_BUFFER;
+        })
+        .await;
+        let owner = Owner::from(LaunchId::next());
+        let ids: Vec<SeriesId> = (0..STALL_SERIES)
+            .map(|i| publish_as(&target, owner, None, i, 0.0).0)
+            .collect();
+        let mut list = on_change("/interfaces", Duration::ZERO);
+        list.subscription.push(
+            stream("/interfaces/interface[name=eth0]", Duration::ZERO)
+                .subscription
+                .remove(0),
+        );
+        // The sync marker alone goes out at once, leaving no response queued.
+        list.updates_only = true;
+        let opened = Instant::now();
+        let mut client = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            list,
+            true,
+        )
+        .await
+        .expect("subscribed");
+        for (i, id) in ids.iter().enumerate() {
+            publish_as(&target, owner, Some(*id), i, 1.0);
+        }
+        let probe = Arc::clone(&target.settings().probe);
+        let samples = || probe.samples.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            eventually(|| target.broadcast_backlog() == 0).await,
+            "the subscription read every change"
+        );
+        assert_eq!(
+            samples(),
+            0,
+            "the premise: the changes were queued within {:?}, before the first sample",
+            opened.elapsed()
+        );
+        assert!(
+            probe
+                .max_queued_values
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > STALL_SERIES / 2,
+            "the premise: changes are waiting"
+        );
+        tokio::time::sleep_until(opened + period * 5 / 2).await;
+        assert_eq!(
+            samples(),
+            1,
+            "two periods passed: one sample is queued behind the changes, and no more"
+        );
+        assert_eq!(next_value(&mut client).await, None, "the sync marker");
+    }
+
+    /// A client that keeps its connection open but never reads is ended at
+    /// the stall floor although changes keep arriving for its ON_CHANGE
+    /// list: an ON_CHANGE list has no sample periods, a heartbeat period does
+    /// not lengthen the limit, and a change does not restart it.
+    #[tokio::test]
+    async fn an_on_change_client_that_drains_nothing_is_ended_at_the_floor() {
+        let target = target_with(1, |settings| {
+            settings.stall_floor = STALL_TEST_FLOOR;
+            settings.subscriber_buffer = MAX_SUBSCRIBER_BUFFER;
+        })
+        .await;
+        let owner = Owner::from(LaunchId::next());
+        let ids: Vec<SeriesId> = (0..STALL_SERIES)
+            .map(|i| publish_as(&target, owner, None, i, 0.0).0)
+            .collect();
+        let opened = Instant::now();
+        let _stalled = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            on_change("/interfaces", Duration::from_secs(1)),
+            true,
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(target.subscriber_count(), 1);
+        let mut value = 0.0;
+        let ended = within(Duration::from_secs(2), || {
+            value += 1.0;
+            publish_as(&target, owner, Some(ids[0]), 0, value);
+            target.subscriber_count() == 0
+        })
+        .await;
+        assert!(ended, "still subscribed after {value} changes");
+        assert!(
+            opened.elapsed() < 3 * STALL_TEST_FLOOR,
+            "ended after {:?}, past the {STALL_TEST_FLOOR:?} floor",
+            opened.elapsed()
+        );
+    }
+
+    /// TARGET_DEFINED puts a subscription in the ON_CHANGE set for string
+    /// values and in a sample group for every other kind; ON_CHANGE with a
+    /// heartbeat adds a heartbeat group; SAMPLE's heartbeat is not read.
+    #[test]
+    fn plan_groups_splits_a_list_by_mode_and_kind() {
+        let floor = Duration::from_millis(100);
+        let mut list = stream("/a", Duration::from_secs(2));
+        list.subscription[0].mode = SubscriptionMode::TargetDefined as i32;
+        list.subscription[0].heartbeat_interval = Duration::from_secs(5).as_nanos() as u64;
+        let mut changes = on_change("/b", Duration::from_millis(1));
+        let mut sampled = stream("/c", Duration::ZERO);
+        sampled.subscription[0].heartbeat_interval = Duration::from_secs(5).as_nanos() as u64;
+        list.subscription.push(changes.subscription.remove(0));
+        list.subscription.push(sampled.subscription.remove(0));
+
+        let plan = plan_groups(&list, floor).expect("a valid list");
+        let timed = |groups: &[Group]| -> Vec<(Duration, KindFilter)> {
+            groups
+                .iter()
+                .map(|g| (g.period, g.selector.kinds))
+                .collect()
+        };
+        assert_eq!(
+            timed(&plan.samples),
+            [
+                (Duration::from_secs(2), KindFilter::NonStrings),
+                (floor, KindFilter::Any)
+            ]
+        );
+        assert_eq!(
+            timed(&plan.heartbeats),
+            [
+                (Duration::from_secs(5), KindFilter::Strings),
+                (floor, KindFilter::Any)
+            ]
+        );
+        let kinds: Vec<KindFilter> = plan.on_change.iter().map(|s| s.kinds).collect();
+        assert_eq!(kinds, [KindFilter::Strings, KindFilter::Any]);
+        assert_eq!(
+            stall_limit(plan.samples.iter().map(|g| g.period), floor),
+            Duration::from_secs(6)
+        );
+    }
+
+    /// The match cache forgets series that left the table, and may then
+    /// grow to twice what is left, or the floor, before the next prune.
+    #[test]
+    fn the_match_cache_is_pruned_to_the_series_in_the_table() {
+        let (_tx, rx) = broadcast::channel(1);
+        let mut set = OnChangeSet {
+            selectors: Vec::new(),
+            rx,
+            matched: HashMap::new(),
+            prune_at: MATCHED_PRUNE_FLOOR,
+        };
+        for id in 0..5_000 {
+            set.seen(id, ValueKind::Uint, || None);
+        }
+        assert_eq!(set.matched.len(), 5_000, "the premise: every id was cached");
+        let live: Vec<SeriesSnapshot> = (4_990..5_000)
+            .map(|series_id| SeriesSnapshot {
+                series_id,
+                path: PathKey::new(proto::Path::default()),
+                kind: ValueKind::Uint,
+                version: 1,
+                latest: Bytes::new(),
+            })
+            .collect();
+        set.prune(&live);
+        let mut kept: Vec<SeriesId> = set.matched.keys().copied().collect();
+        kept.sort_unstable();
+        assert_eq!(kept, (4_990..5_000).collect::<Vec<_>>());
+        assert_eq!(set.prune_at, MATCHED_PRUNE_FLOOR);
     }
 
     /// A metrics scenario `name{ifName=if_name}` at `rate` Hz into `sink`.
