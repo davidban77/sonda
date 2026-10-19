@@ -528,8 +528,22 @@ impl OnChangeSet {
     /// to twice what is left, and at least [`MATCHED_PRUNE_FLOOR`], before it
     /// is pruned again.
     fn prune(&mut self, snapshot: &[SeriesSnapshot]) {
+        self.retain(snapshot, |_| false);
+    }
+
+    /// Forget the series that are not in `snapshot` and that the set does
+    /// not match, as [`OnChangeSet::prune`] does. A matched series stays
+    /// until its removal is read from the broadcast.
+    fn prune_unmatched(&mut self, snapshot: &[SeriesSnapshot]) {
+        self.retain(snapshot, |seen| seen.matches);
+    }
+
+    /// Keep the series in `snapshot` and those `keep` holds for, and reset
+    /// `prune_at` from what is left.
+    fn retain(&mut self, snapshot: &[SeriesSnapshot], keep: impl Fn(&Seen) -> bool) {
         let live: HashSet<SeriesId> = snapshot.iter().map(|s| s.series_id).collect();
-        self.matched.retain(|id, _| live.contains(id));
+        self.matched
+            .retain(|id, seen| live.contains(id) || keep(seen));
         self.prune_at = self
             .matched
             .len()
@@ -667,6 +681,8 @@ pub(crate) struct Probe {
     pub(crate) max_queued_values: std::sync::atomic::AtomicUsize,
     /// Resyncs after a subscription's broadcast receiver lagged.
     pub(crate) resyncs: std::sync::atomic::AtomicUsize,
+    /// Match-cache prunes run on reading a change.
+    pub(crate) prunes: std::sync::atomic::AtomicUsize,
     /// Sample groups that fell due.
     pub(crate) samples: std::sync::atomic::AtomicUsize,
     /// Run by every resync after it takes its new broadcast receiver and
@@ -929,10 +945,11 @@ impl Producer {
         Some(pending)
     }
 
-    /// Queue the latest value of every series a due sample group sends, and
-    /// a delete for every series a due suppressing group had sent that has
-    /// left the table, and move each due group to its next period. `false`
-    /// once the target is gone.
+    /// Queue a delete for every series a due suppressing group had sent that
+    /// has left the table, then the latest value of every series a due
+    /// sample group sends, and move each due group to its next period. A
+    /// value for a path published again after its series left follows that
+    /// series' delete. `false` once the target is gone.
     fn sample(&mut self, pending: &mut Pending) -> bool {
         #[cfg(test)]
         self.probe
@@ -941,11 +958,11 @@ impl Producer {
         let Some(due) = due(&mut self.samples, &self.target) else {
             return false;
         };
-        for series in due.series {
-            pending.push_response(update_response(&series.latest));
-        }
         for (id, path) in due.removed {
             self.queue_delete(id, &delete_notification(path.path()), pending);
+        }
+        for series in due.series {
+            pending.push_response(update_response(&series.latest));
         }
         true
     }
@@ -972,8 +989,8 @@ impl Producer {
     /// Queue `update` when the ON_CHANGE set matches its series and its
     /// version is newer than that of the series' value last queued; a series
     /// not seen before is matched from the path decoded from the update.
-    /// Prunes the match cache when it has outgrown its limit. `false` once
-    /// the target is gone.
+    /// Prunes the match cache of unmatched series when it has outgrown its
+    /// limit. `false` once the target is gone.
     fn offer(&mut self, update: SeriesUpdate, pending: &mut Pending) -> bool {
         let Some(set) = self.on_change.as_mut() else {
             return true;
@@ -990,12 +1007,16 @@ impl Producer {
             pending.push_value(series_id, bytes);
         }
         if set.matched.len() > set.prune_at {
+            #[cfg(test)]
+            self.probe
+                .prunes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let Some(target) = self.target.upgrade() else {
                 return false;
             };
             let snapshot = target.snapshot();
             drop(target);
-            set.prune(&snapshot);
+            set.prune_unmatched(&snapshot);
         }
         true
     }
@@ -3312,6 +3333,55 @@ mod tests {
         assert_eq!(target.series_count(), 1);
     }
 
+    /// An ON_CHANGE client receives the delete of a series released just
+    /// after another series' change, when reading that change prunes the
+    /// set's match cache: the prune keeps the series the set matches.
+    #[tokio::test]
+    async fn an_on_change_client_receives_a_delete_across_a_match_cache_prune() {
+        let target = target_with(4, |_| {}).await;
+        let launch = LaunchId::next();
+        let mut bulk = GnmiTargetSink::from_target(Arc::clone(&target), launch);
+        let mut lone = GnmiTargetSink::from_target(Arc::clone(&target), launch);
+        let mut extra = GnmiTargetSink::from_target(Arc::clone(&target), launch);
+        for i in 0..MATCHED_PRUNE_FLOOR - 1 {
+            publish(&mut bulk, "in_octets", &format!("eth{i}"), 1.0).await;
+        }
+        publish(&mut lone, "in_octets", "lone", 1.0).await;
+        let mut client = open(
+            target.local_addr(),
+            on_change("/interfaces", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        let mut synced = 0;
+        while next_value(&mut client).await.is_some() {
+            synced += 1;
+        }
+        assert_eq!(
+            synced, MATCHED_PRUNE_FLOOR,
+            "the premise: the cache is full"
+        );
+
+        publish(&mut extra, "in_octets", "extra", 1.0).await;
+        drop(lone);
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(300)).await,
+            [
+                Got::Value(counter("extra", "in-octets"), Value::DoubleVal(1.0)),
+                Got::Delete(counter("lone", "in-octets")),
+            ]
+        );
+        assert_eq!(
+            target
+                .settings()
+                .probe
+                .prunes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the premise: the new series' change pruned the cache"
+        );
+    }
+
     /// A SAMPLE client with `suppress_redundant` receives the removed
     /// series' delete at its next sample, once; the unchanged series it is
     /// not sent again.
@@ -3330,6 +3400,31 @@ mod tests {
         assert_eq!(
             got_until(&mut client, Instant::now() + Duration::from_millis(700)).await,
             [Got::Delete(counter("eth0", "in-octets"))]
+        );
+    }
+
+    /// A path published again by a new series before a suppressing SAMPLE
+    /// client's next sample is deleted, then sent with its new value.
+    #[tokio::test]
+    async fn a_suppressing_sample_client_receives_a_delete_before_the_path_published_again() {
+        let (target, first, _second) = two_sinks_of_one_launch().await;
+        let mut client = open(
+            target.local_addr(),
+            suppressed("/interfaces", Duration::from_millis(200), Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        assert_synced(&mut client).await;
+
+        drop(first);
+        let mut again = GnmiTargetSink::from_target(Arc::clone(&target), LaunchId::next());
+        publish(&mut again, "in_octets", "eth0", 5.0).await;
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(700)).await,
+            [
+                Got::Delete(counter("eth0", "in-octets")),
+                Got::Value(counter("eth0", "in-octets"), Value::DoubleVal(5.0)),
+            ]
         );
     }
 

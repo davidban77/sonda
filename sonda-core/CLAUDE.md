@@ -286,14 +286,15 @@ src/
 │   │                       (SeriesId -> Sent { version, path }) is seeded
 │   │                       by the initial sync; due() sends a series only when its version differs
 │   │                       from the recorded one and reports each recorded series gone from the
-│   │                       snapshot, which sample() queues as a delete; its heartbeat_interval adds
+│   │                       snapshot, which sample() queues as a delete ahead of its values; its heartbeat_interval adds
 │   │                       a heartbeat group. Without suppress_redundant SAMPLE's heartbeat_interval
 │   │                       is not read; TARGET_DEFINED's sample groups never suppress. The set's broadcast
 │   │                       receiver is taken before the initial snapshot; a series is
 │   │                       matched once, when first seen (snapshot path, or PathKey::decode
 │   │                       of the update), cached by SeriesId (Seen { matches, queued })
 │   │                       and pruned to the table past 2 x its live size (at least
-│   │                       1024). queued is the version of the value last queued for the
+│   │                       1024): a prune on reading a change keeps matched series (they
+│   │                       leave by their Removed), a resync's drops them. queued is the version of the value last queued for the
 │   │                       series, by the initial sync, a resync, a heartbeat or a change;
 │   │                       offer() drops a change whose version is not newer, so a change
 │   │                       racing a snapshot is sent once. Heartbeats are never filtered
