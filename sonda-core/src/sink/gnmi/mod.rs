@@ -6,11 +6,13 @@
 //! [`registry`](registry::registry), so their series appear as one device.
 //!
 //! The sink takes events through [`Sink::write_metric_event`] and never awaits
-//! a client: publishing is a table upsert and a non-blocking broadcast send.
+//! a client: publishing is a table upsert, a compare with the series' previous
+//! value and, when the value changed, a non-blocking broadcast send.
 //!
 //! Requires the `gnmi` feature flag.
 
 pub(crate) mod matcher;
+pub(crate) mod notification;
 pub mod registry;
 pub mod service;
 pub mod target;
@@ -28,6 +30,7 @@ use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
 use crate::schedule::LaunchId;
+pub use notification::ValueKind;
 pub use registry::{registry, GnmiTargetRegistry};
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
 use target::{Owner, PathKey};
@@ -75,17 +78,18 @@ pub struct GnmiTargetConfig {
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_subscribers: Option<usize>,
-    /// Broadcast capacity per target, 1 to 65536. Only ON_CHANGE
-    /// subscriptions read the broadcast, and the target refuses them, so the
-    /// value changes nothing a subscriber receives. Default 1024. Every sink
-    /// on one address must use the same value.
+    /// Broadcast capacity per target, 1 to 65536: the number of changes an
+    /// ON_CHANGE subscriber may fall behind before it is resynced with the
+    /// latest value of every series it matches. Default 1024. Every sink on
+    /// one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = MAX_SUBSCRIBER_BUFFER)))]
     pub subscriber_buffer: Option<usize>,
-    /// Shortest sample interval the target serves, a duration of at least
-    /// one microsecond such as `"1s"`: a SAMPLE subscription asking for less,
-    /// or for 0, is sampled at this interval. Default `"1s"`. Every sink on
-    /// one address must use the same value.
+    /// Shortest sample and heartbeat interval the target serves, a duration
+    /// of at least one microsecond such as `"1s"`: a SAMPLE subscription
+    /// asking for less, or for 0, is sampled at this interval, and a shorter
+    /// heartbeat interval is raised to it. Default `"1s"`. Every sink on one
+    /// address must use the same value.
     #[cfg_attr(
         feature = "config",
         serde(default, deserialize_with = "crate::config::scalar_text::optional")
@@ -158,6 +162,8 @@ impl GnmiTargetConfig {
             keepalive_interval: target::KEEPALIVE_INTERVAL,
             keepalive_timeout: target::KEEPALIVE_TIMEOUT,
             stall_floor: service::STALL_FLOOR,
+            #[cfg(test)]
+            probe: Arc::default(),
         })
     }
 }
@@ -181,6 +187,9 @@ pub(crate) struct TargetSettings {
     /// response before it is ended as stalled. [`service::STALL_FLOOR`]
     /// except in tests; not configurable.
     pub(crate) stall_floor: Duration,
+    /// Counts what the target's subscriptions did.
+    #[cfg(test)]
+    pub(crate) probe: Arc<service::Probe>,
 }
 
 /// Whether listeners on `a` and `b` would contend for one port: the same
@@ -365,7 +374,7 @@ impl Sink for GnmiTargetSink {
     /// # Errors
     ///
     /// [`SondaError::Sink`] when the target's listener task has exited, or
-    /// when the first event of a series is not a gnmi notification;
+    /// when an event is not a gnmi notification whose update has a value;
     /// [`SondaError::Config`] when the event's path belongs to another launch,
     /// or a joined sink's event names a path the target does not serve.
     async fn write_metric_event(
@@ -377,7 +386,7 @@ impl Sink for GnmiTargetSink {
         self.target.check_serving()?;
         if self.joined {
             let path = PathKey::decode(encoded)?;
-            if self.target.overwrite(&path, encoded).is_none() {
+            if self.target.overwrite(&path, encoded)?.is_none() {
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "no running scenario serves the gnmi path `{}` on {}",
                     path.path(),
@@ -654,6 +663,29 @@ mod tests {
         assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
         assert!(!sink.last_write_delivered());
         assert_eq!(sink.target().series_count(), 0);
+    }
+
+    /// A series' later event that is not a notification with a value is
+    /// refused too, and the series keeps its latest value.
+    #[tokio::test]
+    async fn a_later_event_that_is_not_a_notification_is_an_error() {
+        let mut sink = sink().await;
+        let up = event("up");
+        let first = notification(&up);
+        sink.write_metric_event(&up, &first)
+            .await
+            .expect("the first write succeeds");
+        let err = sink
+            .write_metric_event(&up, b"not protobuf")
+            .await
+            .expect_err("every event needs a value");
+        assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("not a gnmi notification"),
+            "got {err}"
+        );
+        assert!(!sink.last_write_delivered());
+        assert_eq!(sink.target().snapshot()[0].latest, first.as_slice());
     }
 
     /// Dropping a sink removes the series it published and leaves another
