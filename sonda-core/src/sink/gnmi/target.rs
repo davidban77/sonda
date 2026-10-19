@@ -9,7 +9,7 @@ use std::ops::Range;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use prost::Message;
@@ -22,7 +22,7 @@ use tonic::transport::server::{Connected, TcpConnectInfo};
 use super::notification::{value_span, ValueKind};
 use super::service::GnmiService;
 use super::TargetSettings;
-use crate::encoder::gnmi::proto;
+use crate::encoder::gnmi::{encode_delete, proto};
 use crate::schedule::LaunchId;
 use crate::{ConfigError, SondaError};
 
@@ -82,6 +82,30 @@ pub struct SeriesUpdate {
     pub version: u64,
     /// One encoded `gnmi.Notification`.
     pub bytes: Bytes,
+}
+
+/// What the target broadcasts to its subscribers.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub(crate) enum SeriesEvent {
+    /// A series' value changed.
+    Changed(SeriesUpdate),
+    /// A series left the table. `bytes` is one encoded `gnmi.Notification`
+    /// deleting its path, from [`delete_notification`].
+    Removed { series_id: SeriesId, bytes: Bytes },
+}
+
+/// One encoded `gnmi.Notification` deleting the series at `path`, stamped
+/// with the current time (0 before the epoch).
+pub(crate) fn delete_notification(path: &proto::Path) -> Bytes {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
+        });
+    let mut buf = Vec::new();
+    encode_delete(&mut buf, path, timestamp);
+    Bytes::from(buf)
 }
 
 /// What one publish did.
@@ -263,8 +287,8 @@ struct SeriesTable {
 type ServeError = Arc<Mutex<Option<String>>>;
 
 /// The latest value of every series published on one listen address, keyed
-/// by the series' path, the broadcast that carries changed values to
-/// subscribers, and the gRPC listener.
+/// by the series' path, the broadcast that carries changed values and
+/// removed series to subscribers, and the gRPC listener.
 ///
 /// Obtained from the [`registry`](super::registry::registry). The listener
 /// runs on its own task until the last `Arc<GnmiTarget>` is dropped, which
@@ -272,15 +296,17 @@ type ServeError = Arc<Mutex<Option<String>>>;
 /// and connections still open after [`DRAIN_GRACE`] are closed.
 ///
 /// A series is owned by one launch and held while any sink of that launch
-/// has published it; it leaves when the last of those sinks drops, not when
-/// it stops being updated. A path with no live publisher is free: another
+/// has published it; it leaves when the last of those sinks drops, and at no
+/// other time: a series that stops being updated stays. When a series leaves
+/// and anyone is subscribed, a delete for its path is broadcast. A path with
+/// no live publisher is free: another
 /// launch may take it, and a scenario of the first launch refused it in that
 /// window shows why in its stats.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
     table: RwLock<SeriesTable>,
-    tx: broadcast::Sender<SeriesUpdate>,
+    tx: broadcast::Sender<SeriesEvent>,
     /// One permit per subscription the target may serve at once.
     subscribers: Arc<Semaphore>,
     /// The permits `subscribers` started with.
@@ -498,6 +524,12 @@ impl GnmiTarget {
     /// whose last publisher is released leaves the table. Ids that are unknown
     /// or owned by another launch are ignored. A sink releases each id it
     /// published once, when it drops.
+    ///
+    /// When a series leaves and a receiver exists, its delete is encoded once
+    /// and broadcast as [`SeriesEvent::Removed`] while the table's write lock
+    /// is held. Every publish holds the read lock, so no receiver gets a
+    /// value for the series after its delete. With no receiver nothing is
+    /// encoded.
     pub(crate) fn release(&self, owner: Owner, ids: impl IntoIterator<Item = SeriesId>) {
         let mut table = self.write();
         for id in ids {
@@ -508,15 +540,22 @@ impl GnmiTarget {
             if slot.publishers == 0 {
                 if let Some(slot) = table.slots.remove(&id) {
                     table.ids.remove(&slot.path);
+                    if self.tx.receiver_count() > 0 {
+                        // An error means every receiver has gone.
+                        let _ = self.tx.send(SeriesEvent::Removed {
+                            series_id: id,
+                            bytes: delete_notification(slot.path.path()),
+                        });
+                    }
                 }
             }
         }
     }
 
-    /// A receiver for every changed value published from now on. Subscribe
-    /// before taking a [`snapshot`](Self::snapshot): every change the
-    /// snapshot does not hold then arrives on the receiver.
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesUpdate> {
+    /// A receiver for every changed value and removed series from now on.
+    /// Subscribe before taking a [`snapshot`](Self::snapshot): every change
+    /// the snapshot does not hold then arrives on the receiver.
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesEvent> {
         self.tx.subscribe()
     }
 
@@ -627,12 +666,12 @@ impl GnmiTarget {
         *current = Latest { version, ..latest };
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
-            let _ = self.tx.send(SeriesUpdate {
+            let _ = self.tx.send(SeriesEvent::Changed(SeriesUpdate {
                 series_id: id,
                 kind,
                 version,
                 bytes,
-            });
+            }));
         }
         Published { receivers, changed }
     }
@@ -880,6 +919,14 @@ mod tests {
 
     /// The owner in tests that use one; no launch in a test process reaches it.
     const OWNER: Owner = Owner(u64::MAX);
+
+    /// The update `event` carries; a removal fails the test.
+    fn as_change(event: SeriesEvent) -> SeriesUpdate {
+        match event {
+            SeriesEvent::Changed(update) => update,
+            other => panic!("a change, got {other:?}"),
+        }
+    }
     use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig, GnmiValueType};
     use crate::encoder::Encoder;
     use crate::model::metric::{Labels, MetricEvent};
@@ -1238,7 +1285,10 @@ mod tests {
             },
             "a series' first publish is a change"
         );
-        assert_eq!(receiver.try_recv().expect("broadcast").bytes, first);
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).bytes,
+            first
+        );
 
         let same = note_at(1.0, 2_000);
         assert_ne!(same, first, "the premise: the timestamps differ");
@@ -1248,7 +1298,7 @@ mod tests {
         assert!(done.receivers);
         assert!(!done.changed, "only the timestamp differs");
         assert_eq!(
-            receiver.try_recv().map(|u| u.bytes),
+            receiver.try_recv().map(|e| as_change(e).bytes),
             Err(broadcast::error::TryRecvError::Empty),
             "an unchanged value is not broadcast"
         );
@@ -1259,10 +1309,10 @@ mod tests {
             .publish(OWNER, Some(id), &series, &changed)
             .expect("one owner");
         assert!(done.changed);
-        let update = receiver.try_recv().expect("broadcast");
+        let update = as_change(receiver.try_recv().expect("broadcast"));
         assert_eq!((update.series_id, update.bytes), (id, changed));
         assert_eq!(
-            receiver.try_recv().map(|u| u.bytes),
+            receiver.try_recv().map(|e| as_change(e).bytes),
             Err(broadcast::error::TryRecvError::Empty),
             "one broadcast per change"
         );
@@ -1280,6 +1330,144 @@ mod tests {
         );
     }
 
+    /// The full path a delete notification names: its prefix's origin and
+    /// target with the elements of its one deleted path.
+    fn deleted_path(bytes: &[u8]) -> PathKey {
+        let n = proto::Notification::decode(bytes).expect("a notification");
+        assert!(n.update.is_empty(), "a delete carries no update");
+        assert_eq!(n.delete.len(), 1, "one deleted path");
+        let prefix = n.prefix.unwrap_or_default();
+        PathKey::new(proto::Path {
+            origin: prefix.origin,
+            elem: n.delete[0].elem.clone(),
+            target: prefix.target,
+        })
+    }
+
+    /// Releasing a series' last publisher broadcasts exactly one removal,
+    /// whose notification deletes the series' path; the series is gone.
+    #[tokio::test]
+    async fn releasing_the_last_publisher_broadcasts_one_removal() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, &note(1.0))
+            .expect("one owner");
+        let mut receiver = target.subscribe();
+        target.release(OWNER, [id]);
+        match receiver.try_recv().expect("a removal") {
+            SeriesEvent::Removed { series_id, bytes } => {
+                assert_eq!(series_id, id);
+                assert_eq!(deleted_path(&bytes), series);
+            }
+            other => panic!("a removal, got {other:?}"),
+        }
+        assert_eq!(
+            receiver.try_recv().map(|_| ()),
+            Err(broadcast::error::TryRecvError::Empty),
+            "one removal"
+        );
+        assert_eq!(target.series_count(), 0);
+    }
+
+    /// Releasing a publisher of a series another publisher still holds
+    /// broadcasts nothing, and the series stays.
+    #[tokio::test]
+    async fn releasing_a_publisher_that_is_not_the_last_broadcasts_nothing() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, &note(1.0))
+            .expect("one owner");
+        target
+            .publish(OWNER, None, &series, &note(1.0))
+            .expect("one owner");
+        assert_eq!(
+            target.publishers(id),
+            Some(2),
+            "the premise: two publishers"
+        );
+        let mut receiver = target.subscribe();
+        target.release(OWNER, [id]);
+        assert_eq!(
+            receiver.try_recv().map(|_| ()),
+            Err(broadcast::error::TryRecvError::Empty)
+        );
+        assert_eq!(target.series_count(), 1);
+    }
+
+    /// A series released while another thread keeps publishing it: the
+    /// receiver's last event for the released id is its removal, every
+    /// round. The publisher keeps the id each publish returns, so once the
+    /// series has left it publishes a new series on the same path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_value_is_received_after_a_series_removal() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        const ROUNDS: usize = 200;
+        let target = bind(1 << 16).await;
+        let mut receiver = target.subscribe();
+        let mut crossed = 0;
+        for round in 0..ROUNDS {
+            let series = path(&format!("Gi{round}"), "in-octets");
+            let (id, _) = target
+                .publish(OWNER, None, &series, &note(0.0))
+                .expect("one owner");
+            let published = AtomicUsize::new(0);
+            let stop = AtomicBool::new(false);
+            let last_id = std::thread::scope(|scope| {
+                let publisher = scope.spawn(|| {
+                    let mut current = id;
+                    let mut value = 0.0;
+                    while !stop.load(Ordering::Relaxed) {
+                        value += 1.0;
+                        current = target
+                            .publish(OWNER, Some(current), &series, &note(value))
+                            .expect("one owner")
+                            .0;
+                        published.fetch_add(1, Ordering::Relaxed);
+                    }
+                    current
+                });
+                while published.load(Ordering::Relaxed) < 10 {
+                    std::hint::spin_loop();
+                }
+                target.release(OWNER, [id]);
+                let after = published.load(Ordering::Relaxed);
+                while published.load(Ordering::Relaxed) < after + 10 {
+                    std::hint::spin_loop();
+                }
+                stop.store(true, Ordering::Relaxed);
+                publisher.join().expect("the publisher ran")
+            });
+            if last_id != id {
+                crossed += 1;
+            }
+            target.release(OWNER, [last_id]);
+            let mut last_for_id = None;
+            while let Ok(event) = receiver.try_recv() {
+                match event {
+                    SeriesEvent::Changed(update) if update.series_id == id => {
+                        last_for_id = Some("a value");
+                    }
+                    SeriesEvent::Removed { series_id, .. } if series_id == id => {
+                        assert_ne!(
+                            last_for_id,
+                            Some("a removal"),
+                            "round {round}: two removals"
+                        );
+                        last_for_id = Some("a removal");
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(last_for_id, Some("a removal"), "round {round}");
+        }
+        assert_eq!(
+            crossed, ROUNDS,
+            "the premise: publishes kept coming after the removal"
+        );
+    }
+
     /// A series' version is 1 after its first value and rises by one with
     /// each change, through a publish or an overwrite, with or without a
     /// receiver; an unchanged value keeps it. A broadcast update carries the
@@ -1294,7 +1482,10 @@ mod tests {
         let (id, _) = target
             .publish(OWNER, None, &series, &note_at(1.0, 1_000))
             .expect("one owner");
-        assert_eq!(receiver.try_recv().expect("broadcast").version, 1);
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).version,
+            1
+        );
         assert_eq!(version(), 1, "the first value");
 
         target
@@ -1305,14 +1496,20 @@ mod tests {
         target
             .publish(OWNER, Some(id), &series, &note_at(2.0, 3_000))
             .expect("one owner");
-        assert_eq!(receiver.try_recv().expect("broadcast").version, 2);
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).version,
+            2
+        );
         assert_eq!(version(), 2, "a published change");
 
         target
             .overwrite(&series, &note_at(3.0, 4_000))
             .expect("a notification")
             .expect("a served path");
-        assert_eq!(receiver.try_recv().expect("broadcast").version, 3);
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).version,
+            3
+        );
         assert_eq!(version(), 3, "an overwritten change");
 
         drop(receiver);
@@ -1367,7 +1564,7 @@ mod tests {
             .publish(OWNER, None, &series, &as_string)
             .expect("one owner");
         assert_eq!(
-            receiver.try_recv().expect("broadcast").kind,
+            as_change(receiver.try_recv().expect("broadcast")).kind,
             ValueKind::String
         );
         let (_, done) = target
@@ -1375,7 +1572,7 @@ mod tests {
             .expect("one owner");
         assert!(done.changed, "another kind of value is another value");
         assert_eq!(
-            receiver.try_recv().expect("broadcast").kind,
+            as_change(receiver.try_recv().expect("broadcast")).kind,
             ValueKind::String,
             "broadcast with the first kind"
         );
@@ -1632,8 +1829,8 @@ mod tests {
                         barrier.wait();
                         if let Some(receiver) = receiver.as_mut() {
                             let mut last = None;
-                            while let Ok(update) = receiver.try_recv() {
-                                last = Some(update.bytes);
+                            while let Ok(event) = receiver.try_recv() {
+                                last = Some(as_change(event).bytes);
                             }
                             if last != Some(target.snapshot()[0].latest.clone()) {
                                 mismatches.fetch_add(1, Ordering::Relaxed);
@@ -1696,8 +1893,8 @@ mod tests {
                 let mut receiver = target.subscribe();
                 let mut seen = target.snapshot()[0].latest.clone();
                 barrier.wait();
-                while let Ok(update) = receiver.try_recv() {
-                    seen = update.bytes;
+                while let Ok(event) = receiver.try_recv() {
+                    seen = as_change(event).bytes;
                 }
                 if seen != *published {
                     missed.fetch_add(1, Ordering::Relaxed);

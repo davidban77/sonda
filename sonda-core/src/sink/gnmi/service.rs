@@ -29,7 +29,10 @@ use tower::Service;
 
 use super::matcher::SubscriptionMatcher;
 use super::notification::ValueKind;
-use super::target::{GnmiTarget, PathKey, SeriesId, SeriesSnapshot, SeriesUpdate, TargetState};
+use super::target::{
+    delete_notification, GnmiTarget, PathKey, SeriesEvent, SeriesId, SeriesSnapshot, SeriesUpdate,
+    TargetState,
+};
 use crate::encoder::gnmi::proto::{self, subscribe_request, subscription_list, SubscriptionMode};
 use crate::sink::grpc_codec::{PreEncoded, PreEncodedCodec, ProstCodec};
 
@@ -351,6 +354,17 @@ struct Group {
     period: Duration,
     selector: Selector,
     next: Instant,
+    /// For a SAMPLE group with `suppress_redundant`, what the group last
+    /// sent of each series it selects; `None` for every other group.
+    sent: Option<HashMap<SeriesId, Sent>>,
+}
+
+/// A series a suppressing sample group has sent.
+struct Sent {
+    /// The version of the value last sent.
+    version: u64,
+    /// The series' path, for its delete once it leaves the table.
+    path: PathKey,
 }
 
 /// How a STREAM list is served.
@@ -366,19 +380,23 @@ struct Plan {
 /// Split a STREAM `list` into sample groups, heartbeat groups and the
 /// ON_CHANGE set:
 ///
-/// - SAMPLE: a sample group at its `sample_interval`. Its
-///   `heartbeat_interval` is not read.
+/// - SAMPLE: a sample group at its `sample_interval`. With
+///   `suppress_redundant`, the group sends a series only when its value
+///   changed since the group last sent it, and a heartbeat group at its
+///   `heartbeat_interval` re-sends every series it matches unless that is 0.
+///   Without `suppress_redundant`, `heartbeat_interval` is not read: every
+///   sample already sends every series.
 /// - ON_CHANGE: the ON_CHANGE set, and a heartbeat group at its
 ///   `heartbeat_interval` unless that is 0.
 /// - TARGET_DEFINED: for `string_val` series, the ON_CHANGE set and a
 ///   heartbeat group as for ON_CHANGE; for every other kind, a sample group
-///   at its `sample_interval`.
+///   at its `sample_interval` that does not suppress.
 ///
 /// Every interval is raised to `floor`, so a sample interval of 0 is the
-/// floor. Subscriptions with the same period and kinds share a group, due one
-/// period from now.
+/// floor. Subscriptions with the same period, kinds and suppression share a
+/// group, due one period from now; heartbeat groups never suppress.
 fn plan_groups(list: &proto::SubscriptionList, floor: Duration) -> Result<Plan, Status> {
-    type Timed = Vec<((Duration, KindFilter), Vec<proto::Subscription>)>;
+    type Timed = Vec<((Duration, KindFilter, bool), Vec<proto::Subscription>)>;
     let (mut samples, mut heartbeats): (Timed, Timed) = (Vec::new(), Vec::new());
     let mut on_change: Vec<(KindFilter, Vec<proto::Subscription>)> = Vec::new();
     for subscription in &list.subscription {
@@ -388,7 +406,7 @@ fn plan_groups(list: &proto::SubscriptionList, floor: Duration) -> Result<Plan, 
         let mut changes = |kinds: KindFilter| {
             add(&mut on_change, kinds, subscription);
             if let Some(period) = heartbeat {
-                add(&mut heartbeats, (period, kinds), subscription);
+                add(&mut heartbeats, (period, kinds, false), subscription);
             }
         };
         // The matcher has refused every mode but these in a STREAM list.
@@ -396,9 +414,27 @@ fn plan_groups(list: &proto::SubscriptionList, floor: Duration) -> Result<Plan, 
             Ok(SubscriptionMode::OnChange) => changes(KindFilter::Any),
             Ok(SubscriptionMode::TargetDefined) => {
                 changes(KindFilter::Strings);
-                add(&mut samples, (sample, KindFilter::NonStrings), subscription);
+                add(
+                    &mut samples,
+                    (sample, KindFilter::NonStrings, false),
+                    subscription,
+                );
             }
-            _ => add(&mut samples, (sample, KindFilter::Any), subscription),
+            _ => {
+                let suppress = subscription.suppress_redundant;
+                add(
+                    &mut samples,
+                    (sample, KindFilter::Any, suppress),
+                    subscription,
+                );
+                if let Some(period) = heartbeat.filter(|_| suppress) {
+                    add(
+                        &mut heartbeats,
+                        (period, KindFilter::Any, false),
+                        subscription,
+                    );
+                }
+            }
         }
     }
     let selector = |kinds: KindFilter, subscription: Vec<proto::Subscription>| {
@@ -415,11 +451,12 @@ fn plan_groups(list: &proto::SubscriptionList, floor: Duration) -> Result<Plan, 
     let groups = |timed: Timed| {
         timed
             .into_iter()
-            .map(|((period, kinds), subscription)| {
+            .map(|((period, kinds, suppress), subscription)| {
                 Ok(Group {
                     period,
                     selector: selector(kinds, subscription)?,
                     next: now + period,
+                    sent: suppress.then(HashMap::new),
                 })
             })
             .collect::<Result<Vec<_>, Status>>()
@@ -452,7 +489,7 @@ fn add<K: PartialEq>(
 /// of each was last queued.
 struct OnChangeSet {
     selectors: Vec<Selector>,
-    rx: broadcast::Receiver<SeriesUpdate>,
+    rx: broadcast::Receiver<SeriesEvent>,
     /// What the set knows of each series seen so far.
     matched: HashMap<SeriesId, Seen>,
     /// The size of `matched` past which it is pruned.
@@ -503,7 +540,7 @@ impl OnChangeSet {
 
 /// The next message on the ON_CHANGE set's broadcast; never resolves when
 /// there is no set.
-async fn next_change(on_change: &mut Option<OnChangeSet>) -> Result<SeriesUpdate, RecvError> {
+async fn next_change(on_change: &mut Option<OnChangeSet>) -> Result<SeriesEvent, RecvError> {
     match on_change {
         Some(set) => set.rx.recv().await,
         None => std::future::pending().await,
@@ -533,10 +570,10 @@ impl Pending {
         self.queue.is_empty()
     }
 
-    /// The [`Queued::Value`] entries in the queue.
+    /// The series values in the queue.
     #[cfg(test)]
     fn queued_values(&self) -> usize {
-        self.queue.len() - self.responses
+        self.values.len()
     }
 
     /// Queue `response` last.
@@ -557,6 +594,13 @@ impl Pending {
                 self.queue.push_back(Queued::Value(id));
             }
         }
+    }
+
+    /// Queue `delete`, one encoded notification deleting series `id`, last,
+    /// in place of any value queued for the series.
+    fn push_delete(&mut self, id: SeriesId, delete: &Bytes) {
+        self.values.remove(&id);
+        self.push_response(update_response(delete));
     }
 
     /// Take the first response, encoding a queued value as an update.
@@ -681,7 +725,7 @@ enum Step {
     /// A heartbeat group is due.
     Heartbeat,
     /// The ON_CHANGE set's broadcast delivered a change, or reported a lag.
-    Change(Result<SeriesUpdate, RecvError>),
+    Change(Result<SeriesEvent, RecvError>),
 }
 
 /// The task that sends one subscription's responses.
@@ -724,12 +768,21 @@ impl Producer {
     /// replaces it in place. A change is queued only when its version is
     /// newer than that of the series' value last queued, so a change the
     /// initial sync, a resync or a heartbeat already holds is not sent
-    /// again. Sample
-    /// groups fall due only while no sampled response or sync marker waits.
-    /// When the broadcast reports that the subscription fell more than the
-    /// target's `subscriber_buffer` changes behind, the latest value of
-    /// every series the ON_CHANGE set matches is queued again, without a
-    /// second sync marker.
+    /// again. A sample group with `suppress_redundant` sends a series only
+    /// when its version is newer than the one the group last sent; the
+    /// initial sync counts as sent. Sample groups fall due only while no
+    /// sampled response or sync marker waits. When the broadcast reports
+    /// that the subscription fell more than the target's
+    /// `subscriber_buffer` changes behind, the latest value of every series
+    /// the ON_CHANGE set matches is queued again, without a second sync
+    /// marker.
+    ///
+    /// When a series leaves the table, the subscription sends one delete for
+    /// its path if its ON_CHANGE set matched the series (on the broadcast's
+    /// removal) or a suppressing sample group had sent it (at that group's
+    /// next sample), whichever comes first. The delete goes last in the
+    /// queue, in place of any value waiting for the series. A plain SAMPLE
+    /// subscription sends no delete; the series stops appearing.
     ///
     /// Returns when the client stops receiving, after the sync marker for a
     /// ONCE list, and when the target's listener stops or the target is
@@ -802,7 +855,13 @@ impl Producer {
                         }
                         Step::Sample => self.sample(&mut pending),
                         Step::Heartbeat => self.heartbeat(&mut pending),
-                        Step::Change(Ok(update)) => self.offer(update, &mut pending),
+                        Step::Change(Ok(SeriesEvent::Changed(update))) => {
+                            self.offer(update, &mut pending)
+                        }
+                        Step::Change(Ok(SeriesEvent::Removed { series_id, bytes })) => {
+                            self.removed(series_id, &bytes, &mut pending);
+                            true
+                        }
                         Step::Change(Err(RecvError::Lagged(skipped))) => {
                             tracing::debug!(
                                 peer = %self.peer_name(),
@@ -842,7 +901,9 @@ impl Producer {
     /// The latest value of every matching series (none with
     /// `updates_only`), then the sync marker. Each series seen is entered in
     /// the ON_CHANGE set's match cache, with the version of the value
-    /// queued for it. `None` once the target is gone.
+    /// queued for it, and each series queued is recorded as sent by every
+    /// suppressing sample group that selects it. `None` once the target is
+    /// gone.
     fn initial_sync(&mut self) -> Option<Pending> {
         let mut pending = Pending::default();
         if !self.updates_only {
@@ -859,6 +920,7 @@ impl Producer {
                     }
                 }
                 if queue {
+                    record_sent(&mut self.samples, &series);
                     pending.push_value(series.series_id, series.latest);
                 }
             }
@@ -867,9 +929,10 @@ impl Producer {
         Some(pending)
     }
 
-    /// Queue the latest value of every series a due sample group matches,
-    /// and move each due group to its next period. `false` once the target
-    /// is gone.
+    /// Queue the latest value of every series a due sample group sends, and
+    /// a delete for every series a due suppressing group had sent that has
+    /// left the table, and move each due group to its next period. `false`
+    /// once the target is gone.
     fn sample(&mut self, pending: &mut Pending) -> bool {
         #[cfg(test)]
         self.probe
@@ -878,8 +941,11 @@ impl Producer {
         let Some(due) = due(&mut self.samples, &self.target) else {
             return false;
         };
-        for series in due {
+        for series in due.series {
             pending.push_response(update_response(&series.latest));
+        }
+        for (id, path) in due.removed {
+            self.queue_delete(id, &delete_notification(path.path()), pending);
         }
         true
     }
@@ -893,7 +959,7 @@ impl Producer {
         let Some(due) = due(&mut self.heartbeats, &self.target) else {
             return false;
         };
-        for series in due {
+        for series in due.series {
             if let Some(set) = self.on_change.as_mut() {
                 set.seen(series.series_id, series.kind, || Some(series.path.clone()))
                     .queued = series.version;
@@ -934,6 +1000,32 @@ impl Producer {
         true
     }
 
+    /// Handle the broadcast's removal of series `id`: the ON_CHANGE set
+    /// forgets the series and, when it matched, queues `delete`.
+    fn removed(&mut self, id: SeriesId, delete: &Bytes, pending: &mut Pending) {
+        let matched = self
+            .on_change
+            .as_mut()
+            .and_then(|set| set.matched.remove(&id))
+            .is_some_and(|seen| seen.matches);
+        if matched {
+            self.queue_delete(id, delete, pending);
+        }
+    }
+
+    /// Queue `delete` for series `id` in place of any value waiting for it,
+    /// and forget the series in the ON_CHANGE set and every suppressing
+    /// sample group, so no other part of the list sends a second delete.
+    fn queue_delete(&mut self, id: SeriesId, delete: &Bytes, pending: &mut Pending) {
+        pending.push_delete(id, delete);
+        if let Some(set) = self.on_change.as_mut() {
+            set.matched.remove(&id);
+        }
+        for sent in self.samples.iter_mut().filter_map(|g| g.sent.as_mut()) {
+            sent.remove(&id);
+        }
+    }
+
     /// Move the ON_CHANGE set to a receiver at the broadcast's tail, dropping
     /// the changes it fell behind on, then queue the latest value of every
     /// series it matches, recording each one's version, and prune its match
@@ -966,30 +1058,92 @@ impl Producer {
     }
 }
 
-/// Every series a due group of `groups` selects, with each due group moved
-/// to its next period. `None` once the target is gone.
-fn due(groups: &mut [Group], target: &Weak<GnmiTarget>) -> Option<Vec<SeriesSnapshot>> {
+/// What the due groups of a list send at one turn.
+struct Due {
+    /// Every series a due group sends, once each.
+    series: Vec<SeriesSnapshot>,
+    /// Every series a due suppressing group had sent that is no longer in
+    /// the table, once each, with its path.
+    removed: Vec<(SeriesId, PathKey)>,
+}
+
+/// What the due groups of `groups` send, with each due group moved to its
+/// next period. A group without suppression sends every series it selects. A
+/// suppressing group sends a series it selects only when the series'
+/// version differs from the one it last sent, records each version it
+/// sends, and reports, then forgets, each series it had sent that is gone
+/// from the table. `None` once the target is gone.
+fn due(groups: &mut [Group], target: &Weak<GnmiTarget>) -> Option<Due> {
     let now = Instant::now();
     let target = target.upgrade()?;
     let snapshot = target.snapshot();
     drop(target);
-    let selected = {
-        let due: Vec<&Selector> = groups
-            .iter()
-            .filter(|g| g.next <= now)
-            .map(|g| &g.selector)
-            .collect();
-        snapshot
-            .into_iter()
-            .filter(|series| due.iter().any(|s| s.selects(&series.path, series.kind)))
-            .collect()
-    };
+    let mut send = vec![false; snapshot.len()];
+    let mut live: Option<HashSet<SeriesId>> = None;
+    let mut removed = Vec::new();
+    for group in groups.iter_mut().filter(|g| g.next <= now) {
+        for (series, send) in snapshot.iter().zip(send.iter_mut()) {
+            if !group.selector.selects(&series.path, series.kind) {
+                continue;
+            }
+            match group.sent.as_mut() {
+                None => *send = true,
+                Some(sent) => {
+                    let unchanged = sent
+                        .get(&series.series_id)
+                        .is_some_and(|s| s.version == series.version);
+                    if !unchanged {
+                        *send = true;
+                        sent.insert(
+                            series.series_id,
+                            Sent {
+                                version: series.version,
+                                path: series.path.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(sent) = group.sent.as_mut() {
+            let live = live.get_or_insert_with(|| snapshot.iter().map(|s| s.series_id).collect());
+            sent.retain(|id, s| {
+                let present = live.contains(id);
+                if !present {
+                    removed.push((*id, s.path.clone()));
+                }
+                present
+            });
+        }
+        group.next = next_due(group.next, group.period, now);
+    }
+    removed.sort_unstable_by_key(|(id, _)| *id);
+    removed.dedup_by_key(|(id, _)| *id);
+    let series = snapshot
+        .into_iter()
+        .zip(send)
+        .filter_map(|(series, send)| send.then_some(series))
+        .collect();
+    Some(Due { series, removed })
+}
+
+/// Record `series` as sent by every suppressing group of `groups` that
+/// selects it.
+fn record_sent(groups: &mut [Group], series: &SeriesSnapshot) {
     for group in groups.iter_mut() {
-        if group.next <= now {
-            group.next = next_due(group.next, group.period, now);
+        let Some(sent) = group.sent.as_mut() else {
+            continue;
+        };
+        if group.selector.selects(&series.path, series.kind) {
+            sent.insert(
+                series.series_id,
+                Sent {
+                    version: series.version,
+                    path: series.path.clone(),
+                },
+            );
         }
     }
-    Some(selected)
 }
 
 /// The first instant after `now` that is a whole number of `period`s after
@@ -2950,6 +3104,340 @@ mod tests {
             [Some(Value::DoubleVal((ROUNDS * 10 + 2) as f64))],
             "the premise: a heartbeat falls due each period"
         );
+    }
+
+    /// A SAMPLE list for `path` at `period` with `suppress_redundant`, and
+    /// `heartbeat` as its heartbeat interval (0 for none).
+    fn suppressed(path: &str, period: Duration, heartbeat: Duration) -> proto::SubscriptionList {
+        let mut list = stream(path, period);
+        list.subscription[0].suppress_redundant = true;
+        list.subscription[0].heartbeat_interval = heartbeat.as_nanos() as u64;
+        list
+    }
+
+    /// One response as the delete tests read it.
+    #[derive(Debug, PartialEq)]
+    enum Got {
+        /// An update: its series path and value.
+        Value(String, Value),
+        /// A delete: the full path it names.
+        Delete(String),
+        Sync,
+    }
+
+    /// Every response received until `deadline`, deletes included.
+    async fn got_until(client: &mut Client, deadline: Instant) -> Vec<Got> {
+        let mut got = Vec::new();
+        while let Ok(message) = tokio::time::timeout_at(deadline, client.responses.message()).await
+        {
+            let response = message.expect("no error on the stream").expect("open");
+            got.push(match response.response {
+                Some(subscribe_response::Response::SyncResponse(true)) => Got::Sync,
+                Some(subscribe_response::Response::Update(n)) if !n.delete.is_empty() => {
+                    assert_eq!(n.delete.len(), 1, "one deleted path");
+                    assert!(n.update.is_empty(), "a delete carries no update");
+                    let prefix = n.prefix.clone().unwrap_or_default();
+                    Got::Delete(
+                        proto::Path {
+                            origin: prefix.origin,
+                            elem: n.delete[0].elem.clone(),
+                            target: prefix.target,
+                        }
+                        .to_string(),
+                    )
+                }
+                Some(subscribe_response::Response::Update(n)) => {
+                    Got::Value(series_path(&n), value_of(&n))
+                }
+                other => panic!("unexpected response {other:?}"),
+            });
+        }
+        got
+    }
+
+    /// The updates for eth0 and eth1 a client of `list` receives after the
+    /// sync, in 1.1 s, while eth0 changes every 10 ms and eth1 is published
+    /// again with its unchanged value, on a target with a 100 ms floor; and
+    /// how many values eth0 took.
+    async fn sampled_while_one_series_changes(
+        list: proto::SubscriptionList,
+    ) -> (usize, usize, f64) {
+        let mut sink = sink(None, Some("100ms")).await;
+        publish(&mut sink, "in_octets", "eth0", 0.0).await;
+        publish(&mut sink, "in_octets", "eth1", 7.0).await;
+        let mut client = open(sink.target().local_addr(), list)
+            .await
+            .expect("subscribed");
+        let mut synced = vec![next_value(&mut client).await, next_value(&mut client).await];
+        synced.sort_by_key(|v| format!("{v:?}"));
+        assert_eq!(
+            synced,
+            [
+                Some((counter("eth0", "in-octets"), Value::DoubleVal(0.0))),
+                Some((counter("eth1", "in-octets"), Value::DoubleVal(7.0))),
+            ]
+        );
+        assert_eq!(next_value(&mut client).await, None, "the sync marker");
+
+        let started = Instant::now();
+        let mut received = Vec::new();
+        let mut value = 0.0;
+        while started.elapsed() < Duration::from_millis(1_100) {
+            value += 1.0;
+            publish(&mut sink, "in_octets", "eth0", value).await;
+            publish(&mut sink, "in_octets", "eth1", 7.0).await;
+            received.extend(
+                values_until(&mut client, Instant::now() + Duration::from_millis(10)).await,
+            );
+        }
+        assert!(!received.contains(&None), "no second sync marker");
+        (
+            updates_for(&received, &counter("eth0", "in-octets")),
+            updates_for(&received, &counter("eth1", "in-octets")),
+            value,
+        )
+    }
+
+    /// SAMPLE with `suppress_redundant` sends a series whose value holds once,
+    /// in the initial sync, and a changing one every period.
+    #[tokio::test]
+    async fn suppress_redundant_sends_an_unchanged_series_only_once() {
+        let (changing, steady, changes) = sampled_while_one_series_changes(suppressed(
+            "/interfaces",
+            Duration::from_millis(200),
+            Duration::ZERO,
+        ))
+        .await;
+        assert!(changes > 50.0, "the premise: eth0 changed {changes} times");
+        assert!(
+            (4..=6).contains(&changing),
+            "{changing} updates of the changing series in 1.1 s at 200 ms"
+        );
+        assert_eq!(steady, 0, "the unchanged series was sent only in the sync");
+    }
+
+    /// A suppressing SAMPLE subscription's heartbeat re-sends a series whose
+    /// value holds, every heartbeat.
+    #[tokio::test]
+    async fn a_sample_heartbeat_resends_an_unchanged_series() {
+        let (changing, steady, changes) = sampled_while_one_series_changes(suppressed(
+            "/interfaces",
+            Duration::from_millis(200),
+            Duration::from_millis(300),
+        ))
+        .await;
+        assert!(changes > 50.0, "the premise: eth0 changed {changes} times");
+        assert!(changing >= 4, "{changing} updates of the changing series");
+        assert!(
+            (2..=4).contains(&steady),
+            "{steady} heartbeats of the unchanged series in 1.1 s at 300 ms"
+        );
+    }
+
+    /// The control: the same SAMPLE list without `suppress_redundant` sends
+    /// both series every period, and its heartbeat interval is not read.
+    #[tokio::test]
+    async fn without_suppress_redundant_every_period_sends_every_series() {
+        let mut list = suppressed(
+            "/interfaces",
+            Duration::from_millis(200),
+            Duration::from_millis(300),
+        );
+        list.subscription[0].suppress_redundant = false;
+        let (changing, steady, changes) = sampled_while_one_series_changes(list).await;
+        assert!(changes > 50.0, "the premise: eth0 changed {changes} times");
+        for (count, which) in [(changing, "changing"), (steady, "unchanged")] {
+            assert!(
+                (4..=6).contains(&count),
+                "{count} updates of the {which} series in 1.1 s at 200 ms"
+            );
+        }
+    }
+
+    /// A target with a 100 ms floor and two sinks of one launch, one
+    /// publishing eth0 and the other eth1.
+    async fn two_sinks_of_one_launch() -> (Arc<GnmiTarget>, GnmiTargetSink, GnmiTargetSink) {
+        let target = target_with(4, |settings| {
+            settings.sample_floor = Duration::from_millis(100);
+        })
+        .await;
+        let launch = LaunchId::next();
+        let mut first = GnmiTargetSink::from_target(Arc::clone(&target), launch);
+        let mut second = GnmiTargetSink::from_target(Arc::clone(&target), launch);
+        publish(&mut first, "in_octets", "eth0", 1.0).await;
+        publish(&mut second, "in_octets", "eth1", 1.0).await;
+        assert_eq!(target.series_count(), 2, "the premise: two series");
+        (target, first, second)
+    }
+
+    /// The initial sync of eth0 and eth1 at 1.0, in either order, then the
+    /// marker.
+    async fn assert_synced(client: &mut Client) {
+        let mut synced = got_until(client, Instant::now() + Duration::from_millis(50)).await;
+        let marker = synced.pop();
+        synced.sort_by_key(|g| format!("{g:?}"));
+        assert_eq!(
+            synced,
+            [
+                Got::Value(counter("eth0", "in-octets"), Value::DoubleVal(1.0)),
+                Got::Value(counter("eth1", "in-octets"), Value::DoubleVal(1.0)),
+            ]
+        );
+        assert_eq!(marker, Some(Got::Sync));
+    }
+
+    /// Dropping one of two sinks of a launch removes its series: an
+    /// ON_CHANGE client receives exactly one delete, for that path, and no
+    /// value for it after; the other series' changes still arrive.
+    #[tokio::test]
+    async fn dropping_a_sink_sends_one_delete_to_an_on_change_client() {
+        let (target, first, mut second) = two_sinks_of_one_launch().await;
+        let mut client = open(
+            target.local_addr(),
+            on_change("/interfaces", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        assert_synced(&mut client).await;
+
+        drop(first);
+        publish(&mut second, "in_octets", "eth1", 2.0).await;
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(300)).await,
+            [
+                Got::Delete(counter("eth0", "in-octets")),
+                Got::Value(counter("eth1", "in-octets"), Value::DoubleVal(2.0)),
+            ]
+        );
+        assert_eq!(target.series_count(), 1);
+    }
+
+    /// A SAMPLE client with `suppress_redundant` receives the removed
+    /// series' delete at its next sample, once; the unchanged series it is
+    /// not sent again.
+    #[tokio::test]
+    async fn a_suppressing_sample_client_receives_the_delete_at_its_next_sample() {
+        let (target, first, _second) = two_sinks_of_one_launch().await;
+        let mut client = open(
+            target.local_addr(),
+            suppressed("/interfaces", Duration::from_millis(200), Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        assert_synced(&mut client).await;
+
+        drop(first);
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(700)).await,
+            [Got::Delete(counter("eth0", "in-octets"))]
+        );
+    }
+
+    /// A SAMPLE client without `suppress_redundant` sees a removed series
+    /// stop appearing, and receives no delete; the other series is still
+    /// sampled.
+    #[tokio::test]
+    async fn a_plain_sample_client_sees_a_removed_series_stop_without_a_delete() {
+        let (target, first, _second) = two_sinks_of_one_launch().await;
+        let mut client = open(
+            target.local_addr(),
+            stream("/interfaces", Duration::from_millis(200)),
+        )
+        .await
+        .expect("subscribed");
+        assert_synced(&mut client).await;
+        let before = got_until(&mut client, Instant::now() + Duration::from_millis(250)).await;
+        assert!(
+            before.contains(&Got::Value(
+                counter("eth0", "in-octets"),
+                Value::DoubleVal(1.0)
+            )),
+            "the premise: eth0 was sampled, in {before:?}"
+        );
+
+        drop(first);
+        // A sample taken before the drop may still be on its way.
+        let settling = got_until(&mut client, Instant::now() + Duration::from_millis(250)).await;
+        let after = got_until(&mut client, Instant::now() + Duration::from_millis(600)).await;
+        let eth1 = Got::Value(counter("eth1", "in-octets"), Value::DoubleVal(1.0));
+        assert!(
+            settling
+                .iter()
+                .chain(&after)
+                .all(|g| !matches!(g, Got::Delete(_))),
+            "no delete: {settling:?} {after:?}"
+        );
+        assert!(
+            after.len() >= 2 && after.iter().all(|g| *g == eth1),
+            "only eth1 after the drop: {after:?}"
+        );
+    }
+
+    /// A series published again on a path after its delete is a new series,
+    /// and an ON_CHANGE client receives it.
+    #[tokio::test]
+    async fn a_series_published_again_after_its_delete_is_delivered() {
+        let (target, first, _second) = two_sinks_of_one_launch().await;
+        let mut client = open(
+            target.local_addr(),
+            on_change("/interfaces", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        assert_synced(&mut client).await;
+        drop(first);
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(200)).await,
+            [Got::Delete(counter("eth0", "in-octets"))]
+        );
+
+        let mut again = GnmiTargetSink::from_target(Arc::clone(&target), LaunchId::next());
+        publish(&mut again, "in_octets", "eth0", 5.0).await;
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(200)).await,
+            [Got::Value(
+                counter("eth0", "in-octets"),
+                Value::DoubleVal(5.0)
+            )]
+        );
+    }
+
+    /// A list whose ON_CHANGE subscription and suppressing SAMPLE
+    /// subscription both had the removed series sends one delete for it.
+    #[tokio::test]
+    async fn a_list_sends_one_delete_for_a_removed_series() {
+        let (target, first, _second) = two_sinks_of_one_launch().await;
+        let mut list = suppressed("/interfaces", Duration::from_millis(200), Duration::ZERO);
+        list.subscription.push(
+            on_change("/interfaces", Duration::ZERO)
+                .subscription
+                .remove(0),
+        );
+        let mut client = open(target.local_addr(), list).await.expect("subscribed");
+        assert_synced(&mut client).await;
+
+        drop(first);
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(700)).await,
+            [Got::Delete(counter("eth0", "in-octets"))]
+        );
+    }
+
+    /// A ONCE subscription after a series was removed receives the series
+    /// that remain, the marker and the end, and no delete.
+    #[tokio::test]
+    async fn once_after_a_removal_sends_only_the_remaining_series() {
+        let (target, first, _second) = two_sinks_of_one_launch().await;
+        drop(first);
+        let mut client = open(target.local_addr(), once("/interfaces"))
+            .await
+            .expect("subscribed");
+        assert_eq!(
+            next(&mut client).await,
+            Received::Update(counter("eth1", "in-octets"))
+        );
+        assert_eq!(next(&mut client).await, Received::Sync);
+        assert_eq!(next(&mut client).await, Received::End);
     }
 
     /// A client that reads nothing while every matched series changes many
