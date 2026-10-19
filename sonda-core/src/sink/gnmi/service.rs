@@ -844,9 +844,10 @@ impl Producer {
         true
     }
 
-    /// Queue the latest value of every series the ON_CHANGE set matches, and
-    /// prune its match cache to the series in the table. `false` once the
-    /// target is gone.
+    /// Move the ON_CHANGE set to a receiver at the broadcast's tail, dropping
+    /// the changes it fell behind on, then queue the latest value of every
+    /// series it matches and prune its match cache to the series in the
+    /// table. `false` once the target is gone.
     fn resync(&mut self, pending: &mut Pending) -> bool {
         #[cfg(test)]
         self.probe
@@ -855,6 +856,7 @@ impl Producer {
         let Some(set) = self.on_change.as_mut() else {
             return true;
         };
+        set.rx = set.rx.resubscribe();
         let Some(target) = self.target.upgrade() else {
             return false;
         };
@@ -940,6 +942,10 @@ mod tests {
 
     /// How long a test waits for one response before failing.
     const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// How long a test reads with nothing arriving before it takes the
+    /// stream to be quiet.
+    const QUIET: Duration = Duration::from_millis(100);
 
     fn encoder_config() -> GnmiEncoderConfig {
         GnmiEncoderConfig {
@@ -1239,16 +1245,24 @@ mod tests {
     /// The next response: an update's series path and value, or `None` for
     /// the sync marker.
     async fn next_value(client: &mut Client) -> Option<(String, Value)> {
-        let message = tokio::time::timeout(PATIENCE, client.responses.message())
+        value_within(client, PATIENCE)
             .await
             .expect("a response in time")
+    }
+
+    /// The next response as [`next_value`] reads it, or `None` when none
+    /// arrives within `wait`.
+    async fn value_within(client: &mut Client, wait: Duration) -> Option<Option<(String, Value)>> {
+        let message = tokio::time::timeout(wait, client.responses.message())
+            .await
+            .ok()?
             .expect("no error on the stream")
             .expect("the stream is open");
-        match message.response {
+        Some(match message.response {
             Some(subscribe_response::Response::SyncResponse(true)) => None,
             Some(subscribe_response::Response::Update(n)) => Some((series_path(&n), value_of(&n))),
             other => panic!("unexpected response {other:?}"),
-        }
+        })
     }
 
     /// The value of a notification's first update.
@@ -2514,14 +2528,22 @@ mod tests {
 
     /// An ON_CHANGE subscription that falls more than `subscriber_buffer`
     /// changes behind is resynced: the client ends with the latest value of
-    /// every matched series, and no second sync marker. The burst is
+    /// every matched series, no series' value ever goes back, and no second
+    /// sync marker is sent. Each burst changes `eth0` once, first, and then
+    /// every other series many times, so the broadcast's backlog holds older
+    /// values of the other series and none of `eth0`'s: a resync that
+    /// replayed the backlog would send older values after the latest, and
+    /// one that queued nothing would leave `eth0` behind. Each burst is
     /// published without yielding to the single-threaded runtime, so the
-    /// subscription cannot read the broadcast until it is over.
+    /// subscription cannot read the broadcast until it is over; the client
+    /// then reads until nothing has arrived for [`QUIET`] after the latest.
+    /// Three bursts each cause a resync.
     #[tokio::test]
     async fn a_lagged_on_change_subscriber_is_resynced_to_the_latest() {
         const SERIES: usize = 5;
         const ROUNDS: usize = 20;
-        let mut sink = sink_with(|cfg| cfg.subscriber_buffer = Some(1)).await;
+        const BURSTS: usize = 3;
+        let mut sink = sink_with(|cfg| cfg.subscriber_buffer = Some(8)).await;
         for i in 0..SERIES {
             publish(&mut sink, "in_octets", &format!("eth{i}"), 0.0).await;
         }
@@ -2531,31 +2553,48 @@ mod tests {
         )
         .await
         .expect("subscribed");
+        let mut seen: HashMap<String, f64> = HashMap::new();
         for i in 0..SERIES {
-            assert!(next_value(&mut client).await.is_some(), "sync update {i}");
+            let (path, value) = next_value(&mut client).await.expect("a sync update");
+            assert_eq!(value, Value::DoubleVal(0.0), "sync update {i}");
+            seen.insert(path, 0.0);
         }
         assert_eq!(next_value(&mut client).await, None, "the sync marker");
 
         let probe = Arc::clone(&sink.target().settings().probe);
-        for round in 1..=ROUNDS {
-            for i in 0..SERIES {
-                publish(&mut sink, "in_octets", &format!("eth{i}"), round as f64).await;
-            }
-        }
-        let last = Value::DoubleVal(ROUNDS as f64);
-        let mut latest: HashMap<String, Value> = HashMap::new();
-        while latest.len() < SERIES || latest.values().any(|v| *v != last) {
-            match next_value(&mut client).await {
-                Some((path, value)) => {
-                    latest.insert(path, value);
+        for burst in 0..BURSTS {
+            let resyncs = probe.resyncs.load(std::sync::atomic::Ordering::Relaxed);
+            let last = ((burst + 1) * ROUNDS) as f64;
+            publish(&mut sink, "in_octets", "eth0", last).await;
+            for round in 1..=ROUNDS {
+                let value = (burst * ROUNDS + round) as f64;
+                for i in 1..SERIES {
+                    publish(&mut sink, "in_octets", &format!("eth{i}"), value).await;
                 }
-                None => panic!("a second sync marker after {latest:?}"),
             }
+            loop {
+                let at_last = seen.values().all(|v| *v == last);
+                let wait = if at_last { QUIET } else { PATIENCE };
+                let Some(received) = value_within(&mut client, wait).await else {
+                    assert!(at_last, "burst {burst}: no response in time, at {seen:?}");
+                    break;
+                };
+                let Some((path, Value::DoubleVal(value))) = received else {
+                    panic!(
+                        "burst {burst}: a second sync marker or a non-double value, at {seen:?}"
+                    );
+                };
+                let previous = seen.insert(path.clone(), value).expect("a matched series");
+                assert!(
+                    value >= previous,
+                    "burst {burst}: {path} went back from {previous} to {value}"
+                );
+            }
+            assert!(
+                probe.resyncs.load(std::sync::atomic::Ordering::Relaxed) > resyncs,
+                "burst {burst}: the subscription lagged and was resynced"
+            );
         }
-        assert!(
-            probe.resyncs.load(std::sync::atomic::Ordering::Relaxed) >= 1,
-            "the subscription lagged and was resynced"
-        );
     }
 
     /// A client that reads nothing while every matched series changes many

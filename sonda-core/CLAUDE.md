@@ -272,7 +272,9 @@ src/
 │   │                       receiver is taken before the initial snapshot; a series is
 │   │                       matched once, when first seen (snapshot path, or PathKey::decode
 │   │                       of the update), cached by SeriesId and pruned to the table past
-│   │                       2 x its live size (at least 1024). Lagged(n) re-queues the latest
+│   │                       2 x its live size (at least 1024). Lagged(n) moves the set to a
+│   │                       receiver at the broadcast's tail (resubscribe(), dropping the
+│   │                       backlog it fell behind on), then re-queues the latest
 │   │                       of every matched series (no second sync marker; debug log with
 │   │                       n). Pending queues encoded responses (sync marker, samples) and
 │   │                       series values, at most one per series: a newer change,
