@@ -197,15 +197,20 @@ src/
 │   │   │                   A sink caches the table's PathKey (path_of) so siblings
 │   │   │                   compare by pointer.
 │   │   │                   overwrite() takes nothing. publish()
-│   │   │                   copies the encoded bytes once, takes the broadcast lock once
-│   │   │                   with no broadcast receiver and twice with one, never awaits.
-│   │   │                   Store and broadcast happen under the series' lock, so
-│   │   │                   receivers see a series' updates in table order. SAMPLE and
-│   │   │                   ONCE subscriptions hold no receiver (subscribe() is for
-│   │   │                   ON_CHANGE): they hold a permit of the target's
-│   │   │                   max_subscribers Semaphore (admit()); subscriber_count() is
-│   │   │                   permits taken. snapshot() shares each slot's PathKey and
-│   │   │                   Bytes, copying no path. The server pings an HTTP/2
+│   │   │                   locates the value (value_span), refusing bytes without one on
+│   │   │                   every event, copies the encoded bytes once, keeps the value's
+│   │   │                   range in them, and compares it with the previous value:
+│   │   │                   Published { receivers, changed } (the timestamp is not part of
+│   │   │                   the value; a first publish is a change) is the one definition
+│   │   │                   of "changed". Only a change with a receiver is broadcast (the
+│   │   │                   one Bytes clone). A slot's ValueKind is its first publish's.
+│   │   │                   Never awaits. Store and broadcast happen under the series'
+│   │   │                   lock, so receivers see a series' updates in table order.
+│   │   │                   Only ON_CHANGE (and TARGET_DEFINED) lists hold a receiver
+│   │   │                   (subscribe()); every subscription holds a permit of the
+│   │   │                   target's max_subscribers Semaphore (admit());
+│   │   │                   subscriber_count() is permits taken. snapshot() shares each
+│   │   │                   slot's PathKey and Bytes, copying no path. The server pings an HTTP/2
 │   │   │                   connection silent for KEEPALIVE_INTERVAL (30 s) and closes it
 │   │   │                   after KEEPALIVE_TIMEOUT (20 s) unanswered; TargetSettings
 │   │   │                   carries both so tests can shorten them (no config). Accepted
@@ -235,12 +240,16 @@ src/
 │   │   │                   prefix; matches() is a prefix match on elements, a key of "*"
 │   │   │                   or an absent key matching any value, an empty origin or target
 │   │   │                   matching any. new() refuses (UNIMPLEMENTED, named) POLL,
-│   │   │                   ON_CHANGE in a STREAM list, BYTES, ASCII and JSON_IETF
-│   │   │                   encodings and element wildcards; INVALID_ARGUMENT for an empty
+│   │   │                   BYTES, ASCII and JSON_IETF encodings and element
+│   │   │                   wildcards; INVALID_ARGUMENT for an empty
 │   │   │                   list, an empty element name, or an unknown list encoding or
 │   │   │                   mode or (STREAM lists only) subscription mode. JSON (encoding
 │   │   │                   0, also an unset encoding) is accepted and served as PROTO.
 │   │   │                   pub(crate).
+│   │   ├── notification.rs ← value_span(): the byte range of an encoded Notification's
+│   │   │                   first update's val (the TypedValue without key and length)
+│   │   │                   and its ValueKind (the first field's number); walks keys and
+│   │   │                   lengths, decodes no path, allocates nothing. pub(crate).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service). Holds the target
 │   │                       WEAKLY (so does every handler and subscription task): nothing a
@@ -252,15 +261,30 @@ src/
 │   │                       ignores the rest of the inbound stream (never polled in a
 │   │                       select!); its end does not end the subscription. A producer
 │   │                       task sends the initial sync (matching snapshot, none with
-│   │                       updates_only, then sync_response) and, for STREAM, re-reads the
-│   │                       table per sample group (period = max(sample_interval,
-│   │                       sample_floor), one group per distinct period; next_due skips
-│   │                       missed periods in one step), framing each stored Notification
-│   │                       as SubscribeResponse.update bytes. Its select! arms: listener
-│   │                       left Listening (state()), tx.closed(), tx.reserve() (mpsc of
-│   │                       64: a client that stops reading parks only its own task) under
-│   │                       a timeout of stall_limit = max(3 x the list's longest sample
-│   │                       period, stall_floor), the next sample. stall_floor is
+│   │                       updates_only, then sync_response). plan_groups splits a STREAM
+│   │                       list: SAMPLE into sample groups; ON_CHANGE into the ON_CHANGE
+│   │                       set plus a heartbeat group when heartbeat_interval > 0;
+│   │                       TARGET_DEFINED into both, the set and heartbeat for string_val
+│   │                       series (KindFilter::Strings), a sample group for the rest
+│   │                       (NonStrings). Periods are max(interval, sample_floor), one group
+│   │                       per (period, kinds); next_due skips missed periods in one step.
+│   │                       SAMPLE's heartbeat_interval is not read. The set's broadcast
+│   │                       receiver is taken before the initial snapshot; a series is
+│   │                       matched once, when first seen (snapshot path, or PathKey::decode
+│   │                       of the update), cached by SeriesId and pruned to the table past
+│   │                       2 x its live size (at least 1024). Lagged(n) re-queues the latest
+│   │                       of every matched series (no second sync marker; debug log with
+│   │                       n). Pending queues encoded responses (sync marker, samples) and
+│   │                       series values, at most one per series: a newer change,
+│   │                       heartbeat or resync replaces it in place. Each stored
+│   │                       Notification is framed as SubscribeResponse.update bytes. Its
+│   │                       select! arms: listener left Listening (state()), tx.closed(),
+│   │                       tx.reserve() (mpsc of 64: a client that stops reading parks only
+│   │                       its own task) under a deadline stall_limit after the queue last
+│   │                       became non-empty or last sent, the broadcast (always read), the
+│   │                       next sample (only while no encoded response waits), the next
+│   │                       heartbeat. stall_limit = max(3 x the list's longest sample period,
+│   │                       stall_floor); heartbeats do not count. stall_floor is
 │   │                       STALL_FLOOR (10 s), carried in TargetSettings so tests can
 │   │                       shorten it (no config). Responses waiting a whole stall_limit
 │   │                       with none taken from the queue end the subscription UNAVAILABLE
@@ -276,7 +300,8 @@ src/
 │   │                       ONCE ends with OK after the sync marker. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the
 │   │                       producer sends the status on a oneshot, and Responses yields it
-│   │                       after the queue drains. Publishes wake no subscriber task.
+│   │                       after the queue drains. A publish wakes only ON_CHANGE
+│   │                       subscriber tasks, and only when the value changed.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/

@@ -24,9 +24,9 @@ impl SubscriptionMatcher {
     ///   an element with an empty name, or the list's encoding or mode, or in
     ///   a `STREAM` list a subscription's mode, is a number gNMI does not
     ///   define. A `ONCE` list's subscription modes are not read.
-    /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list, an
-    ///   `ON_CHANGE` subscription in a `STREAM` list, a `BYTES`, `ASCII` or
-    ///   `JSON_IETF` encoding, or a path element named `*` or `...`.
+    /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list, a
+    ///   `BYTES`, `ASCII` or `JSON_IETF` encoding, or a path element named
+    ///   `*` or `...`.
     ///
     /// `PROTO` and `JSON` are accepted and both served as `PROTO`: `JSON` is
     /// encoding 0, which is also what a list that sets no encoding carries.
@@ -57,18 +57,12 @@ impl SubscriptionMatcher {
         let mut paths = Vec::with_capacity(list.subscription.len());
         for subscription in &list.subscription {
             if mode == subscription_list::Mode::Stream {
-                let sub_mode = SubscriptionMode::try_from(subscription.mode).map_err(|_| {
+                SubscriptionMode::try_from(subscription.mode).map_err(|_| {
                     Status::invalid_argument(format!(
                         "unknown subscription mode {}",
                         subscription.mode
                     ))
                 })?;
-                if sub_mode == SubscriptionMode::OnChange {
-                    return Err(Status::unimplemented(
-                        "subscription mode ON_CHANGE is not supported; use SAMPLE or \
-                         TARGET_DEFINED",
-                    ));
-                }
             }
             let own = subscription.path.clone().unwrap_or_default();
             let mut elem = prefix.elem.clone();
@@ -272,7 +266,6 @@ mod tests {
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::poll_list(subscription_list::Mode::Poll as i32, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "POLL")]
-    #[case::on_change(subscription_list::Mode::Stream as i32, SubscriptionMode::OnChange as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "ON_CHANGE")]
     #[case::unknown_list_mode(9, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_mode(subscription_list::Mode::Stream as i32, 9, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_encoding(subscription_list::Mode::Stream as i32, SubscriptionMode::Sample as i32, 9, tonic::Code::InvalidArgument, "encoding 9")]
@@ -328,6 +321,7 @@ mod tests {
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::stream_sample(subscription_list::Mode::Stream, SubscriptionMode::Sample)]
+    #[case::stream_on_change(subscription_list::Mode::Stream, SubscriptionMode::OnChange)]
     #[case::stream_target_defined(subscription_list::Mode::Stream, SubscriptionMode::TargetDefined)]
     #[case::once(subscription_list::Mode::Once, SubscriptionMode::OnChange)]
     fn supported_modes_are_accepted(

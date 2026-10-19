@@ -5,6 +5,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::net::SocketAddr;
+use std::ops::Range;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
@@ -18,6 +19,7 @@ use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::transport::server::{Connected, TcpConnectInfo};
 
+use super::notification::{value_span, ValueKind};
 use super::service::GnmiService;
 use super::TargetSettings;
 use crate::encoder::gnmi::proto;
@@ -66,13 +68,37 @@ pub(crate) enum TargetState {
 /// A target-local series number, allocated on a series' first publish.
 pub type SeriesId = u32;
 
-/// A new latest value for one series, as broadcast to subscribers.
+/// A changed value for one series, as broadcast to subscribers.
 #[derive(Clone, Debug)]
 pub struct SeriesUpdate {
     /// The series the value belongs to.
     pub series_id: SeriesId,
+    /// The kind of value the series carries, fixed at its first publish.
+    pub kind: ValueKind,
     /// One encoded `gnmi.Notification`.
     pub bytes: Bytes,
+}
+
+/// What one publish did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Published {
+    /// Whether any broadcast receiver was subscribed.
+    pub(crate) receivers: bool,
+    /// Whether the value changed: its encoded `TypedValue` bytes differ from
+    /// the series' previous ones. The notification's timestamp is not part of
+    /// the value. A series' first publish is a change.
+    pub(crate) changed: bool,
+}
+
+/// [`SondaError::Sink`]: `encoded` is not a gnmi notification with an update
+/// that has a path and a value.
+fn not_a_notification(detail: impl std::fmt::Display) -> SondaError {
+    SondaError::Sink(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "gnmi_target received bytes that are not a gnmi notification with an update: {detail}"
+        ),
+    ))
 }
 
 /// The gNMI identity of a series: its full path, with the origin and target
@@ -115,24 +141,14 @@ impl PathKey {
     /// [`SondaError::Sink`] when `encoded` is not a notification with an
     /// update.
     pub(crate) fn decode(encoded: &[u8]) -> Result<Self, SondaError> {
-        let not_a_notification = |detail: String| {
-            SondaError::Sink(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "gnmi_target received bytes that are not a gnmi notification with an \
-                     update: {detail}"
-                ),
-            ))
-        };
-        let mut notification =
-            proto::Notification::decode(encoded).map_err(|e| not_a_notification(e.to_string()))?;
+        let mut notification = proto::Notification::decode(encoded).map_err(not_a_notification)?;
         let prefix = notification.prefix.take().unwrap_or_default();
         let elem = notification
             .update
             .into_iter()
             .next()
             .and_then(|update| update.path)
-            .ok_or_else(|| not_a_notification("no update path".to_string()))?
+            .ok_or_else(|| not_a_notification("no update path"))?
             .elem;
         Ok(Self::new(proto::Path {
             origin: prefix.origin,
@@ -176,12 +192,13 @@ impl Hash for PathKey {
 
 /// One series as held by the target, returned by [`GnmiTarget::snapshot`].
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub(crate) struct SeriesSnapshot {
     pub(crate) series_id: SeriesId,
     /// The series' full path: the notification prefix's origin and target
     /// with the update's elements. Shared with the table, not copied.
     pub(crate) path: PathKey,
+    /// The kind of value the series carries, fixed at its first publish.
+    pub(crate) kind: ValueKind,
     /// The latest encoded `gnmi.Notification`.
     pub(crate) latest: Bytes,
 }
@@ -199,12 +216,30 @@ impl From<LaunchId> for Owner {
 /// One series in the table.
 struct Slot {
     path: PathKey,
-    latest: Mutex<Bytes>,
+    latest: Mutex<Latest>,
+    /// The kind of the value of the series' first publish.
+    kind: ValueKind,
     /// The only launch whose sinks may publish the series.
     owner: Owner,
     /// Sinks of `owner` that have published the series; it leaves the table
     /// when the last of them is released.
     publishers: usize,
+}
+
+/// A series' latest encoded `gnmi.Notification` and where its value lies in
+/// it.
+#[derive(Default)]
+struct Latest {
+    bytes: Bytes,
+    /// The range of the update's encoded `TypedValue` in `bytes`.
+    value: Range<usize>,
+}
+
+impl Latest {
+    /// The encoded `TypedValue`, borrowed from `bytes`.
+    fn value(&self) -> &[u8] {
+        self.bytes.get(self.value.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(Default)]
@@ -218,7 +253,7 @@ struct SeriesTable {
 type ServeError = Arc<Mutex<Option<String>>>;
 
 /// The latest value of every series published on one listen address, keyed
-/// by the series' path, the broadcast that carries new values to
+/// by the series' path, the broadcast that carries changed values to
 /// subscribers, and the gRPC listener.
 ///
 /// Obtained from the [`registry`](super::registry::registry). The listener
@@ -367,14 +402,19 @@ impl GnmiTarget {
         self.token.cancel();
     }
 
+    /// Broadcast updates some receiver has yet to read.
+    #[cfg(test)]
+    pub(crate) fn broadcast_backlog(&self) -> usize {
+        self.tx.len()
+    }
+
     /// The settings the target was bound with.
     pub(crate) fn settings(&self) -> &TargetSettings {
         &self.settings
     }
 
     /// Upsert `encoded` as the latest notification of a series `owner`
-    /// publishes. Returns the series' id and whether any receiver was
-    /// subscribed.
+    /// publishes. Returns the series' id and what the publish did.
     ///
     /// With `id` naming a series `owner` holds, that series is updated under
     /// the read lock. Otherwise (no `id`, or one that no longer names this
@@ -383,35 +423,53 @@ impl GnmiTarget {
     /// `owner` as its owner, and counts one more publisher. Each publisher is
     /// [released](Self::release) once; the series leaves with the last.
     ///
-    /// Synchronous; `broadcast::Sender::send` never blocks. Copies `encoded`
-    /// once. The update is broadcast while the series is still locked, so
-    /// concurrent publishes of one path reach subscribers in the order the
-    /// table stores them.
+    /// Synchronous; `broadcast::Sender::send` never blocks. Locates the value
+    /// in `encoded`, copies `encoded` once and compares the value with the
+    /// series' previous one; only a changed value is broadcast. The update is
+    /// broadcast while the series is still locked, so concurrent publishes of
+    /// one path reach subscribers in the order the table stores them.
     ///
     /// # Errors
     ///
-    /// [`SondaError::Config`] naming the path and the listen address when
-    /// another launch owns the series for `path`.
+    /// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
+    /// update has a value; [`SondaError::Config`] naming the path and the
+    /// listen address when another launch owns the series for `path`.
     pub(crate) fn publish(
         &self,
         owner: Owner,
         id: Option<SeriesId>,
         path: &PathKey,
         encoded: &[u8],
-    ) -> Result<(SeriesId, bool), SondaError> {
-        self.store(owner, id, path, Bytes::copy_from_slice(encoded))
+    ) -> Result<(SeriesId, Published), SondaError> {
+        let (latest, kind) = latest(encoded)?;
+        self.store(owner, id, path, latest, kind)
     }
 
     /// Replace the latest notification of the series already in the table
     /// for `path`, whoever owns it, taking no ownership. Returns its id, or
-    /// `None` when no series has that path. Synchronous, and broadcast like
-    /// [`publish`](Self::publish).
-    pub(crate) fn overwrite(&self, path: &PathKey, encoded: &[u8]) -> Option<SeriesId> {
+    /// `None` when no series has that path. Synchronous, and compared and
+    /// broadcast like [`publish`](Self::publish).
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
+    /// update has a value.
+    pub(crate) fn overwrite(
+        &self,
+        path: &PathKey,
+        encoded: &[u8],
+    ) -> Result<Option<SeriesId>, SondaError> {
+        let (latest, _) = latest(encoded)?;
         let table = self.read();
-        let id = *table.ids.get(path)?;
-        let slot = table.slots.get(&id)?;
-        self.replace(id, &mut lock(&slot.latest), Bytes::copy_from_slice(encoded));
-        Some(id)
+        let Some((id, slot)) = table
+            .ids
+            .get(path)
+            .and_then(|id| table.slots.get(id).map(|slot| (*id, slot)))
+        else {
+            return Ok(None);
+        };
+        self.replace(id, slot.kind, &mut lock(&slot.latest), latest);
+        Ok(Some(id))
     }
 
     /// How many publishers series `id` counts.
@@ -445,10 +503,9 @@ impl GnmiTarget {
         }
     }
 
-    /// A receiver for every update published from now on. Subscribe before
-    /// taking a [`snapshot`](Self::snapshot): every value the snapshot does
-    /// not hold then arrives on the receiver.
-    #[allow(dead_code)] // read by ON_CHANGE subscriptions
+    /// A receiver for every changed value published from now on. Subscribe
+    /// before taking a [`snapshot`](Self::snapshot): every change the
+    /// snapshot does not hold then arrives on the receiver.
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesUpdate> {
         self.tx.subscribe()
     }
@@ -462,7 +519,8 @@ impl GnmiTarget {
             .map(|(id, slot)| SeriesSnapshot {
                 series_id: *id,
                 path: slot.path.clone(),
-                latest: lock(&slot.latest).clone(),
+                kind: slot.kind,
+                latest: lock(&slot.latest).bytes.clone(),
             })
             .collect()
     }
@@ -472,8 +530,9 @@ impl GnmiTarget {
         owner: Owner,
         id: Option<SeriesId>,
         path: &PathKey,
-        latest: Bytes,
-    ) -> Result<(SeriesId, bool), SondaError> {
+        latest: Latest,
+        kind: ValueKind,
+    ) -> Result<(SeriesId, Published), SondaError> {
         if let Some(id) = id {
             let table = self.read();
             // A cached id names this path's series unless the id was freed
@@ -483,8 +542,8 @@ impl GnmiTarget {
                 .get(&id)
                 .filter(|slot| slot.owner == owner && slot.path == *path)
             {
-                let delivered = self.replace(id, &mut lock(&slot.latest), latest);
-                return Ok((id, delivered));
+                let published = self.replace(id, slot.kind, &mut lock(&slot.latest), latest);
+                return Ok((id, published));
             }
         }
         let mut table = self.write();
@@ -513,40 +572,51 @@ impl GnmiTarget {
         };
         let slot = table.slots.entry(id).or_insert_with(|| Slot {
             path: path.clone(),
-            latest: Mutex::new(Bytes::new()),
+            latest: Mutex::new(Latest::default()),
+            kind,
             owner,
             publishers: 0,
         });
         // Reaching here is a publisher's first publish of this path: with no
         // id, or with a cached id that no longer names its series.
         slot.publishers += 1;
+        let kind = slot.kind;
         let current = slot
             .latest
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        let delivered = self.replace(id, current, latest);
-        Ok((id, delivered))
+        let published = self.replace(id, kind, current, latest);
+        Ok((id, published))
     }
 
-    /// Store `latest` in `current` and, when anyone is subscribed, broadcast
-    /// it. The caller holds the series' lock, so the store, the check for
-    /// receivers and the broadcast are one step: a subscriber that takes a
-    /// snapshot after subscribing sees the stored value or receives it.
-    /// Returns whether any receiver was subscribed.
-    fn replace(&self, id: SeriesId, current: &mut Bytes, latest: Bytes) -> bool {
+    /// Store `latest` in `current` and, when its value differs from the one
+    /// it replaces and anyone is subscribed, broadcast it. A series' first
+    /// value differs from the empty one its slot starts with. The caller
+    /// holds the series' lock, so the store, the check for receivers and the
+    /// broadcast are one step: a subscriber that takes a snapshot after
+    /// subscribing sees the stored value or receives it.
+    fn replace(
+        &self,
+        id: SeriesId,
+        kind: ValueKind,
+        current: &mut Latest,
+        latest: Latest,
+    ) -> Published {
+        let changed = current.value() != latest.value();
+        let receivers = self.tx.receiver_count() > 0;
         // A clone shares the buffer but allocates its refcount on first use,
         // so it is made only when someone will receive it.
-        let update = (self.tx.receiver_count() > 0).then(|| latest.clone());
+        let update = (changed && receivers).then(|| latest.bytes.clone());
         *current = latest;
-        let receivers = update.is_some();
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
             let _ = self.tx.send(SeriesUpdate {
                 series_id: id,
+                kind,
                 bytes,
             });
         }
-        receivers
+        Published { receivers, changed }
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SeriesTable> {
@@ -761,8 +831,23 @@ impl Connected for Connection {
     }
 }
 
-fn lock(latest: &Mutex<Bytes>) -> std::sync::MutexGuard<'_, Bytes> {
+fn lock(latest: &Mutex<Latest>) -> std::sync::MutexGuard<'_, Latest> {
     latest.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A copy of `encoded` with its value located, and the value's kind.
+///
+/// # Errors
+///
+/// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
+/// update has a value.
+fn latest(encoded: &[u8]) -> Result<(Latest, ValueKind), SondaError> {
+    let (value, kind) = value_span(encoded).ok_or_else(|| not_a_notification("no update value"))?;
+    let latest = Latest {
+        bytes: Bytes::copy_from_slice(encoded),
+        value,
+    };
+    Ok((latest, kind))
 }
 
 #[cfg(test)]
@@ -775,7 +860,7 @@ mod tests {
 
     /// The owner in tests that use one; no launch in a test process reaches it.
     const OWNER: Owner = Owner(u64::MAX);
-    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig, GnmiValueType};
     use crate::encoder::Encoder;
     use crate::model::metric::{Labels, MetricEvent};
     use crate::sink::gnmi::GnmiTargetConfig;
@@ -813,22 +898,47 @@ mod tests {
     /// One encoded notification for `labels`, through a gnmi encoder that
     /// places `ifName` and drops `job`.
     fn encoded(labels: &[(&str, &str)], value: f64) -> Vec<u8> {
-        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
-            origin: "openconfig".to_string(),
-            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
-            drop_labels: vec!["job".to_string()],
-            ..Default::default()
-        })
-        .expect("valid encoder");
         let event = MetricEvent::new(
             "in_octets".to_string(),
             value,
             Labels::from_pairs(labels).expect("valid labels"),
         )
         .expect("valid event");
+        encode(&event, GnmiValueType::Double)
+    }
+
+    /// `event` encoded with `in_octets` typed as `value_type`, through a
+    /// gnmi encoder that places `ifName` and drops `job`.
+    fn encode(event: &MetricEvent, value_type: GnmiValueType) -> Vec<u8> {
+        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+            origin: "openconfig".to_string(),
+            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
+            drop_labels: vec!["job".to_string()],
+            values: std::collections::HashMap::from([("in_octets".to_string(), value_type)]),
+            ..Default::default()
+        })
+        .expect("valid encoder");
         let mut buf = Vec::new();
-        encoder.encode_metric(&event, &mut buf).expect("encodes");
+        encoder.encode_metric(event, &mut buf).expect("encodes");
         buf
+    }
+
+    /// An encoded notification carrying `value`, for publishing under any
+    /// path.
+    fn note(value: f64) -> Bytes {
+        Bytes::from(encoded(&[("ifName", "Gi0")], value))
+    }
+
+    /// `value` encoded as a double, stamped `nanos` after the epoch.
+    fn note_at(value: f64, nanos: u64) -> Bytes {
+        let event = MetricEvent::with_timestamp(
+            "in_octets".to_string(),
+            value,
+            Labels::from_pairs(&[("ifName", "Gi0")]).expect("valid labels"),
+            std::time::UNIX_EPOCH + Duration::from_nanos(nanos),
+        )
+        .expect("valid event");
+        Bytes::from(encode(&event, GnmiValueType::Double))
     }
 
     #[tokio::test]
@@ -837,13 +947,12 @@ mod tests {
         let a = path("Gi0", "in-octets");
         let b = path("Gi1", "in-octets");
 
-        let (first, _) = target.publish(OWNER, None, &a, b"one").expect("one owner");
+        let (one, two, three) = (note(1.0), note(2.0), note(3.0));
+        let (first, _) = target.publish(OWNER, None, &a, &one).expect("one owner");
         let (again, _) = target
-            .publish(OWNER, Some(first), &a, b"two")
+            .publish(OWNER, Some(first), &a, &two)
             .expect("one owner");
-        let (other, _) = target
-            .publish(OWNER, None, &b, b"three")
-            .expect("one owner");
+        let (other, _) = target.publish(OWNER, None, &b, &three).expect("one owner");
 
         assert_eq!(first, again, "the same path keeps its id");
         assert_ne!(first, other, "a different path is a different series");
@@ -853,26 +962,24 @@ mod tests {
             snapshot.sort_by_key(|s| s.series_id);
             snapshot.into_iter().map(|s| s.latest).collect()
         };
-        assert_eq!(
-            latest,
-            [Bytes::from_static(b"two"), Bytes::from_static(b"three")]
-        );
+        assert_eq!(latest, [two, three]);
     }
 
     #[tokio::test]
     async fn publish_never_blocks_without_receivers() {
         let target = bind(4).await;
         let series = path("Gi0", "in-octets");
+        let value = note(1.0);
         let (id, _) = target
-            .publish(OWNER, None, &series, b"value")
+            .publish(OWNER, None, &series, &value)
             .expect("one owner");
         let started = Instant::now();
         let mut published = 0usize;
         for _ in 0..10_000 {
-            let (_, receivers) = target
-                .publish(OWNER, Some(id), &series, b"value")
+            let (_, done) = target
+                .publish(OWNER, Some(id), &series, &value)
                 .expect("one owner");
-            assert!(!receivers);
+            assert!(!done.receivers);
             published += 1;
         }
         let elapsed = started.elapsed();
@@ -889,13 +996,15 @@ mod tests {
         let target = bind(4).await;
         let mut receiver = target.subscribe();
         let series = path("Gi0", "in-octets");
-        let (id, receivers) = target
-            .publish(OWNER, None, &series, b"value")
+        let (id, done) = target
+            .publish(OWNER, None, &series, &note(-1.0))
             .expect("one owner");
-        assert!(receivers, "the receiver counts as subscribed");
-        for _ in 0..1_000 {
+        assert!(done.receivers, "the receiver counts as subscribed");
+        // Each value differs from the last, so each is broadcast.
+        let values: Vec<Bytes> = (0..1_000).map(|i| note(f64::from(i))).collect();
+        for value in &values {
             target
-                .publish(OWNER, Some(id), &series, b"value")
+                .publish(OWNER, Some(id), &series, value)
                 .expect("one owner");
         }
         match receiver.recv().await {
@@ -986,18 +1095,19 @@ mod tests {
     async fn a_reused_id_does_not_write_into_another_path() {
         let target = bind(16).await;
         let (old_path, new_path) = (path("Gi0", "in-octets"), path("Gi1", "in-octets"));
+        let (old, new, old_again) = (note(1.0), note(2.0), note(3.0));
         let (stale, _) = target
-            .publish(OWNER, None, &old_path, b"old")
+            .publish(OWNER, None, &old_path, &old)
             .expect("one owner");
         target.release(OWNER, [stale]);
         target.write().next_id = stale;
         let (reused, _) = target
-            .publish(OWNER, None, &new_path, b"new")
+            .publish(OWNER, None, &new_path, &new)
             .expect("one owner");
         assert_eq!(reused, stale, "the premise: the id was handed out again");
 
         let (resolved, _) = target
-            .publish(OWNER, Some(stale), &old_path, b"old again")
+            .publish(OWNER, Some(stale), &old_path, &old_again)
             .expect("one owner");
         assert_ne!(resolved, stale);
         assert_eq!(
@@ -1012,10 +1122,9 @@ mod tests {
         );
         let mut latest: Vec<Bytes> = target.snapshot().into_iter().map(|s| s.latest).collect();
         latest.sort();
-        assert_eq!(
-            latest,
-            [Bytes::from_static(b"new"), Bytes::from_static(b"old again")]
-        );
+        let mut expected = [new, old_again];
+        expected.sort();
+        assert_eq!(latest, expected);
         target.release(OWNER, [resolved, reused]);
         assert_eq!(
             target.series_count(),
@@ -1034,32 +1143,29 @@ mod tests {
         let (owner, other) = (Owner::from(LaunchId::next()), Owner::from(LaunchId::next()));
         assert_ne!(owner, other, "each launch is its own owner");
         let shared = path("Gi0", "in-octets");
-        let (id, _) = target
-            .publish(owner, None, &shared, b"a")
-            .expect("new path");
-        let (same, _) = target
-            .publish(owner, None, &shared, b"b")
-            .expect("own path");
+        let (a, b, c) = (note(1.0), note(2.0), note(3.0));
+        let (id, _) = target.publish(owner, None, &shared, &a).expect("new path");
+        let (same, _) = target.publish(owner, None, &shared, &b).expect("own path");
         assert_eq!(
             id, same,
             "the owner's second publish of a path is an upsert"
         );
 
         let err = target
-            .publish(other, None, &shared, b"c")
+            .publish(other, None, &shared, &c)
             .expect_err("another owner's path is refused");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
         let msg = err.to_string();
         assert!(msg.contains("interface[name=Gi0]/in-octets"), "got {msg}");
         assert!(msg.contains(&target.local_addr().to_string()), "got {msg}");
         let err = target
-            .publish(other, Some(id), &shared, b"c")
+            .publish(other, Some(id), &shared, &c)
             .expect_err("another owner's id is refused too");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
-        assert_eq!(target.snapshot()[0].latest, Bytes::from_static(b"b"));
+        assert_eq!(target.snapshot()[0].latest, b);
 
         let (own, _) = target
-            .publish(other, None, &path("Gi1", "in-octets"), b"d")
+            .publish(other, None, &path("Gi1", "in-octets"), &note(4.0))
             .expect("a free path");
         assert_ne!(own, id);
         assert_eq!(target.series_count(), 2);
@@ -1077,7 +1183,7 @@ mod tests {
         target.release(owner, [id]);
         assert_eq!(target.series_count(), 1, "an unknown id is ignored");
         let (again, _) = target
-            .publish(other, None, &shared, b"e")
+            .publish(other, None, &shared, &note(5.0))
             .expect("the path is free once its publishers left");
         target.release(other, [own, again]);
         assert_eq!(target.series_count(), 0);
@@ -1090,6 +1196,189 @@ mod tests {
         let empty = proto::Notification::default().encode_to_vec();
         let err = PathKey::decode(&empty).expect_err("no update");
         assert!(err.to_string().contains("no update path"), "got {err}");
+    }
+
+    /// Two publishes of one value are one change: the second, stamped later,
+    /// is stored but not broadcast. A different value is a change and is
+    /// broadcast once.
+    #[tokio::test]
+    async fn only_a_changed_value_is_broadcast() {
+        let target = bind(16).await;
+        let mut receiver = target.subscribe();
+        let series = path("Gi0", "in-octets");
+        let first = note_at(1.0, 1_000);
+        let (id, done) = target
+            .publish(OWNER, None, &series, &first)
+            .expect("one owner");
+        assert_eq!(
+            done,
+            Published {
+                receivers: true,
+                changed: true
+            },
+            "a series' first publish is a change"
+        );
+        assert_eq!(receiver.try_recv().expect("broadcast").bytes, first);
+
+        let same = note_at(1.0, 2_000);
+        assert_ne!(same, first, "the premise: the timestamps differ");
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, &same)
+            .expect("one owner");
+        assert!(done.receivers);
+        assert!(!done.changed, "only the timestamp differs");
+        assert_eq!(
+            receiver.try_recv().map(|u| u.bytes),
+            Err(broadcast::error::TryRecvError::Empty),
+            "an unchanged value is not broadcast"
+        );
+        assert_eq!(target.snapshot()[0].latest, same, "but it is stored");
+
+        let changed = note_at(2.0, 3_000);
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, &changed)
+            .expect("one owner");
+        assert!(done.changed);
+        let update = receiver.try_recv().expect("broadcast");
+        assert_eq!((update.series_id, update.bytes), (id, changed));
+        assert_eq!(
+            receiver.try_recv().map(|u| u.bytes),
+            Err(broadcast::error::TryRecvError::Empty),
+            "one broadcast per change"
+        );
+
+        drop(receiver);
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, &note_at(3.0, 4_000))
+            .expect("one owner");
+        assert_eq!(
+            done,
+            Published {
+                receivers: false,
+                changed: true
+            }
+        );
+    }
+
+    /// The value a series is compared by lies inside its stored
+    /// notification: located, not copied.
+    #[tokio::test]
+    async fn the_value_is_a_slice_of_the_latest_notification() {
+        let target = bind(16).await;
+        let buf = note(7.0);
+        let (id, _) = target
+            .publish(OWNER, None, &path("Gi0", "in-octets"), &buf)
+            .expect("one owner");
+        let table = target.read();
+        let latest = lock(&table.slots[&id].latest);
+        let (bytes, value) = (latest.bytes.as_ptr_range(), latest.value().as_ptr_range());
+        assert!(
+            bytes.start <= value.start && value.end <= bytes.end && value.start < value.end,
+            "the value {value:?} is not inside the notification {bytes:?}"
+        );
+        let decoded = proto::TypedValue::decode(latest.value()).expect("a typed value");
+        assert_eq!(
+            decoded.value,
+            Some(proto::typed_value::Value::DoubleVal(7.0))
+        );
+    }
+
+    /// A series' kind is its first publish's; a later value of another kind
+    /// is stored without changing it.
+    #[tokio::test]
+    async fn the_kind_is_fixed_at_the_first_publish() {
+        let target = bind(16).await;
+        let mut receiver = target.subscribe();
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            1.0,
+            Labels::from_pairs(&[("ifName", "Gi0")]).expect("valid labels"),
+        )
+        .expect("valid event");
+        let enumeration = GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())]));
+        let (as_string, as_uint) = (
+            encode(&event, enumeration),
+            encode(&event, GnmiValueType::Uint),
+        );
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, &as_string)
+            .expect("one owner");
+        assert_eq!(
+            receiver.try_recv().expect("broadcast").kind,
+            ValueKind::String
+        );
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, &as_uint)
+            .expect("one owner");
+        assert!(done.changed, "another kind of value is another value");
+        assert_eq!(
+            receiver.try_recv().expect("broadcast").kind,
+            ValueKind::String,
+            "broadcast with the first kind"
+        );
+        let snapshot = target.snapshot();
+        assert_eq!(snapshot[0].kind, ValueKind::String);
+        assert_eq!(snapshot[0].latest, as_uint.as_slice());
+
+        let (_, _) = target
+            .publish(OWNER, None, &path("Gi1", "in-octets"), &as_uint)
+            .expect("one owner");
+        let kinds: Vec<ValueKind> = {
+            let mut snapshot = target.snapshot();
+            snapshot.sort_by_key(|s| s.series_id);
+            snapshot.into_iter().map(|s| s.kind).collect()
+        };
+        assert_eq!(kinds, [ValueKind::String, ValueKind::Uint]);
+    }
+
+    /// Bytes without a locatable value are refused on every publish, a
+    /// series' first or a later one, and by an overwrite, and leave the
+    /// stored value as it was.
+    #[tokio::test]
+    async fn a_notification_without_a_value_is_refused_on_every_publish() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let no_value = proto::Notification {
+            timestamp: 1,
+            update: vec![proto::Update {
+                path: Some(series.path().clone()),
+                val: None,
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let refused = |err: SondaError| {
+            assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
+            assert!(
+                err.to_string().contains("not a gnmi notification"),
+                "got {err}"
+            );
+        };
+        refused(
+            target
+                .publish(OWNER, None, &series, &no_value)
+                .expect_err("a first publish without a value"),
+        );
+        assert_eq!(target.series_count(), 0, "nothing was stored");
+
+        let value = note(1.0);
+        let (id, _) = target
+            .publish(OWNER, None, &series, &value)
+            .expect("one owner");
+        for bytes in [no_value.as_slice(), b"bytes"] {
+            refused(
+                target
+                    .publish(OWNER, Some(id), &series, bytes)
+                    .expect_err("a later publish without a value"),
+            );
+            refused(
+                target
+                    .overwrite(&series, bytes)
+                    .expect_err("an overwrite without a value"),
+            );
+        }
+        assert_eq!(target.snapshot()[0].latest, value, "the value is kept");
     }
 
     /// A client that connects and never speaks does not hold the port or
@@ -1150,17 +1439,18 @@ mod tests {
     #[tokio::test]
     async fn ids_after_a_wrap_skip_live_series() {
         let target = bind(16).await;
+        let (a, b, c) = (note(1.0), note(2.0), note(3.0));
         let (first, _) = target
-            .publish(OWNER, None, &path("Gi0", "in-octets"), b"a")
+            .publish(OWNER, None, &path("Gi0", "in-octets"), &a)
             .expect("one owner");
         assert_eq!(first, 0);
         target.write().next_id = SeriesId::MAX;
         let (last, _) = target
-            .publish(OWNER, None, &path("Gi1", "in-octets"), b"b")
+            .publish(OWNER, None, &path("Gi1", "in-octets"), &b)
             .expect("one owner");
         assert_eq!(last, SeriesId::MAX);
         let (wrapped, _) = target
-            .publish(OWNER, None, &path("Gi2", "in-octets"), b"c")
+            .publish(OWNER, None, &path("Gi2", "in-octets"), &c)
             .expect("one owner");
         assert_ne!(wrapped, first, "id 0 is still in use");
         assert_eq!(wrapped, 1);
@@ -1170,14 +1460,7 @@ mod tests {
             snapshot.sort_by_key(|s| s.series_id);
             snapshot.into_iter().map(|s| s.latest).collect()
         };
-        assert_eq!(
-            latest,
-            [
-                Bytes::from_static(b"a"),
-                Bytes::from_static(b"c"),
-                Bytes::from_static(b"b")
-            ]
-        );
+        assert_eq!(latest, [a, c, b]);
     }
 
     /// Accepted connections have `TCP_NODELAY` set and keep vectored writes.
@@ -1229,12 +1512,21 @@ mod tests {
         let target = bind(16).await;
         let served = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &served, b"scenario")
+            .publish(OWNER, None, &served, &note(1.0))
             .expect("one owner");
 
-        assert_eq!(target.overwrite(&served, b"posted"), Some(id));
-        assert_eq!(target.snapshot()[0].latest, Bytes::from_static(b"posted"));
-        assert_eq!(target.overwrite(&path("Gi9", "in-octets"), b"posted"), None);
+        let posted = note(2.0);
+        assert_eq!(
+            target.overwrite(&served, &posted).expect("a value"),
+            Some(id)
+        );
+        assert_eq!(target.snapshot()[0].latest, posted);
+        assert_eq!(
+            target
+                .overwrite(&path("Gi9", "in-octets"), &posted)
+                .expect("a value"),
+            None
+        );
         assert_eq!(target.series_count(), 1, "an unknown path is not added");
 
         target.release(OWNER, [id]);
@@ -1258,21 +1550,22 @@ mod tests {
         let target = rt.block_on(bind(1 << 16));
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, b"seed")
+            .publish(OWNER, None, &series, &note(-1.0))
             .expect("one owner");
+        // Every value is distinct, so every publish is a change.
+        let values: Vec<Bytes> = (0..ROUNDS * WRITERS).map(|i| note(i as f64)).collect();
         let barrier = Barrier::new(WRITERS);
         let (checked, mismatches) = (AtomicUsize::new(0), AtomicUsize::new(0));
         std::thread::scope(|scope| {
             for writer in 0..WRITERS {
-                let (target, series, barrier) = (&target, &series, &barrier);
+                let (target, series, barrier, values) = (&target, &series, &barrier, &values);
                 let (checked, mismatches) = (&checked, &mismatches);
                 scope.spawn(move || {
                     let mut receiver = (writer == 0).then(|| target.subscribe());
                     for round in 0..ROUNDS {
                         barrier.wait();
-                        let value = format!("{round}-{writer}");
                         target
-                            .publish(OWNER, Some(id), series, value.as_bytes())
+                            .publish(OWNER, Some(id), series, &values[round * WRITERS + writer])
                             .expect("one owner");
                         barrier.wait();
                         if let Some(receiver) = receiver.as_mut() {
@@ -1318,23 +1611,25 @@ mod tests {
         let target = rt.block_on(bind(16));
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, b"seed")
+            .publish(OWNER, None, &series, &note(-1.0))
             .expect("one owner");
+        // Every value is distinct, so every publish is a change.
+        let values: Vec<Bytes> = (0..ROUNDS).map(|i| note(i as f64)).collect();
         let barrier = Barrier::new(2);
         let missed = AtomicUsize::new(0);
         std::thread::scope(|scope| {
-            let (target, series, barrier) = (&target, &series, &barrier);
+            let (target, series, barrier, values) = (&target, &series, &barrier, &values);
             scope.spawn(move || {
-                for round in 0..ROUNDS {
+                for value in values {
                     barrier.wait();
                     target
-                        .publish(OWNER, Some(id), series, round.to_string().as_bytes())
+                        .publish(OWNER, Some(id), series, value)
                         .expect("one owner");
                     barrier.wait();
                     barrier.wait();
                 }
             });
-            for round in 0..ROUNDS {
+            for published in values {
                 barrier.wait();
                 let mut receiver = target.subscribe();
                 let mut seen = target.snapshot()[0].latest.clone();
@@ -1342,7 +1637,7 @@ mod tests {
                 while let Ok(update) = receiver.try_recv() {
                     seen = update.bytes;
                 }
-                if seen != round.to_string().as_bytes() {
+                if seen != *published {
                     missed.fetch_add(1, Ordering::Relaxed);
                 }
                 drop(receiver);

@@ -486,8 +486,8 @@ Pair this sink with the [`gnmi` encoder](encoders.md#gnmi), which renders each s
 |-----------|------|----------|---------|-------------|
 | `listen` | string | yes | -- | Address to listen on, for example `"0.0.0.0:57400"`. |
 | `max_subscribers` | integer | no | `16` | Subscriptions served at once, at least 1. One more is refused with `RESOURCE_EXHAUSTED`. |
-| `sample_floor` | duration string | no | `1s` | Shortest sample interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval. |
-| `subscriber_buffer` | integer | no | `1024` | Capacity of the broadcast that ON_CHANGE subscriptions read, 1 to 65536. The target refuses ON_CHANGE, so the value changes nothing a subscriber receives. |
+| `sample_floor` | duration string | no | `1s` | Shortest sample and heartbeat interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval, and a shorter heartbeat interval is raised to it. |
+| `subscriber_buffer` | integer | no | `1024` | Changes an ON_CHANGE subscription may fall behind before it is resynced, 1 to 65536. |
 
 Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set `max_subscribers`, `sample_floor` and `subscriber_buffer` alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.
 
@@ -496,19 +496,25 @@ The listener serves plaintext gRPC:
 | Request | What the target does |
 |---------|----------------------|
 | `Capabilities` | Answers gNMI version `0.10.0` and the one encoding `PROTO`. |
-| `Subscribe`, STREAM with SAMPLE | Sends the latest value of every matching series, then `sync_response`. After that it resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. `TARGET_DEFINED` is served as SAMPLE. |
 | `Subscribe`, ONCE | Sends the latest value of every matching series and `sync_response`, then ends the stream. |
+| `Subscribe`, STREAM | Sends the latest value of every matching series, then `sync_response`, once for the whole request even when it mixes modes. After that each subscription is served by its mode. |
+| SAMPLE | Resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. |
+| ON_CHANGE | Sends a matching series each time its value changes, including a series first published after the subscription started. A value that holds sends nothing. |
+| TARGET_DEFINED | Decides per series from the kind of value its first publish carried. A series with a string value (the encoder's `string` and `enum` values) is served as ON_CHANGE, any other as SAMPLE at the subscription's sample interval. |
+| `heartbeat_interval` | On ON_CHANGE, and on TARGET_DEFINED's string series, resends the latest value of every matching series at this interval, changed or not. `0` sends none. Not read for SAMPLE. |
 | `updates_only: true` | Skips the initial values; the first message is `sync_response`. |
-| POLL, ON_CHANGE | Refused with `UNIMPLEMENTED`, naming the mode. |
+| POLL | Refused with `UNIMPLEMENTED`, naming the mode. |
 | Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
 | Encoding `JSON_IETF`, `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding and `PROTO`. |
+
+A change is a new value: the update's encoded `TypedValue` differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than `subscriber_buffer` changes behind is resynced with the latest value of every series it matches, without a second `sync_response`.
 
 A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of `*`, or a key the subscription leaves out, matches any value: `/interfaces/interface/state/counters` matches every interface's counters. An empty origin or target in the subscription matches any. Element wildcards (`*` or `...` as an element name) are refused with `UNIMPLEMENTED`.
 
 A subscription ends with `UNAVAILABLE` when:
 
 - **The run stops.** The status follows the updates already queued, and the listener closes.
-- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
+- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions has the 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
 
 The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.
 
@@ -558,7 +564,7 @@ scenarios:
     labels: { device: rtr-core-01, ifName: GigabitEthernet0/0/0 }
 ```
 
-The Telegraf side subscribes to the counters and the oper-status. Both subscriptions use SAMPLE mode:
+The Telegraf side samples the counters every 10 seconds. It subscribes to the oper-status ON_CHANGE, so it receives the oper-status when it changes and every 30 seconds while it holds:
 
 ```toml title="examples/telegraf/telegraf.conf (excerpt)"
 [[inputs.gnmi]]
@@ -577,8 +583,8 @@ The Telegraf side subscribes to the counters and the oper-status. Both subscript
     name = "ifstate"
     origin = "openconfig-interfaces"
     path = "/interfaces/interface/state/oper-status"
-    subscription_mode = "sample"
-    sample_interval = "1s"
+    subscription_mode = "on_change"
+    heartbeat_interval = "30s"
 ```
 
 Each subscription's `name` becomes the measurement, the interface key becomes the `name` tag, and the address Telegraf dialed becomes `source`. The full `telegraf.conf` maps oper-status `UP`/`DOWN` to `1`/`2` with `processors.enum`, so Telegraf writes these lines:
@@ -596,10 +602,12 @@ docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up 
 sonda run examples/gnmi-telegraf.yaml
 ```
 
-Without Telegraf, gnmic reads the same target directly:
+Without Telegraf, gnmic reads the same target directly, once or as each oper-status changes:
 
 ```bash
 gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode once
+gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces/interface/state/oper-status \
+  --stream-mode on-change
 ```
 
 ## Retry with backoff
