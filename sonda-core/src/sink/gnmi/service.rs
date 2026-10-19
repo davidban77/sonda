@@ -3772,6 +3772,47 @@ mod tests {
         assert_eq!(set.prune_at, MATCHED_PRUNE_FLOOR);
     }
 
+    /// The prune run on reading a change forgets only the series that left
+    /// the table and that the set does not match; it keeps every series in
+    /// the table, and every matched one. The cache may then grow to twice
+    /// what is left.
+    #[test]
+    fn the_prune_on_a_change_keeps_matched_series_that_left_the_table() {
+        let (_tx, rx) = broadcast::channel(1);
+        let mut set = OnChangeSet {
+            selectors: Vec::new(),
+            rx,
+            matched: HashMap::new(),
+            prune_at: MATCHED_PRUNE_FLOOR,
+        };
+        let seen = |matches| Seen { matches, queued: 0 };
+        for id in 0..3_000 {
+            set.matched.insert(id, seen(false));
+        }
+        for id in 3_000..3_600 {
+            set.matched.insert(id, seen(true));
+        }
+        // 10 unmatched and 10 matched series are still in the table.
+        let live: Vec<SeriesSnapshot> = (2_990..3_010)
+            .map(|series_id| SeriesSnapshot {
+                series_id,
+                path: PathKey::new(proto::Path::default()),
+                kind: ValueKind::Uint,
+                version: 1,
+                latest: Bytes::new(),
+            })
+            .collect();
+        set.prune_unmatched(&live);
+        let mut kept: Vec<SeriesId> = set.matched.keys().copied().collect();
+        kept.sort_unstable();
+        assert_eq!(kept, (2_990..3_600).collect::<Vec<_>>());
+        assert!(
+            2 * kept.len() > MATCHED_PRUNE_FLOOR,
+            "the premise: twice what is left is above the floor"
+        );
+        assert_eq!(set.prune_at, 2 * kept.len());
+    }
+
     /// A metrics scenario `name{ifName=if_name}` at `rate` Hz into `sink`.
     fn scenario(name: &str, if_name: &str, rate: f64, sink: SinkConfig) -> ScenarioConfig {
         ScenarioConfig {
