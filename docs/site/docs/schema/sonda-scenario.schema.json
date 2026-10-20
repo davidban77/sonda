@@ -2275,6 +2275,34 @@
         }
       ]
     },
+    "GnmiCredentials": {
+      "description": "The `credentials:` block of a [`GnmiTargetConfig`]: the username and\npassword every RPC must carry as gRPC metadata `username` and\n`password`.",
+      "type": "object",
+      "properties": {
+        "password": {
+          "description": "The password clients must send.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "writeOnly": true
+        },
+        "username": {
+          "description": "The username clients must send.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "username",
+        "password"
+      ]
+    },
     "GnmiEnumWire": {
       "description": "`{ enum: { <i64>: <string>, ... } }`.",
       "type": "object",
@@ -2307,6 +2335,43 @@
         "double",
         "bool",
         "string"
+      ]
+    },
+    "GnmiTlsConfig": {
+      "description": "The `tls:` block of a [`GnmiTargetConfig`]: the PEM files a target\nserves TLS from.\n\nWith `tls` set, every connection to the listen address is TLS, and a\nplaintext client is refused at the handshake. Validation reads the files\nto check them; a target serves the files as they were when it bound.",
+      "type": "object",
+      "properties": {
+        "cert": {
+          "description": "PEM file holding the certificate chain the target presents, its own\ncertificate first.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "client_ca": {
+          "description": "PEM file of CA certificates. When set, every client must present a\ncertificate signed by one of them; when unset, any client may\nconnect.",
+          "type": [
+            "string",
+            "null",
+            "number",
+            "boolean"
+          ],
+          "default": null
+        },
+        "key": {
+          "description": "PEM file holding the private key of `cert`.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cert",
+        "key"
       ]
     },
     "GnmiValueType": {
@@ -3388,6 +3453,18 @@
           "description": "Serve metric events to gNMI clients from a listener on `listen`.\n\nSinks naming the same address share one target. Pairs only with the\n`gnmi` encoder. See [`gnmi::GnmiTargetConfig`] for the fields.\nRequires the `gnmi` feature flag.",
           "type": "object",
           "properties": {
+            "credentials": {
+              "description": "Require every RPC to carry this username and password as gRPC\nmetadata. Needs `tls`. Every sink on one address must use the same\npair.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GnmiCredentials"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "listen": {
               "description": "Address to listen on, e.g. `\"0.0.0.0:57400\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`GnmiTarget::local_addr`].",
               "type": [
@@ -3426,6 +3503,18 @@
               "default": null,
               "maximum": 65536,
               "minimum": 1
+            },
+            "tls": {
+              "description": "Serve over TLS from these PEM files. Every sink on one address must\nname the same files.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GnmiTlsConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "type": {
               "type": "string",

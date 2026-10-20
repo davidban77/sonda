@@ -175,6 +175,12 @@ impl GnmiTargetRegistry {
         if cfg.sample_floor.is_some() {
             wanted.sample_floor = settings.sample_floor;
         }
+        if cfg.tls.is_some() {
+            wanted.tls = settings.tls;
+        }
+        if cfg.credentials.is_some() {
+            wanted.credentials = settings.credentials;
+        }
         check_settings(target, &wanted)
     }
 
@@ -641,5 +647,79 @@ mod tests {
             .check(&GnmiTargetConfig::new("not-an-address"))
             .is_err());
         assert_eq!(registry.len(), 1, "check bound nothing");
+    }
+
+    /// The config error `result` holds, as text.
+    fn config_error<T>(result: Result<T, SondaError>) -> String {
+        match result {
+            Err(SondaError::Config(e)) => e.to_string(),
+            Err(other) => panic!("a config error, got {other:?}"),
+            Ok(_) => panic!("a config error, got a target"),
+        }
+    }
+
+    /// Sinks on one address agree on `tls` and `credentials`: equal ones
+    /// share the target, and `acquire`, `check` and `join` refuse other TLS
+    /// paths or another password, naming neither password.
+    #[tokio::test]
+    async fn sinks_on_one_address_agree_on_tls_and_credentials() {
+        use crate::sink::gnmi::test_tls::TlsFiles;
+        use crate::sink::gnmi::{GnmiCredentials, GnmiTlsConfig};
+
+        let files = TlsFiles::new();
+        let cfg = |listen: &str, tls: GnmiTlsConfig, password: &str| GnmiTargetConfig {
+            tls: Some(tls),
+            credentials: Some(GnmiCredentials {
+                username: "sonda".to_string(),
+                password: password.to_string(),
+            }),
+            ..GnmiTargetConfig::new(listen)
+        };
+        let registry = GnmiTargetRegistry::new();
+        let first = registry
+            .acquire(&cfg("127.0.0.1:0", files.tls(), "first-secret"))
+            .await
+            .expect("bind an ephemeral port");
+        let addr = first.local_addr().to_string();
+        let shared = registry
+            .acquire(&cfg(&addr, files.tls(), "first-secret"))
+            .await
+            .expect("equal settings share the target");
+        assert!(Arc::ptr_eq(&first, &shared));
+
+        let copy = files.write(
+            "copy.pem",
+            &std::fs::read_to_string(files.path("server.pem")).expect("the cert"),
+        );
+        let moved = GnmiTlsConfig {
+            cert: copy.clone(),
+            ..files.tls()
+        };
+        let other_tls = cfg(&addr, moved, "first-secret");
+        let other_password = cfg(&addr, files.tls(), "second-secret");
+        for refused in [
+            config_error(registry.acquire(&other_tls).await),
+            config_error(registry.check(&other_tls).map(|()| first.clone())),
+            config_error(registry.join(&other_tls)),
+        ] {
+            assert!(refused.contains("different settings"), "{refused}");
+            assert!(refused.contains(&format!("{copy:?}")), "{refused}");
+            assert!(!refused.contains("first-secret"), "{refused}");
+        }
+        for refused in [
+            config_error(registry.acquire(&other_password).await),
+            config_error(registry.check(&other_password).map(|()| first.clone())),
+            config_error(registry.join(&other_password)),
+        ] {
+            assert!(
+                refused.contains(r#"username "sonda" and username "sonda" with another password"#),
+                "{refused}"
+            );
+            assert!(
+                !refused.contains("first-secret") && !refused.contains("second-secret"),
+                "{refused}"
+            );
+        }
+        assert_eq!(registry.len(), 1, "nothing else bound");
     }
 }

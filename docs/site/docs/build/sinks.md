@@ -488,10 +488,12 @@ Pair this sink with the [`gnmi` encoder](encoders.md#gnmi), which renders each s
 | `max_subscribers` | integer | no | `16` | Subscriptions served at once, at least 1. One more is refused with `RESOURCE_EXHAUSTED`. |
 | `sample_floor` | duration string | no | `1s` | Shortest sample and heartbeat interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval, and a shorter heartbeat interval is raised to it. |
 | `subscriber_buffer` | integer | no | `1024` | Changes an ON_CHANGE subscription may fall behind before it is resynced, 1 to 65536. |
+| `tls` | object | no | -- | Serve over TLS: `cert` and `key` PEM files, and `client_ca` to require client certificates. See [TLS and credentials](#tls-and-credentials). |
+| `credentials` | object | no | -- | Require a `username` and `password` on every RPC. Needs `tls`. See [TLS and credentials](#tls-and-credentials). |
 
-Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set `max_subscribers`, `sample_floor` and `subscriber_buffer` alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.
+Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set `max_subscribers`, `sample_floor`, `subscriber_buffer`, `tls` and `credentials` alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.
 
-The listener serves plaintext gRPC:
+The listener serves gRPC, over TLS when `tls` is set:
 
 | Request | What the target does |
 |---------|----------------------|
@@ -611,6 +613,65 @@ Without Telegraf, gnmic reads the same target directly, once or as each oper-sta
 gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode once
 gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces/interface/state/oper-status \
   --stream-mode on-change
+```
+
+### TLS and credentials
+
+With `tls`, the target serves TLS from a certificate and key, and can require client certificates. With `credentials`, every RPC must carry a username and password:
+
+```yaml title="examples/gnmi-telegraf-tls.yaml (sink)"
+# sonda:static - excerpt only; the certificate files are made locally
+sink:
+  type: gnmi_target
+  listen: 0.0.0.0:57401
+  tls:
+    cert: examples/telegraf/certs/server.pem
+    key: examples/telegraf/certs/server-key.pem
+  credentials:
+    username: sonda
+    password: sonda-uat
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `tls.cert` | yes | PEM file holding the certificate chain the target presents, its own certificate first. |
+| `tls.key` | yes | PEM file holding the private key of `cert`. |
+| `tls.client_ca` | no | PEM file of CA certificates. When set, every client must present a certificate signed by one of them; when unset, any client may connect. |
+| `credentials.username` | yes | The username every RPC must carry. |
+| `credentials.password` | yes | The password every RPC must carry. |
+
+- **TLS.** Every connection to the `listen` address is TLS, and a plaintext client is refused at the handshake. The files are read when the scenario is validated, so `--dry-run` reports a file that cannot be read, or holds no PEM certificate or private key, naming the field and the file. A key that is not `cert`'s is reported the same way. Relative paths resolve against the directory Sonda runs in.
+- **Credentials need TLS.** A sink with `credentials` and no `tls` is refused, because the password would cross the wire in clear.
+- **Every RPC is checked.** `Capabilities` and `Subscribe` alike must carry the gRPC metadata `username` and `password`, equal to the configured pair. A request without them, or with another pair, is refused with `UNAUTHENTICATED` and the message `credentials required`. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.
+- **One address, one identity.** Every entry on one address names the same `tls` files and the same `credentials`; a different set is refused, naming the files and usernames that differ but no password.
+
+gnmic trusts the target's CA with `--tls-ca` and sends the pair with `-u` and `-p`:
+
+```bash
+gnmic -a 127.0.0.1:57401 --tls-ca examples/telegraf/certs/ca.pem -u sonda -p sonda-uat \
+  subscribe --path /interfaces --mode once
+```
+
+When the target sets `client_ca`, gnmic also presents its own certificate with `--tls-cert` and `--tls-key`.
+
+Telegraf's `inputs.gnmi` turns TLS on with `tls_enable`, trusts the CA with `tls_ca`, and sends `username` and `password`. With `client_ca` on the target, it presents `tls_cert` and `tls_key` as well:
+
+```toml title="examples/telegraf/telegraf-tls.conf (excerpt)"
+[[inputs.gnmi]]
+  addresses = ["sonda:57401"]
+  encoding = "proto"
+  redial = "10s"
+  tls_enable = true
+  tls_ca = "/etc/telegraf/certs/ca.pem"
+  username = "sonda"
+  password = "sonda-uat"
+```
+
+The compose stack's `gnmi-tls` profile runs this Telegraf, with `examples/telegraf/certs/` mounted at `/etc/telegraf/certs`. The certificates are not committed. The header of `examples/gnmi-telegraf-tls.yaml` makes them with `openssl`, for the names `sonda`, `localhost` and `127.0.0.1`:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi-tls up -d
+sonda run examples/gnmi-telegraf-tls.yaml
 ```
 
 ## Retry with backoff

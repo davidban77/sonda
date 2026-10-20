@@ -447,5 +447,36 @@ services:
       victoriametrics:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Telegraf over TLS: the same client as `telegraf`, for a gnmi_target that
+  # serves TLS and requires a username and password.
+  #
+  # Dials sonda:57401, which examples/gnmi-telegraf-tls.yaml serves, verifies
+  # the target's certificate against examples/telegraf/certs/ca.pem and sends
+  # the example credentials. The certificates are made locally, not
+  # committed; the header of examples/gnmi-telegraf-tls.yaml shows how, and
+  # scripts/live_infra_uat.py makes them before it starts the stack. Sonda
+  # runs on the host:
+  #
+  #   sonda run examples/gnmi-telegraf-tls.yaml
+  #
+  # Its health endpoint is on port 8096.
+  #
+  # This service is only started with --profile gnmi-tls.
+  # ---------------------------------------------------------------------------
+  telegraf-tls:
+    image: telegraf:1.40.2
+    profiles: [gnmi-tls]
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./telegraf/telegraf-tls.conf:/etc/telegraf/telegraf.conf:ro
+      - ./telegraf/certs:/etc/telegraf/certs:ro
+    extra_hosts:
+      - "sonda:host-gateway"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+
 volumes:
   vm-data:

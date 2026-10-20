@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tonic::codec::Streaming;
 use tonic::server::{Grpc, NamedService};
+use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::Status;
 use tower::Service;
 
@@ -33,8 +34,10 @@ use super::target::{
     delete_notification, GnmiTarget, PathKey, SeriesEvent, SeriesId, SeriesSnapshot, SeriesUpdate,
     TargetState,
 };
+use super::GnmiCredentials;
 use crate::encoder::gnmi::proto::{self, subscribe_request, subscription_list, SubscriptionMode};
 use crate::sink::grpc_codec::{PreEncoded, PreEncodedCodec, ProstCodec};
+use crate::util::constant_time_eq;
 
 /// The gRPC service name of gNMI.
 pub const SERVICE_NAME: &str = "gnmi.gNMI";
@@ -73,7 +76,9 @@ type BoxFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 ///
 /// The service holds its target weakly, so neither the listener nor an open
 /// RPC keeps the target alive. A request that arrives after the target is
-/// gone answers `UNAVAILABLE`.
+/// gone answers `UNAVAILABLE`. When the target's settings carry credentials,
+/// a request whose metadata lacks them answers `UNAUTHENTICATED` before it
+/// reaches any method.
 #[derive(Clone)]
 pub struct GnmiService {
     target: Weak<GnmiTarget>,
@@ -103,8 +108,22 @@ impl Service<http::Request<tonic::body::Body>> for GnmiService {
     fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
         let target = self.target.clone();
         Box::pin(async move {
-            if target.strong_count() == 0 {
+            let Some(held) = target.upgrade() else {
                 return Ok(target_stopped().into_http());
+            };
+            let refused = held
+                .settings()
+                .credentials
+                .as_ref()
+                .is_some_and(|credentials| !authenticated(credentials, req.headers()));
+            drop(held);
+            if refused {
+                tracing::warn!(
+                    peer = %peer_of(&req).map_or_else(|| "unknown".to_string(), |p| p.to_string()),
+                    method = req.uri().path(),
+                    "gnmi_target refused an RPC without the credentials it requires"
+                );
+                return Ok(Status::unauthenticated("credentials required").into_http());
             }
             let response = match req.uri().path() {
                 CAPABILITIES_PATH => {
@@ -133,6 +152,33 @@ impl Service<http::Request<tonic::body::Body>> for GnmiService {
 /// `UNAVAILABLE`: the target this service belonged to has stopped.
 fn target_stopped() -> Status {
     Status::unavailable("this gnmi target has stopped")
+}
+
+/// Whether `headers` carry gRPC metadata `username` and `password` equal to
+/// `credentials`. Both values are compared in constant time, and both are
+/// compared whether or not the first matched.
+fn authenticated(credentials: &GnmiCredentials, headers: &http::HeaderMap) -> bool {
+    let matches = |name: &str, expected: &str| {
+        headers
+            .get(name)
+            .map(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
+    };
+    let username = matches("username", &credentials.username);
+    let password = matches("password", &credentials.password);
+    username == Some(true) && password == Some(true)
+}
+
+/// The address of the client that sent `req`, over TCP or TLS.
+fn peer_of<B>(req: &http::Request<B>) -> Option<SocketAddr> {
+    let extensions = req.extensions();
+    extensions
+        .get::<TcpConnectInfo>()
+        .and_then(TcpConnectInfo::remote_addr)
+        .or_else(|| {
+            extensions
+                .get::<TlsConnectInfo<TcpConnectInfo>>()
+                .and_then(|info| info.get_ref().remote_addr())
+        })
 }
 
 /// Answers `gNMI.Capabilities`.
@@ -1628,6 +1674,160 @@ mod tests {
             .expect_err("Get is not served");
         assert_eq!(status.code(), tonic::Code::Unimplemented);
         assert!(status.message().contains("/gnmi.gNMI/Get"), "{status}");
+    }
+
+    /// The password the credential tests configure.
+    const PASSWORD: &str = "s3cret-pass";
+
+    /// A target on an ephemeral port requiring `sonda` / [`PASSWORD`]. The
+    /// router reads the credentials from the settings, so this target needs
+    /// no TLS.
+    async fn credentialed_target() -> Arc<GnmiTarget> {
+        let mut settings = GnmiTargetConfig::new("127.0.0.1:0")
+            .settings()
+            .expect("valid settings");
+        settings.credentials = Some(super::super::GnmiCredentials {
+            username: "sonda".to_string(),
+            password: PASSWORD.to_string(),
+        });
+        GnmiTarget::bind(settings)
+            .await
+            .expect("bind an ephemeral port")
+    }
+
+    /// `request` carrying `metadata`.
+    fn with_metadata<T>(request: T, metadata: &[(&'static str, &str)]) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(request);
+        for (key, value) in metadata {
+            request
+                .metadata_mut()
+                .insert(*key, value.parse().expect("ascii metadata"));
+        }
+        request
+    }
+
+    /// `Capabilities` on `addr` with `metadata`.
+    async fn capabilities_with(
+        addr: SocketAddr,
+        metadata: &[(&'static str, &str)],
+    ) -> Result<proto::CapabilityResponse, Status> {
+        let mut grpc = tonic::client::Grpc::new(connect(addr).await);
+        grpc.ready().await.expect("the channel is ready");
+        grpc.unary(
+            with_metadata(proto::CapabilityRequest {}, metadata),
+            http::uri::PathAndQuery::from_static(CAPABILITIES_PATH),
+            ProstCodec::<proto::CapabilityRequest, proto::CapabilityResponse>::default(),
+        )
+        .await
+        .map(tonic::Response::into_inner)
+    }
+
+    /// A ONCE subscription to `/interfaces` on `addr` with `metadata`:
+    /// whether its stream ends with the sync marker.
+    async fn once_with(
+        addr: SocketAddr,
+        metadata: &[(&'static str, &str)],
+    ) -> Result<bool, Status> {
+        let request = proto::SubscribeRequest {
+            request: Some(subscribe_request::Request::Subscribe(once("/interfaces"))),
+        };
+        let mut grpc = tonic::client::Grpc::new(connect(addr).await);
+        grpc.ready().await.expect("the channel is ready");
+        let mut responses = grpc
+            .streaming(
+                with_metadata(tokio_stream::iter([request]), metadata),
+                http::uri::PathAndQuery::from_static(SUBSCRIBE_PATH),
+                ProstCodec::<proto::SubscribeRequest, proto::SubscribeResponse>::default(),
+            )
+            .await?
+            .into_inner();
+        let mut synced = false;
+        while let Some(response) = responses.next().await {
+            synced |= matches!(
+                response?.response,
+                Some(subscribe_response::Response::SyncResponse(true))
+            );
+        }
+        Ok(synced)
+    }
+
+    /// `UNAUTHENTICATED` with the one message every refusal carries.
+    fn assert_refused<T: std::fmt::Debug>(result: Result<T, Status>) {
+        let status = result.expect_err("the RPC is refused");
+        assert_eq!(status.code(), tonic::Code::Unauthenticated, "{status}");
+        assert_eq!(status.message(), "credentials required");
+    }
+
+    #[tokio::test]
+    async fn rpcs_without_credentials_are_unauthenticated() {
+        let target = credentialed_target().await;
+        let addr = target.local_addr();
+        assert_refused(capabilities_with(addr, &[]).await);
+        assert_refused(once_with(addr, &[]).await);
+        assert_refused(once_with(addr, &[("username", "sonda")]).await);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_unauthenticated_with_the_same_message() {
+        let target = credentialed_target().await;
+        let addr = target.local_addr();
+        let wrong = [("username", "sonda"), ("password", "s3cret-pasS")];
+        assert_refused(capabilities_with(addr, &wrong).await);
+        assert_refused(once_with(addr, &wrong).await);
+        let other_user = [("username", "admin"), ("password", PASSWORD)];
+        assert_refused(capabilities_with(addr, &other_user).await);
+    }
+
+    #[tokio::test]
+    async fn the_right_credentials_are_served() {
+        let target = credentialed_target().await;
+        let addr = target.local_addr();
+        let right = [("username", "sonda"), ("password", PASSWORD)];
+        let capabilities = capabilities_with(addr, &right).await.expect("capabilities");
+        assert_eq!(capabilities.gnmi_version, GNMI_VERSION);
+        assert!(once_with(addr, &right).await.expect("subscribed"), "synced");
+    }
+
+    /// A target without credentials serves a request carrying none.
+    #[tokio::test]
+    async fn a_target_without_credentials_needs_none() {
+        let sink = sink(None, None).await;
+        let addr = sink.target().local_addr();
+        assert!(capabilities_with(addr, &[]).await.is_ok());
+        assert!(once_with(addr, &[]).await.expect("subscribed"), "synced");
+    }
+
+    /// The refusal is logged at warn with the client's address and the
+    /// method, and never with a password, offered or configured.
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn a_refusal_is_logged_with_the_peer_and_not_the_password() {
+        let target = credentialed_target().await;
+        let addr = target.local_addr();
+        let offered = "offered-guess";
+        let channel = connect(addr).await;
+        let mut grpc = tonic::client::Grpc::new(channel);
+        grpc.ready().await.expect("the channel is ready");
+        let refused = grpc
+            .unary(
+                with_metadata(
+                    proto::CapabilityRequest {},
+                    &[("username", "sonda"), ("password", offered)],
+                ),
+                http::uri::PathAndQuery::from_static(CAPABILITIES_PATH),
+                ProstCodec::<proto::CapabilityRequest, proto::CapabilityResponse>::default(),
+            )
+            .await;
+        assert_refused(refused);
+
+        assert!(logs_contain(
+            "gnmi_target refused an RPC without the credentials it requires"
+        ));
+        assert!(logs_contain("WARN"));
+        assert!(logs_contain("peer=127.0.0.1:"));
+        assert!(logs_contain(CAPABILITIES_PATH));
+        assert!(!logs_contain(offered), "the offered password is logged");
+        assert!(!logs_contain(PASSWORD), "the configured password is logged");
     }
 
     /// A request reaching a service whose target is gone is `UNAVAILABLE`.

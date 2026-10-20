@@ -335,6 +335,7 @@ Pick the tab that matches your scenario.
     | Metrics | `remote_write` | `remote_write` (VM + vmalert → Alertmanager) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --alertmanager-url http://localhost:9093 --interval 5s` — same scenario one hop further: exit 0 means the *notification* reached Alertmanager and cleared |
     | Metrics | `remote_write` | `remote_write` (Alertmanager, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `--alertmanager-url` shape — must exit 1 with `did not fire within` |
     | Metrics | `gnmi` | `gnmi_target` (Telegraf → VM) | `examples/gnmi-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=ifcounters_in_octets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has subscribed |
+    | Metrics | `gnmi` | `gnmi_target` over TLS with credentials (Telegraf → VM) | `examples/gnmi-telegraf-tls.yaml` | The same query, once Telegraf has subscribed over TLS with the example username and password |
 
     † These two rows need OTLP, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see [What the pre-built binaries include](#prebuilt-binaries) below.
 
@@ -347,6 +348,8 @@ Pick the tab that matches your scenario.
         The OTLP-logs row needs both `--profile otel-collector` and `--profile loki` so the collector has somewhere to forward log records.
 
         The gNMI row needs `--profile gnmi`. Here the direction is reversed: Sonda runs on your host as the gNMI target, and the profile's Telegraf dials it at `sonda:57400` (mapped to the host) and writes what it receives to VictoriaMetrics.
+
+        The gNMI-over-TLS row needs `--profile gnmi-tls`, whose Telegraf dials `sonda:57401` over TLS with the example credentials. Make its certificates first, as the header of `examples/gnmi-telegraf-tls.yaml` shows.
 
     <a id="prebuilt-binaries"></a>
 

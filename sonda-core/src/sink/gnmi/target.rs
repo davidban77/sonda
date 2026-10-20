@@ -18,10 +18,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::transport::server::{Connected, TcpConnectInfo};
+use tonic::transport::Server;
 
 use super::notification::{value_span, ValueKind};
 use super::service::GnmiService;
-use super::TargetSettings;
+use super::{error_chain, TargetSettings};
 use crate::encoder::gnmi::{encode_delete, proto};
 use crate::schedule::LaunchId;
 use crate::{ConfigError, SondaError};
@@ -317,9 +318,17 @@ pub struct GnmiTarget {
 }
 
 impl GnmiTarget {
-    /// Bind `settings.listen` and start serving on a spawned task.
+    /// Bind `settings.listen` and start serving on a spawned task, over TLS
+    /// when the settings carry it.
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Sink`] naming the address when the TLS files cannot
+    /// make a server configuration, or the address cannot be bound. Nothing
+    /// is bound when TLS fails.
     pub(crate) async fn bind(settings: TargetSettings) -> Result<Arc<Self>, SondaError> {
         let listen = settings.listen;
+        let server = server(&settings)?;
         let listener = TcpListener::bind(listen).await.map_err(|e| {
             SondaError::Sink(std::io::Error::new(
                 e.kind(),
@@ -335,7 +344,6 @@ impl GnmiTarget {
         let (tx, _) = broadcast::channel(settings.subscriber_buffer);
         // A limit beyond what a semaphore holds is no limit in practice.
         let subscriber_limit = settings.max_subscribers.min(Semaphore::MAX_PERMITS);
-        let keepalive = (settings.keepalive_interval, settings.keepalive_timeout);
         let token = CancellationToken::new();
         let (state_tx, state) = watch::channel(TargetState::Listening);
         let error = ServeError::default();
@@ -343,9 +351,9 @@ impl GnmiTarget {
         Ok(Arc::new_cyclic(|target| {
             let service = GnmiService::new(target.clone());
             tokio::spawn(serve(
+                server,
                 service,
                 listener,
-                keepalive,
                 token.clone(),
                 StoppedOnDrop(state_tx),
                 Arc::clone(&error),
@@ -691,15 +699,38 @@ impl Drop for GnmiTarget {
     }
 }
 
-/// Serve `service` on `listener` until `token` is cancelled, then close the
-/// listening socket, give open connections [`DRAIN_GRACE`] to finish, and
-/// close the rest. Reports each step on `state`. A connection silent for
-/// the keepalive interval is pinged and closed when the ping goes
-/// unanswered for the keepalive timeout.
+/// The server a target with `settings` runs: a connection silent for the
+/// keepalive interval is pinged and closed when the ping goes unanswered for
+/// the keepalive timeout, and every connection is TLS when the settings carry
+/// TLS files.
+///
+/// # Errors
+///
+/// [`SondaError::Sink`] naming the listen address when the TLS files cannot
+/// make a server configuration.
+fn server(settings: &TargetSettings) -> Result<Server, SondaError> {
+    let server = Server::builder()
+        .http2_keepalive_interval(Some(settings.keepalive_interval))
+        .http2_keepalive_timeout(Some(settings.keepalive_timeout));
+    match &settings.tls {
+        None => Ok(server),
+        Some(tls) => server.tls_config(tls.server_config()).map_err(|e| {
+            SondaError::Sink(io::Error::other(format!(
+                "gnmi_target cannot serve TLS on {}: {}",
+                settings.listen,
+                error_chain(&e)
+            )))
+        }),
+    }
+}
+
+/// Serve `service` with `server` on `listener` until `token` is cancelled,
+/// then close the listening socket, give open connections [`DRAIN_GRACE`]
+/// to finish, and close the rest. Reports each step on `state`.
 async fn serve(
+    server: Server,
     service: GnmiService,
     listener: TcpListener,
-    (keepalive_interval, keepalive_timeout): (Duration, Duration),
     token: CancellationToken,
     state: StoppedOnDrop,
     error: ServeError,
@@ -717,11 +748,7 @@ async fn serve(
         backoff: None,
     };
     // Returns once `incoming` ends, which drops the listening socket.
-    let served = tonic::transport::Server::builder()
-        .http2_keepalive_interval(Some(keepalive_interval))
-        .http2_keepalive_timeout(Some(keepalive_timeout))
-        .serve_with_incoming(service, incoming)
-        .await;
+    let served = server.serve_with_incoming(service, incoming).await;
     if let Err(e) = served {
         tracing::warn!(error = %e, addr = ?local_addr, "gnmi_target server stopped with an error");
         *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
@@ -1949,5 +1976,112 @@ mod tests {
         assert!(logs_contain("gnmi_target listening on an ephemeral port"));
         assert!(logs_contain(&addr));
         assert!(logs_contain("WARN"));
+    }
+
+    /// A target serving TLS from `tls`, on an ephemeral port.
+    async fn bind_tls(tls: crate::sink::gnmi::GnmiTlsConfig) -> Arc<GnmiTarget> {
+        let cfg = GnmiTargetConfig {
+            tls: Some(tls),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        };
+        GnmiTarget::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("bind an ephemeral port")
+    }
+
+    /// Connect to `addr` and subscribe ONCE; the error of whichever step
+    /// failed, as text. Fails the test when neither finishes within 5 s.
+    async fn attempt(
+        connect: impl Future<Output = Result<tonic::transport::Channel, tonic::transport::Error>>,
+    ) -> Result<bool, String> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let channel = connect.await.map_err(|e| error_chain(&e))?;
+            crate::sink::gnmi::test_tls::once_syncs(channel)
+                .await
+                .map_err(|s| s.to_string())
+        })
+        .await
+        .expect("the attempt ends with an answer, not a timeout")
+    }
+
+    #[tokio::test]
+    async fn a_tls_client_trusting_the_ca_receives_the_sync() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.tls()).await;
+        let synced = attempt(files.channel(target.local_addr(), false)).await;
+        assert_eq!(synced, Ok(true));
+    }
+
+    #[tokio::test]
+    async fn a_plaintext_client_is_refused_by_a_tls_target() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.tls()).await;
+        let addr = target.local_addr();
+        assert_eq!(
+            attempt(files.channel(addr, false)).await,
+            Ok(true),
+            "the premise: the target serves a TLS client"
+        );
+
+        let plaintext =
+            tonic::transport::Endpoint::from_shared(format!("http://{addr}")).expect("a valid uri");
+        let refused = attempt(plaintext.connect()).await;
+        assert!(
+            refused.is_err(),
+            "a plaintext client is served: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_client_ca_only_a_client_with_a_signed_certificate_is_served() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.mutual_tls()).await;
+        let addr = target.local_addr();
+
+        let refused = attempt(files.channel(addr, false)).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("CertificateRequired")),
+            "a client without a certificate is refused at the handshake: {refused:?}"
+        );
+        assert_eq!(attempt(files.channel(addr, true)).await, Ok(true));
+    }
+
+    #[tokio::test]
+    async fn without_client_ca_a_client_without_a_certificate_is_served() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.tls()).await;
+        assert_eq!(
+            attempt(files.channel(target.local_addr(), false)).await,
+            Ok(true)
+        );
+    }
+
+    /// TLS files that make no server configuration fail the bind with an
+    /// error naming the listen address.
+    #[tokio::test]
+    async fn a_tls_error_at_bind_names_the_address() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let mut settings = GnmiTargetConfig::new("127.0.0.1:0")
+            .settings()
+            .expect("valid settings");
+        settings.tls = Some(crate::sink::gnmi::TlsIdentity {
+            paths: files.tls(),
+            cert: b"not a certificate".to_vec(),
+            key: b"not a key".to_vec(),
+            client_ca: None,
+        });
+        let error = match GnmiTarget::bind(settings).await {
+            Ok(_) => panic!("TLS without a certificate binds"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, SondaError::Sink(_)), "got {error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot serve TLS on 127.0.0.1:0"),
+            "got {error}"
+        );
     }
 }

@@ -40,7 +40,7 @@ http = ["dep:ureq", "dep:chrono", "runtime"]
 kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots", "runtime"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]
-gnmi = ["dep:prost", "dep:tonic", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "runtime"]
+gnmi = ["dep:prost", "dep:tonic", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "dep:rustls-pki-types", "runtime"]
 # JSON Schema for the scenario config types. Implies `config`: schemars
 # reads the `#[serde(...)]` attributes to know the WIRE shape, and those
 # attributes are themselves behind the config feature.
@@ -78,6 +78,7 @@ rstest = { workspace = true }
 criterion = { version = "0.8", default-features = false }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tracing-test = "0.2"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 jsonschema = { version = "0.52.0", default-features = false }
 
