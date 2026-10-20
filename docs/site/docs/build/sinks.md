@@ -629,7 +629,7 @@ sink:
     key: examples/telegraf/certs/server-key.pem
   credentials:
     username: sonda
-    password: sonda-uat
+    password: "sonda-uat"
 ```
 
 | Field | Required | Description |
@@ -638,7 +638,7 @@ sink:
 | `tls.key` | yes | PEM file holding the private key of `cert`. |
 | `tls.client_ca` | no | PEM file of CA certificates. When set, every client must present a certificate signed by one of them; when unset, any client may connect. |
 | `credentials.username` | yes | The username every RPC must carry. |
-| `credentials.password` | yes | The password every RPC must carry. |
+| `credentials.password` | yes | The password every RPC must carry. Quote it: YAML reads an unquoted number as a number, and the target then compares its rewritten text (`0x1F` as `31`). |
 
 - **TLS.** Every connection to the `listen` address is TLS, and a plaintext client is refused at the handshake. A connection that has not finished its handshake 10 seconds after it was accepted is closed. The files are read when the scenario is validated, so `--dry-run` reports a file that cannot be read, or holds no PEM certificate or private key, naming the field and the file. A key that is not `cert`'s is reported the same way. Relative paths resolve against the directory Sonda runs in.
 - **Credentials need TLS.** A sink with `credentials` and no `tls` is refused, because the password would cross the wire in clear.

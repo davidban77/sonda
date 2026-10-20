@@ -56,7 +56,7 @@ defaults:
       key: examples/telegraf/certs/server-key.pem
     credentials:
       username: sonda
-      password: sonda-uat
+      password: "sonda-uat"
 
 scenarios:
   # --- GigabitEthernet0/0/0: the uplink that flaps ---

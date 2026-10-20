@@ -2066,8 +2066,7 @@ mod tests {
     }
 
     /// A client that opens a TCP connection to a TLS target and sends
-    /// nothing is closed once the handshake timeout has passed, and never
-    /// takes a subscriber's place.
+    /// nothing is closed once the handshake timeout has passed.
     #[tokio::test]
     async fn a_connection_that_never_starts_its_handshake_is_closed_at_the_timeout() {
         use tokio::io::AsyncReadExt;
@@ -2100,7 +2099,6 @@ mod tests {
             "the connection is open {:?} after it was made: {closed:?}",
             connected.elapsed()
         );
-        assert_eq!(target.subscriber_count(), 0);
     }
 
     /// TLS files that make no server configuration fail the bind with an

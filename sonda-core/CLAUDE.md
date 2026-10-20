@@ -184,7 +184,9 @@ src/
 │   │   │                   GnmiCredentials { username, password }, both deny_unknown_fields;
 │   │   │                   the password is writeOnly in the schema and Debug prints "***".
 │   │   │                   GnmiCredentials' Deserialize is hand-written (deserialize_any
-│   │   │                   over CredentialsFields): a value that is not a map is refused
+│   │   │                   over credentials_fields::GnmiCredentials, a private derive of the
+│   │   │                   same name, so its errors name GnmiCredentials): a value that is
+│   │   │                   not a map is refused
 │   │   │                   with a fixed message, because a buffered sink block answers
 │   │   │                   deserialize_struct on a scalar with an error quoting it.
 │   │   │                   settings() refuses credentials without tls, and reads each tls

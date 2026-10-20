@@ -177,16 +177,19 @@ pub struct GnmiCredentials {
     pub password: String,
 }
 
-/// The fields of a `credentials:` block as written: each a scalar read as
-/// text, and no other key.
+/// The fields of a `credentials:` block as written. The derive's errors name
+/// this struct, `GnmiCredentials`.
 #[cfg(feature = "config")]
-#[derive(serde::Deserialize)]
-#[serde(rename = "GnmiCredentials", deny_unknown_fields)]
-struct CredentialsFields {
-    #[serde(deserialize_with = "crate::config::scalar_text::required")]
-    username: String,
-    #[serde(deserialize_with = "crate::config::scalar_text::required")]
-    password: String,
+mod credentials_fields {
+    /// Each field a scalar read as text, and no other key.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct GnmiCredentials {
+        #[serde(deserialize_with = "crate::config::scalar_text::required")]
+        pub(super) username: String,
+        #[serde(deserialize_with = "crate::config::scalar_text::required")]
+        pub(super) password: String,
+    }
 }
 
 /// The error for a `credentials:` value that is not a map. It names no part
@@ -216,15 +219,15 @@ impl<'de> serde::Deserialize<'de> for GnmiCredentials {
                 f.write_str("a map with username and password")
             }
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                <CredentialsFields as serde::Deserialize>::deserialize(MapAccessDeserializer::new(
-                    map,
-                ))
+                <credentials_fields::GnmiCredentials as serde::Deserialize>::deserialize(
+                    MapAccessDeserializer::new(map),
+                )
                 .map(Into::into)
             }
             fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
-                <CredentialsFields as serde::Deserialize>::deserialize(SeqAccessDeserializer::new(
-                    seq,
-                ))
+                <credentials_fields::GnmiCredentials as serde::Deserialize>::deserialize(
+                    SeqAccessDeserializer::new(seq),
+                )
                 .map(Into::into)
             }
             fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
@@ -253,8 +256,8 @@ impl<'de> serde::Deserialize<'de> for GnmiCredentials {
 }
 
 #[cfg(feature = "config")]
-impl From<CredentialsFields> for GnmiCredentials {
-    fn from(fields: CredentialsFields) -> Self {
+impl From<credentials_fields::GnmiCredentials> for GnmiCredentials {
+    fn from(fields: credentials_fields::GnmiCredentials) -> Self {
         Self {
             username: fields.username,
             password: fields.password,
