@@ -9,6 +9,15 @@
 //! a client: publishing is a table upsert, a compare with the series' previous
 //! value and, when the value changed, a non-blocking broadcast send.
 //!
+//! A series leaves the target when the last sink of its launch that published
+//! it drops, and at no other time; a series that stops being updated stays.
+//! When a series leaves, ON_CHANGE subscriptions that matched it, and SAMPLE
+//! subscriptions with `suppress_redundant` that had sent it, receive one
+//! notification deleting its path. A SAMPLE subscription with
+//! `suppress_redundant` is sent a series only when its value changed since
+//! the subscription last sent it, and its `heartbeat_interval` resends every
+//! series it matches regardless.
+//!
 //! Requires the `gnmi` feature flag.
 
 pub(crate) mod matcher;
@@ -260,7 +269,8 @@ impl TargetSettings {
 /// reuse the id the target returned. A series is owned by the launch whose
 /// sink created it and held while any sink of that launch has published it:
 /// the sinks of that launch share it, a sink of another launch is refused
-/// it, and it leaves the target when the last of its publishers drops. A
+/// it, and it leaves the target, with a delete broadcast to its subscribers,
+/// when the last of its publishers drops. A
 /// path with no live publisher is free; a scenario refused it in that window
 /// shows why in its stats. Dropping the last sink on an address stops its
 /// listener.

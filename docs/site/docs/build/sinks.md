@@ -499,13 +499,16 @@ The listener serves plaintext gRPC:
 | `Subscribe`, ONCE | Sends the latest value of every matching series and `sync_response`, then ends the stream. |
 | `Subscribe`, STREAM | Sends the latest value of every matching series, then `sync_response`, once for the whole request even when it mixes modes. After that each subscription is served by its mode. |
 | SAMPLE | Resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. |
+| SAMPLE, `suppress_redundant: true` | At each sample interval, sends a matching series only when its value changed since the subscription last sent it. The initial values count as sent; a series first seen at a sample is sent. Ignored on the other modes. |
 | ON_CHANGE | Sends a matching series each time its value changes, including a series first published after the subscription started. A value that holds sends nothing. |
 | TARGET_DEFINED | Decides per series from the kind of value its first publish carried. A series with a string value (the encoder's `string` and `enum` values) is served as ON_CHANGE, any other as SAMPLE at the subscription's sample interval. |
-| `heartbeat_interval` | On ON_CHANGE, and on TARGET_DEFINED's string series, resends the latest value of every matching series at this interval, changed or not. `0` sends none. Not read for SAMPLE. |
+| `heartbeat_interval` | On ON_CHANGE, on TARGET_DEFINED's string series, and on SAMPLE with `suppress_redundant`, resends the latest value of every matching series at this interval, changed or not. `0` sends none. Not read for SAMPLE without `suppress_redundant`, where every sample already sends every series. |
 | `updates_only: true` | Skips the initial values; the first message is `sync_response`. |
 | POLL | Refused with `UNIMPLEMENTED`, naming the mode. |
 | Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
 | Encoding `JSON_IETF`, `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding and `PROTO`. |
+
+A series leaves the target when the last scenario publishing it stops (scenarios of one scenario file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. When a series leaves, a subscription receives one notification whose `delete` names its path, split into `prefix` and path as its updates are, if the subscription is ON_CHANGE (or TARGET_DEFINED for a string series) and matched it, or SAMPLE with `suppress_redundant` and had sent it, at its next sample. A request with both receives the delete; the series ends deleted. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE never receives one. A series published again on the same path later is a new series and is sent like any other. A subscriber that fell behind the broadcast and was resynced may keep a path removed during the gap, with its last value, until that path is published again.
 
 A change is a new value: the update's encoded `TypedValue` differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than `subscriber_buffer` changes behind is resynced with the latest value of every series it matches, without a second `sync_response`. A change the initial values, a resync or a heartbeat already sent is not sent again.
 
