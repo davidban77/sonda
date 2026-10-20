@@ -667,12 +667,13 @@ Telegraf's `inputs.gnmi` turns TLS on with `tls_enable`, trusts the CA with `tls
   password = "sonda-uat"
 ```
 
-The compose stack's `gnmi-tls` profile runs this Telegraf, with `examples/telegraf/certs/` mounted at `/etc/telegraf/certs`. The certificates are not committed. The header of `examples/gnmi-telegraf-tls.yaml` makes them with `openssl`, for the names `sonda`, `localhost` and `127.0.0.1`:
+The compose stack's `gnmi-tls` profile runs this Telegraf, with `examples/telegraf/certs/` mounted at `/etc/telegraf/certs`. The certificates are not committed: make them first with the `openssl` commands in the header of `examples/gnmi-telegraf-tls.yaml`, for the names `sonda`, `localhost` and `127.0.0.1`. Then start the profile:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi-tls up -d
-sonda run examples/gnmi-telegraf-tls.yaml
 ```
+
+and, from the repository root, `sonda run examples/gnmi-telegraf-tls.yaml`. Without the certificates, that command and its `--dry-run` stop with `gnmi_target tls cert "examples/telegraf/certs/server.pem" cannot be read`.
 
 ## Retry with backoff
 
