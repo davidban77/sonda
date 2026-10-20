@@ -26,9 +26,10 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use sonda_core::config::{BaseScheduleConfig, ScenarioConfig};
-use sonda_core::encoder::gnmi::GnmiEncoderConfig;
-use sonda_core::encoder::EncoderConfig;
+use sonda_core::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+use sonda_core::encoder::{Encoder, EncoderConfig};
 use sonda_core::generator::GeneratorConfig;
+use sonda_core::model::metric::{Labels, MetricEvent};
 use sonda_core::schedule::stats::ScenarioStats;
 use sonda_core::sink::gnmi::{GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
 use sonda_core::sink::{Sink, SinkConfig};
@@ -209,5 +210,46 @@ fn gnmi_target_surcharge_over_a_plain_sink_is_under_one_and_a_half() {
          {surcharge:.3} (allowed < 1.5)"
     );
     drop(sink);
+    drop(target);
+}
+
+/// Dropping a sink releases its series. With nobody subscribed, the release
+/// allocates nothing: no delete is encoded. The target is held, so dropping
+/// the sink does not stop it.
+#[test]
+fn a_release_with_no_receiver_allocates_nothing() {
+    let rt = current_thread_runtime();
+    let mut sink = rt
+        .block_on(GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0")))
+        .expect("bind an ephemeral port");
+    let target: Arc<GnmiTarget> = Arc::clone(sink.target());
+    let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+        path: Some("/sites/site[name={site}]/{name}".to_string()),
+        ..GnmiEncoderConfig::default()
+    })
+    .expect("valid encoder");
+    for site in ["ams", "fra", "lon"] {
+        let event = MetricEvent::new(
+            "up".to_string(),
+            1.0,
+            Labels::from_pairs(&[("site", site)]).expect("valid labels"),
+        )
+        .expect("valid event");
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).expect("encodes");
+        rt.block_on(sink.write_metric_event(&event, &buf))
+            .expect("published");
+    }
+    // Vacuity guards: the series are in the table and nobody is subscribed.
+    assert_eq!(target.series_count(), 3);
+    assert_eq!(target.subscriber_count(), 0);
+
+    let ((), allocs) = count_allocations(|| drop(sink));
+
+    assert_eq!(target.series_count(), 0, "the drop released every series");
+    assert_eq!(
+        allocs, 0,
+        "releasing with no receiver allocated {allocs} times"
+    );
     drop(target);
 }

@@ -686,6 +686,40 @@ impl Encoder for GnmiEncoder {
     }
 }
 
+/// Append one prost-encoded `Notification` deleting the series at `path` —
+/// NOT length-prefixed — into `buf`.
+///
+/// `path` is a series' full path, as the sink's table keys it: its origin
+/// and target go on the notification prefix and its elements on `delete[0]`,
+/// split as [`GnmiEncoder`] splits an update's prefix and path. A timestamp of
+/// 0 is omitted.
+pub(crate) fn encode_delete(buf: &mut Vec<u8>, path: &proto::Path, timestamp_ns: i64) {
+    // Notification { timestamp = 1, prefix = 2, delete = 5 }
+    //   prefix: Path { origin = 2, target = 4 }
+    //   delete: Path { elem = 3 }
+    let prefix_len = str_field_len(2, &path.origin) + str_field_len(4, &path.target);
+    let delete_len: usize = path
+        .elem
+        .iter()
+        .map(|elem| encoding::message::encoded_len(3, elem))
+        .sum();
+    buf.reserve(
+        encoding::int64::encoded_len(1, &timestamp_ns)
+            + delimited_field_len(2, prefix_len)
+            + delimited_field_len(5, delete_len),
+    );
+    if timestamp_ns != 0 {
+        encoding::int64::encode(1, &timestamp_ns, buf);
+    }
+    encode_delimited_header(2, prefix_len, buf);
+    encode_str_field(2, &path.origin, buf);
+    encode_str_field(4, &path.target, buf);
+    encode_delimited_header(5, delete_len, buf);
+    for elem in &path.elem {
+        encoding::message::encode(3, elem, buf);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +788,43 @@ mod tests {
             "/interfaces/interface[name=Gi0/0/0]/state/counters/in-octets"
         );
         assert_eq!(only_value(&n), Value::DoubleVal(1.5));
+    }
+
+    /// A delete for a series the encoder rendered carries the update's
+    /// prefix and, as its one deleted path, the update's path: the full path
+    /// joined from the update the way the sink's table joins it splits back
+    /// the same way.
+    #[test]
+    fn a_delete_splits_its_path_as_the_update_does() {
+        let custom = GnmiEncoderConfig {
+            origin: "openconfig-interfaces".to_string(),
+            ..config()
+        };
+        let cases = [
+            (config(), event("in_octets", 1.5)),
+            (
+                config(),
+                event_at("in_octets", 2.0, &[("ifName", "Gi0/0/1")], 7),
+            ),
+            (custom, event("out_octets", 3.0)),
+        ];
+        for (cfg, e) in cases {
+            let encoder = GnmiEncoder::new(&cfg).unwrap();
+            let mut update_bytes = Vec::new();
+            encoder.encode_metric(&e, &mut update_bytes).unwrap();
+            let update = proto::Notification::decode(update_bytes.as_slice()).unwrap();
+            let full = crate::sink::gnmi::target::PathKey::decode(&update_bytes).unwrap();
+
+            let mut delete_bytes = Vec::new();
+            encode_delete(&mut delete_bytes, full.path(), 1_700_000_000_000_000_001);
+            let delete = proto::Notification::decode(delete_bytes.as_slice()).unwrap();
+
+            assert_eq!(delete.timestamp, 1_700_000_000_000_000_001);
+            assert_eq!(delete.prefix, update.prefix, "{}", e.name);
+            assert_eq!(delete.delete.len(), 1, "{}", e.name);
+            assert_eq!(Some(&delete.delete[0]), update.update[0].path.as_ref());
+            assert!(delete.update.is_empty(), "{}", e.name);
+        }
     }
 
     #[test]

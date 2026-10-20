@@ -145,7 +145,9 @@ src/
 │   │   │                   the key and may not drop it; _sum/_count need a template
 │   │   │                   without it: their own paths: entries, or path when the
 │   │   │                   bucket/quantile series has its own paths: entry. Logs
-│   │   │                   entries refuse both encoder and sink.
+│   │   │                   entries refuse both encoder and sink. encode_delete (pub(crate)) writes a
+│   │   │                   Notification deleting a full path: origin and target on the prefix, the
+│   │   │                   elements on delete[0], split as an update's prefix and path are.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike
@@ -208,6 +210,12 @@ src/
 │   │   │                   first value), set with the value under the series' lock;
 │   │   │                   SeriesUpdate and SeriesSnapshot carry it (both
 │   │   │                   #[non_exhaustive], as is ValueKind).
+│   │   │                   The broadcast carries SeriesEvent (pub(crate), #[non_exhaustive]):
+│   │   │                   Changed(SeriesUpdate), or Removed { series_id, bytes } when release()
+│   │   │                   removes a slot and a receiver exists: the delete (delete_notification,
+│   │   │                   stamped now) is encoded once and sent under the table write lock, so no
+│   │   │                   receiver gets a value for the series after its delete. A series leaves
+│   │   │                   with its launch's last publisher and never on idle.
 │   │   │                   Never awaits. Store and broadcast happen under the series'
 │   │   │                   lock, so receivers see a series' updates in table order.
 │   │   │                   Only ON_CHANGE (and TARGET_DEFINED) lists hold a receiver
@@ -273,17 +281,27 @@ src/
 │   │                       TARGET_DEFINED into both, the set and heartbeat for string_val
 │   │                       series (KindFilter::Strings), a sample group for the rest
 │   │                       (NonStrings). Periods are max(interval, sample_floor), one group
-│   │                       per (period, kinds); next_due skips missed periods in one step.
-│   │                       SAMPLE's heartbeat_interval is not read. The set's broadcast
+│   │                       per (period, kinds, suppress); next_due skips missed periods in
+│   │                       one step. SAMPLE with suppress_redundant: a group whose sent map
+│   │                       (SeriesId -> Sent { version, path }) is seeded
+│   │                       by the initial sync; due() sends a series only when its version differs
+│   │                       from the recorded one and reports each recorded series gone from the
+│   │                       snapshot, which sample() queues as a delete ahead of its values; its heartbeat_interval adds
+│   │                       a heartbeat group. Without suppress_redundant SAMPLE's heartbeat_interval
+│   │                       is not read; TARGET_DEFINED's sample groups never suppress. The set's broadcast
 │   │                       receiver is taken before the initial snapshot; a series is
 │   │                       matched once, when first seen (snapshot path, or PathKey::decode
 │   │                       of the update), cached by SeriesId (Seen { matches, queued })
 │   │                       and pruned to the table past 2 x its live size (at least
-│   │                       1024). queued is the version of the value last queued for the
+│   │                       1024): a prune on reading a change keeps matched series (they
+│   │                       leave by their Removed), a resync's drops them. queued is the version of the value last queued for the
 │   │                       series, by the initial sync, a resync, a heartbeat or a change;
 │   │                       offer() drops a change whose version is not newer, so a change
 │   │                       racing a snapshot is sent once. Heartbeats are never filtered
-│   │                       and set queued. Lagged(n) moves the set to a
+│   │                       and set queued. A Removed for a series the set matched queues its delete
+│   │                       bytes and drops its Seen. queue_delete forgets the series in the set and
+│   │                       every sent map; Pending::push_delete
+│   │                       drops a queued value for it and queues the delete last. Lagged(n) moves the set to a
 │   │                       receiver at the broadcast's tail (resubscribe(), dropping the
 │   │                       backlog it fell behind on), then re-queues the latest
 │   │                       of every matched series (no second sync marker; debug log with
