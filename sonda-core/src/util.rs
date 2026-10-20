@@ -90,6 +90,23 @@ pub(crate) fn random_spike_value(prefix: &str, seed: u64, index: u64) -> String 
     format!("{prefix}{:016x}", random_spike_hash(seed, index))
 }
 
+/// Installs rustls's ring provider as the process-wide default crypto
+/// provider when no default is installed yet, and leaves an installed one,
+/// whoever installed it, in place.
+///
+/// The default is process state: once set, every rustls configuration in
+/// the process that does not name a provider uses it, and it cannot be
+/// replaced. If another thread installs one between the check and the
+/// install, its provider stays the default. Release builds compile ring
+/// alone; a build that compiles both of rustls's providers has no default
+/// until one is installed.
+#[cfg(any(feature = "kafka", feature = "gnmi"))]
+pub(crate) fn ensure_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 /// Whether `a` and `b` hold the same bytes. Slices of different lengths
 /// are unequal at once; slices of one length are compared in full, every
 /// byte pair XORed into one accumulator, so the time taken does not depend

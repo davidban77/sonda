@@ -20,7 +20,11 @@ src/
 │                          ConfigError. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash;
 │                          constant_time_eq under gnmi: length check, then an XOR-fold over
-│                          every byte pair)
+│                          every byte pair; ensure_crypto_provider under kafka or gnmi:
+│                          installs rustls's ring provider as the PROCESS-WIDE default when
+│                          none is, for every rustls config in the process, embedder's
+│                          included. Release builds compile ring alone; a workspace build
+│                          also compiles aws-lc-rs, so rustls cannot pick one by itself)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
 │   │                      folds one `extends:` link. `metrics:` is additive and refuses a
@@ -179,14 +183,17 @@ src/
 │   │   │                   tls: GnmiTlsConfig { cert, key, client_ca } and credentials:
 │   │   │                   GnmiCredentials { username, password }, both deny_unknown_fields;
 │   │   │                   the password is writeOnly in the schema and Debug prints "***".
+│   │   │                   GnmiCredentials' Deserialize is hand-written (deserialize_any
+│   │   │                   over CredentialsFields): a value that is not a map is refused
+│   │   │                   with a fixed message, because a buffered sink block answers
+│   │   │                   deserialize_struct on a scalar with an error quoting it.
 │   │   │                   settings() refuses credentials without tls, and reads each tls
 │   │   │                   file into TlsIdentity (paths + PEM bytes; Debug prints the
 │   │   │                   paths): every file parsed on its own (rustls-pki-types) so an
 │   │   │                   error names field and file, then tonic's server TLS config built
 │   │   │                   once, so a key that is not cert's fails at validation, not bind.
-│   │   │                   server_config() installs rustls's ring provider as the process
-│   │   │                   default when none is: tonic's server TLS reads that default, which
-│   │   │                   rustls cannot pick when a build compiles both of its providers.
+│   │   │                   server_config() calls util::ensure_crypto_provider: tonic's
+│   │   │                   server TLS reads the process default provider.
 │   │   │                   serves() compares tls by its paths and credentials by both fields;
 │   │   │                   beside() names credentials by username only.
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
@@ -246,7 +253,9 @@ src/
 │   │   │                   listener task owns a StoppedOnDrop guard, so the target
 │   │   │                   reads Stopped however the task ends (panic, runtime drop);
 │   │   │                   is_serving() is state == Listening. bind() builds the tonic
-│   │   │                   Server (keepalives, and tls_config from TlsIdentity when set)
+│   │   │                   Server (keepalives, and tls_config from TlsIdentity when set,
+│   │   │                   timing out a handshake after TLS_HANDSHAKE_TIMEOUT (10 s), carried
+│   │   │                   in TargetSettings so tests can shorten it; no config)
 │   │   │                   before binding the socket; a TLS error is SondaError::Sink naming
 │   │   │                   the address and binds nothing. serve_with_incoming does the TLS
 │   │   │                   handshake on each accepted Connection and drops failed ones.

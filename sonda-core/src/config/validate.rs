@@ -3242,6 +3242,29 @@ generator:
         );
     }
 
+    /// A `credentials:` value that is not a map is refused with an error that
+    /// does not repeat the value.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::string("\"sonda:Hunter2Secret\"", "Hunter2Secret")]
+    #[case::number("424242", "424242")]
+    fn gnmi_target_credentials_that_are_not_a_map_are_not_echoed(
+        #[case] value: &str,
+        #[case] secret: &str,
+    ) {
+        let err = serde_yaml_ng::from_str::<SinkConfig>(&format!(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n\
+             tls: {{cert: a.pem, key: b.pem}}\ncredentials: {value}\n"
+        ))
+        .expect_err("a scalar is not credentials");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("credentials must be a map with username and password"),
+            "got: {msg}"
+        );
+        assert!(!msg.contains(secret), "got: {msg}");
+    }
+
     #[cfg(feature = "gnmi")]
     #[test]
     fn gnmi_target_credentials_without_tls_are_refused() {

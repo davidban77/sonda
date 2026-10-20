@@ -21,6 +21,9 @@
 //! With `tls` set, every connection to the target is TLS, optionally
 //! requiring client certificates; with `credentials` set, every RPC must
 //! carry them as gRPC metadata. Every sink on one address uses the same.
+//! Validating or binding a target with `tls` installs rustls's ring provider
+//! as the process-wide default crypto provider when none is installed; an
+//! application that installs its own must do so first.
 //!
 //! Requires the `gnmi` feature flag.
 
@@ -163,23 +166,100 @@ pub struct GnmiTlsConfig {
 /// password every RPC must carry as gRPC metadata `username` and
 /// `password`.
 #[derive(Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
 #[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GnmiCredentials {
     /// The username clients must send.
-    #[cfg_attr(
-        feature = "config",
-        serde(deserialize_with = "crate::config::scalar_text::required")
-    )]
     pub username: String,
     /// The password clients must send.
-    #[cfg_attr(
-        feature = "config",
-        serde(deserialize_with = "crate::config::scalar_text::required")
-    )]
     #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
     pub password: String,
+}
+
+/// The fields of a `credentials:` block as written: each a scalar read as
+/// text, and no other key.
+#[cfg(feature = "config")]
+#[derive(serde::Deserialize)]
+#[serde(rename = "GnmiCredentials", deny_unknown_fields)]
+struct CredentialsFields {
+    #[serde(deserialize_with = "crate::config::scalar_text::required")]
+    username: String,
+    #[serde(deserialize_with = "crate::config::scalar_text::required")]
+    password: String,
+}
+
+/// The error for a `credentials:` value that is not a map. It names no part
+/// of the value.
+#[cfg(feature = "config")]
+const CREDENTIALS_NOT_A_MAP: &str =
+    "gnmi_target credentials must be a map with username and password";
+
+/// Reads a map with `username` and `password` (or the two as a sequence),
+/// refusing any other key. Any other value is refused with
+/// [`CREDENTIALS_NOT_A_MAP`], which does not repeat the value.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for GnmiCredentials {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+        use serde::de::{Error, MapAccess, SeqAccess, Visitor};
+
+        struct CredentialsVisitor;
+        impl CredentialsVisitor {
+            fn refuse<E: Error>(self) -> Result<GnmiCredentials, E> {
+                Err(E::custom(CREDENTIALS_NOT_A_MAP))
+            }
+        }
+        impl<'de> Visitor<'de> for CredentialsVisitor {
+            type Value = GnmiCredentials;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map with username and password")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                <CredentialsFields as serde::Deserialize>::deserialize(MapAccessDeserializer::new(
+                    map,
+                ))
+                .map(Into::into)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                <CredentialsFields as serde::Deserialize>::deserialize(SeqAccessDeserializer::new(
+                    seq,
+                ))
+                .map(Into::into)
+            }
+            fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+        }
+        // `deserialize_any`, because a buffered sink block answers
+        // `deserialize_struct` for a scalar with an error quoting it.
+        deserializer.deserialize_any(CredentialsVisitor)
+    }
+}
+
+#[cfg(feature = "config")]
+impl From<CredentialsFields> for GnmiCredentials {
+    fn from(fields: CredentialsFields) -> Self {
+        Self {
+            username: fields.username,
+            password: fields.password,
+        }
+    }
 }
 
 /// Prints the username, and `"***"` in place of the password.
@@ -270,6 +350,7 @@ impl GnmiTargetConfig {
             credentials: self.credentials.clone(),
             keepalive_interval: target::KEEPALIVE_INTERVAL,
             keepalive_timeout: target::KEEPALIVE_TIMEOUT,
+            tls_handshake_timeout: target::TLS_HANDSHAKE_TIMEOUT,
             stall_floor: service::STALL_FLOOR,
             #[cfg(test)]
             probe: Arc::default(),
@@ -295,6 +376,10 @@ pub(crate) struct TargetSettings {
     /// connection. [`target::KEEPALIVE_TIMEOUT`] except in tests; not
     /// configurable.
     pub(crate) keepalive_timeout: Duration,
+    /// How long a TLS target waits for a connection to finish its TLS
+    /// handshake before it closes the connection.
+    /// [`target::TLS_HANDSHAKE_TIMEOUT`] except in tests; not configurable.
+    pub(crate) tls_handshake_timeout: Duration,
     /// The least time a subscription may go without its client draining a
     /// response before it is ended as stalled. [`service::STALL_FLOOR`]
     /// except in tests; not configurable.
@@ -391,15 +476,11 @@ impl TlsIdentity {
     /// certificates must chain to, when set.
     ///
     /// tonic builds the server's rustls configuration from the process's
-    /// default crypto provider, which rustls cannot choose by itself when
-    /// both of its providers are compiled in; this installs the ring
-    /// provider as that default when none is installed.
+    /// default crypto provider; this installs the ring provider as that
+    /// default when none is installed
+    /// ([`ensure_crypto_provider`](crate::util::ensure_crypto_provider)).
     pub(crate) fn server_config(&self) -> ServerTlsConfig {
-        if rustls::crypto::CryptoProvider::get_default().is_none() {
-            // Another thread may install one first; either way a default is
-            // installed.
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
+        crate::util::ensure_crypto_provider();
         let config = ServerTlsConfig::new().identity(Identity::from_pem(&self.cert, &self.key));
         match &self.client_ca {
             Some(ca) => config.client_ca_root(Certificate::from_pem(ca)),

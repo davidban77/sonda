@@ -38,6 +38,10 @@ pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// connection, which ends that connection's subscriptions.
 pub(crate) const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long a TLS target waits for a connection to finish its TLS
+/// handshake before it closes the connection.
+pub(crate) const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long the listener waits before accepting again after an accept
 /// error that is not about one connection, such as running out of file
 /// descriptors.
@@ -702,7 +706,8 @@ impl Drop for GnmiTarget {
 /// The server a target with `settings` runs: a connection silent for the
 /// keepalive interval is pinged and closed when the ping goes unanswered for
 /// the keepalive timeout, and every connection is TLS when the settings carry
-/// TLS files.
+/// TLS files, closed when its handshake has not finished within the TLS
+/// handshake timeout.
 ///
 /// # Errors
 ///
@@ -714,13 +719,15 @@ fn server(settings: &TargetSettings) -> Result<Server, SondaError> {
         .http2_keepalive_timeout(Some(settings.keepalive_timeout));
     match &settings.tls {
         None => Ok(server),
-        Some(tls) => server.tls_config(tls.server_config()).map_err(|e| {
-            SondaError::Sink(io::Error::other(format!(
-                "gnmi_target cannot serve TLS on {}: {}",
-                settings.listen,
-                error_chain(&e)
-            )))
-        }),
+        Some(tls) => server
+            .tls_config(tls.server_config().timeout(settings.tls_handshake_timeout))
+            .map_err(|e| {
+                SondaError::Sink(io::Error::other(format!(
+                    "gnmi_target cannot serve TLS on {}: {}",
+                    settings.listen,
+                    error_chain(&e)
+                )))
+            }),
     }
 }
 
@@ -2056,6 +2063,44 @@ mod tests {
             attempt(files.channel(target.local_addr(), false)).await,
             Ok(true)
         );
+    }
+
+    /// A client that opens a TCP connection to a TLS target and sends
+    /// nothing is closed once the handshake timeout has passed, and never
+    /// takes a subscriber's place.
+    #[tokio::test]
+    async fn a_connection_that_never_starts_its_handshake_is_closed_at_the_timeout() {
+        use tokio::io::AsyncReadExt;
+        const TIMEOUT: Duration = Duration::from_millis(200);
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let mut settings = GnmiTargetConfig {
+            tls: Some(files.tls()),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        }
+        .settings()
+        .expect("valid settings");
+        settings.tls_handshake_timeout = TIMEOUT;
+        let target = GnmiTarget::bind(settings)
+            .await
+            .expect("bind an ephemeral port");
+
+        let mut socket = TcpStream::connect(target.local_addr())
+            .await
+            .expect("connect");
+        let connected = tokio::time::Instant::now();
+        let mut byte = [0u8; 1];
+        let early = tokio::time::timeout(TIMEOUT / 2, socket.read(&mut byte)).await;
+        assert!(
+            early.is_err(),
+            "the premise: the target holds the connection while the timeout runs: {early:?}"
+        );
+        let closed = tokio::time::timeout_at(connected + 2 * TIMEOUT, socket.read(&mut byte)).await;
+        assert!(
+            matches!(closed, Ok(Ok(0) | Err(_))),
+            "the connection is open {:?} after it was made: {closed:?}",
+            connected.elapsed()
+        );
+        assert_eq!(target.subscriber_count(), 0);
     }
 
     /// TLS files that make no server configuration fail the bind with an
