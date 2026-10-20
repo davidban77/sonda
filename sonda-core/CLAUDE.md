@@ -300,7 +300,7 @@ src/
 │   │                       racing a snapshot is sent once. Heartbeats are never filtered
 │   │                       and set queued. A Removed for a series the set matched queues its delete
 │   │                       bytes and drops its Seen. queue_delete forgets the series in the set and
-│   │                       every sent map, so a list sends one delete per series; Pending::push_delete
+│   │                       every sent map; Pending::push_delete
 │   │                       drops a queued value for it and queues the delete last. Lagged(n) moves the set to a
 │   │                       receiver at the broadcast's tail (resubscribe(), dropping the
 │   │                       backlog it fell behind on), then re-queues the latest

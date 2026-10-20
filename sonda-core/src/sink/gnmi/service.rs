@@ -1036,7 +1036,7 @@ impl Producer {
 
     /// Queue `delete` for series `id` in place of any value waiting for it,
     /// and forget the series in the ON_CHANGE set and every suppressing
-    /// sample group, so no other part of the list sends a second delete.
+    /// sample group.
     fn queue_delete(&mut self, id: SeriesId, delete: &Bytes, pending: &mut Pending) {
         pending.push_delete(id, delete);
         if let Some(set) = self.on_change.as_mut() {
