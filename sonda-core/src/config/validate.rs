@@ -3146,6 +3146,8 @@ generator:
             max_subscribers: Some(1),
             subscriber_buffer: Some(65_536),
             sample_floor: Some("100ms".into()),
+            tls: None,
+            credentials: None,
         };
         validate_sink_config(&SinkConfig::GnmiTarget(cfg)).expect("every field at a bound");
     }
@@ -3194,6 +3196,142 @@ generator:
         )
         .expect_err("a misspelt key is refused");
         assert!(err.to_string().contains("listen_addr"), "got: {err}");
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::tls("tls: {cert: a.pem, key: b.pem, client-ca: c.pem}", "client-ca")]
+    #[case::credentials("credentials: {username: u, pasword: p}", "pasword")]
+    fn gnmi_target_tls_and_credentials_reject_unknown_keys(
+        #[case] block: &str,
+        #[case] misspelt: &str,
+    ) {
+        let err = serde_yaml_ng::from_str::<SinkConfig>(&format!(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n{block}\n"
+        ))
+        .expect_err("a misspelt key is refused");
+        assert!(err.to_string().contains(misspelt), "got: {err}");
+    }
+
+    /// Every field of the two blocks parses from YAML; numbers parse as text,
+    /// as the schema allows.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_target_tls_and_credentials_parse() {
+        let sink: SinkConfig = serde_yaml_ng::from_str(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n\
+             tls: {cert: a.pem, key: b.pem, client_ca: c.pem}\n\
+             credentials: {username: sonda, password: 1234}\n",
+        )
+        .expect("parses");
+        let SinkConfig::GnmiTarget(cfg) = &sink else {
+            panic!("got {sink:?}");
+        };
+        assert_eq!(
+            cfg.tls,
+            Some(crate::sink::gnmi::GnmiTlsConfig {
+                cert: "a.pem".into(),
+                key: "b.pem".into(),
+                client_ca: Some("c.pem".into()),
+            })
+        );
+        let credentials = cfg.credentials.as_ref().expect("credentials");
+        assert_eq!(
+            (credentials.username.as_str(), credentials.password.as_str()),
+            ("sonda", "1234")
+        );
+    }
+
+    /// A `credentials:` value that is not a map is refused with an error that
+    /// does not repeat the value.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::string("\"sonda:Hunter2Secret\"", "Hunter2Secret")]
+    #[case::number("424242", "424242")]
+    fn gnmi_target_credentials_that_are_not_a_map_are_not_echoed(
+        #[case] value: &str,
+        #[case] secret: &str,
+    ) {
+        let err = serde_yaml_ng::from_str::<SinkConfig>(&format!(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n\
+             tls: {{cert: a.pem, key: b.pem}}\ncredentials: {value}\n"
+        ))
+        .expect_err("a scalar is not credentials");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("credentials must be a map with username and password"),
+            "got: {msg}"
+        );
+        assert!(!msg.contains(secret), "got: {msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_target_credentials_without_tls_are_refused() {
+        let cfg = GnmiTargetConfig {
+            credentials: Some(crate::sink::gnmi::GnmiCredentials {
+                username: "sonda".into(),
+                password: "hunter2".into(),
+            }),
+            ..GnmiTargetConfig::new("127.0.0.1:57400")
+        };
+        let msg = err_msg(validate_sink_config(&SinkConfig::GnmiTarget(cfg)));
+        assert!(
+            msg.contains("credentials need tls")
+                && msg.contains("the password would cross the wire in clear"),
+            "got: {msg}"
+        );
+        assert!(!msg.contains("hunter2"), "got: {msg}");
+    }
+
+    /// Each `tls` file that cannot be read, or does not hold what its field
+    /// needs, fails validation with an error naming the field and the file.
+    #[cfg(feature = "gnmi")]
+    #[rstest::rstest]
+    #[case::cert_missing("cert", None, "cannot be read")]
+    #[case::cert_not_pem("cert", Some("not a certificate\n"), "holds no PEM certificate")]
+    #[case::cert_holds_a_key("cert", Some("@key"), "holds no PEM certificate")]
+    #[case::key_missing("key", None, "cannot be read")]
+    #[case::key_holds_a_certificate("key", Some("@cert"), "holds no PEM private key")]
+    #[case::key_of_another_certificate("key", Some("@client-key"), "cannot serve TLS")]
+    #[case::client_ca_missing("client_ca", None, "cannot be read")]
+    #[case::client_ca_not_pem("client_ca", Some("garbage\n"), "holds no PEM certificate")]
+    #[rustfmt::skip]
+    fn gnmi_target_tls_files_are_checked_at_validation(
+        #[case] field: &str,
+        #[case] contents: Option<&str>,
+        #[case] needle: &str,
+    ) {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let mut cfg = GnmiTargetConfig {
+            tls: Some(files.mutual_tls()),
+            ..GnmiTargetConfig::new("127.0.0.1:57400")
+        };
+        validate_sink_config(&SinkConfig::GnmiTarget(cfg.clone())).expect("the baseline validates");
+
+        let pem = |name: &str| std::fs::read_to_string(files.path(name)).expect("a test file");
+        let path = match contents {
+            None => files.path("absent.pem"),
+            Some("@key") => files.write("replaced.pem", &pem("server-key.pem")),
+            Some("@cert") => files.write("replaced.pem", &pem("server.pem")),
+            Some("@client-key") => files.write("replaced.pem", &files.client_key_pem),
+            Some(text) => files.write("replaced.pem", text),
+        };
+        let tls = cfg.tls.as_mut().expect("tls");
+        match field {
+            "cert" => tls.cert = path.clone(),
+            "key" => tls.key = path.clone(),
+            _ => tls.client_ca = Some(path.clone()),
+        }
+        let msg = err_msg(validate_sink_config(&SinkConfig::GnmiTarget(cfg)));
+        assert!(msg.contains(needle), "got: {msg}");
+        assert!(msg.contains(&format!("{path:?}")), "names the file: {msg}");
+        let named_field = match field {
+            // The pair is named together when only the combination fails.
+            "key" if needle == "cannot serve TLS" => "key".to_string(),
+            field => format!("tls {field} "),
+        };
+        assert!(msg.contains(&named_field), "names the field: {msg}");
     }
 
     /// `validate_config` runs the gnmi checks, so an invalid block reports its

@@ -77,11 +77,7 @@ pub struct KafkaSink {
 /// Returns [`SondaError::Sink`] if the CA certificate file cannot be read
 /// or contains no valid certificates.
 fn build_rustls_config(ca_cert: Option<&str>) -> Result<rustls::ClientConfig, SondaError> {
-    // Install the ring crypto provider. `ok()` because another thread may
-    // have already installed it.
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
+    crate::util::ensure_crypto_provider();
 
     let root_store = match ca_cert {
         Some(path) => {

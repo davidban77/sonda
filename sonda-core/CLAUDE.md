@@ -18,7 +18,13 @@ src/
 │                          ConfigError. A joined write only overwrites a path the target
 │                          already serves and owns nothing; an unserved path is a
 │                          ConfigError. Used by the sonda-server `POST /events` handler.
-├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
+├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash;
+│                          constant_time_eq under gnmi: length check, then an XOR-fold over
+│                          every byte pair; ensure_crypto_provider under kafka or gnmi:
+│                          installs rustls's ring provider as the PROCESS-WIDE default when
+│                          none is, for every rustls config in the process, embedder's
+│                          included. Release builds compile ring alone; a workspace build
+│                          also compiles aws-lc-rs, so rustls cannot pick one by itself)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
 │   │                      folds one `extends:` link. `metrics:` is additive and refuses a
@@ -173,7 +179,25 @@ src/
 │   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
 │   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
 │   │   │                   field check validation and the sink both call; it returns
-│   │   │                   an IPv4-mapped listen as the IPv4 address it maps),
+│   │   │                   an IPv4-mapped listen as the IPv4 address it maps).
+│   │   │                   tls: GnmiTlsConfig { cert, key, client_ca } and credentials:
+│   │   │                   GnmiCredentials { username, password }, both deny_unknown_fields;
+│   │   │                   the password is writeOnly in the schema and Debug prints "***".
+│   │   │                   GnmiCredentials' Deserialize is hand-written (deserialize_any
+│   │   │                   over credentials_fields::GnmiCredentials, a private derive of the
+│   │   │                   same name, so its errors name GnmiCredentials): a value that is
+│   │   │                   not a map is refused
+│   │   │                   with a fixed message, because a buffered sink block answers
+│   │   │                   deserialize_struct on a scalar with an error quoting it.
+│   │   │                   settings() refuses credentials without tls, and reads each tls
+│   │   │                   file into TlsIdentity (paths + PEM bytes; Debug prints the
+│   │   │                   paths): every file parsed on its own (rustls-pki-types) so an
+│   │   │                   error names field and file, then tonic's server TLS config built
+│   │   │                   once, so a key that is not cert's fails at validation, not bind.
+│   │   │                   server_config() calls util::ensure_crypto_provider: tonic's
+│   │   │                   server TLS reads the process default provider.
+│   │   │                   serves() compares tls by its paths and credentials by both fields;
+│   │   │                   beside() names credentials by username only.
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
 │   │   │                   synchronously from write_metric_event; write() is an error.
 │   │   │                   Keeps one (SeriesId, PathKey) entry per path it published
@@ -230,7 +254,13 @@ src/
 │   │   │                   refused/aborted/reset connection backs off 100 ms. The
 │   │   │                   listener task owns a StoppedOnDrop guard, so the target
 │   │   │                   reads Stopped however the task ends (panic, runtime drop);
-│   │   │                   is_serving() is state == Listening.
+│   │   │                   is_serving() is state == Listening. bind() builds the tonic
+│   │   │                   Server (keepalives, and tls_config from TlsIdentity when set,
+│   │   │                   timing out a handshake after TLS_HANDSHAKE_TIMEOUT (10 s), carried
+│   │   │                   in TargetSettings so tests can shorten it; no config)
+│   │   │                   before binding the socket; a TLS error is SondaError::Sink naming
+│   │   │                   the address and binds nothing. serve_with_incoming does the TLS
+│   │   │                   handshake on each accepted Connection and drops failed ones.
 │   │   │                   Teardown: dropping the last Arc cancels the
 │   │   │                   root token; the listening socket closes at once (Incoming
 │   │   │                   ends), connections still open after DRAIN_GRACE are closed
@@ -240,7 +270,8 @@ src/
 │   │   │                   is not live; before binding it waits (≤ 2 s in all, never
 │   │   │                   under the bind lock) for a stopped target's socket on an
 │   │   │                   overlapping address to close. join() never binds
-│   │   │                   (emit_metric) and compares only the settings it sets; it finds
+│   │   │                   (emit_metric) and compares only the settings it sets (tls and
+│   │   │                   credentials included); it finds
 │   │   │                   a live wildcard target covering the address. Differing
 │   │   │                   settings, or a second listener contending for a port
 │   │   │                   (listen_overlap: same address, or a wildcard covering the
@@ -258,6 +289,10 @@ src/
 │   │   │                   mode or (STREAM lists only) subscription mode. JSON (encoding
 │   │   │                   0, also an unset encoding) is accepted and served as PROTO.
 │   │   │                   pub(crate).
+│   │   ├── test_tls.rs ←   (cfg(test)) TlsFiles: a CA, and a server (localhost, 127.0.0.1) and
+│   │   │                   a client certificate it signed, made with rcgen (a dev-dependency)
+│   │   │                   and written to a temp dir; tls()/mutual_tls() blocks, a TLS channel,
+│   │   │                   and once_syncs() for the TLS tests.
 │   │   ├── notification.rs ← value_span(): the byte range of an encoded Notification's
 │   │   │                   first update's val (the TypedValue without key and length)
 │   │   │                   and its ValueKind (the first field's number); walks keys and
@@ -266,7 +301,13 @@ src/
 │   │                       serve_with_incoming (never add_service). Holds the target
 │   │                       WEAKLY (so does every handler and subscription task): nothing a
 │   │                       client does keeps a target alive; a request after it is gone is
-│   │                       UNAVAILABLE. Capabilities: 0.10.0, [PROTO], no models.
+│   │                       UNAVAILABLE. When the target's settings carry credentials,
+│   │                       the router checks the `username` and `password` metadata of
+│   │                       every request before dispatch (authenticated(): both compared
+│   │                       with constant_time_eq); a missing or wrong pair is
+│   │                       UNAUTHENTICATED "credentials required", logged once at warn with
+│   │                       the peer (TCP or TLS connect info) and the method, never a value.
+│   │                       Capabilities: 0.10.0, [PROTO], no models.
 │   │                       Subscribe: first message must be a SubscriptionList; start()
 │   │                       plans it, takes a place with target.admit() (or the request
 │   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns)
@@ -462,7 +503,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream` and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
+| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain

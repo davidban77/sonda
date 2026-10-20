@@ -23,11 +23,14 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import functools
 import json
 import math
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -113,6 +116,8 @@ class RowResult:
 GNMI_RUN_S = 90.0
 # Telegraf's debug line once its Subscribe stream is open and the request sent.
 GNMI_CONNECTED_LINE = "Connection to gNMI device sonda:57400 established"
+# The same line from the telegraf-tls service, which dials the TLS target.
+GNMI_TLS_CONNECTED_LINE = "Connection to gNMI device sonda:57401 established"
 # The UTC timestamp, to the second, that begins each Telegraf log line.
 TELEGRAF_LOG_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z ")
 # The series Telegraf's influx output produces, as VictoriaMetrics names them:
@@ -158,15 +163,18 @@ def parse_vm_export(body: bytes) -> dict[tuple[str, str], list[tuple[int, float]
 
 
 def telegraf_connected_at(
-    telegraf_log: str, started_s: float, ended_s: float
+    telegraf_log: str,
+    started_s: float,
+    ended_s: float,
+    connected_line: str = GNMI_CONNECTED_LINE,
 ) -> float | None:
     """The time, in seconds since the epoch, on the first line of
-    ``telegraf_log`` that carries GNMI_CONNECTED_LINE and is stamped within
+    ``telegraf_log`` that carries ``connected_line`` and is stamped within
     [started_s - 1, ended_s]; the second's slack is the log's precision.
     None when no such line has a timestamp that parses.
     """
     for line in telegraf_log.splitlines():
-        if GNMI_CONNECTED_LINE not in line:
+        if connected_line not in line:
             continue
         match = TELEGRAF_LOG_TIME.search(line)
         if match is None:
@@ -185,12 +193,13 @@ def gnmi_findings(
     samples: dict[tuple[str, str], list[tuple[int, float]]],
     started_s: float,
     ended_s: float,
+    connected_line: str = GNMI_CONNECTED_LINE,
 ) -> list[str]:
-    """Every way the gnmi row's evidence falls short, in check order; empty
+    """Every way a gnmi row's evidence falls short, in check order; empty
     when all hold.
 
     Only samples timestamped within [started_s, ended_s] count. In order:
-    Telegraf logged GNMI_CONNECTED_LINE, and the line carries a timestamp
+    Telegraf logged ``connected_line``, and the line carries a timestamp
     within the window (:func:`telegraf_connected_at`); some sample exists, the
     earliest no later than GNMI_FIRST_SAMPLE_WITHIN_S after started_s (with
     none, the checks after this one do not run); each series in
@@ -206,12 +215,14 @@ def gnmi_findings(
     plus two.
     """
     findings: list[str] = []
-    connected_s = telegraf_connected_at(telegraf_log, started_s, ended_s)
-    if GNMI_CONNECTED_LINE not in telegraf_log:
-        findings.append(f"telegraf log has no {GNMI_CONNECTED_LINE!r}")
+    connected_s = telegraf_connected_at(
+        telegraf_log, started_s, ended_s, connected_line
+    )
+    if connected_line not in telegraf_log:
+        findings.append(f"telegraf log has no {connected_line!r}")
     elif connected_s is None:
         findings.append(
-            f"telegraf log has no {GNMI_CONNECTED_LINE!r} line stamped within "
+            f"telegraf log has no {connected_line!r} line stamped within "
             "the run's window, so its heartbeats cannot be counted"
         )
 
@@ -283,9 +294,16 @@ def gnmi_findings(
     return findings
 
 
-def verify_gnmi_row(repo_root: Path, started_s: float, ended_s: float) -> str:
-    """Collect Telegraf's log and the run's samples, then apply :func:`gnmi_findings`."""
-    telegraf_log = compose_logs_tail(repo_root, "telegraf", tail_lines=None)
+def verify_gnmi_row(
+    repo_root: Path,
+    started_s: float,
+    ended_s: float,
+    service: str = "telegraf",
+    connected_line: str = GNMI_CONNECTED_LINE,
+) -> str:
+    """Collect the log of the Telegraf compose ``service`` and the run's
+    samples, then apply :func:`gnmi_findings` with ``connected_line``."""
+    telegraf_log = compose_logs_tail(repo_root, service, tail_lines=None)
     query = urllib.parse.urlencode(
         {
             "match[]": GNMI_EXPORT_MATCH,
@@ -297,8 +315,96 @@ def verify_gnmi_row(repo_root: Path, started_s: float, ended_s: float) -> str:
     if status != 200:
         return f"VictoriaMetrics export answered {status}: {body[:200]!r}"
     return "\n".join(
-        gnmi_findings(telegraf_log, parse_vm_export(body), started_s, ended_s)
+        gnmi_findings(
+            telegraf_log, parse_vm_export(body), started_s, ended_s, connected_line
+        )
     )
+
+
+# --- gNMI TLS certificates -----------------------------------------------------
+
+# Where the gnmi-tls row's certificates are made: gitignored, and mounted into
+# the telegraf-tls service at /etc/telegraf/certs.
+GNMI_TLS_CERTS_DIR = Path("examples/telegraf/certs")
+# The names the server certificate covers: the one Telegraf dials, and the
+# host's own for gnmic.
+GNMI_TLS_SERVER_NAMES = "DNS:sonda,DNS:localhost,IP:127.0.0.1"
+
+
+def gnmi_tls_cert_commands(certs: Path) -> list[list[str]]:
+    """The openssl invocations that make, in ``certs``, a CA (``ca.pem``,
+    ``ca-key.pem``) and a server certificate it signs (``server.pem``,
+    ``server-key.pem``) for GNMI_TLS_SERVER_NAMES, each valid for one day.
+    The last reads its extensions from ``server.ext``."""
+    return [
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-days", "1", "-subj", "/CN=sonda-uat-ca",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+            "-keyout", str(certs / "ca-key.pem"), "-out", str(certs / "ca.pem"),
+        ],
+        [
+            "openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=sonda",
+            "-keyout", str(certs / "server-key.pem"),
+            "-out", str(certs / "server.csr"),
+        ],
+        [
+            "openssl", "x509", "-req", "-in", str(certs / "server.csr"),
+            "-CA", str(certs / "ca.pem"), "-CAkey", str(certs / "ca-key.pem"),
+            "-CAcreateserial", "-days", "1",
+            "-extfile", str(certs / "server.ext"), "-out", str(certs / "server.pem"),
+        ],
+    ]
+
+
+def make_gnmi_tls_certs(
+    repo_root: Path,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> str:
+    """Make the gnmi-tls row's certificates in GNMI_TLS_CERTS_DIR under
+    ``repo_root``, replacing any there. Returns "" when they were made,
+    otherwise what failed: no ``openssl`` on PATH, or the invocation that
+    exited non-zero with its stderr."""
+    if which("openssl") is None:
+        return (
+            "the gnmi-tls row makes its certificates with the openssl CLI, "
+            "and there is no openssl on PATH"
+        )
+    certs = repo_root / GNMI_TLS_CERTS_DIR
+    certs.mkdir(parents=True, exist_ok=True)
+    (certs / "server.ext").write_text(
+        f"subjectAltName={GNMI_TLS_SERVER_NAMES}\nextendedKeyUsage=serverAuth\n"
+    )
+    for argv in gnmi_tls_cert_commands(certs):
+        done = run(argv, capture_output=True, text=True)
+        if done.returncode != 0:
+            return (
+                f"{' '.join(argv[:3])} exited {done.returncode} making the "
+                f"gnmi-tls certificates: {done.stderr.strip()}"
+            )
+    # Telegraf reads the CA as its own user inside the container.
+    (certs / "ca.pem").chmod(0o644)
+    return ""
+
+
+# Files a profile's services read that are made before the stack starts.
+PROFILE_SETUP: dict[str, Callable[[Path], str]] = {
+    "gnmi-tls": make_gnmi_tls_certs,
+}
+
+
+def prepare_profiles(repo_root: Path, profiles: Iterable[str]) -> str:
+    """Run the PROFILE_SETUP step of each of ``profiles``. Returns "" when
+    every step succeeded, otherwise the first failure."""
+    for prof in profiles:
+        setup = PROFILE_SETUP.get(prof)
+        if setup is not None:
+            failure = setup(repo_root)
+            if failure:
+                return failure
+    return ""
 
 
 # --- Matrix ------------------------------------------------------------------
@@ -458,6 +564,27 @@ MATRIX: tuple[MatrixRow, ...] = (
         timeout_s=GNMI_RUN_S + 60.0,
         post_verify=verify_gnmi_row,
     ),
+    # -- The gnmi row over TLS with credentials: Telegraf (profile gnmi-tls)
+    # dials sonda:57401 with tls_enable and a username and password. Its
+    # samples can only arrive through the TLS handshake, so the same checks
+    # as the gnmi row hold only when TLS and the credentials work.
+    MatrixRow(
+        name="gnmi-tls",
+        profiles=("gnmi-tls",),
+        subcommand="metrics",
+        scenario=Path("examples/gnmi-telegraf-tls.yaml"),
+        verify_url=(
+            "http://localhost:8428/api/v1/query?query={source=~\"sonda.*\"}"
+        ),
+        failure_log_containers=("telegraf-tls", "victoriametrics"),
+        extra_args=("--duration", f"{GNMI_RUN_S:.0f}s"),
+        timeout_s=GNMI_RUN_S + 60.0,
+        post_verify=functools.partial(
+            verify_gnmi_row,
+            service="telegraf-tls",
+            connected_line=GNMI_TLS_CONNECTED_LINE,
+        ),
+    ),
 )
 
 # Backends keyed by compose profile. The empty-tuple key is for the default
@@ -482,6 +609,9 @@ BACKENDS_BY_PROFILE: dict[str, tuple[Backend, ...]] = {
     ),
     "gnmi": (
         Backend(name="telegraf", health_url="http://localhost:8095/"),
+    ),
+    "gnmi-tls": (
+        Backend(name="telegraf-tls", health_url="http://localhost:8096/"),
     ),
 }
 
@@ -883,6 +1013,10 @@ def boot_only(repo_root: Path, profiles: Sequence[str]) -> int:
     needs the stack. The runner reclaims it.
     """
     ordered = tuple(sorted(set(profiles)))
+    failure = prepare_profiles(repo_root, ordered)
+    if failure:
+        print(failure, file=sys.stderr)
+        return 1
     print(
         f"==> compose up (profiles: {','.join(ordered) or '<default>'})",
         file=sys.stderr,
@@ -960,6 +1094,9 @@ def run_all(
     backends = required_backends(rows)
     results: list[RowResult] = []
 
+    failure = prepare_profiles(repo_root, profiles)
+    if failure:
+        raise RuntimeError(failure)
     print(
         f"==> compose up (profiles: {','.join(profiles) or '<default>'})",
         file=sys.stderr,
@@ -1394,6 +1531,21 @@ class _MatrixIntegrityTests(unittest.TestCase):
         for row in MATRIX:
             self.assertTrue(row.failure_log_containers, row.name)
 
+    def test_profile_setup_profiles_are_recognised(self) -> None:
+        for prof in PROFILE_SETUP:
+            self.assertIn(prof, BACKENDS_BY_PROFILE, prof)
+
+    def test_the_gnmi_tls_row_reads_its_own_telegraf(self) -> None:
+        rows = {row.name: row for row in MATRIX}
+        self.assertIn("gnmi-tls", rows)
+        verify = rows["gnmi-tls"].post_verify
+        self.assertIsInstance(verify, functools.partial)
+        self.assertIs(verify.func, verify_gnmi_row)
+        self.assertEqual(
+            verify.keywords,
+            {"service": "telegraf-tls", "connected_line": GNMI_TLS_CONNECTED_LINE},
+        )
+
 
 class _AttributeFailureTests(unittest.TestCase):
     def test_includes_row_name_and_message(self) -> None:
@@ -1470,6 +1622,21 @@ class _GnmiFindingsTests(unittest.TestCase):
 
     def test_passing_evidence_has_no_findings(self) -> None:
         self.assertEqual(self._findings(self._passing()), [])
+
+    def test_the_tls_row_needs_its_own_connection_line(self) -> None:
+        tls = gnmi_findings(
+            self.LOG, self._passing(), self.STARTED_S, self.ENDED_S,
+            connected_line=GNMI_TLS_CONNECTED_LINE,
+        )
+        self.assertEqual(tls, [f"telegraf log has no {GNMI_TLS_CONNECTED_LINE!r}"])
+        log = _telegraf_line(self.CONNECTED_S, GNMI_TLS_CONNECTED_LINE)
+        self.assertEqual(
+            gnmi_findings(
+                log, self._passing(), self.STARTED_S, self.ENDED_S,
+                connected_line=GNMI_TLS_CONNECTED_LINE,
+            ),
+            [],
+        )
 
     def test_missing_connection_line_is_named(self) -> None:
         findings = self._findings(self._passing(), log="nothing here\n")
@@ -1638,6 +1805,70 @@ class _GnmiFindingsTests(unittest.TestCase):
         self.assertIn("first sample arrived", self._findings(samples)[0])
 
 
+class _GnmiTlsCertTests(unittest.TestCase):
+    def test_missing_openssl_is_named(self) -> None:
+        with tempfile.TemporaryDirectory() as repo:
+            failure = make_gnmi_tls_certs(Path(repo), which=lambda _: None)
+            self.assertIn("openssl", failure)
+            self.assertFalse((Path(repo) / GNMI_TLS_CERTS_DIR).exists())
+
+    def test_a_failing_invocation_is_reported_with_its_stderr(self) -> None:
+        def run(argv, **_):
+            return subprocess.CompletedProcess(argv, 1, "", "bad option\n")
+
+        with tempfile.TemporaryDirectory() as repo:
+            failure = make_gnmi_tls_certs(
+                Path(repo), which=lambda _: "/usr/bin/openssl", run=run
+            )
+        self.assertIn("openssl req -x509 exited 1", failure)
+        self.assertIn("bad option", failure)
+
+    @unittest.skipUnless(shutil.which("openssl"), "needs the openssl CLI")
+    def test_the_server_certificate_covers_the_dialled_names_for_one_day(self) -> None:
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertEqual(make_gnmi_tls_certs(Path(repo)), "")
+            certs = Path(repo) / GNMI_TLS_CERTS_DIR
+
+            def openssl(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    ["openssl", *args], capture_output=True, text=True
+                )
+
+            names = openssl(
+                "x509", "-in", str(certs / "server.pem"), "-noout",
+                "-ext", "subjectAltName",
+            ).stdout
+            for name in ("DNS:sonda", "DNS:localhost", "IP Address:127.0.0.1"):
+                self.assertIn(name, names)
+            verified = openssl(
+                "verify", "-CAfile", str(certs / "ca.pem"), str(certs / "server.pem")
+            )
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            for pem in ("ca.pem", "server.pem"):
+                path = str(certs / pem)
+                hour = openssl("x509", "-in", path, "-noout", "-checkend", "3600")
+                self.assertEqual(hour.returncode, 0, f"{pem} lasts an hour")
+                # One day and an hour: a certificate made for longer outlives it.
+                day = openssl("x509", "-in", path, "-noout", "-checkend", "90000")
+                self.assertEqual(day.returncode, 1, f"{pem} expires within a day")
+            self.assertTrue((certs / "server-key.pem").is_file())
+
+    def test_prepare_profiles_runs_the_setup_of_the_listed_profiles(self) -> None:
+        ran: list[str] = []
+        original = dict(PROFILE_SETUP)
+        try:
+            PROFILE_SETUP.clear()
+            PROFILE_SETUP["a"] = lambda _: ran.append("a") or ""
+            PROFILE_SETUP["b"] = lambda _: ran.append("b") or "b failed"
+            self.assertEqual(prepare_profiles(Path("/repo"), ("loki",)), "")
+            self.assertEqual(ran, [])
+            self.assertEqual(prepare_profiles(Path("/repo"), ("a", "b", "c")), "b failed")
+            self.assertEqual(ran, ["a", "b"])
+        finally:
+            PROFILE_SETUP.clear()
+            PROFILE_SETUP.update(original)
+
+
 def _run_self_tests() -> int:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -1652,6 +1883,7 @@ def _run_self_tests() -> int:
         _AttributeFailureTests,
         _ParseVmExportTests,
         _GnmiFindingsTests,
+        _GnmiTlsCertTests,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     runner = unittest.TextTestRunner(verbosity=2)
