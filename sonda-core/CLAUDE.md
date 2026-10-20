@@ -184,6 +184,9 @@ src/
 │   │   │                   paths): every file parsed on its own (rustls-pki-types) so an
 │   │   │                   error names field and file, then tonic's server TLS config built
 │   │   │                   once, so a key that is not cert's fails at validation, not bind.
+│   │   │                   server_config() installs rustls's ring provider as the process
+│   │   │                   default when none is: tonic's server TLS reads that default, which
+│   │   │                   rustls cannot pick when a build compiles both of its providers.
 │   │   │                   serves() compares tls by its paths and credentials by both fields;
 │   │   │                   beside() names credentials by username only.
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
@@ -478,7 +481,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls-pki-types` (already built by tonic's TLS; parses the `tls` PEM files) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
+| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain

@@ -389,7 +389,17 @@ impl TlsIdentity {
     /// The tonic server TLS configuration for these files: the identity
     /// from `cert` and `key`, and `client_ca` as the root client
     /// certificates must chain to, when set.
+    ///
+    /// tonic builds the server's rustls configuration from the process's
+    /// default crypto provider, which rustls cannot choose by itself when
+    /// both of its providers are compiled in; this installs the ring
+    /// provider as that default when none is installed.
     pub(crate) fn server_config(&self) -> ServerTlsConfig {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            // Another thread may install one first; either way a default is
+            // installed.
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
         let config = ServerTlsConfig::new().identity(Identity::from_pem(&self.cert, &self.key));
         match &self.client_ca {
             Some(ca) => config.client_ca_root(Certificate::from_pem(ca)),
