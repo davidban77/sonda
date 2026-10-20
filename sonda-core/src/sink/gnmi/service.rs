@@ -341,6 +341,7 @@ fn start(
         updates_only: list.updates_only,
         samples: plan.samples,
         heartbeats: plan.heartbeats,
+        delivered: Delivered::new(on_change.is_some()),
         on_change,
         stall_limit,
         peer,
@@ -400,17 +401,9 @@ struct Group {
     period: Duration,
     selector: Selector,
     next: Instant,
-    /// For a SAMPLE group with `suppress_redundant`, what the group last
-    /// sent of each series it selects; `None` for every other group.
-    sent: Option<HashMap<SeriesId, Sent>>,
-}
-
-/// A series a suppressing sample group has sent.
-struct Sent {
-    /// The version of the value last sent.
-    version: u64,
-    /// The series' path, for its delete once it leaves the table.
-    path: PathKey,
+    /// For a SAMPLE group with `suppress_redundant`, the version of each
+    /// series it selects that it last sent; `None` for every other group.
+    sent: Option<HashMap<SeriesId, u64>>,
 }
 
 /// How a STREAM list is served.
@@ -543,10 +536,11 @@ struct OnChangeSet {
 }
 
 /// What an [`OnChangeSet`] knows of one series.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 struct Seen {
-    /// Whether the series matches, decided when it is first seen.
-    matches: bool,
+    /// The series' path when the set matches it, decided when the series is
+    /// first seen; `None` when it does not match.
+    path: Option<PathKey>,
     /// The version of the series' value last queued, by the initial sync, a
     /// resync, a heartbeat or a change; 0 before any.
     queued: u64,
@@ -555,8 +549,8 @@ struct Seen {
 impl OnChangeSet {
     /// What the set knows of series `id`, whose values are of `kind`.
     /// Whether it matches is decided the first time the series is seen,
-    /// from the path `path` returns; a series without a path does not
-    /// match.
+    /// from the path `path` returns, which a matched series keeps; a series
+    /// without a path does not match.
     fn seen(
         &mut self,
         id: SeriesId,
@@ -565,7 +559,7 @@ impl OnChangeSet {
     ) -> &mut Seen {
         let selectors = &self.selectors;
         self.matched.entry(id).or_insert_with(|| Seen {
-            matches: path().is_some_and(|path| selectors.iter().any(|s| s.selects(&path, kind))),
+            path: path().filter(|path| selectors.iter().any(|s| s.selects(path, kind))),
             queued: 0,
         })
     }
@@ -574,27 +568,181 @@ impl OnChangeSet {
     /// to twice what is left, and at least [`MATCHED_PRUNE_FLOOR`], before it
     /// is pruned again.
     fn prune(&mut self, snapshot: &[SeriesSnapshot]) {
-        self.retain(snapshot, |_| false);
-    }
-
-    /// Forget the series that are not in `snapshot` and that the set does
-    /// not match, as [`OnChangeSet::prune`] does. A matched series stays
-    /// until its removal is read from the broadcast.
-    fn prune_unmatched(&mut self, snapshot: &[SeriesSnapshot]) {
-        self.retain(snapshot, |seen| seen.matches);
-    }
-
-    /// Keep the series in `snapshot` and those `keep` holds for, and reset
-    /// `prune_at` from what is left.
-    fn retain(&mut self, snapshot: &[SeriesSnapshot], keep: impl Fn(&Seen) -> bool) {
-        let live: HashSet<SeriesId> = snapshot.iter().map(|s| s.series_id).collect();
-        self.matched
-            .retain(|id, seen| live.contains(id) || keep(seen));
+        let live = live_ids(snapshot);
+        self.matched.retain(|id, _| live.contains(id));
         self.prune_at = self
             .matched
             .len()
             .saturating_mul(2)
             .max(MATCHED_PRUNE_FLOOR);
+    }
+}
+
+/// The ids of the series in `snapshot`.
+fn live_ids(snapshot: &[SeriesSnapshot]) -> HashSet<SeriesId> {
+    snapshot.iter().map(|s| s.series_id).collect()
+}
+
+/// Where a value joins a subscription's queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placement {
+    /// In place of the value waiting for the series, or last
+    /// ([`Pending::push_value`]).
+    InPlace,
+    /// Last, as a response of its own ([`Pending::push_response`]).
+    Last,
+}
+
+/// The paths a subscription list has queued a value for and not yet queued
+/// a delete for, each with the series it was queued under: the list's
+/// delivery index. A value enters it when the list's ON_CHANGE set matches
+/// its series or a suppressing sample group selects it; a value of a series
+/// only plain SAMPLE subscriptions select does not.
+///
+/// For a list that reads the target's broadcast, a series whose delete was
+/// queued before its removal was read stays as deleted until that removal
+/// is read, or until a resync forgets it.
+#[derive(Debug, Default)]
+struct Delivered {
+    /// The series each indexed path was last queued under.
+    paths: HashMap<PathKey, SeriesId>,
+    /// For each indexed series, its path; `None` for a series remembered as
+    /// deleted.
+    series: HashMap<SeriesId, Option<PathKey>>,
+    /// Whether a delete is remembered until its removal is read: the list
+    /// reads the broadcast.
+    remembers: bool,
+    /// The series remembered as deleted when the last resync took its
+    /// snapshot, forgotten once `horizon` more broadcast messages are read.
+    expiring: Vec<SeriesId>,
+    /// The broadcast messages left to read before `expiring` is forgotten.
+    horizon: usize,
+}
+
+impl Delivered {
+    /// An empty index that remembers deletes when `remembers`.
+    fn new(remembers: bool) -> Self {
+        Self {
+            remembers,
+            ..Self::default()
+        }
+    }
+
+    /// Whether series `id` is remembered as deleted.
+    fn is_deleted(&self, id: SeriesId) -> bool {
+        self.series.get(&id).is_some_and(Option::is_none)
+    }
+
+    /// Whether `path` is indexed under a series other than `id`.
+    fn holds_another(&self, path: &PathKey, id: SeriesId) -> bool {
+        self.paths.get(path).is_some_and(|held| *held != id)
+    }
+
+    /// Queue `latest`, one encoded notification, as the value of series `id`
+    /// at `path`, where `placement` says. When `path` is indexed under
+    /// another series, that series' delete is queued first. With `index`,
+    /// `path` is then indexed under `id`.
+    fn queue_value(
+        &mut self,
+        id: SeriesId,
+        path: &PathKey,
+        latest: Bytes,
+        placement: Placement,
+        index: bool,
+        pending: &mut Pending,
+    ) {
+        let held = self.paths.get(path).copied();
+        if let Some(other) = held.filter(|held| *held != id) {
+            self.queue_delete(other, pending);
+        }
+        match placement {
+            Placement::InPlace => pending.push_value(id, latest),
+            Placement::Last => pending.push_response(update_response(&latest)),
+        }
+        if index && held != Some(id) {
+            self.paths.insert(path.clone(), id);
+            self.series.insert(id, Some(path.clone()));
+        }
+    }
+
+    /// Queue the delete of series `id` when its path is indexed, encoded
+    /// from that path, last and in place of any value waiting for the
+    /// series, and drop the path from the index; nothing otherwise. The
+    /// series is then remembered as deleted when the index remembers
+    /// deletes.
+    fn queue_delete(&mut self, id: SeriesId, pending: &mut Pending) {
+        let Some(path) = self.series.get_mut(&id).and_then(Option::take) else {
+            return;
+        };
+        pending.push_delete(id, &delete_notification(path.path()));
+        self.paths.remove(&path);
+        if !self.remembers {
+            self.series.remove(&id);
+        }
+    }
+
+    /// Handle the broadcast's removal of series `id`: when its path is
+    /// indexed, queue `delete` as [`Delivered::queue_delete`] does and drop
+    /// the path; when it is remembered as deleted, forget it.
+    fn removed(&mut self, id: SeriesId, delete: &Bytes, pending: &mut Pending) {
+        if let Some(Some(path)) = self.series.remove(&id) {
+            pending.push_delete(id, delete);
+            self.paths.remove(&path);
+        }
+    }
+
+    /// Queue the delete of every indexed series that is not in `snapshot`,
+    /// in order of id.
+    fn sweep(&mut self, snapshot: &[SeriesSnapshot], pending: &mut Pending) {
+        if self.paths.is_empty() {
+            return;
+        }
+        let live = live_ids(snapshot);
+        let mut gone: Vec<SeriesId> = self
+            .series
+            .iter()
+            .filter(|(id, path)| path.is_some() && !live.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        gone.sort_unstable();
+        for id in gone {
+            self.queue_delete(id, pending);
+        }
+    }
+
+    /// Forget every series remembered as deleted now once `messages` more
+    /// broadcast messages are read, at once when `messages` is 0. Replaces
+    /// what an earlier call left to forget.
+    fn forget_after(&mut self, messages: usize) {
+        self.expiring = self
+            .series
+            .iter()
+            .filter(|(_, path)| path.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        self.horizon = messages;
+        if messages == 0 {
+            self.forget_expiring();
+        }
+    }
+
+    /// Count one broadcast message read.
+    fn read_one(&mut self) {
+        if self.horizon > 0 {
+            self.horizon -= 1;
+            if self.horizon == 0 {
+                self.forget_expiring();
+            }
+        }
+    }
+
+    /// Forget the series of `expiring` still remembered as deleted.
+    fn forget_expiring(&mut self) {
+        for id in self.expiring.drain(..) {
+            if self.series.get(&id).is_some_and(Option::is_none) {
+                self.series.remove(&id);
+            }
+        }
     }
 }
 
@@ -736,6 +884,8 @@ pub(crate) struct Probe {
     pub(crate) after_resubscribe: Hook,
     /// Run by every heartbeat before it reads the snapshot.
     pub(crate) before_heartbeat: Hook,
+    /// Run by every sample before it reads the snapshot.
+    pub(crate) before_sample: Hook,
 }
 
 /// A step a test sets for a subscription to run; nothing until it is set.
@@ -800,6 +950,8 @@ struct Producer {
     samples: Vec<Group>,
     heartbeats: Vec<Group>,
     on_change: Option<OnChangeSet>,
+    /// The list's delivery index.
+    delivered: Delivered,
     /// How long responses may wait without the client draining one.
     stall_limit: Duration,
     /// The client's address, for the log lines when it stalls or lags.
@@ -839,12 +991,18 @@ impl Producer {
     /// the ON_CHANGE set matches is queued again, without a second sync
     /// marker.
     ///
-    /// When a series leaves the table, the subscription sends one delete for
-    /// its path if its ON_CHANGE set matched the series (on the broadcast's
-    /// removal) or a suppressing sample group had sent it (at that group's
-    /// next sample), whichever comes first. The delete goes last in the
-    /// queue, in place of any value waiting for the series. A plain SAMPLE
-    /// subscription sends no delete; the series stops appearing.
+    /// Every value is queued through the list's delivery index
+    /// ([`Delivered`]): a value for a path indexed under another series
+    /// follows that series' delete. A path the index holds is deleted once,
+    /// whichever way the subscription learns that its series left the
+    /// table: the broadcast's removal, a due suppressing sample group that
+    /// had sent the series, a prune of the match cache or a resync that
+    /// finds it gone, or a value of the next series at the path. The delete
+    /// goes last in the queue, in place of any value waiting for the series.
+    /// A change read from the broadcast for a series whose delete was
+    /// queued, or for a path indexed under another series, is not sent. A
+    /// series only plain SAMPLE subscriptions select is not indexed and gets
+    /// no delete; it stops appearing.
     ///
     /// Returns when the client stops receiving, after the sync marker for a
     /// ONCE list, and when the target's listener stops or the target is
@@ -917,12 +1075,16 @@ impl Producer {
                         }
                         Step::Sample => self.sample(&mut pending),
                         Step::Heartbeat => self.heartbeat(&mut pending),
-                        Step::Change(Ok(SeriesEvent::Changed(update))) => {
-                            self.offer(update, &mut pending)
-                        }
-                        Step::Change(Ok(SeriesEvent::Removed { series_id, bytes })) => {
-                            self.removed(series_id, &bytes, &mut pending);
-                            true
+                        Step::Change(Ok(event)) => {
+                            let served = match event {
+                                SeriesEvent::Changed(update) => self.offer(update, &mut pending),
+                                SeriesEvent::Removed { series_id, bytes } => {
+                                    self.removed(series_id, &bytes, &mut pending);
+                                    true
+                                }
+                            };
+                            self.delivered.read_one();
+                            served
                         }
                         Step::Change(Err(RecvError::Lagged(skipped))) => {
                             tracing::debug!(
@@ -964,7 +1126,8 @@ impl Producer {
     /// `updates_only`), then the sync marker. Each series seen is entered in
     /// the ON_CHANGE set's match cache, with the version of the value
     /// queued for it, and each series queued is recorded as sent by every
-    /// suppressing sample group that selects it. `None` once the target is
+    /// suppressing sample group that selects it, and indexed when the set
+    /// matches it or such a group selects it. `None` once the target is
     /// gone.
     fn initial_sync(&mut self) -> Option<Pending> {
         let mut pending = Pending::default();
@@ -974,16 +1137,25 @@ impl Producer {
             drop(target);
             for series in snapshot {
                 let queue = self.matcher.matches(series.path.path());
+                let mut index = false;
                 if let Some(set) = self.on_change.as_mut() {
                     let seen =
                         set.seen(series.series_id, series.kind, || Some(series.path.clone()));
                     if queue {
                         seen.queued = series.version;
                     }
+                    index = seen.path.is_some();
                 }
                 if queue {
-                    record_sent(&mut self.samples, &series);
-                    pending.push_value(series.series_id, series.latest);
+                    index |= record_sent(&mut self.samples, &series);
+                    self.delivered.queue_value(
+                        series.series_id,
+                        &series.path,
+                        series.latest,
+                        Placement::InPlace,
+                        index,
+                        &mut pending,
+                    );
                 }
             }
         }
@@ -991,24 +1163,40 @@ impl Producer {
         Some(pending)
     }
 
-    /// Queue a delete for every series a due suppressing group had sent that
-    /// has left the table, then the latest value of every series a due
-    /// sample group sends, and move each due group to its next period. A
-    /// value for a path published again after its series left follows that
-    /// series' delete. `false` once the target is gone.
+    /// Queue the latest value of every series a due sample group sends,
+    /// indexed when a suppressing group sends it or the ON_CHANGE set
+    /// matches it, then the delete of every series a due suppressing group
+    /// had sent that has left the table, and move each due group to its next
+    /// period. `false` once the target is gone.
     fn sample(&mut self, pending: &mut Pending) -> bool {
         #[cfg(test)]
-        self.probe
-            .samples
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            self.probe
+                .samples
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.probe.before_sample.run();
+        }
         let Some(due) = due(&mut self.samples, &self.target) else {
             return false;
         };
-        for (id, path) in due.removed {
-            self.queue_delete(id, &delete_notification(path.path()), pending);
+        for (series, suppressed) in due.series {
+            let index = suppressed
+                || self.on_change.as_mut().is_some_and(|set| {
+                    set.seen(series.series_id, series.kind, || Some(series.path.clone()))
+                        .path
+                        .is_some()
+                });
+            self.delivered.queue_value(
+                series.series_id,
+                &series.path,
+                series.latest,
+                Placement::Last,
+                index,
+                pending,
+            );
         }
-        for series in due.series {
-            pending.push_response(update_response(&series.latest));
+        for id in due.removed {
+            self.delivered.queue_delete(id, pending);
         }
         true
     }
@@ -1022,21 +1210,30 @@ impl Producer {
         let Some(due) = due(&mut self.heartbeats, &self.target) else {
             return false;
         };
-        for series in due.series {
+        for (series, _) in due.series {
             if let Some(set) = self.on_change.as_mut() {
                 set.seen(series.series_id, series.kind, || Some(series.path.clone()))
                     .queued = series.version;
             }
-            pending.push_value(series.series_id, series.latest);
+            self.delivered.queue_value(
+                series.series_id,
+                &series.path,
+                series.latest,
+                Placement::InPlace,
+                true,
+                pending,
+            );
         }
         true
     }
 
-    /// Queue `update` when the ON_CHANGE set matches its series and its
-    /// version is newer than that of the series' value last queued; a series
-    /// not seen before is matched from the path decoded from the update.
-    /// Prunes the match cache of unmatched series when it has outgrown its
-    /// limit. `false` once the target is gone.
+    /// Queue `update` when the ON_CHANGE set matches its series, its version
+    /// is newer than that of the series' value last queued, the series is
+    /// not remembered as deleted, and its path is not indexed under another
+    /// series; a series not seen before is matched from the path decoded
+    /// from the update. When the match cache has outgrown its limit, prunes
+    /// it to the series in the table and queues the delete of every indexed
+    /// series that has left. `false` once the target is gone.
     fn offer(&mut self, update: SeriesUpdate, pending: &mut Pending) -> bool {
         let Some(set) = self.on_change.as_mut() else {
             return true;
@@ -1047,10 +1244,25 @@ impl Producer {
             version,
             bytes,
         } = update;
-        let seen = set.seen(series_id, kind, || PathKey::decode(&bytes).ok());
-        if seen.matches && version > seen.queued {
-            seen.queued = version;
-            pending.push_value(series_id, bytes);
+        if !self.delivered.is_deleted(series_id) {
+            let seen = set.seen(series_id, kind, || PathKey::decode(&bytes).ok());
+            if version > seen.queued {
+                if let Some(path) = seen
+                    .path
+                    .as_ref()
+                    .filter(|path| !self.delivered.holds_another(path, series_id))
+                {
+                    self.delivered.queue_value(
+                        series_id,
+                        path,
+                        bytes,
+                        Placement::InPlace,
+                        true,
+                        pending,
+                    );
+                    seen.queued = version;
+                }
+            }
         }
         if set.matched.len() > set.prune_at {
             #[cfg(test)]
@@ -1062,41 +1274,29 @@ impl Producer {
             };
             let snapshot = target.snapshot();
             drop(target);
-            set.prune_unmatched(&snapshot);
+            set.prune(&snapshot);
+            self.delivered.sweep(&snapshot, pending);
         }
         true
     }
 
     /// Handle the broadcast's removal of series `id`: the ON_CHANGE set
-    /// forgets the series and, when it matched, queues `delete`.
+    /// forgets the series, and the delivery index queues `delete` when it
+    /// holds the series' path.
     fn removed(&mut self, id: SeriesId, delete: &Bytes, pending: &mut Pending) {
-        let matched = self
-            .on_change
-            .as_mut()
-            .and_then(|set| set.matched.remove(&id))
-            .is_some_and(|seen| seen.matches);
-        if matched {
-            self.queue_delete(id, delete, pending);
-        }
-    }
-
-    /// Queue `delete` for series `id` in place of any value waiting for it,
-    /// and forget the series in the ON_CHANGE set and every suppressing
-    /// sample group.
-    fn queue_delete(&mut self, id: SeriesId, delete: &Bytes, pending: &mut Pending) {
-        pending.push_delete(id, delete);
         if let Some(set) = self.on_change.as_mut() {
             set.matched.remove(&id);
         }
-        for sent in self.samples.iter_mut().filter_map(|g| g.sent.as_mut()) {
-            sent.remove(&id);
-        }
+        self.delivered.removed(id, delete, pending);
     }
 
     /// Move the ON_CHANGE set to a receiver at the broadcast's tail, dropping
-    /// the changes it fell behind on, then queue the latest value of every
-    /// series it matches, recording each one's version, and prune its match
-    /// cache to the series in the table. `false` once the target is gone.
+    /// the changes it fell behind on; prune its match cache to the series in
+    /// the table and queue the delete of every indexed series that has left;
+    /// then queue the latest value of every series it matches, recording
+    /// each one's version. The series remembered as deleted are forgotten
+    /// once the new receiver has read the messages it held when the
+    /// snapshot was taken. `false` once the target is gone.
     fn resync(&mut self, pending: &mut Pending) -> bool {
         #[cfg(test)]
         self.probe
@@ -1114,11 +1314,20 @@ impl Producer {
         let snapshot = target.snapshot();
         drop(target);
         set.prune(&snapshot);
+        self.delivered.sweep(&snapshot, pending);
+        self.delivered.forget_after(set.rx.len());
         for series in snapshot {
             let seen = set.seen(series.series_id, series.kind, || Some(series.path.clone()));
-            if seen.matches {
+            if seen.path.is_some() {
                 seen.queued = series.version;
-                pending.push_value(series.series_id, series.latest);
+                self.delivered.queue_value(
+                    series.series_id,
+                    &series.path,
+                    series.latest,
+                    Placement::InPlace,
+                    true,
+                    pending,
+                );
             }
         }
         true
@@ -1127,11 +1336,12 @@ impl Producer {
 
 /// What the due groups of a list send at one turn.
 struct Due {
-    /// Every series a due group sends, once each.
-    series: Vec<SeriesSnapshot>,
+    /// Every series a due group sends, once each, and whether a suppressing
+    /// group sends it.
+    series: Vec<(SeriesSnapshot, bool)>,
     /// Every series a due suppressing group had sent that is no longer in
-    /// the table, once each, with its path.
-    removed: Vec<(SeriesId, PathKey)>,
+    /// the table, once each.
+    removed: Vec<SeriesId>,
 }
 
 /// What the due groups of `groups` send, with each due group moved to its
@@ -1145,7 +1355,9 @@ fn due(groups: &mut [Group], target: &Weak<GnmiTarget>) -> Option<Due> {
     let target = target.upgrade()?;
     let snapshot = target.snapshot();
     drop(target);
-    let mut send = vec![false; snapshot.len()];
+    // For each series: not sent, or sent and whether a suppressing group
+    // sends it.
+    let mut send: Vec<Option<bool>> = vec![None; snapshot.len()];
     let mut live: Option<HashSet<SeriesId>> = None;
     let mut removed = Vec::new();
     for group in groups.iter_mut().filter(|g| g.next <= now) {
@@ -1154,63 +1366,53 @@ fn due(groups: &mut [Group], target: &Weak<GnmiTarget>) -> Option<Due> {
                 continue;
             }
             match group.sent.as_mut() {
-                None => *send = true,
+                None => {
+                    send.get_or_insert(false);
+                }
                 Some(sent) => {
-                    let unchanged = sent
-                        .get(&series.series_id)
-                        .is_some_and(|s| s.version == series.version);
-                    if !unchanged {
-                        *send = true;
-                        sent.insert(
-                            series.series_id,
-                            Sent {
-                                version: series.version,
-                                path: series.path.clone(),
-                            },
-                        );
+                    if sent.get(&series.series_id) != Some(&series.version) {
+                        *send = Some(true);
+                        sent.insert(series.series_id, series.version);
                     }
                 }
             }
         }
         if let Some(sent) = group.sent.as_mut() {
-            let live = live.get_or_insert_with(|| snapshot.iter().map(|s| s.series_id).collect());
-            sent.retain(|id, s| {
+            let live = live.get_or_insert_with(|| live_ids(&snapshot));
+            sent.retain(|id, _| {
                 let present = live.contains(id);
                 if !present {
-                    removed.push((*id, s.path.clone()));
+                    removed.push(*id);
                 }
                 present
             });
         }
         group.next = next_due(group.next, group.period, now);
     }
-    removed.sort_unstable_by_key(|(id, _)| *id);
-    removed.dedup_by_key(|(id, _)| *id);
+    removed.sort_unstable();
+    removed.dedup();
     let series = snapshot
         .into_iter()
         .zip(send)
-        .filter_map(|(series, send)| send.then_some(series))
+        .filter_map(|(series, send)| send.map(|suppressed| (series, suppressed)))
         .collect();
     Some(Due { series, removed })
 }
 
 /// Record `series` as sent by every suppressing group of `groups` that
-/// selects it.
-fn record_sent(groups: &mut [Group], series: &SeriesSnapshot) {
+/// selects it. Returns whether any did.
+fn record_sent(groups: &mut [Group], series: &SeriesSnapshot) -> bool {
+    let mut recorded = false;
     for group in groups.iter_mut() {
         let Some(sent) = group.sent.as_mut() else {
             continue;
         };
         if group.selector.selects(&series.path, series.kind) {
-            sent.insert(
-                series.series_id,
-                Sent {
-                    version: series.version,
-                    path: series.path.clone(),
-                },
-            );
+            sent.insert(series.series_id, series.version);
+            recorded = true;
         }
     }
+    recorded
 }
 
 /// The first instant after `now` that is a whole number of `period`s after
@@ -3346,32 +3548,51 @@ mod tests {
         Sync,
     }
 
+    /// `response` as the delete tests read it.
+    fn got_of(response: proto::SubscribeResponse) -> Got {
+        match response.response {
+            Some(subscribe_response::Response::SyncResponse(true)) => Got::Sync,
+            Some(subscribe_response::Response::Update(n)) if !n.delete.is_empty() => {
+                assert_eq!(n.delete.len(), 1, "one deleted path");
+                assert!(n.update.is_empty(), "a delete carries no update");
+                let prefix = n.prefix.clone().unwrap_or_default();
+                Got::Delete(
+                    proto::Path {
+                        origin: prefix.origin,
+                        elem: n.delete[0].elem.clone(),
+                        target: prefix.target,
+                    }
+                    .to_string(),
+                )
+            }
+            Some(subscribe_response::Response::Update(n)) => {
+                Got::Value(series_path(&n), value_of(&n))
+            }
+            other => panic!("unexpected response {other:?}"),
+        }
+    }
+
     /// Every response received until `deadline`, deletes included.
     async fn got_until(client: &mut Client, deadline: Instant) -> Vec<Got> {
         let mut got = Vec::new();
         while let Ok(message) = tokio::time::timeout_at(deadline, client.responses.message()).await
         {
-            let response = message.expect("no error on the stream").expect("open");
-            got.push(match response.response {
-                Some(subscribe_response::Response::SyncResponse(true)) => Got::Sync,
-                Some(subscribe_response::Response::Update(n)) if !n.delete.is_empty() => {
-                    assert_eq!(n.delete.len(), 1, "one deleted path");
-                    assert!(n.update.is_empty(), "a delete carries no update");
-                    let prefix = n.prefix.clone().unwrap_or_default();
-                    Got::Delete(
-                        proto::Path {
-                            origin: prefix.origin,
-                            elem: n.delete[0].elem.clone(),
-                            target: prefix.target,
-                        }
-                        .to_string(),
-                    )
-                }
-                Some(subscribe_response::Response::Update(n)) => {
-                    Got::Value(series_path(&n), value_of(&n))
-                }
-                other => panic!("unexpected response {other:?}"),
-            });
+            got.push(got_of(
+                message.expect("no error on the stream").expect("open"),
+            ));
+        }
+        got
+    }
+
+    /// Every response `responses` yields until none arrives for [`QUIET`],
+    /// deletes included.
+    async fn got_until_quiet(responses: &mut Responses) -> Vec<Got> {
+        let mut got = Vec::new();
+        while let Ok(Some(response)) = tokio::time::timeout(QUIET, responses.next()).await {
+            let response = response.expect("no error on the stream");
+            got.push(got_of(
+                proto::SubscribeResponse::decode(response.0).expect("a subscribe response"),
+            ));
         }
         got
     }
@@ -3735,6 +3956,343 @@ mod tests {
         assert_eq!(next(&mut client).await, Received::End);
     }
 
+    /// An ON_CHANGE subscription that lags while a series leaves the table
+    /// loses the removal with the rest of the broadcast's backlog; its
+    /// resync finds the series gone and sends that path's delete, once, and
+    /// the latest value of every other series. The burst is published
+    /// without yielding, on a buffer of 1, and the departing series' sink is
+    /// dropped in its middle. The clock is paused, so the quiet wait ends as
+    /// soon as the subscription has nothing left to do.
+    #[tokio::test(start_paused = true)]
+    async fn a_lagged_on_change_client_receives_one_delete_for_a_series_removed_in_the_gap() {
+        const SERIES: usize = 4;
+        const BURST: usize = 10;
+        let target = target_with(1, |settings| settings.subscriber_buffer = 1).await;
+        let owner = Owner::from(LaunchId::next());
+        let ids: Vec<SeriesId> = (0..SERIES)
+            .map(|i| publish_as(&target, owner, None, i, 0.0).0)
+            .collect();
+        let mut departing = GnmiTargetSink::from_target(Arc::clone(&target), LaunchId::next());
+        publish(&mut departing, "in_octets", "gone", 0.0).await;
+        let (producer, mut responses) = start(
+            Arc::downgrade(&target),
+            None,
+            &on_change("/interfaces", Duration::ZERO),
+        )
+        .expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        let synced = got_until_quiet(&mut responses).await;
+        assert_eq!(
+            synced.len(),
+            SERIES + 2,
+            "the premise: every series, then the marker: {synced:?}"
+        );
+        assert_eq!(synced.last(), Some(&Got::Sync));
+
+        let publish_all = |value: usize| {
+            for (i, id) in ids.iter().enumerate() {
+                publish_as(&target, owner, Some(*id), i, value as f64);
+            }
+        };
+        (1..=BURST / 2).for_each(publish_all);
+        drop(departing);
+        (BURST / 2 + 1..=BURST).for_each(publish_all);
+        let got = got_until_quiet(&mut responses).await;
+        assert_eq!(
+            target
+                .settings()
+                .probe
+                .resyncs
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the premise: the subscription lagged"
+        );
+        let deletes: Vec<&Got> = got.iter().filter(|g| matches!(g, Got::Delete(_))).collect();
+        assert_eq!(
+            deletes,
+            [&Got::Delete(counter("gone", "in-octets"))],
+            "{got:?}"
+        );
+        let mut latest = HashMap::new();
+        for g in &got {
+            if let Got::Value(path, value) = g {
+                latest.insert(path.clone(), value.clone());
+            }
+        }
+        let expected: HashMap<String, Value> = (0..SERIES)
+            .map(|i| {
+                (
+                    counter(&format!("eth{i}"), "in-octets"),
+                    Value::DoubleVal(BURST as f64),
+                )
+            })
+            .collect();
+        assert_eq!(latest, expected, "{got:?}");
+    }
+
+    /// A path released and published again by a new series after the
+    /// subscription's last read of the broadcast and before a heartbeat's
+    /// snapshot, with the old series' removal still unread, is deleted and
+    /// then sent with the new series' value; the new series' next change is
+    /// sent. The heartbeat's hook releases the old series and publishes the
+    /// new one before the heartbeat reads the snapshot. The clock is paused,
+    /// as above.
+    #[tokio::test(start_paused = true)]
+    async fn a_path_published_again_before_a_heartbeat_is_deleted_then_sent() {
+        const HEARTBEAT: Duration = Duration::from_secs(10);
+        let target = target_with(1, |_| {}).await;
+        let (old, new) = (Owner::from(LaunchId::next()), Owner::from(LaunchId::next()));
+        let (old_id, _) = publish_as(&target, old, None, 0, 1.0);
+        let new_id: Arc<Mutex<Option<SeriesId>>> = Arc::new(Mutex::new(None));
+        target.settings().probe.before_heartbeat.set({
+            let (target, new_id) = (Arc::downgrade(&target), Arc::clone(&new_id));
+            move || {
+                let mut new_id = new_id.lock().expect("not poisoned");
+                if let Some(target) = target.upgrade().filter(|_| new_id.is_none()) {
+                    target.release(old, [old_id]);
+                    *new_id = Some(publish_as(&target, new, None, 0, 2.0).0);
+                }
+            }
+        });
+        let (producer, mut responses) = start(
+            Arc::downgrade(&target),
+            None,
+            &on_change("/interfaces", HEARTBEAT),
+        )
+        .expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        let eth0 = counter("eth0", "in-octets");
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [Got::Value(eth0.clone(), Value::DoubleVal(1.0)), Got::Sync],
+            "the initial sync"
+        );
+
+        tokio::time::advance(HEARTBEAT).await;
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [
+                Got::Delete(eth0.clone()),
+                Got::Value(eth0.clone(), Value::DoubleVal(2.0)),
+            ],
+            "the old series' delete, then the new series' value"
+        );
+        let new_id = new_id
+            .lock()
+            .expect("not poisoned")
+            .expect("the heartbeat ran its hook");
+        publish_as(&target, new, Some(new_id), 0, 3.0);
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [Got::Value(eth0, Value::DoubleVal(3.0))],
+            "the new series' next change"
+        );
+    }
+
+    /// A list with a suppressing SAMPLE subscription and an ON_CHANGE
+    /// subscription sends exactly one delete, and nothing else, for a series
+    /// that changes and leaves the table as a sample runs: the sample
+    /// deletes the series its group had sent, and the change and the removal
+    /// then read from the broadcast send nothing. The sample's hook changes
+    /// and releases the series before the sample reads the snapshot. Each of
+    /// 20 rounds publishes a new series on the path, which the ON_CHANGE
+    /// subscription and then a sample send, before the round's last sample
+    /// removes it. The clock is paused, as above.
+    #[tokio::test(start_paused = true)]
+    async fn a_series_changed_and_removed_as_it_is_sampled_is_deleted_once() {
+        const ROUNDS: usize = 20;
+        const PERIOD: Duration = Duration::from_secs(60);
+        let target = target_with(1, |_| {}).await;
+        let doomed: Arc<Mutex<Option<(Owner, SeriesId, f64)>>> = Arc::new(Mutex::new(None));
+        target.settings().probe.before_sample.set({
+            let (target, doomed) = (Arc::downgrade(&target), Arc::clone(&doomed));
+            move || {
+                let taken = doomed.lock().expect("not poisoned").take();
+                if let (Some(target), Some((owner, id, value))) = (target.upgrade(), taken) {
+                    publish_as(&target, owner, Some(id), 0, value);
+                    target.release(owner, [id]);
+                }
+            }
+        });
+        let mut list = suppressed("/interfaces", PERIOD, Duration::ZERO);
+        list.subscription.push(
+            on_change("/interfaces", Duration::ZERO)
+                .subscription
+                .remove(0),
+        );
+        let (producer, mut responses) =
+            start(Arc::downgrade(&target), None, &list).expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [Got::Sync],
+            "the initial sync of an empty table"
+        );
+        let eth0 = counter("eth0", "in-octets");
+        for round in 1..=ROUNDS {
+            let value = (round * 10) as f64;
+            let owner = Owner::from(LaunchId::next());
+            let (id, _) = publish_as(&target, owner, None, 0, value);
+            let sent = [Got::Value(eth0.clone(), Value::DoubleVal(value))];
+            assert_eq!(
+                got_until_quiet(&mut responses).await,
+                sent,
+                "round {round}: the premise: the change is sent"
+            );
+            tokio::time::advance(PERIOD).await;
+            assert_eq!(
+                got_until_quiet(&mut responses).await,
+                sent,
+                "round {round}: the premise: the sample sends the series"
+            );
+            *doomed.lock().expect("not poisoned") = Some((owner, id, value + 1.0));
+            tokio::time::advance(PERIOD).await;
+            assert_eq!(
+                got_until_quiet(&mut responses).await,
+                [Got::Delete(eth0.clone())],
+                "round {round}: one delete"
+            );
+            assert!(
+                doomed.lock().expect("not poisoned").is_none(),
+                "round {round}: the premise: the sample ran its hook"
+            );
+        }
+    }
+
+    /// A change read from the broadcast for a path the subscription last
+    /// sent as a newer series is older than what it sent, and is not sent.
+    /// The heartbeat's hook releases the path's series, publishes a second
+    /// series on the path and releases it, then publishes a third, before the
+    /// heartbeat reads the snapshot: the heartbeat sends the first series'
+    /// delete and the third series' value; the second series' change and
+    /// removal, read after, send nothing; the third series' next change is
+    /// sent. The clock is paused, as above.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_for_a_path_sent_as_a_newer_series_is_not_sent() {
+        const HEARTBEAT: Duration = Duration::from_secs(10);
+        let target = target_with(1, |_| {}).await;
+        let first = Owner::from(LaunchId::next());
+        let (first_id, _) = publish_as(&target, first, None, 0, 1.0);
+        let third: Arc<Mutex<Option<(Owner, SeriesId)>>> = Arc::new(Mutex::new(None));
+        target.settings().probe.before_heartbeat.set({
+            let (target, third) = (Arc::downgrade(&target), Arc::clone(&third));
+            move || {
+                let mut third = third.lock().expect("not poisoned");
+                if let Some(target) = target.upgrade().filter(|_| third.is_none()) {
+                    target.release(first, [first_id]);
+                    let second = Owner::from(LaunchId::next());
+                    let (second_id, _) = publish_as(&target, second, None, 0, 5.0);
+                    target.release(second, [second_id]);
+                    let owner = Owner::from(LaunchId::next());
+                    *third = Some((owner, publish_as(&target, owner, None, 0, 2.0).0));
+                }
+            }
+        });
+        let (producer, mut responses) = start(
+            Arc::downgrade(&target),
+            None,
+            &on_change("/interfaces", HEARTBEAT),
+        )
+        .expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        let eth0 = counter("eth0", "in-octets");
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [Got::Value(eth0.clone(), Value::DoubleVal(1.0)), Got::Sync],
+            "the initial sync"
+        );
+
+        tokio::time::advance(HEARTBEAT).await;
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [
+                Got::Delete(eth0.clone()),
+                Got::Value(eth0.clone(), Value::DoubleVal(2.0)),
+            ],
+            "the first series' delete, then the third series' value"
+        );
+        let (owner, id) = third
+            .lock()
+            .expect("not poisoned")
+            .expect("the heartbeat ran its hook");
+        publish_as(&target, owner, Some(id), 0, 3.0);
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [Got::Value(eth0, Value::DoubleVal(3.0))],
+            "the third series' next change"
+        );
+    }
+
+    /// A series that changes and leaves the table after a resync takes its
+    /// new receiver and before it reads the snapshot is deleted once: the
+    /// resync finds it gone and sends the delete, and the change and the
+    /// removal then read from the new receiver send nothing. In each of ten
+    /// rounds a new series is published on eth0 and sent, then a burst of
+    /// 20 changes to eth1, published without yielding, lags the
+    /// subscription (a buffer of 8); the resync's hook changes and releases
+    /// the eth0 series. The clock is paused, as above.
+    #[tokio::test(start_paused = true)]
+    async fn a_series_changed_and_removed_inside_a_resync_is_deleted_once() {
+        const ROUNDS: usize = 10;
+        const BURST: usize = 20;
+        let target = target_with(1, |settings| settings.subscriber_buffer = 8).await;
+        let steady = Owner::from(LaunchId::next());
+        let (steady_id, _) = publish_as(&target, steady, None, 1, 0.0);
+        let doomed: Arc<Mutex<Option<(Owner, SeriesId, f64)>>> = Arc::new(Mutex::new(None));
+        let probe = Arc::clone(&target.settings().probe);
+        probe.after_resubscribe.set({
+            let (target, doomed) = (Arc::downgrade(&target), Arc::clone(&doomed));
+            move || {
+                let taken = doomed.lock().expect("not poisoned").take();
+                if let (Some(target), Some((owner, id, value))) = (target.upgrade(), taken) {
+                    publish_as(&target, owner, Some(id), 0, value);
+                    target.release(owner, [id]);
+                }
+            }
+        });
+        let (producer, mut responses) = start(
+            Arc::downgrade(&target),
+            None,
+            &on_change("/interfaces", Duration::ZERO),
+        )
+        .expect("started");
+        tokio::spawn(producer.run(tokio::spawn(async {})));
+        let (eth0, eth1) = (counter("eth0", "in-octets"), counter("eth1", "in-octets"));
+        assert_eq!(
+            got_until_quiet(&mut responses).await,
+            [Got::Value(eth1.clone(), Value::DoubleVal(0.0)), Got::Sync],
+            "the initial sync"
+        );
+        for round in 1..=ROUNDS {
+            let owner = Owner::from(LaunchId::next());
+            let (id, _) = publish_as(&target, owner, None, 0, round as f64);
+            assert_eq!(
+                got_until_quiet(&mut responses).await,
+                [Got::Value(eth0.clone(), Value::DoubleVal(round as f64))],
+                "round {round}: the premise: the new series is sent"
+            );
+            *doomed.lock().expect("not poisoned") = Some((owner, id, round as f64 + 0.5));
+            let last = round * 100 + BURST;
+            for k in round * 100 + 1..=last {
+                publish_as(&target, steady, Some(steady_id), 1, k as f64);
+            }
+            assert_eq!(
+                got_until_quiet(&mut responses).await,
+                [
+                    Got::Delete(eth0.clone()),
+                    Got::Value(eth1.clone(), Value::DoubleVal(last as f64)),
+                ],
+                "round {round}: one delete, then the latest of the rest"
+            );
+            assert_eq!(
+                probe.resyncs.load(std::sync::atomic::Ordering::Relaxed),
+                round,
+                "round {round}: the premise: one resync, which ran its hook"
+            );
+            assert!(doomed.lock().expect("not poisoned").is_none());
+        }
+    }
+
     /// A client that reads nothing while every matched series changes many
     /// times holds at most one queued value per series: a newer change
     /// replaces the queued one. When it reads, it receives the latest value
@@ -3972,45 +4530,229 @@ mod tests {
         assert_eq!(set.prune_at, MATCHED_PRUNE_FLOOR);
     }
 
-    /// The prune run on reading a change forgets only the series that left
-    /// the table and that the set does not match; it keeps every series in
-    /// the table, and every matched one. The cache may then grow to twice
-    /// what is left.
+    /// The key of `in_octets` for interface `if_name`.
+    fn key(if_name: &str) -> PathKey {
+        PathKey::decode(&encoded("in_octets", if_name, 1.0).1).expect("a notification")
+    }
+
+    /// The value `value` of `in_octets` for interface `if_name`, encoded.
+    fn latest(if_name: &str, value: f64) -> Bytes {
+        Bytes::from(encoded("in_octets", if_name, value).1)
+    }
+
+    /// Every response `pending` holds, oldest first, as the delete tests
+    /// read them.
+    fn drained(pending: &mut Pending) -> Vec<Got> {
+        std::iter::from_fn(|| pending.pop())
+            .map(|r| got_of(proto::SubscribeResponse::decode(r.0).expect("a subscribe response")))
+            .collect()
+    }
+
+    /// A value queued at a path indexed under another series follows that
+    /// series' delete, and the path is then indexed under the new series.
     #[test]
-    fn the_prune_on_a_change_keeps_matched_series_that_left_the_table() {
-        let (_tx, rx) = broadcast::channel(1);
-        let mut set = OnChangeSet {
-            selectors: Vec::new(),
-            rx,
-            matched: HashMap::new(),
-            prune_at: MATCHED_PRUNE_FLOOR,
-        };
-        let seen = |matches| Seen { matches, queued: 0 };
-        for id in 0..3_000 {
-            set.matched.insert(id, seen(false));
+    fn a_value_at_a_path_indexed_under_another_series_follows_its_delete() {
+        let mut delivered = Delivered::new(false);
+        let mut pending = Pending::default();
+        let eth0 = key("eth0");
+        for (id, value) in [(1, 1.0), (2, 2.0)] {
+            delivered.queue_value(
+                id,
+                &eth0,
+                latest("eth0", value),
+                Placement::InPlace,
+                true,
+                &mut pending,
+            );
         }
-        for id in 3_000..3_600 {
-            set.matched.insert(id, seen(true));
-        }
-        // 10 unmatched and 10 matched series are still in the table.
-        let live: Vec<SeriesSnapshot> = (2_990..3_010)
-            .map(|series_id| SeriesSnapshot {
-                series_id,
-                path: PathKey::new(proto::Path::default()),
-                kind: ValueKind::Uint,
-                version: 1,
-                latest: Bytes::new(),
-            })
-            .collect();
-        set.prune_unmatched(&live);
-        let mut kept: Vec<SeriesId> = set.matched.keys().copied().collect();
-        kept.sort_unstable();
-        assert_eq!(kept, (2_990..3_600).collect::<Vec<_>>());
-        assert!(
-            2 * kept.len() > MATCHED_PRUNE_FLOOR,
-            "the premise: twice what is left is above the floor"
+        let path = counter("eth0", "in-octets");
+        assert_eq!(
+            drained(&mut pending),
+            [
+                Got::Delete(path.clone()),
+                Got::Value(path, Value::DoubleVal(2.0))
+            ]
         );
-        assert_eq!(set.prune_at, 2 * kept.len());
+        assert_eq!(delivered.paths, HashMap::from([(eth0.clone(), 2)]));
+        assert_eq!(delivered.series, HashMap::from([(2, Some(eth0))]));
+    }
+
+    /// A value queued without `index` is not indexed, and still follows the
+    /// delete of the series its path was indexed under.
+    #[test]
+    fn a_value_not_indexed_still_follows_the_delete_at_its_path() {
+        let mut delivered = Delivered::new(false);
+        let mut pending = Pending::default();
+        let eth0 = key("eth0");
+        delivered.queue_value(
+            1,
+            &eth0,
+            latest("eth0", 1.0),
+            Placement::Last,
+            true,
+            &mut pending,
+        );
+        delivered.queue_value(
+            2,
+            &eth0,
+            latest("eth0", 2.0),
+            Placement::Last,
+            false,
+            &mut pending,
+        );
+        delivered.queue_value(
+            3,
+            &key("eth1"),
+            latest("eth1", 3.0),
+            Placement::Last,
+            false,
+            &mut pending,
+        );
+        let (eth0, eth1) = (counter("eth0", "in-octets"), counter("eth1", "in-octets"));
+        assert_eq!(
+            drained(&mut pending),
+            [
+                Got::Value(eth0.clone(), Value::DoubleVal(1.0)),
+                Got::Delete(eth0.clone()),
+                Got::Value(eth0, Value::DoubleVal(2.0)),
+                Got::Value(eth1, Value::DoubleVal(3.0)),
+            ]
+        );
+        assert!(delivered.paths.is_empty() && delivered.series.is_empty());
+    }
+
+    /// A delete or a removal of a series the index does not hold queues
+    /// nothing.
+    #[test]
+    fn a_delete_of_a_series_the_index_does_not_hold_queues_nothing() {
+        let mut delivered = Delivered::new(true);
+        let mut pending = Pending::default();
+        delivered.queue_delete(7, &mut pending);
+        delivered.removed(7, &latest("eth0", 1.0), &mut pending);
+        assert!(pending.is_empty());
+        assert!(delivered.series.is_empty());
+    }
+
+    /// A series deleted before its removal is read is remembered as deleted
+    /// until that removal, which then queues nothing; an index that does
+    /// not read the broadcast remembers nothing.
+    #[test]
+    fn a_series_deleted_before_its_removal_is_read_is_remembered_until_then() {
+        for remembers in [true, false] {
+            let mut delivered = Delivered::new(remembers);
+            let mut pending = Pending::default();
+            delivered.queue_value(
+                1,
+                &key("eth0"),
+                latest("eth0", 1.0),
+                Placement::InPlace,
+                true,
+                &mut pending,
+            );
+            delivered.queue_delete(1, &mut pending);
+            delivered.queue_delete(1, &mut pending);
+            assert_eq!(
+                drained(&mut pending),
+                [Got::Delete(counter("eth0", "in-octets"))],
+                "remembers {remembers}: the delete, once, in place of the value"
+            );
+            assert_eq!(delivered.is_deleted(1), remembers);
+            assert!(delivered.paths.is_empty());
+            delivered.removed(1, &latest("eth0", 1.0), &mut pending);
+            assert!(pending.is_empty(), "remembers {remembers}");
+            assert!(!delivered.is_deleted(1));
+            assert!(delivered.series.is_empty());
+        }
+    }
+
+    /// The removal of an indexed series queues the broadcast's delete bytes
+    /// and drops the series' path.
+    #[test]
+    fn the_removal_of_an_indexed_series_queues_its_delete() {
+        let mut delivered = Delivered::new(true);
+        let mut pending = Pending::default();
+        delivered.queue_value(
+            1,
+            &key("eth0"),
+            latest("eth0", 1.0),
+            Placement::InPlace,
+            true,
+            &mut pending,
+        );
+        let _ = drained(&mut pending);
+        let delete = delete_notification(key("eth0").path());
+        delivered.removed(1, &delete, &mut pending);
+        assert_eq!(pending.pop().map(|r| r.0), Some(update_response(&delete).0));
+        assert!(pending.is_empty());
+        assert!(delivered.paths.is_empty() && delivered.series.is_empty());
+    }
+
+    /// A sweep deletes every indexed series missing from the snapshot, in
+    /// order of id, and keeps the rest.
+    #[test]
+    fn a_sweep_deletes_every_indexed_series_missing_from_the_snapshot() {
+        let mut delivered = Delivered::new(false);
+        let mut pending = Pending::default();
+        for (id, if_name) in [(3, "eth3"), (1, "eth1"), (2, "eth2")] {
+            delivered.queue_value(
+                id,
+                &key(if_name),
+                latest(if_name, 1.0),
+                Placement::InPlace,
+                true,
+                &mut pending,
+            );
+        }
+        let _ = drained(&mut pending);
+        let live = [SeriesSnapshot {
+            series_id: 2,
+            path: key("eth2"),
+            kind: ValueKind::Double,
+            version: 1,
+            latest: latest("eth2", 1.0),
+        }];
+        delivered.sweep(&live, &mut pending);
+        assert_eq!(
+            drained(&mut pending),
+            [
+                Got::Delete(counter("eth1", "in-octets")),
+                Got::Delete(counter("eth3", "in-octets")),
+            ]
+        );
+        assert_eq!(delivered.paths, HashMap::from([(key("eth2"), 2)]));
+    }
+
+    /// A resync forgets the series remembered as deleted once the given
+    /// number of broadcast messages are read, or at once for none; a series
+    /// deleted after it is kept.
+    #[test]
+    fn a_resync_forgets_remembered_deletes_after_the_messages_it_counts() {
+        let mut delivered = Delivered::new(true);
+        let mut pending = Pending::default();
+        for (id, if_name) in [(1, "eth1"), (2, "eth2"), (3, "eth3")] {
+            delivered.queue_value(
+                id,
+                &key(if_name),
+                latest(if_name, 1.0),
+                Placement::InPlace,
+                true,
+                &mut pending,
+            );
+        }
+        delivered.queue_delete(1, &mut pending);
+        delivered.forget_after(2);
+        delivered.queue_delete(2, &mut pending);
+        delivered.read_one();
+        assert!(delivered.is_deleted(1), "one message read of two");
+        delivered.read_one();
+        assert!(!delivered.is_deleted(1), "both read");
+        assert!(delivered.is_deleted(2), "deleted after the resync");
+        delivered.read_one();
+        assert!(delivered.is_deleted(2), "nothing left to count");
+
+        delivered.forget_after(0);
+        assert!(!delivered.is_deleted(2), "none to read: forgotten at once");
+        assert_eq!(delivered.series, HashMap::from([(3, Some(key("eth3")))]));
     }
 
     /// A metrics scenario `name{ifName=if_name}` at `rate` Hz into `sink`.

@@ -322,29 +322,40 @@ src/
 │   │                       (NonStrings). Periods are max(interval, sample_floor), one group
 │   │                       per (period, kinds, suppress); next_due skips missed periods in
 │   │                       one step. SAMPLE with suppress_redundant: a group whose sent map
-│   │                       (SeriesId -> Sent { version, path }) is seeded
+│   │                       (SeriesId -> version) is seeded
 │   │                       by the initial sync; due() sends a series only when its version differs
 │   │                       from the recorded one and reports each recorded series gone from the
-│   │                       snapshot, which sample() queues as a delete ahead of its values; its heartbeat_interval adds
+│   │                       snapshot, which sample() deletes through the index; its heartbeat_interval adds
 │   │                       a heartbeat group. Without suppress_redundant SAMPLE's heartbeat_interval
 │   │                       is not read; TARGET_DEFINED's sample groups never suppress. The set's broadcast
 │   │                       receiver is taken before the initial snapshot; a series is
 │   │                       matched once, when first seen (snapshot path, or PathKey::decode
-│   │                       of the update), cached by SeriesId (Seen { matches, queued })
-│   │                       and pruned to the table past 2 x its live size (at least
-│   │                       1024): a prune on reading a change keeps matched series (they
-│   │                       leave by their Removed), a resync's drops them. queued is the version of the value last queued for the
+│   │                       of the update), cached by SeriesId (Seen { path, queued }: path is
+│   │                       Some only for a matched series) and pruned to the table past 2 x its
+│   │                       live size (at least 1024). queued is the version of the value last queued for the
 │   │                       series, by the initial sync, a resync, a heartbeat or a change;
 │   │                       offer() drops a change whose version is not newer, so a change
 │   │                       racing a snapshot is sent once. Heartbeats are never filtered
-│   │                       and set queued. A Removed for a series the set matched queues its delete
-│   │                       bytes and drops its Seen. queue_delete forgets the series in the set and
-│   │                       every sent map; Pending::push_delete
+│   │                       and set queued. Delivered is the list's delivery index: PathKey ->
+│   │                       SeriesId for every path queued a value and not yet a delete, and
+│   │                       SeriesId -> Option<PathKey> (None: deleted, its Removed unread).
+│   │                       Every value goes through Delivered::queue_value (Placement::InPlace
+│   │                       for sync, resync, heartbeat and change; Last for samples): a path
+│   │                       indexed under another id gets that id's delete first. Indexed: values
+│   │                       of series the set matches or a suppressing group sends; never a value
+│   │                       only a plain SAMPLE sends. queue_delete deletes only an indexed id;
+│   │                       with a receiver the id is then remembered as deleted. Removed of an
+│   │                       indexed id queues the broadcast's bytes; of a remembered id, nothing
+│   │                       (and forgets it). offer() skips a remembered id and a path indexed
+│   │                       under another id (that change predates the indexed series). The
+│   │                       prune on a change and every resync sweep(): delete each indexed id
+│   │                       absent from the snapshot. Pending::push_delete
 │   │                       drops a queued value for it and queues the delete last. Lagged(n) moves the set to a
 │   │                       receiver at the broadcast's tail (resubscribe(), dropping the
-│   │                       backlog it fell behind on), then re-queues the latest
+│   │                       backlog it fell behind on), sweeps, then re-queues the latest
 │   │                       of every matched series (no second sync marker; debug log with
-│   │                       n). Pending queues encoded responses (sync marker, samples) and
+│   │                       n); forget_after(rx.len()) forgets every remembered delete once the
+│   │                       new receiver has read what it held at the snapshot (read_one counts). Pending queues encoded responses (sync marker, samples) and
 │   │                       series values, at most one per series: a newer change,
 │   │                       heartbeat or resync replaces it in place. Each stored
 │   │                       Notification is framed as SubscribeResponse.update bytes. Its
@@ -366,8 +377,8 @@ src/
 │   │                       until then its HTTP/2 layer accepts data whether or not the
 │   │                       application reads it, so the server cannot see a reader that
 │   │                       stopped. max_subscribers is the lever.
-│   │                       Probe (cfg(test)) carries the after_resubscribe and
-│   │                       before_heartbeat hooks the window tests publish from.
+│   │                       Probe (cfg(test)) carries the after_resubscribe, before_heartbeat
+│   │                       and before_sample hooks the window tests publish and release from.
 │   │                       STREAM runs until the client goes, stalls or the target stops;
 │   │                       ONCE ends with OK after the sync marker. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the
