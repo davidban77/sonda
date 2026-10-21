@@ -331,24 +331,25 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
 ///   a leaf, an entry on port 0 binds a target of its own, and an entry whose
 ///   `listen` does not parse is left to per-entry validation. Series on one
 ///   address are compared pairwise.
-/// - A template with optional keys (`[key={x?}]`) gives a series one leaf
-///   per shape: each label it references only as `{x?}` present or absent,
-///   as the series' events can carry it. A cardinality spike over nothing
-///   is present inside its window and absent outside it, a label no event
-///   carries is always absent, and any other label is always present. Every
-///   shape of one series is compared with every shape of another, so a
-///   series outside its spike window meets what its base shape meets.
+/// - A key whose value is an optional placeholder (`[key={x?}]`), on a
+///   label the template references only that way, is left out of the leaf
+///   when no event carries the label, and may be left out when the label is
+///   a cardinality spike over nothing, which is absent outside its window.
+///   Any other label is always present. Two elements with an optional key
+///   meet when, for each key name, both carry the key with values that can
+///   be equal, or every side that carries it may leave it out; so a series
+///   outside its spike window meets what its base path meets. The error
+///   shows the leaf with the keys left out that the meeting leaves out.
 ///
 /// Three comparisons are approximate:
 ///
 /// - Each element name, key value and target is compared on its own, so a
 ///   label used in two places is matched in each place separately. This can
 ///   reject two series that never write the same leaf, and never misses one.
-/// - Each label referenced only as an optional key is taken as present or
-///   absent on its own, so a series has a shape for every combination of
-///   them, even one its events never produce, such as one of two spikes
-///   whose windows always open together. This too can reject and never
-///   misses.
+/// - Each optional key is taken as present or absent on its own, so two
+///   series can meet on a combination of keys their events never produce,
+///   such as one of two spikes whose windows always open together. This
+///   too can reject and never misses.
 /// - A counter label against a `random` cardinality spike of more than
 ///   [`MAX_ENUMERATED_SPIKE`](crate::config::MAX_ENUMERATED_SPIKE) values:
 ///   the spike's values are compared by their shape only, its prefix
@@ -457,6 +458,17 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         /// Each label placeholder of the leaf, with its label's values; the
         /// label the runner adds to this series takes the values it gives it.
         labels: Vec<(String, Option<LabelValueSet>)>,
+        /// The labels whose keys the leaf may leave out: referenced only as
+        /// optional keys, and absent from some of the series' events.
+        absent: Vec<String>,
+    }
+
+    /// Whether `writer` may leave out a key whose value is `rendered`.
+    fn may_leave_out(writer: &Writer<'_>, rendered: &str) -> bool {
+        rendered
+            .strip_prefix('{')
+            .and_then(|r| r.strip_suffix('}'))
+            .is_some_and(|label| writer.absent.iter().any(|absent| absent == label))
     }
 
     /// One element name or key value of a leaf.
@@ -506,9 +518,37 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         }
     }
 
-    /// Whether element name or key value `x` of `a` can equal `y` of `b`.
-    /// A meeting by a random spike's shape records the labels whose values
-    /// are compared by shape in `shaped`.
+    /// How element name or key value `x` of `a` and `y` of `b` can be equal.
+    fn term_overlap(a: &Writer<'_>, x: &str, b: &Writer<'_>, y: &str) -> Overlap {
+        match (term(a, x), term(b, y)) {
+            (Term::Literal(x), Term::Literal(y)) if x == y => Overlap::Certain,
+            (Term::Literal(value), Term::Label(_, Some(set)))
+            | (Term::Label(_, Some(set)), Term::Literal(value)) => set.meets_value(value),
+            (Term::Label(_, Some(set)), Term::Label(_, Some(other))) => set.meets(other),
+            _ => Overlap::Disjoint,
+        }
+    }
+
+    /// Record in `shaped` each label of `x` of `a` and `y` of `b` whose
+    /// values are compared by a random spike's shape.
+    fn record_shaped<'a>(
+        a: &'a Writer<'_>,
+        x: &'a str,
+        b: &'a Writer<'_>,
+        y: &'a str,
+        shaped: &mut Vec<(&'a str, &'a str)>,
+    ) {
+        for (writer, side) in [(a, term(a, x)), (b, term(b, y))] {
+            if let Term::Label(label, Some(set)) = side {
+                if set.compared_by_shape() {
+                    shaped.push((writer.name, label));
+                }
+            }
+        }
+    }
+
+    /// Whether `x` of `a` can equal `y` of `b`, recording in `shaped` the
+    /// labels of a meeting by a random spike's shape.
     fn terms_meet<'a>(
         a: &'a Writer<'_>,
         x: &'a str,
@@ -516,42 +556,83 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         y: &'a str,
         shaped: &mut Vec<(&'a str, &'a str)>,
     ) -> bool {
-        let (left, right) = (term(a, x), term(b, y));
-        let overlap = match (&left, &right) {
-            (Term::Literal(x), Term::Literal(y)) if x == y => Overlap::Certain,
-            (Term::Literal(value), Term::Label(_, Some(set)))
-            | (Term::Label(_, Some(set)), Term::Literal(value)) => set.meets_value(value),
-            (Term::Label(_, Some(set)), Term::Label(_, Some(other))) => set.meets(other),
-            _ => Overlap::Disjoint,
-        };
+        let overlap = term_overlap(a, x, b, y);
         if overlap == Overlap::ByShape {
-            for (writer, side) in [(a, &left), (b, &right)] {
-                if let Term::Label(label, Some(set)) = side {
-                    if set.compared_by_shape() {
-                        shaped.push((writer.name, label));
+            record_shaped(a, x, b, y, shaped);
+        }
+        overlap != Overlap::Disjoint
+    }
+
+    /// A key a meeting leaves out: the element's index, the key, and
+    /// whether `a` and `b` leave it out.
+    type LeftOut<'a> = (usize, &'a str, bool, bool);
+
+    /// Whether the leaves of `a` and `b` can be one leaf: the same origin and
+    /// number of elements, element names that can be equal, and for each key
+    /// name of an element, either both carry the key with values that can be
+    /// equal, or every side that carries it may leave it out. A key both
+    /// sides may leave out is left out unless its values are certainly
+    /// equal. Records the keys left out in `left_out` and the labels of a
+    /// meeting by a random spike's shape in `shaped`.
+    fn leaves_meet<'a>(
+        a: &'a Writer<'_>,
+        b: &'a Writer<'_>,
+        left_out: &mut Vec<LeftOut<'a>>,
+        shaped: &mut Vec<(&'a str, &'a str)>,
+    ) -> bool {
+        if a.leaf.origin != b.leaf.origin || a.leaf.elem.len() != b.leaf.elem.len() {
+            return false;
+        }
+        for (at, (x, y)) in a.leaf.elem.iter().zip(&b.leaf.elem).enumerate() {
+            if !terms_meet(a, &x.name, b, &y.name, shaped) {
+                return false;
+            }
+            let only_in_y = y.key.keys().filter(|key| !x.key.contains_key(*key));
+            for key in x.key.keys().chain(only_in_y) {
+                match (x.key.get(key), y.key.get(key)) {
+                    (Some(vx), Some(vy)) => {
+                        let overlap = term_overlap(a, vx, b, vy);
+                        if overlap == Overlap::Certain {
+                            continue;
+                        }
+                        if may_leave_out(a, vx) && may_leave_out(b, vy) {
+                            left_out.push((at, key, true, true));
+                        } else if overlap == Overlap::ByShape {
+                            record_shaped(a, vx, b, vy, shaped);
+                        } else {
+                            return false;
+                        }
                     }
+                    (Some(vx), None) if may_leave_out(a, vx) => {
+                        left_out.push((at, key, true, false));
+                    }
+                    (None, Some(vy)) if may_leave_out(b, vy) => {
+                        left_out.push((at, key, false, true));
+                    }
+                    _ => return false,
                 }
             }
         }
-        overlap != Overlap::Disjoint
+        true
+    }
+
+    /// `writer`'s leaf without the keys `left_out` says it leaves out.
+    fn shown(writer: &Writer<'_>, left_out: &[LeftOut<'_>], first: bool) -> Path {
+        let mut leaf = writer.leaf.clone();
+        for &(at, key, in_a, in_b) in left_out {
+            if (first && in_a) || (!first && in_b) {
+                leaf.elem[at].key.remove(key);
+            }
+        }
+        leaf
     }
 
     /// The error for two series that can write the same leaf on the same
     /// target, or `None` when they cannot.
     fn collision(other: &Writer<'_>, writer: &Writer<'_>) -> Option<String> {
         let mut shaped = Vec::new();
-        let leaves_meet = other.leaf.origin == writer.leaf.origin
-            && other.leaf.elem.len() == writer.leaf.elem.len()
-            && other.leaf.elem.iter().zip(&writer.leaf.elem).all(|(x, y)| {
-                x.key.len() == y.key.len()
-                    && terms_meet(other, &x.name, writer, &y.name, &mut shaped)
-                    && x.key.iter().all(|(key, value)| {
-                        y.key.get(key).is_some_and(|theirs| {
-                            terms_meet(other, value, writer, theirs, &mut shaped)
-                        })
-                    })
-            });
-        if !leaves_meet {
+        let mut left_out = Vec::new();
+        if !leaves_meet(other, writer, &mut left_out, &mut shaped) {
             return None;
         }
         match other.target.meets(&writer.target) {
@@ -566,10 +647,14 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             Overlap::Certain => {}
         }
 
-        let spelled = if other.leaf == writer.leaf {
+        let (other_leaf, writer_leaf) = (
+            shown(other, &left_out, true),
+            shown(writer, &left_out, false),
+        );
+        let spelled = if other_leaf == writer_leaf {
             String::new()
         } else {
-            format!(" (`{}` writes it as `{}`)", writer.name, writer.leaf)
+            format!(" (`{}` writes it as `{}`)", writer.name, writer_leaf)
         };
         let on_target = match (&other.target, &writer.target) {
             (LabelValueSet::Static(value), LabelValueSet::Static(_)) if value.is_empty() => {
@@ -601,7 +686,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             return Some(format!(
                 "metrics `{}` and `{}` would both write the gnmi leaf `{}`{spelled}{on_target}, \
                  each overwriting the other; {advice}",
-                other.name, writer.name, other.leaf
+                other.name, writer.name, other_leaf
             ));
         }
         shaped.sort_unstable();
@@ -616,7 +701,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
              compared with a counter by their prefix and 16 hex digits only; {advice}",
             other.name,
             writer.name,
-            other.leaf,
+            other_leaf,
             random_labels.join(" and "),
             MAX_ENUMERATED_SPIKE
         ))
@@ -667,69 +752,45 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
                     }
                 }
             }
-            let symbols: Vec<String> = values
-                .iter()
-                .map(|(label, _)| format!("{{{label}}}"))
-                .collect();
-
-            // Every shape the leaf can take: one per choice of which labels
-            // referenced only optionally are on the event.
-            let mut shapes: Vec<Vec<bool>> = vec![Vec::new()];
-            for (at, (_, set)) in values.iter().enumerate() {
-                let states: &[bool] = match (optional_only[at], set) {
-                    (false, _) => &[true],
-                    (true, None) => &[false],
-                    (true, Some(set)) if may_be_absent(set) => &[true, false],
-                    (true, Some(_)) => &[true],
-                };
-                shapes = shapes
-                    .into_iter()
-                    .flat_map(|shape| {
-                        states.iter().map(move |present| {
-                            let mut next = shape.clone();
-                            next.push(*present);
-                            next
-                        })
-                    })
-                    .collect();
-            }
-            let mut leaves = Vec::with_capacity(shapes.len());
-            for shape in &shapes {
-                let pairs: Vec<(&str, &str)> = values
-                    .iter()
-                    .zip(&symbols)
-                    .zip(shape)
-                    .filter(|(_, present)| **present)
-                    .map(|(((label, _), symbol), _)| (label.as_str(), symbol.as_str()))
-                    .collect();
-                let Ok(labels) = Labels::from_pairs(&pairs) else {
-                    continue;
-                };
-                let Ok(mut leaf) = template.render(name, &labels) else {
-                    continue;
-                };
-                leaf.origin.clone_from(&cfg.origin);
-                leaves.push(leaf);
-            }
-
-            for leaf in leaves {
-                let writer = Writer {
-                    address,
-                    name,
-                    leaf,
-                    target_label: cfg.target_label.as_str(),
-                    target: target.clone(),
-                    labels: values.clone(),
-                };
-                if let Some(message) = writers
-                    .iter()
-                    .filter(|other| other.address == writer.address && other.name != name)
-                    .find_map(|other| collision(other, &writer))
-                {
-                    return Err(invalid(*idx, message));
+            // A label referenced only optionally is rendered when an event
+            // can carry it, and its key may be left out when an event can
+            // lack it.
+            let mut symbols: Vec<(&str, String)> = Vec::new();
+            let mut absent: Vec<String> = Vec::new();
+            for ((label, set), optional) in values.iter().zip(&optional_only) {
+                if !*optional || set.is_some() {
+                    symbols.push((label.as_str(), format!("{{{label}}}")));
                 }
-                writers.push(writer);
+                if *optional && set.as_ref().is_some_and(may_be_absent) {
+                    absent.push(label.clone());
+                }
             }
+            let pairs: Vec<(&str, &str)> = symbols.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let Ok(labels) = Labels::from_pairs(&pairs) else {
+                continue;
+            };
+            let Ok(mut leaf) = template.render(name, &labels) else {
+                continue;
+            };
+            leaf.origin.clone_from(&cfg.origin);
+
+            let writer = Writer {
+                address,
+                name,
+                leaf,
+                target_label: cfg.target_label.as_str(),
+                target: target.clone(),
+                labels: values,
+                absent,
+            };
+            if let Some(message) = writers
+                .iter()
+                .filter(|other| other.address == writer.address && other.name != name)
+                .find_map(|other| collision(other, &writer))
+            {
+                return Err(invalid(*idx, message));
+            }
+            writers.push(writer);
         }
     }
     Ok(())
@@ -3493,6 +3554,53 @@ scenarios:
                 assert!(msg.contains(text), "{msg}");
             }
         }
+    }
+
+    /// Two metrics sharing a template with 14 optional spike keys validate
+    /// in under a second: each series' leaf is compared once, with each
+    /// optional key present or left out on its own, not once per combination
+    /// of its keys (2^14 per series).
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_fourteen_optional_keys_validate_in_under_a_second() {
+        const KEYS: usize = 14;
+        let template: String = (0..KEYS)
+            .map(|i| format!("[s{i}={{s{i}?}}]"))
+            .collect::<String>();
+        let template = format!("/if{template}/{{name}}");
+        let spikes: String = (0..KEYS)
+            .map(|i| format!("      - label: s{i}\n        every: 10s\n        for: 5s\n        cardinality: 2\n"))
+            .collect();
+        let entry = |name: &str| {
+            format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n{spikes}")
+        };
+        let yaml = shared_encoder_file(
+            &leaf_paths(
+                &[
+                    ("in_octets", template.as_str()),
+                    ("out_octets", template.as_str()),
+                ],
+                &[],
+            ),
+            &(entry("in_octets") + &entry("out_octets")),
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 2, "the premise: two metrics");
+        let ScenarioEntry::Metrics(config) = &entries[0] else {
+            panic!("a metrics entry");
+        };
+        assert_eq!(
+            config.cardinality_spikes.as_ref().map(Vec::len),
+            Some(KEYS),
+            "the premise: each metric has {KEYS} spike labels"
+        );
+        let started = std::time::Instant::now();
+        prepare_entries(entries).expect("distinct leaves by {name}");
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "validation took {took:?}"
+        );
     }
 
     /// Every series of a spiking histogram must reference the spike label as

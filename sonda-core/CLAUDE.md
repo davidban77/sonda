@@ -118,10 +118,11 @@ src/
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
 │   │                      share a port, and every gnmi encoder agrees with its entries.
-│   │                      Its leaf check gives a series one leaf per shape of its optional
-│   │                      keys (a label used only as {x?}: a spike over nothing present or
-│   │                      absent, a label no event carries absent, any other present) and
-│   │                      compares every shape pairwise.
+│   │                      Its leaf check gives a series one leaf (keys of labels used only
+│   │                      as {x?} that no event carries left out) and the set of keys it may
+│   │                      leave out (a spike over nothing); two elements meet when each key
+│   │                      is on both with values that can be equal, or every side that has
+│   │                      it may leave it out. Per pair O(elements x keys), never 2^k shapes.
 │   │                      check_running_sinks() checks entries against sinks already
 │   │                      running in the process (gnmi_target via registry().check());
 │   │                      both multi-launch paths call it (POST /scenarios through
