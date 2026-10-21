@@ -283,7 +283,7 @@ For the first 30 seconds of every 2 minutes, `in_octets` is sent on 20 paths, `/
 
 A series a spike creates keeps its last value until the scenario that publishes it stops. It is not removed when the window closes, so after the first window the target serves the base path and all 20 spike paths. [Sinks — gnmi_target](sinks.md#gnmi_target) describes when a series leaves the target.
 
-Every shape a template can render is checked against every other metric's paths. Here those shapes are the base path and one path per spike value. A metric whose path equals the base path is refused, just as two metrics on one path are.
+Every path the metric's events can write is checked against every other metric's paths: here, the base path and one path per spike value. A metric whose path equals the base path is refused, just as two metrics on one path are.
 
 ### Value types
 

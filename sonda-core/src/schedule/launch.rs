@@ -339,11 +339,16 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
 ///   shape of one series is compared with every shape of another, so a
 ///   series outside its spike window meets what its base shape meets.
 ///
-/// Two comparisons are approximate:
+/// Three comparisons are approximate:
 ///
 /// - Each element name, key value and target is compared on its own, so a
 ///   label used in two places is matched in each place separately. This can
 ///   reject two series that never write the same leaf, and never misses one.
+/// - Each label referenced only as an optional key is taken as present or
+///   absent on its own, so a series has a shape for every combination of
+///   them, even one its events never produce, such as one of two spikes
+///   whose windows always open together. This too can reject and never
+///   misses.
 /// - A counter label against a `random` cardinality spike of more than
 ///   [`MAX_ENUMERATED_SPIKE`](crate::config::MAX_ENUMERATED_SPIKE) values:
 ///   the spike's values are compared by their shape only, its prefix
@@ -3403,6 +3408,14 @@ scenarios:
         format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n      - label: spike\n        every: 10s\n        for: 5s\n        cardinality: 3\n")
     }
 
+    /// A metrics entry `name` with two counter spikes over `spike`, the
+    /// second over the first: inside either window a `spike` value, outside
+    /// both no `spike` label.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn spiking_twice_yaml(name: &str) -> String {
+        format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n      - label: spike\n        every: 10s\n        for: 5s\n        cardinality: 3\n      - label: spike\n        every: 20s\n        for: 5s\n        cardinality: 2\n        prefix: other_\n")
+    }
+
     /// A metrics entry `name` whose events always carry `ifName: eth0`.
     #[cfg(all(feature = "gnmi", feature = "config"))]
     fn eth0_yaml(name: &str) -> String {
@@ -3420,6 +3433,16 @@ scenarios:
     #[case::a_static_series_on_the_base_path_of_a_spiking_metric(
         leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0]/state")], &[]),
         spiking_yaml("spiking") + &metric_yaml("steady"),
+        Some("metrics `spiking` and `steady` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
+    )]
+    #[case::a_key_on_a_label_no_event_carries(
+        leaf_paths(&[("in_octets", "/interfaces/interface[name=eth0][spike={spike?}]/state/{name}"), ("out_octets", "/interfaces/interface[name=eth0]/state/in-octets")], &[]),
+        metric_yaml("in_octets") + &metric_yaml("out_octets"),
+        Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state/in-octets` with no target, each overwriting the other"),
+    )]
+    #[case::a_static_series_on_the_base_path_of_a_spike_over_a_spike(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0]/state")], &[]),
+        spiking_twice_yaml("spiking") + &metric_yaml("steady"),
         Some("metrics `spiking` and `steady` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
     )]
     #[case::two_spiking_metrics_on_distinct_base_paths(

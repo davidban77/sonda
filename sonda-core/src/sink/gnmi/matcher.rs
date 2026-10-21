@@ -381,12 +381,12 @@ mod tests {
         assert!(m.matches(&path(series)), "{p} matches {series}");
     }
 
-    /// The counter paths the Phase 1 example renders for each interface, and
-    /// its oper-status paths: each metrics entry of `examples/gnmi-telegraf.yaml`
-    /// rendered through its encoder, with the origin and the target label's
-    /// value on the path.
+    /// Every path `examples/gnmi-telegraf.yaml` renders, counters and
+    /// oper-status, with its metric's name: each metrics entry rendered
+    /// through its encoder, with the origin and the target label's value on
+    /// the path.
     #[cfg(feature = "config")]
-    fn phase_one_example_paths() -> Vec<(String, proto::Path)> {
+    fn gnmi_telegraf_example_paths() -> Vec<(String, proto::Path)> {
         use crate::compiler::expand::InMemoryPackResolver;
         use crate::config::ScenarioEntry;
         use crate::encoder::gnmi::GnmiEncoder;
@@ -397,7 +397,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../examples/gnmi-telegraf.yaml"
         );
-        let yaml = std::fs::read_to_string(file).expect("the Phase 1 example");
+        let yaml = std::fs::read_to_string(file).expect("examples/gnmi-telegraf.yaml");
         let entries = crate::compile_scenario_file(&yaml, &InMemoryPackResolver::new())
             .expect("the example compiles");
         entries
@@ -427,13 +427,14 @@ mod tests {
             .collect()
     }
 
-    /// `/interfaces/.../in-octets` matches the Phase 1 example's `in-octets`
-    /// path on every interface and nothing else; `/interfaces/.../counters`
-    /// matches its counter paths and not its oper-status paths.
+    /// `/interfaces/.../in-octets` matches the `in-octets` path
+    /// `examples/gnmi-telegraf.yaml` renders on every interface and nothing
+    /// else; `/interfaces/.../counters` matches its counter paths and not its
+    /// oper-status paths.
     #[cfg(feature = "config")]
     #[test]
-    fn a_run_wildcard_matches_the_phase_one_example_counters() {
-        let paths = phase_one_example_paths();
+    fn a_run_wildcard_matches_the_gnmi_telegraf_example_counters() {
+        let paths = gnmi_telegraf_example_paths();
         let names: std::collections::BTreeSet<&str> =
             paths.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
