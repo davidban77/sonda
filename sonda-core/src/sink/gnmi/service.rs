@@ -197,7 +197,10 @@ impl Service<tonic::Request<proto::CapabilityRequest>> for CapabilitiesHandler {
     fn call(&mut self, _req: tonic::Request<proto::CapabilityRequest>) -> Self::Future {
         std::future::ready(Ok(tonic::Response::new(proto::CapabilityResponse {
             supported_models: Vec::new(),
-            supported_encodings: vec![proto::Encoding::Proto as i32],
+            supported_encodings: vec![
+                proto::Encoding::Proto as i32,
+                proto::Encoding::JsonIetf as i32,
+            ],
             gnmi_version: GNMI_VERSION.to_string(),
         })))
     }
@@ -332,6 +335,12 @@ fn start(
     let state = held.state();
     drop(held);
 
+    let delivered = Delivered::new(on_change.is_some());
+    let delivered = if list.encoding == proto::Encoding::JsonIetf as i32 {
+        delivered.serving_json_ietf(target.clone())
+    } else {
+        delivered
+    };
     let (tx, rx) = mpsc::channel(OUTBOUND_CAPACITY);
     let (ending, ended) = oneshot::channel();
     let producer = Producer {
@@ -341,7 +350,7 @@ fn start(
         updates_only: list.updates_only,
         samples: plan.samples,
         heartbeats: plan.heartbeats,
-        delivered: Delivered::new(on_change.is_some()),
+        delivered,
         on_change,
         stall_limit,
         peer,
@@ -602,6 +611,9 @@ enum Placement {
 /// For a list that reads the target's broadcast, a series whose delete was
 /// queued before its removal was read stays as deleted until that removal
 /// is read, or until a resync forgets it.
+///
+/// A JSON_IETF list queues every value as JSON_IETF, from the target's
+/// [`GnmiTarget::json_ietf_of`]; a PROTO list queues it as stored.
 #[derive(Debug, Default)]
 struct Delivered {
     /// The series each indexed path was last queued under.
@@ -617,14 +629,26 @@ struct Delivered {
     expiring: Vec<SeriesId>,
     /// The broadcast messages left to read before `expiring` is forgotten.
     horizon: usize,
+    /// For a JSON_IETF list, the target its values are made by; `None` for
+    /// a PROTO list.
+    json_ietf: Option<Weak<GnmiTarget>>,
 }
 
 impl Delivered {
-    /// An empty index that remembers deletes when `remembers`.
+    /// An empty index that remembers deletes when `remembers`, for a PROTO
+    /// list.
     fn new(remembers: bool) -> Self {
         Self {
             remembers,
             ..Self::default()
+        }
+    }
+
+    /// The index, for a JSON_IETF list whose values `target` makes.
+    fn serving_json_ietf(self, target: Weak<GnmiTarget>) -> Self {
+        Self {
+            json_ietf: Some(target),
+            ..self
         }
     }
 
@@ -639,18 +663,32 @@ impl Delivered {
     }
 
     /// Queue `latest`, one encoded notification, as the value of series `id`
-    /// at `path`, where `placement` says. When `path` is indexed under
-    /// another series, that series' delete is queued first. With `index`,
-    /// `path` is then indexed under `id`.
+    /// at `path` at `version`, where `placement` says: for a JSON_IETF list,
+    /// `latest` with its value as JSON_IETF, and nothing when the series has
+    /// left the table, whose delete reaches the list as any delete does. When
+    /// `path` is indexed under another series, that series' delete is queued
+    /// first. With `index`, `path` is then indexed under `id`.
+    #[allow(clippy::too_many_arguments)]
     fn queue_value(
         &mut self,
         id: SeriesId,
         path: &PathKey,
         latest: Bytes,
+        version: u64,
         placement: Placement,
         index: bool,
         pending: &mut Pending,
     ) {
+        let latest = match &self.json_ietf {
+            None => latest,
+            Some(target) => match target
+                .upgrade()
+                .and_then(|target| target.json_ietf_of(id, version, &latest))
+            {
+                Some(json) => json,
+                None => return,
+            },
+        };
         let held = self.paths.get(path).copied();
         if let Some(other) = held.filter(|held| *held != id) {
             self.queue_delete(other, pending);
@@ -879,6 +917,8 @@ pub(crate) struct Probe {
     pub(crate) prunes: std::sync::atomic::AtomicUsize,
     /// Sample groups that fell due.
     pub(crate) samples: std::sync::atomic::AtomicUsize,
+    /// JSON_IETF values the target made ([`GnmiTarget::json_ietf_value`]).
+    pub(crate) json_ietf_values: std::sync::atomic::AtomicUsize,
     /// Run by every resync after it takes its new broadcast receiver and
     /// before it reads the snapshot.
     pub(crate) after_resubscribe: Hook,
@@ -1152,6 +1192,7 @@ impl Producer {
                         series.series_id,
                         &series.path,
                         series.latest,
+                        series.version,
                         Placement::InPlace,
                         index,
                         &mut pending,
@@ -1190,6 +1231,7 @@ impl Producer {
                 series.series_id,
                 &series.path,
                 series.latest,
+                series.version,
                 Placement::Last,
                 index,
                 pending,
@@ -1219,6 +1261,7 @@ impl Producer {
                 series.series_id,
                 &series.path,
                 series.latest,
+                series.version,
                 Placement::InPlace,
                 true,
                 pending,
@@ -1256,6 +1299,7 @@ impl Producer {
                         series_id,
                         path,
                         bytes,
+                        version,
                         Placement::InPlace,
                         true,
                         pending,
@@ -1324,6 +1368,7 @@ impl Producer {
                     series.series_id,
                     &series.path,
                     series.latest,
+                    series.version,
                     Placement::InPlace,
                     true,
                     pending,
@@ -1840,7 +1885,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capabilities_reports_proto_and_version() {
+    async fn capabilities_reports_proto_json_ietf_and_version() {
         let sink = sink(None, None).await;
         let mut grpc = tonic::client::Grpc::new(connect(sink.target().local_addr()).await);
         grpc.ready().await.expect("the channel is ready");
@@ -1856,7 +1901,10 @@ mod tests {
         assert_eq!(capabilities.gnmi_version, "0.10.0");
         assert_eq!(
             capabilities.supported_encodings,
-            vec![proto::Encoding::Proto as i32]
+            vec![
+                proto::Encoding::Proto as i32,
+                proto::Encoding::JsonIetf as i32
+            ]
         );
         assert!(capabilities.supported_models.is_empty());
     }
@@ -4560,6 +4608,7 @@ mod tests {
                 id,
                 &eth0,
                 latest("eth0", value),
+                1,
                 Placement::InPlace,
                 true,
                 &mut pending,
@@ -4588,6 +4637,7 @@ mod tests {
             1,
             &eth0,
             latest("eth0", 1.0),
+            1,
             Placement::Last,
             true,
             &mut pending,
@@ -4596,6 +4646,7 @@ mod tests {
             2,
             &eth0,
             latest("eth0", 2.0),
+            1,
             Placement::Last,
             false,
             &mut pending,
@@ -4604,6 +4655,7 @@ mod tests {
             3,
             &key("eth1"),
             latest("eth1", 3.0),
+            1,
             Placement::Last,
             false,
             &mut pending,
@@ -4645,6 +4697,7 @@ mod tests {
                 1,
                 &key("eth0"),
                 latest("eth0", 1.0),
+                1,
                 Placement::InPlace,
                 true,
                 &mut pending,
@@ -4675,6 +4728,7 @@ mod tests {
             1,
             &key("eth0"),
             latest("eth0", 1.0),
+            1,
             Placement::InPlace,
             true,
             &mut pending,
@@ -4698,6 +4752,7 @@ mod tests {
                 id,
                 &key(if_name),
                 latest(if_name, 1.0),
+                1,
                 Placement::InPlace,
                 true,
                 &mut pending,
@@ -4734,6 +4789,7 @@ mod tests {
                 id,
                 &key(if_name),
                 latest(if_name, 1.0),
+                1,
                 Placement::InPlace,
                 true,
                 &mut pending,
@@ -4951,5 +5007,247 @@ mod tests {
             metric_type: None,
             help: None,
         }
+    }
+
+    /// `list`, asking for JSON_IETF.
+    fn in_json_ietf(list: proto::SubscriptionList) -> proto::SubscriptionList {
+        proto::SubscriptionList {
+            encoding: proto::Encoding::JsonIetf as i32,
+            ..list
+        }
+    }
+
+    /// A `json_ietf_val` holding `text`.
+    fn json(text: &str) -> Value {
+        Value::JsonIetfVal(text.as_bytes().to_vec())
+    }
+
+    /// How many JSON_IETF values `target` has made.
+    fn json_ietf_values(target: &GnmiTarget) -> usize {
+        target
+            .settings()
+            .probe
+            .json_ietf_values
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The next response's notification, which must be an update.
+    async fn next_notification(client: &mut Client) -> proto::Notification {
+        let message = tokio::time::timeout(PATIENCE, client.responses.message())
+            .await
+            .expect("a response in time")
+            .expect("no error on the stream")
+            .expect("the stream is open");
+        match message.response {
+            Some(subscribe_response::Response::Update(n)) => n,
+            other => panic!("an update, got {other:?}"),
+        }
+    }
+
+    /// A JSON_IETF ON_CHANGE client receives its initial sync, a change, a
+    /// heartbeat and a delete, every value as `json_ietf_val`.
+    #[tokio::test]
+    async fn a_json_ietf_on_change_client_gets_its_sync_changes_heartbeats_and_deletes_in_json_ietf(
+    ) {
+        const HEARTBEAT: Duration = Duration::from_millis(400);
+        let (target, first, mut second) = two_sinks_of_one_launch().await;
+        let mut client = open(
+            target.local_addr(),
+            in_json_ietf(on_change("/interfaces", HEARTBEAT)),
+        )
+        .await
+        .expect("subscribed");
+        let (eth0, eth1) = (counter("eth0", "in-octets"), counter("eth1", "in-octets"));
+
+        let mut synced = got_until(&mut client, Instant::now() + Duration::from_millis(50)).await;
+        let marker = synced.pop();
+        synced.sort_by_key(|g| format!("{g:?}"));
+        assert_eq!(
+            synced,
+            [
+                Got::Value(eth0.clone(), json("1")),
+                Got::Value(eth1.clone(), json("1")),
+            ],
+            "the initial sync"
+        );
+        assert_eq!(marker, Some(Got::Sync));
+
+        publish(&mut second, "in_octets", "eth1", 2.5).await;
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(100)).await,
+            [Got::Value(eth1.clone(), json("2.5"))],
+            "the change"
+        );
+
+        let mut heartbeat = got_until(&mut client, Instant::now() + HEARTBEAT).await;
+        heartbeat.sort_by_key(|g| format!("{g:?}"));
+        assert_eq!(
+            heartbeat,
+            [
+                Got::Value(eth0.clone(), json("1")),
+                Got::Value(eth1, json("2.5"))
+            ],
+            "one heartbeat"
+        );
+
+        drop(first);
+        assert_eq!(
+            got_until(&mut client, Instant::now() + Duration::from_millis(100)).await,
+            [Got::Delete(eth0)],
+            "the delete"
+        );
+    }
+
+    /// A JSON_IETF suppressing SAMPLE client receives its samples, and a
+    /// JSON_IETF ONCE client its values, as `json_ietf_val`.
+    #[tokio::test]
+    async fn json_ietf_sample_and_once_clients_get_json_ietf_values() {
+        let (target, _first, mut second) = two_sinks_of_one_launch().await;
+        let mut sampled = open(
+            target.local_addr(),
+            in_json_ietf(suppressed(
+                "/interfaces",
+                Duration::from_millis(200),
+                Duration::ZERO,
+            )),
+        )
+        .await
+        .expect("subscribed");
+        let mut synced = got_until(&mut sampled, Instant::now() + Duration::from_millis(50)).await;
+        assert_eq!(synced.pop(), Some(Got::Sync));
+        assert_eq!(synced.len(), 2, "the initial sync of both series");
+
+        publish(&mut second, "in_octets", "eth1", 3.0).await;
+        assert_eq!(
+            got_until(&mut sampled, Instant::now() + Duration::from_millis(400)).await,
+            [Got::Value(counter("eth1", "in-octets"), json("3"))],
+            "the sample of the changed series"
+        );
+
+        let mut once = open(target.local_addr(), in_json_ietf(once("/interfaces")))
+            .await
+            .expect("subscribed");
+        let mut values = vec![next_value(&mut once).await, next_value(&mut once).await];
+        values.sort_by_key(|v| format!("{v:?}"));
+        assert_eq!(
+            values,
+            [
+                Some((counter("eth0", "in-octets"), json("1"))),
+                Some((counter("eth1", "in-octets"), json("3"))),
+            ]
+        );
+        assert_eq!(next(&mut once).await, Received::Sync);
+        assert_eq!(next(&mut once).await, Received::End);
+    }
+
+    /// A PROTO client and two JSON_IETF clients of one target each receive
+    /// their own form of every value, and the JSON_IETF value of each version
+    /// is made once for both JSON_IETF clients.
+    #[tokio::test]
+    async fn proto_and_json_ietf_clients_on_one_target_each_get_their_form() {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let addr = sink.target().local_addr();
+        let path = "/interfaces/interface/state/counters/in-octets";
+        let series = counter("eth0", "in-octets");
+        let mut protobuf = open(addr, on_change(path, Duration::ZERO))
+            .await
+            .expect("subscribed");
+        let mut first = open(addr, in_json_ietf(on_change(path, Duration::ZERO)))
+            .await
+            .expect("subscribed");
+        let mut second = open(addr, in_json_ietf(on_change(path, Duration::ZERO)))
+            .await
+            .expect("subscribed");
+        for (client, value) in [
+            (&mut protobuf, Value::DoubleVal(1.0)),
+            (&mut first, json("1")),
+            (&mut second, json("1")),
+        ] {
+            assert_eq!(next_value(client).await, Some((series.clone(), value)));
+            assert_eq!(next_value(client).await, None, "the sync marker");
+        }
+        assert_eq!(
+            json_ietf_values(sink.target()),
+            1,
+            "one value for two syncs"
+        );
+
+        publish(&mut sink, "in_octets", "eth0", 2.0).await;
+        for (client, value) in [
+            (&mut protobuf, Value::DoubleVal(2.0)),
+            (&mut first, json("2")),
+            (&mut second, json("2")),
+        ] {
+            assert_eq!(next_value(client).await, Some((series.clone(), value)));
+        }
+        assert_eq!(
+            json_ietf_values(sink.target()),
+            2,
+            "one value for the change, for both JSON_IETF clients"
+        );
+    }
+
+    /// A heartbeat of a value published again unchanged carries the latest
+    /// publish's timestamp in JSON_IETF, as it does in PROTO.
+    #[tokio::test]
+    async fn a_json_ietf_heartbeat_carries_the_timestamp_of_the_latest_publish() {
+        const HEARTBEAT: Duration = Duration::from_millis(300);
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let addr = sink.target().local_addr();
+        let path = "/interfaces/interface/state/counters/in-octets";
+        let mut protobuf = open(addr, on_change(path, HEARTBEAT))
+            .await
+            .expect("subscribed");
+        let mut json_ietf = open(addr, in_json_ietf(on_change(path, HEARTBEAT)))
+            .await
+            .expect("subscribed");
+        let synced = next_notification(&mut json_ietf).await;
+        assert_eq!(next_value(&mut json_ietf).await, None, "the sync marker");
+        assert_eq!(
+            next_notification(&mut protobuf).await.timestamp,
+            synced.timestamp
+        );
+        assert_eq!(next_value(&mut protobuf).await, None, "the sync marker");
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let republished = sink.target().snapshot().remove(0);
+        assert_eq!(
+            republished.version, 1,
+            "the premise: the value did not change"
+        );
+        let latest = proto::Notification::decode(republished.latest.as_ref())
+            .expect("decodes")
+            .timestamp;
+        assert!(latest > synced.timestamp, "the premise: a newer timestamp");
+
+        let beat = next_notification(&mut json_ietf).await;
+        assert_eq!(value_of(&beat), json("1"));
+        assert_eq!(beat.timestamp, latest, "the latest publish's timestamp");
+        assert_eq!(next_notification(&mut protobuf).await.timestamp, latest);
+    }
+
+    /// BYTES and ASCII are still refused, naming the encoding.
+    #[rstest::rstest]
+    #[case::bytes(proto::Encoding::Bytes, "BYTES")]
+    #[case::ascii(proto::Encoding::Ascii, "ASCII")]
+    #[tokio::test]
+    async fn encodings_other_than_proto_and_json_ietf_are_refused(
+        #[case] encoding: proto::Encoding,
+        #[case] named: &str,
+    ) {
+        let sink = sink(None, None).await;
+        let list = proto::SubscriptionList {
+            encoding: encoding as i32,
+            ..stream("/interfaces", Duration::from_secs(1))
+        };
+        let status = match open(sink.target().local_addr(), list).await {
+            Ok(_) => panic!("{named} was served"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert!(status.message().contains(named), "{}", status.message());
     }
 }
