@@ -681,6 +681,9 @@ When the target sets `client_ca`, gnmic also presents its own certificate with `
 Telegraf's `inputs.gnmi` turns TLS on with `tls_enable`, trusts the CA with `tls_ca`, and sends `username` and `password`. With `client_ca` on the target, it presents `tls_cert` and `tls_key` as well:
 
 ```toml title="examples/telegraf/telegraf-tls.conf (excerpt)"
+[global_tags]
+  gnmi_row = "tls"
+
 [[inputs.gnmi]]
   addresses = ["sonda:57401"]
   encoding = "json_ietf"
@@ -691,17 +694,7 @@ Telegraf's `inputs.gnmi` turns TLS on with `tls_enable`, trusts the CA with `tls
   password = "sonda-uat"
 ```
 
-This client asks for `JSON_IETF`, so the counters arrive as [JSON strings](#gnmi-encodings), which Telegraf keeps as string fields. The file converts them back to numbers, and tags every metric `gnmi_row="tls"` to tell them apart from those of `telegraf.conf`, which carry the same `source`:
-
-```toml title="examples/telegraf/telegraf-tls.conf (excerpt)"
-[global_tags]
-  gnmi_row = "tls"
-
-[[processors.converter]]
-  namepass = ["ifcounters"]
-  [processors.converter.fields]
-    unsigned = ["in_octets", "out_octets"]
-```
+This client asks for `JSON_IETF`, so the counters arrive as [JSON strings](#gnmi-encodings). Telegraf writes them as string fields (`in_octets="1250000"`), which VictoriaMetrics stores as numbers; a backend that does not needs Telegraf's `processors.converter` to turn them into integers first. The `gnmi_row="tls"` tag tells this client's metrics apart from those of `telegraf.conf`, which carry the same `source`.
 
 The compose stack's `gnmi-tls` profile runs this Telegraf, with `examples/telegraf/certs/` mounted at `/etc/telegraf/certs`. The certificates are not committed: make them first with the `openssl` commands in the header of `examples/gnmi-telegraf-tls.yaml`, for the names `sonda`, `localhost` and `127.0.0.1`. Then start the profile:
 

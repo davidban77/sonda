@@ -1908,15 +1908,6 @@ class _GnmiTelegrafConfTests(unittest.TestCase):
         self.assertEqual([i["encoding"] for i in tls], ["json_ietf"])
         self.assertEqual([i["encoding"] for i in plain], ["proto"])
 
-    def test_the_tls_conf_converts_every_counter_to_a_number(self) -> None:
-        measurement = {series.split("_", 1)[0] for series in GNMI_COUNTER_SERIES}
-        fields = sorted(series.split("_", 1)[1] for series in GNMI_COUNTER_SERIES)
-        self.assertEqual(measurement, {"ifcounters"})
-        converters = _telegraf_conf(GNMI_TLS_TELEGRAF_CONF)["processors"]["converter"]
-        self.assertEqual(len(converters), 1)
-        self.assertEqual(converters[0]["namepass"], ["ifcounters"])
-        self.assertEqual(converters[0]["fields"], {"unsigned": fields})
-
 
 class _GnmiTlsCertTests(unittest.TestCase):
     def test_missing_openssl_is_named(self) -> None:
