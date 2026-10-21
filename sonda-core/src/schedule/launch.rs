@@ -3469,6 +3469,12 @@ scenarios:
         format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n      - label: spike\n        every: 10s\n        for: 5s\n        cardinality: 3\n")
     }
 
+    /// `spiking_yaml` with spike values `{prefix}0` to `{prefix}2`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn prefixed_spiking_yaml(name: &str, prefix: &str) -> String {
+        spiking_yaml(name) + &format!("        prefix: {prefix}\n")
+    }
+
     /// A metrics entry `name` with two counter spikes over `spike`, the
     /// second over the first: inside either window a `spike` value, outside
     /// both no `spike` label.
@@ -3496,6 +3502,11 @@ scenarios:
         spiking_yaml("spiking") + &metric_yaml("steady"),
         Some("metrics `spiking` and `steady` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
     )]
+    #[case::a_static_series_before_a_spiking_metric_on_its_base_path(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0]/state")], &[]),
+        metric_yaml("steady") + &spiking_yaml("spiking"),
+        Some("metrics `steady` and `spiking` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
+    )]
     #[case::a_key_on_a_label_no_event_carries(
         leaf_paths(&[("in_octets", "/interfaces/interface[name=eth0][spike={spike?}]/state/{name}"), ("out_octets", "/interfaces/interface[name=eth0]/state/in-octets")], &[]),
         metric_yaml("in_octets") + &metric_yaml("out_octets"),
@@ -3515,6 +3526,11 @@ scenarios:
         leaf_paths(&[("a", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("b", "/interfaces/interface[name=eth0][spike={spike?}]/state")], &[]),
         spiking_yaml("a") + &spiking_yaml("b"),
         Some("metrics `a` and `b` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0][spike={spike}]/state` with no target"),
+    )]
+    #[case::two_spiking_metrics_with_distinct_spike_values_on_one_base_path(
+        leaf_paths(&[("a", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("b", "/interfaces/interface[name=eth0][spike={spike?}]/state")], &[]),
+        prefixed_spiking_yaml("a", "a_") + &prefixed_spiking_yaml("b", "b_"),
+        Some("metrics `a` and `b` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
     )]
     #[case::a_literal_on_a_spike_value(
         leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0][spike=spike_1]/state")], &[]),
@@ -3559,7 +3575,8 @@ scenarios:
     /// Two metrics sharing a template with 14 optional spike keys validate
     /// in under a second: each series' leaf is compared once, with each
     /// optional key present or left out on its own, not once per combination
-    /// of its keys (2^14 per series).
+    /// of its keys (2^14 per series). A third metric on the first one's base
+    /// path is refused, so the two were compared.
     #[cfg(all(feature = "gnmi", feature = "config"))]
     #[test]
     fn gnmi_fourteen_optional_keys_validate_in_under_a_second() {
@@ -3579,13 +3596,14 @@ scenarios:
                 &[
                     ("in_octets", template.as_str()),
                     ("out_octets", template.as_str()),
+                    ("base", "/if/in-octets"),
                 ],
                 &[],
             ),
-            &(entry("in_octets") + &entry("out_octets")),
+            &(entry("in_octets") + &entry("out_octets") + &metric_yaml("base")),
         );
         let entries = compile_entries(&yaml, &Default::default());
-        assert_eq!(entries.len(), 2, "the premise: two metrics");
+        assert_eq!(entries.len(), 3, "the premise: three metrics");
         let ScenarioEntry::Metrics(config) = &entries[0] else {
             panic!("a metrics entry");
         };
@@ -3595,8 +3613,15 @@ scenarios:
             "the premise: each metric has {KEYS} spike labels"
         );
         let started = std::time::Instant::now();
-        prepare_entries(entries).expect("distinct leaves by {name}");
+        let refused = prepare_entries(entries);
         let took = started.elapsed();
+        let msg = refused
+            .expect_err("`base` writes `in_octets`'s leaf outside every window")
+            .to_string();
+        assert!(
+            msg.contains("metrics `in_octets` and `base` would both write the gnmi leaf `openconfig:/if/in-octets` with no target"),
+            "{msg}"
+        );
         assert!(
             took < std::time::Duration::from_secs(1),
             "validation took {took:?}"
