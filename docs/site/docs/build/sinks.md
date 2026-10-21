@@ -497,7 +497,7 @@ The listener serves gRPC, over TLS when `tls` is set:
 
 | Request | What the target does |
 |---------|----------------------|
-| `Capabilities` | Answers gNMI version `0.10.0` and the one encoding `PROTO`. |
+| `Capabilities` | Answers gNMI version `0.10.0` and the encodings `PROTO` and `JSON_IETF`. |
 | `Subscribe`, ONCE | Sends the latest value of every matching series and `sync_response`, then ends the stream. |
 | `Subscribe`, STREAM | Sends the latest value of every matching series, then `sync_response`, once for the whole request even when it mixes modes. After that each subscription is served by its mode. |
 | SAMPLE | Resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. |
@@ -508,7 +508,8 @@ The listener serves gRPC, over TLS when `tls` is set:
 | `updates_only: true` | Skips the initial values; the first message is `sync_response`. |
 | POLL | Refused with `UNIMPLEMENTED`, naming the mode. |
 | Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
-| Encoding `JSON_IETF`, `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding and `PROTO`. |
+| Encoding `JSON_IETF` | Served in `JSON_IETF`: every value is a `json_ietf_val`. See [Encodings](#gnmi-encodings). |
+| Encoding `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding, `PROTO` and `JSON_IETF`. |
 
 A series leaves the target when the last scenario publishing it stops (scenarios of one scenario file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose `delete` names the path, split into `prefix` and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with `suppress_redundant` matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE never receives one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.
 
@@ -615,6 +616,29 @@ gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces/interface/state
   --stream-mode on-change
 ```
 
+### Encodings { #gnmi-encodings }
+
+The request's `encoding` decides how the values of its subscriptions are sent. One target serves `PROTO` and `JSON_IETF` requests at once.
+
+- **`PROTO`**, and `JSON` or no encoding: each value is the `TypedValue` field the [`gnmi` encoder](encoders.md#gnmi) wrote.
+- **`JSON_IETF`**: each value is a `json_ietf_val` holding the value's JSON text, written as RFC 7951 writes it. The timestamp, prefix and path are those a `PROTO` request receives.
+
+Deletes and `sync_response` carry no value and are the same in both.
+
+| Encoder value | `PROTO` | `JSON_IETF` text |
+|---------------|---------|------------------|
+| `uint` | `uint_val` | A JSON string: `"18446744073709551615"`. |
+| `int` | `int_val` | A JSON string: `"-42"`. |
+| `double` | `double_val` | A JSON number in decimal notation: `1.5`, `2`. NaN and the infinities, which JSON has no number for, are the strings `"NaN"`, `"Infinity"` and `"-Infinity"`. |
+| `bool` | `bool_val` | `true` or `false`. |
+| `string`, `enum` | `string_val` | A JSON string, escaped as RFC 8259 requires: `"UP"`. |
+
+Integers arrive as strings: RFC 7951 writes 64-bit integers as JSON strings, so a client that reads the text with a plain JSON parser gets a string, not a number. gnmic asks for `JSON_IETF` with `-e json_ietf`:
+
+```bash
+gnmic -a 127.0.0.1:57400 --insecure -e json_ietf subscribe --path /interfaces --mode once
+```
+
 ### TLS and credentials
 
 With `tls`, the target serves TLS from a certificate and key, and can require client certificates. With `credentials`, every RPC must carry a username and password:
@@ -657,15 +681,20 @@ When the target sets `client_ca`, gnmic also presents its own certificate with `
 Telegraf's `inputs.gnmi` turns TLS on with `tls_enable`, trusts the CA with `tls_ca`, and sends `username` and `password`. With `client_ca` on the target, it presents `tls_cert` and `tls_key` as well:
 
 ```toml title="examples/telegraf/telegraf-tls.conf (excerpt)"
+[global_tags]
+  gnmi_row = "tls"
+
 [[inputs.gnmi]]
   addresses = ["sonda:57401"]
-  encoding = "proto"
+  encoding = "json_ietf"
   redial = "10s"
   tls_enable = true
   tls_ca = "/etc/telegraf/certs/ca.pem"
   username = "sonda"
   password = "sonda-uat"
 ```
+
+This client asks for `JSON_IETF`, so the counters arrive as [JSON strings](#gnmi-encodings). Telegraf writes them as string fields (`in_octets="1250000"`), which VictoriaMetrics stores as numbers; a backend that does not needs Telegraf's `processors.converter` to turn them into integers first. The `gnmi_row="tls"` tag tells this client's metrics apart from those of `telegraf.conf`, which carry the same `source`.
 
 The compose stack's `gnmi-tls` profile runs this Telegraf, with `examples/telegraf/certs/` mounted at `/etc/telegraf/certs`. The certificates are not committed: make them first with the `openssl` commands in the header of `examples/gnmi-telegraf-tls.yaml`, for the names `sonda`, `localhost` and `127.0.0.1`. Then start the profile:
 

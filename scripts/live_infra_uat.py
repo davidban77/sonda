@@ -24,6 +24,7 @@ import argparse
 import dataclasses
 import datetime
 import functools
+import inspect
 import json
 import math
 import re
@@ -32,12 +33,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+from unittest import mock
 
 
 # --- Configuration -----------------------------------------------------------
@@ -140,7 +143,18 @@ GNMI_FIRST_SAMPLE_WITHIN_S = 60.0
 GNMI_OPER_STATUS_CODES = {"UP": 1.0, "DOWN": 2.0}
 # The interface whose oper_status flaps (up 60s / down 5s) in the example.
 GNMI_FLAPPING_INTERFACE = GNMI_INTERFACES[0]
-GNMI_EXPORT_MATCH = '{__name__=~"ifcounters_.*|ifstate_.*",source="sonda"}'
+# Both Telegraf configs tag `source="sonda"`; examples/telegraf/telegraf-tls.conf
+# also tags every metric `gnmi_row="tls"` ([global_tags]). The gnmi row reads
+# the samples without that tag, the gnmi-tls row the samples with it.
+GNMI_EXPORT_MATCH = (
+    '{__name__=~"ifcounters_.*|ifstate_.*",source="sonda",gnmi_row!="tls"}'
+)
+GNMI_TLS_EXPORT_MATCH = (
+    '{__name__=~"ifcounters_.*|ifstate_.*",source="sonda",gnmi_row="tls"}'
+)
+# The Telegraf configs of the two rows.
+GNMI_TELEGRAF_CONF = Path("examples/telegraf/telegraf.conf")
+GNMI_TLS_TELEGRAF_CONF = Path("examples/telegraf/telegraf-tls.conf")
 
 
 def parse_vm_export(body: bytes) -> dict[tuple[str, str], list[tuple[int, float]]]:
@@ -194,6 +208,7 @@ def gnmi_findings(
     started_s: float,
     ended_s: float,
     connected_line: str = GNMI_CONNECTED_LINE,
+    export_match: str = GNMI_EXPORT_MATCH,
 ) -> list[str]:
     """Every way a gnmi row's evidence falls short, in check order; empty
     when all hold.
@@ -202,7 +217,8 @@ def gnmi_findings(
     Telegraf logged ``connected_line``, and the line carries a timestamp
     within the window (:func:`telegraf_connected_at`); some sample exists, the
     earliest no later than GNMI_FIRST_SAMPLE_WITHIN_S after started_s (with
-    none, the checks after this one do not run); each series in
+    none, named with ``export_match``, the selector the samples were exported
+    by, the checks after this one do not run); each series in
     GNMI_COUNTER_SERIES has at least GNMI_MIN_SAMPLES samples for each
     interface; GNMI_STATE_SERIES has at least one for the flapping interface
     and, for each steady interface, at least one and at least one fewer than
@@ -234,7 +250,7 @@ def gnmi_findings(
     timestamps = [ts for pairs in in_window.values() for ts, _ in pairs]
     if not timestamps:
         findings.append(
-            f"no sample matching {GNMI_EXPORT_MATCH} within the run's window"
+            f"no sample matching {export_match} within the run's window"
         )
         return findings
     first_after_s = (min(timestamps) - start_ms) / 1000
@@ -300,13 +316,15 @@ def verify_gnmi_row(
     ended_s: float,
     service: str = "telegraf",
     connected_line: str = GNMI_CONNECTED_LINE,
+    export_match: str = GNMI_EXPORT_MATCH,
 ) -> str:
     """Collect the log of the Telegraf compose ``service`` and the run's
-    samples, then apply :func:`gnmi_findings` with ``connected_line``."""
+    samples matching the series selector ``export_match``, then apply
+    :func:`gnmi_findings` with ``connected_line`` and ``export_match``."""
     telegraf_log = compose_logs_tail(repo_root, service, tail_lines=None)
     query = urllib.parse.urlencode(
         {
-            "match[]": GNMI_EXPORT_MATCH,
+            "match[]": export_match,
             "start": f"{started_s:.3f}",
             "end": f"{ended_s:.3f}",
         }
@@ -316,7 +334,12 @@ def verify_gnmi_row(
         return f"VictoriaMetrics export answered {status}: {body[:200]!r}"
     return "\n".join(
         gnmi_findings(
-            telegraf_log, parse_vm_export(body), started_s, ended_s, connected_line
+            telegraf_log,
+            parse_vm_export(body),
+            started_s,
+            ended_s,
+            connected_line,
+            export_match,
         )
     )
 
@@ -565,9 +588,10 @@ MATRIX: tuple[MatrixRow, ...] = (
         post_verify=verify_gnmi_row,
     ),
     # -- The gnmi row over TLS with credentials: Telegraf (profile gnmi-tls)
-    # dials sonda:57401 with tls_enable and a username and password. Its
-    # samples can only arrive through the TLS handshake, so the same checks
-    # as the gnmi row hold only when TLS and the credentials work.
+    # dials sonda:57401 with tls_enable and a username and password, and asks
+    # for JSON_IETF. Its samples can only arrive through the TLS handshake, so
+    # the same checks as the gnmi row hold only when TLS, the credentials and
+    # JSON_IETF work. The row reads only the samples its Telegraf tags.
     MatrixRow(
         name="gnmi-tls",
         profiles=("gnmi-tls",),
@@ -583,6 +607,7 @@ MATRIX: tuple[MatrixRow, ...] = (
             verify_gnmi_row,
             service="telegraf-tls",
             connected_line=GNMI_TLS_CONNECTED_LINE,
+            export_match=GNMI_TLS_EXPORT_MATCH,
         ),
     ),
 )
@@ -1543,8 +1568,19 @@ class _MatrixIntegrityTests(unittest.TestCase):
         self.assertIs(verify.func, verify_gnmi_row)
         self.assertEqual(
             verify.keywords,
-            {"service": "telegraf-tls", "connected_line": GNMI_TLS_CONNECTED_LINE},
+            {
+                "service": "telegraf-tls",
+                "connected_line": GNMI_TLS_CONNECTED_LINE,
+                "export_match": GNMI_TLS_EXPORT_MATCH,
+            },
         )
+
+    def test_the_gnmi_row_reads_the_untagged_samples(self) -> None:
+        rows = {row.name: row for row in MATRIX}
+        self.assertIn("gnmi", rows)
+        self.assertIs(rows["gnmi"].post_verify, verify_gnmi_row)
+        defaults = inspect.signature(verify_gnmi_row).parameters
+        self.assertEqual(defaults["export_match"].default, GNMI_EXPORT_MATCH)
 
 
 class _AttributeFailureTests(unittest.TestCase):
@@ -1638,6 +1674,32 @@ class _GnmiFindingsTests(unittest.TestCase):
             [],
         )
 
+    def test_verify_exports_by_the_selector_it_is_given(self) -> None:
+        calls: dict[str, str] = {}
+
+        def logs(repo_root: Path, service: str, **_) -> str:
+            calls["service"] = service
+            return _telegraf_line(self.CONNECTED_S, GNMI_TLS_CONNECTED_LINE)
+
+        def get(url: str, *_) -> tuple[int, bytes]:
+            calls["url"] = url
+            return 200, b""
+
+        with mock.patch.dict(globals(), {"compose_logs_tail": logs, "http_get": get}):
+            message = verify_gnmi_row(
+                Path("."), self.STARTED_S, self.ENDED_S,
+                service="telegraf-tls",
+                connected_line=GNMI_TLS_CONNECTED_LINE,
+                export_match=GNMI_TLS_EXPORT_MATCH,
+            )
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(calls["url"]).query)
+        self.assertEqual(query["match[]"], [GNMI_TLS_EXPORT_MATCH])
+        self.assertEqual(calls["service"], "telegraf-tls")
+        self.assertEqual(
+            message,
+            f"no sample matching {GNMI_TLS_EXPORT_MATCH} within the run's window",
+        )
+
     def test_missing_connection_line_is_named(self) -> None:
         findings = self._findings(self._passing(), log="nothing here\n")
         self.assertEqual(len(findings), 1)
@@ -1647,6 +1709,16 @@ class _GnmiFindingsTests(unittest.TestCase):
         findings = self._findings({})
         self.assertEqual(len(findings), 1)
         self.assertIn("no sample", findings[0])
+
+    def test_no_samples_names_the_selector_of_the_row(self) -> None:
+        self.assertIn(GNMI_EXPORT_MATCH, self._findings({})[0])
+        tls = gnmi_findings(
+            self.LOG, {}, self.STARTED_S, self.ENDED_S,
+            export_match=GNMI_TLS_EXPORT_MATCH,
+        )
+        self.assertEqual(
+            tls, [f"no sample matching {GNMI_TLS_EXPORT_MATCH} within the run's window"]
+        )
 
     def test_samples_outside_the_window_do_not_count(self) -> None:
         late = {
@@ -1805,6 +1877,38 @@ class _GnmiFindingsTests(unittest.TestCase):
         self.assertIn("first sample arrived", self._findings(samples)[0])
 
 
+def _telegraf_conf(path: Path) -> dict:
+    """The Telegraf config at ``path``, relative to the repository root."""
+    root = find_repo_root(Path(__file__).parent)
+    return tomllib.loads((root / path).read_text())
+
+
+class _GnmiTelegrafConfTests(unittest.TestCase):
+    TAG = ("gnmi_row", "tls")
+
+    def test_only_the_tls_conf_carries_the_row_tag(self) -> None:
+        key, value = self.TAG
+        tls = _telegraf_conf(GNMI_TLS_TELEGRAF_CONF)
+        plain = _telegraf_conf(GNMI_TELEGRAF_CONF)
+        self.assertEqual(tls.get("global_tags"), {key: value})
+        self.assertNotIn(key, plain.get("global_tags", {}))
+
+    def test_the_export_matches_differ_only_in_the_row_tag(self) -> None:
+        key, value = self.TAG
+        tagged, untagged = f'{key}="{value}"', f'{key}!="{value}"'
+        self.assertEqual(GNMI_TLS_EXPORT_MATCH.count(tagged), 1)
+        self.assertEqual(GNMI_EXPORT_MATCH.count(untagged), 1)
+        self.assertEqual(
+            GNMI_TLS_EXPORT_MATCH.replace(tagged, untagged), GNMI_EXPORT_MATCH
+        )
+
+    def test_the_tls_conf_asks_for_json_ietf_and_the_plain_for_proto(self) -> None:
+        tls = _telegraf_conf(GNMI_TLS_TELEGRAF_CONF)["inputs"]["gnmi"]
+        plain = _telegraf_conf(GNMI_TELEGRAF_CONF)["inputs"]["gnmi"]
+        self.assertEqual([i["encoding"] for i in tls], ["json_ietf"])
+        self.assertEqual([i["encoding"] for i in plain], ["proto"])
+
+
 class _GnmiTlsCertTests(unittest.TestCase):
     def test_missing_openssl_is_named(self) -> None:
         with tempfile.TemporaryDirectory() as repo:
@@ -1883,6 +1987,7 @@ def _run_self_tests() -> int:
         _AttributeFailureTests,
         _ParseVmExportTests,
         _GnmiFindingsTests,
+        _GnmiTelegrafConfTests,
         _GnmiTlsCertTests,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))

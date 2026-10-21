@@ -20,7 +20,7 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::transport::server::{Connected, TcpConnectInfo};
 use tonic::transport::Server;
 
-use super::notification::{value_span, ValueKind};
+use super::notification::{self, value_span, ValueKind};
 use super::service::GnmiService;
 use super::{error_chain, TargetSettings};
 use crate::encoder::gnmi::{encode_delete, proto};
@@ -264,7 +264,8 @@ struct Slot {
 }
 
 /// A series' latest encoded `gnmi.Notification`, where its value lies in
-/// it, and the series' version.
+/// it, the series' version, and the value's JSON_IETF form once a subscriber
+/// has asked for it.
 #[derive(Default)]
 struct Latest {
     bytes: Bytes,
@@ -272,6 +273,10 @@ struct Latest {
     value: Range<usize>,
     /// How many times the series' value has changed; 0 before its first.
     version: u64,
+    /// The value as an encoded `TypedValue` holding `json_ietf_val`, made by
+    /// the first [`GnmiTarget::json_ietf_value`] after the value last changed;
+    /// `None` until then. A publish that does not change the value keeps it.
+    json: Option<Bytes>,
 }
 
 impl Latest {
@@ -564,6 +569,59 @@ impl GnmiTarget {
         }
     }
 
+    /// Series `id`'s value at `version` as an encoded `TypedValue` holding
+    /// `json_ietf_val` ([`notification::json_ietf_value`]), where `latest` is
+    /// the series' encoded notification at `version`.
+    ///
+    /// While `version` is the series' current version, the value is made once
+    /// and kept with the series, under the series' lock: the first call after
+    /// a change makes it, and every later call returns the same `Bytes` until
+    /// the value changes again. When the series has moved past `version`, the
+    /// value is made from `latest` and not kept. Publishers never make it.
+    ///
+    /// `None` when no series has `id`, or the value has no JSON_IETF form.
+    pub(crate) fn json_ietf_value(
+        &self,
+        id: SeriesId,
+        version: u64,
+        latest: &[u8],
+    ) -> Option<Bytes> {
+        let table = self.read();
+        let slot = table.slots.get(&id)?;
+        let mut current = lock(&slot.latest);
+        if current.version != version {
+            drop(current);
+            drop(table);
+            return self.made_json_ietf(latest);
+        }
+        if let Some(json) = &current.json {
+            return Some(json.clone());
+        }
+        let json = self.made_json_ietf(&current.bytes)?;
+        current.json = Some(json.clone());
+        Some(json)
+    }
+
+    /// The notification `latest`, series `id`'s at `version`, with its value
+    /// as JSON_IETF: [`notification::with_value`] of
+    /// [`json_ietf_value`](Self::json_ietf_value). The timestamp, prefix and
+    /// path are `latest`'s.
+    ///
+    /// `None` when no series has `id`, or the value has no JSON_IETF form.
+    pub(crate) fn json_ietf_of(&self, id: SeriesId, version: u64, latest: &[u8]) -> Option<Bytes> {
+        notification::with_value(latest, &self.json_ietf_value(id, version, latest)?)
+    }
+
+    /// [`notification::json_ietf_value`] of `encoded`, counted for tests.
+    fn made_json_ietf(&self, encoded: &[u8]) -> Option<Bytes> {
+        #[cfg(test)]
+        self.settings
+            .probe
+            .json_ietf_values
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        notification::json_ietf_value(encoded)
+    }
+
     /// A receiver for every changed value and removed series from now on.
     /// Subscribe before taking a [`snapshot`](Self::snapshot): every change
     /// the snapshot does not hold then arrives on the receiver.
@@ -675,7 +733,12 @@ impl GnmiTarget {
         // A clone shares the buffer but allocates its refcount on first use,
         // so it is made only when someone will receive it.
         let update = (changed && receivers).then(|| latest.bytes.clone());
-        *current = Latest { version, ..latest };
+        let json = if changed { None } else { current.json.take() };
+        *current = Latest {
+            version,
+            json,
+            ..latest
+        };
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
             let _ = self.tx.send(SeriesEvent::Changed(SeriesUpdate {
@@ -939,6 +1002,7 @@ fn latest(encoded: &[u8]) -> Result<(Latest, ValueKind), SondaError> {
         value,
         // Set when the value is stored.
         version: 0,
+        json: None,
     };
     Ok((latest, kind))
 }
@@ -2126,5 +2190,175 @@ mod tests {
                 .contains("cannot serve TLS on 127.0.0.1:0"),
             "got {error}"
         );
+    }
+
+    /// The `json_ietf_val` text of `value`, one encoded `TypedValue`.
+    fn json_ietf_text(value: &[u8]) -> String {
+        match proto::TypedValue::decode(value)
+            .expect("a typed value")
+            .value
+        {
+            Some(proto::typed_value::Value::JsonIetfVal(text)) => {
+                String::from_utf8(text).expect("UTF-8 text")
+            }
+            other => panic!("not a json_ietf_val: {other:?}"),
+        }
+    }
+
+    /// How many JSON_IETF values `target` has made.
+    fn json_ietf_values(target: &GnmiTarget) -> usize {
+        target
+            .settings
+            .probe
+            .json_ietf_values
+            .load(Ordering::Relaxed)
+    }
+
+    /// The only series' version and latest notification.
+    fn only_series(target: &GnmiTarget) -> (SeriesId, u64, Bytes) {
+        let mut snapshot = target.snapshot();
+        assert_eq!(snapshot.len(), 1, "the premise: one series");
+        let series = snapshot.remove(0);
+        (series.series_id, series.version, series.latest)
+    }
+
+    /// Sixteen callers asking at once for a series' JSON_IETF value make it
+    /// once and all hold the same buffer. A publish that does not change the
+    /// value keeps it; after a change the next caller makes the new one.
+    #[tokio::test]
+    async fn a_json_ietf_value_is_made_once_per_change() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, &note_at(1.5, 1_000))
+            .expect("one owner");
+        let (_, version, latest) = only_series(&target);
+
+        let barrier = std::sync::Barrier::new(16);
+        let values: Vec<Bytes> = std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        target.json_ietf_value(id, version, &latest)
+                    })
+                })
+                .collect();
+            callers
+                .into_iter()
+                .map(|caller| caller.join().expect("caller").expect("a value"))
+                .collect()
+        });
+        assert_eq!(values.len(), 16);
+        assert_eq!(
+            json_ietf_values(&target),
+            1,
+            "made once for sixteen callers"
+        );
+        assert!(
+            values.iter().all(|v| v.as_ptr() == values[0].as_ptr()),
+            "every caller holds the same buffer"
+        );
+        assert_eq!(json_ietf_text(&values[0]), "1.5");
+
+        target
+            .publish(OWNER, Some(id), &series, &note_at(1.5, 2_000))
+            .expect("one owner");
+        let (_, unchanged, republished) = only_series(&target);
+        assert_eq!(unchanged, version, "the premise: the value did not change");
+        assert_ne!(republished, latest, "the premise: the notification did");
+        let kept = target
+            .json_ietf_value(id, unchanged, &republished)
+            .expect("a value");
+        assert_eq!(
+            kept.as_ptr(),
+            values[0].as_ptr(),
+            "kept through the publish"
+        );
+        assert_eq!(json_ietf_values(&target), 1);
+
+        target
+            .publish(OWNER, Some(id), &series, &note_at(2.5, 3_000))
+            .expect("one owner");
+        let (_, changed, newest) = only_series(&target);
+        assert_eq!(changed, version + 1, "the premise: a change");
+        let remade = target
+            .json_ietf_value(id, changed, &newest)
+            .expect("a value");
+        assert_eq!(json_ietf_values(&target), 2, "made again after the change");
+        assert_ne!(remade.as_ptr(), values[0].as_ptr());
+        assert_eq!(json_ietf_text(&remade), "2.5");
+    }
+
+    /// A caller holding a version the series has moved past gets that
+    /// version's value, made from the notification it holds and not kept.
+    /// An unknown id has none, and nothing is made for it.
+    #[tokio::test]
+    async fn a_json_ietf_value_of_a_past_version_is_made_from_the_callers_notification() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let first = note_at(1.5, 1_000);
+        let (id, _) = target
+            .publish(OWNER, None, &series, &first)
+            .expect("one owner");
+        target
+            .publish(OWNER, Some(id), &series, &note_at(2.5, 2_000))
+            .expect("one owner");
+        let (_, version, latest) = only_series(&target);
+        assert_eq!(version, 2, "the premise: the series moved past version 1");
+
+        let past = target.json_ietf_value(id, 1, &first).expect("a value");
+        assert_eq!(json_ietf_text(&past), "1.5", "the value the caller holds");
+        let current = target
+            .json_ietf_value(id, version, &latest)
+            .expect("a value");
+        assert_eq!(
+            json_ietf_text(&current),
+            "2.5",
+            "the past value was not kept"
+        );
+        assert_eq!(json_ietf_values(&target), 2);
+
+        assert_eq!(target.json_ietf_value(id.wrapping_add(1), 1, &first), None);
+        assert_eq!(target.json_ietf_of(id.wrapping_add(1), 1, &first), None);
+        assert_eq!(
+            json_ietf_values(&target),
+            2,
+            "nothing made for an unknown id"
+        );
+    }
+
+    /// `json_ietf_of` is the caller's notification with the JSON_IETF value
+    /// in it: through a publish that does not change the value, the value is
+    /// made once and each notification keeps its own timestamp.
+    #[tokio::test]
+    async fn json_ietf_of_carries_the_callers_timestamp() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, &note_at(1.5, 1_000))
+            .expect("one owner");
+        let (_, version, first) = only_series(&target);
+        let at_first = target
+            .json_ietf_of(id, version, &first)
+            .expect("a notification");
+        target
+            .publish(OWNER, Some(id), &series, &note_at(1.5, 2_000))
+            .expect("one owner");
+        let (_, unchanged, second) = only_series(&target);
+        assert_eq!(unchanged, version, "the premise: the value did not change");
+        let at_second = target
+            .json_ietf_of(id, unchanged, &second)
+            .expect("a notification");
+        assert_eq!(json_ietf_values(&target), 1, "the value was made once");
+
+        let json = Some(proto::TypedValue {
+            value: Some(proto::typed_value::Value::JsonIetfVal(b"1.5".to_vec())),
+        });
+        for (bytes, timestamp) in [(&at_first, 1_000), (&at_second, 2_000)] {
+            let notification = proto::Notification::decode(bytes.as_ref()).expect("decodes");
+            assert_eq!(notification.timestamp, timestamp);
+            assert_eq!(notification.update[0].val, json);
+        }
     }
 }

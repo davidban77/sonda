@@ -27,17 +27,21 @@ impl SubscriptionMatcher {
     ///   is a number gNMI does not define. A `ONCE` list's subscription modes
     ///   are not read.
     /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list or a
-    ///   `BYTES`, `ASCII` or `JSON_IETF` encoding.
+    ///   `BYTES` or `ASCII` encoding.
     ///
-    /// `PROTO` and `JSON` are accepted and both served as `PROTO`: `JSON` is
-    /// encoding 0, which is also what a list that sets no encoding carries.
+    /// `PROTO`, `JSON_IETF` and `JSON` are accepted. `JSON` is served as
+    /// `PROTO`: it is encoding 0, which is also what a list that sets no
+    /// encoding carries.
     pub fn new(list: &proto::SubscriptionList) -> Result<Self, Status> {
         let encoding = Encoding::try_from(list.encoding).map_err(|_| {
             Status::invalid_argument(format!("unknown gnmi encoding {}", list.encoding))
         })?;
-        if !matches!(encoding, Encoding::Proto | Encoding::Json) {
+        if !matches!(
+            encoding,
+            Encoding::Proto | Encoding::JsonIetf | Encoding::Json
+        ) {
             return Err(Status::unimplemented(format!(
-                "encoding {} is not supported; this target encodes PROTO only",
+                "encoding {} is not supported; this target encodes PROTO and JSON_IETF",
                 encoding_name(encoding)
             )));
         }
@@ -324,13 +328,12 @@ mod tests {
     }
 
     /// An encoding this target does not serve is refused, naming it and
-    /// the one served.
+    /// the ones served.
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::bytes(Encoding::Bytes, "BYTES")]
     #[case::ascii(Encoding::Ascii, "ASCII")]
-    #[case::json_ietf(Encoding::JsonIetf, "JSON_IETF")]
-    fn refused_encodings_name_the_request_and_proto(
+    fn refused_encodings_name_the_request_and_the_served(
         #[case] encoding: Encoding,
         #[case] named: &str,
     ) {
@@ -339,14 +342,15 @@ mod tests {
         let status = SubscriptionMatcher::new(&list).expect_err("refused");
         assert_eq!(status.code(), tonic::Code::Unimplemented, "{}", status.message());
         assert!(status.message().contains(named), "{}", status.message());
-        assert!(status.message().contains("PROTO"), "{}", status.message());
+        assert!(status.message().contains("PROTO and JSON_IETF"), "{}", status.message());
     }
 
-    /// PROTO is accepted, and so is JSON: encoding 0, which a list that sets
-    /// no encoding also carries.
+    /// PROTO and JSON_IETF are accepted, and so is JSON: encoding 0, which a
+    /// list that sets no encoding also carries.
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::proto(Encoding::Proto)]
+    #[case::json_ietf(Encoding::JsonIetf)]
     #[case::json_or_unset(Encoding::Json)]
     fn served_encodings_are_accepted(#[case] encoding: Encoding) {
         let mut list = list(&["/interfaces"]);

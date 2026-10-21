@@ -241,6 +241,16 @@ src/
 │   │   │                   the value; a first publish is a change) is the one definition
 │   │   │                   of "changed". Only a change with a receiver is broadcast (the
 │   │   │                   one Bytes clone). A slot's ValueKind is its first publish's.
+│   │   │                   Latest.json is the value as JSON_IETF (json_ietf_value), made
+│   │   │                   by the first GnmiTarget::json_ietf_value after the value
+│   │   │                   changed, under the series' lock; a change clears it, an
+│   │   │                   unchanged publish keeps it, and a publisher never makes it.
+│   │   │                   json_ietf_value(id, version, latest) answers from the cache
+│   │   │                   when the slot holds `version`, and makes it from `latest`
+│   │   │                   without caching when the slot moved on; None for an unknown
+│   │   │                   id. json_ietf_of() splices that value into the caller's
+│   │   │                   `latest` (with_value), so each response keeps its own
+│   │   │                   timestamp.
 │   │   │                   Each change raises the series' version by one (1 for its
 │   │   │                   first value), set with the value under the series' lock;
 │   │   │                   SeriesUpdate and SeriesSnapshot carry it (both
@@ -297,12 +307,12 @@ src/
 │   │   │                   first and lengthened on a mismatch; no allocation), a key of "*"
 │   │   │                   or an absent key matching any value, an empty origin or target
 │   │   │                   matching any. new() refuses (UNIMPLEMENTED, named) POLL,
-│   │   │                   BYTES, ASCII and JSON_IETF encodings; INVALID_ARGUMENT for an
+│   │   │                   BYTES and ASCII encodings; INVALID_ARGUMENT for an
 │   │   │                   empty list, an empty element name, a `...` with keys, or an
 │   │   │                   unknown list encoding or
-│   │   │                   mode or (STREAM lists only) subscription mode. JSON (encoding
-│   │   │                   0, also an unset encoding) is accepted and served as PROTO.
-│   │   │                   pub(crate).
+│   │   │                   mode or (STREAM lists only) subscription mode. PROTO and
+│   │   │                   JSON_IETF are accepted; JSON (encoding 0, also an unset
+│   │   │                   encoding) is accepted and served as PROTO. pub(crate).
 │   │   ├── test_tls.rs ←   (cfg(test)) TlsFiles: a CA, and a server (localhost, 127.0.0.1) and
 │   │   │                   a client certificate it signed, made with rcgen (a dev-dependency)
 │   │   │                   and written to a temp dir; tls()/mutual_tls() blocks, a TLS channel,
@@ -310,7 +320,16 @@ src/
 │   │   ├── notification.rs ← value_span(): the byte range of an encoded Notification's
 │   │   │                   first update's val (the TypedValue without key and length)
 │   │   │                   and its ValueKind (the first field's number); walks keys and
-│   │   │                   lengths, decodes no path, allocates nothing. pub(crate).
+│   │   │                   lengths, decodes no path, allocates nothing.
+│   │   │                   json_ietf_value(): that val as a TypedValue { json_ietf_val },
+│   │   │                   one allocation; json_text is the ONE RFC 7951 rendering: uint
+│   │   │                   and int as JSON strings, double as a JSON number (NaN and
+│   │   │                   the infinities as the strings "NaN", "Infinity",
+│   │   │                   "-Infinity"), bool as true/false, string as an escaped JSON
+│   │   │                   string, a json_ietf_val as it is; any other kind is None.
+│   │   │                   with_value(): the notification with its first update's val
+│   │   │                   replaced and every other field copied, one allocation.
+│   │   │                   pub(crate).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service). Holds the target
 │   │                       WEAKLY (so does every handler and subscription task): nothing a
@@ -321,7 +340,7 @@ src/
 │   │                       with constant_time_eq); a missing or wrong pair is
 │   │                       UNAUTHENTICATED "credentials required", logged once at warn with
 │   │                       the peer (TCP or TLS connect info) and the method, never a value.
-│   │                       Capabilities: 0.10.0, [PROTO], no models.
+│   │                       Capabilities: 0.10.0, [PROTO, JSON_IETF], no models.
 │   │                       Subscribe: first message must be a SubscriptionList; start()
 │   │                       plans it, takes a place with target.admit() (or the request
 │   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns)
@@ -357,7 +376,10 @@ src/
 │   │                       SeriesId -> Option<PathKey> (None: deleted, its Removed unread).
 │   │                       Every value goes through Delivered::queue_value (Placement::InPlace
 │   │                       for sync, resync, heartbeat and change; Last for samples): a path
-│   │                       indexed under another id gets that id's delete first. Indexed: values
+│   │                       indexed under another id gets that id's delete first. A JSON_IETF
+│   │                       list's Delivered holds the target (weakly) and queues each value as
+│   │                       target.json_ietf_of(id, version, latest) returns it, nothing when
+│   │                       that is None; a PROTO list's queues the stored bytes. Indexed: values
 │   │                       of series the set matches or a suppressing group sends; never a value
 │   │                       only a plain SAMPLE sends. queue_delete deletes only an indexed id;
 │   │                       with a receiver the id is then remembered as deleted. Removed of an
