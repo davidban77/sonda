@@ -11,4 +11,18 @@
 # The companion `yanked` warning for the same crate is intentionally left
 # visible (cargo-audit has no per-crate yanked silencing) — same root cause,
 # same justification, surfaces the same actionable signal in CI logs.
-ignore = ["RUSTSEC-2026-0105"]
+#
+# RUSTSEC-2026-0381 — `webpki-roots` bundles root certificates that trust
+# distrusted emSign intermediates. Fixed in webpki-roots 1.0.10.
+#
+# Two versions are in the lockfile:
+#   webpki-roots 1.0.10, fixed.
+#   webpki-roots 0.26.11, via sonda-core (http, remote-write) -> ureq 2.12.1.
+#
+# 0.26.11 holds no certificates of its own: its only dependency is
+# `webpki-roots = "1"`, which it re-exports, so it serves 1.0.10's roots.
+# There is no 0.26.x release, and ureq 2.12.1 is the last 2.x. The ignore
+# matches the advisory ID, so it covers 1.x too: keep webpki-roots 1.x at
+# >= 1.0.10. Remove this entry when sonda-core moves to ureq 3, which depends
+# on webpki-roots 1.x directly.
+ignore = ["RUSTSEC-2026-0105", "RUSTSEC-2026-0381"]
