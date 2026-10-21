@@ -433,7 +433,7 @@ impl GnmiEncoder {
             !self.label_needs_no_reference(key)
                 && !template
                     .placeholders()
-                    .any(|p| p != path::NAME_PLACEHOLDER && p == *key)
+                    .any(|p| p.name != path::NAME_PLACEHOLDER && p.name == *key)
         })
     }
 

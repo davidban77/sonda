@@ -118,6 +118,11 @@ src/
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
 │   │                      share a port, and every gnmi encoder agrees with its entries.
+│   │                      Its leaf check gives a series one leaf (keys of labels used only
+│   │                      as {x?} that no event carries left out) and the set of keys it may
+│   │                      leave out (a spike over nothing); two elements meet when each key
+│   │                      is on both with values that can be equal, or every side that has
+│   │                      it may leave it out. Per pair O(elements x keys), never 2^k shapes.
 │   │                      check_running_sinks() checks entries against sinks already
 │   │                      running in the process (gnmi_target via registry().check());
 │   │                      both multi-launch paths call it (POST /scenarios through
@@ -149,12 +154,18 @@ src/
 │   │   │                   with `le`, _sum, _count; summary: <name> with `quantile`,
 │   │   │                   _sum, _count). The `le`/`quantile` template must reference
 │   │   │                   the key and may not drop it; _sum/_count need a template
-│   │   │                   without it: their own paths: entries, or path when the
-│   │   │                   bucket/quantile series has its own paths: entry. Logs
+│   │   │                   without it: their own paths: entries, path when the
+│   │   │                   bucket/quantile series has its own paths: entry, or a path
+│   │   │                   that writes it optionally ([le={le?}]). A cardinality_spikes
+│   │   │                   label is a template's only as an optional key. Logs
 │   │   │                   entries refuse both encoder and sink. encode_delete (pub(crate)) writes a
 │   │   │                   Notification deleting a full path: origin and target on the prefix, the
 │   │   │                   elements on delete[0], split as an update's prefix and path are.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
+│   │   │                   placeholders() yields Placeholder { name, optional }. An
+│   │   │                   optional key value [key={x?}] renders the key only when the
+│   │   │                   event carries x (render leaves it out; never an error); an
+│   │   │                   optional element name is a parse error.
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike
 │   │   │                   value an element-name placeholder can render to) both apply
@@ -280,12 +291,15 @@ src/
 │   │   │                   new target. check() answers as acquire() would, binding
 │   │   │                   nothing. listen_overlap assumes a dual-stack [::].
 │   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's paths joined to its
-│   │   │                   prefix; matches() is a prefix match on elements, a key of "*"
+│   │   │                   prefix; matches() aligns the subscription's elements with the
+│   │   │                   series' first ones (aligns(): `*` is any one element, its keys
+│   │   │                   still apply; `...` any run of zero or more, tried shortest
+│   │   │                   first and lengthened on a mismatch; no allocation), a key of "*"
 │   │   │                   or an absent key matching any value, an empty origin or target
 │   │   │                   matching any. new() refuses (UNIMPLEMENTED, named) POLL,
-│   │   │                   BYTES, ASCII and JSON_IETF encodings and element
-│   │   │                   wildcards; INVALID_ARGUMENT for an empty
-│   │   │                   list, an empty element name, or an unknown list encoding or
+│   │   │                   BYTES, ASCII and JSON_IETF encodings; INVALID_ARGUMENT for an
+│   │   │                   empty list, an empty element name, a `...` with keys, or an
+│   │   │                   unknown list encoding or
 │   │   │                   mode or (STREAM lists only) subscription mode. JSON (encoding
 │   │   │                   0, also an unset encoding) is accepted and served as PROTO.
 │   │   │                   pub(crate).

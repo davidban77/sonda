@@ -4755,6 +4755,175 @@ mod tests {
         assert_eq!(delivered.series, HashMap::from([(3, Some(key("eth3")))]));
     }
 
+    /// The entries of `examples/gnmi-spike.yaml`, each with the path it
+    /// renders outside the spike window and, for the spiking one, the path of
+    /// each spike value: rendered through the example's own encoder, with the
+    /// values the example's spike takes.
+    fn spike_example() -> (Vec<ScenarioConfig>, Vec<String>, Vec<String>) {
+        use crate::compiler::expand::InMemoryPackResolver;
+        use crate::config::{LabelValueSet, ScenarioEntry};
+
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/gnmi-spike.yaml");
+        let yaml = std::fs::read_to_string(file).expect("the spike example");
+        let entries = crate::compile_scenario_file(&yaml, &InMemoryPackResolver::new())
+            .expect("the example compiles");
+        let mut configs = Vec::new();
+        let (mut base, mut spiked) = (Vec::new(), Vec::new());
+        for entry in entries {
+            let ScenarioEntry::Metrics(config) = entry else {
+                panic!("the example holds metrics entries only");
+            };
+            let EncoderConfig::Gnmi(cfg) = &config.encoder else {
+                panic!("the example encodes gnmi");
+            };
+            let encoder = GnmiEncoder::new(cfg).expect("a valid encoder");
+            let template = encoder.template_for(&config.name).expect("a template");
+            let static_labels = config.labels.clone().unwrap_or_default();
+            let render = |extra: Option<(&str, &str)>| {
+                let mut pairs: Vec<(&str, &str)> = static_labels
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                pairs.extend(extra);
+                let labels = Labels::from_pairs(&pairs).expect("valid labels");
+                let mut path = template
+                    .render(&config.name, &labels)
+                    .expect("the path renders");
+                path.origin.clone_from(&cfg.origin);
+                path.to_string()
+            };
+            base.push(render(None));
+            for window in config.cardinality_spikes.iter().flatten() {
+                let Some(LabelValueSet::SpikeCounter {
+                    prefix,
+                    cardinality,
+                    outside: None,
+                }) = config.label_value_set(&window.label)
+                else {
+                    panic!("the example's spike is a counter over no static label");
+                };
+                spiked.extend(
+                    (0..cardinality)
+                        .map(|i| render(Some((&window.label, &format!("{prefix}{i}"))))),
+                );
+            }
+            configs.push(config);
+        }
+        (configs, base, spiked)
+    }
+
+    /// The spike example through a target, with its window shortened to
+    /// 1.5 s and its rate raised to 100 per second. Inside the window the
+    /// table holds one series per spike value beside the non-spiking
+    /// metric's base path, and the spiking metric's base path is absent: its
+    /// events all carry the spike label. After the window the spiking
+    /// metric's base path joins them and no series leaves. An ON_CHANGE
+    /// client subscribed to `/interfaces/.../in-octets` receives each spike
+    /// path as a new series, then the base path, and nothing for the other
+    /// metric.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_spike_example_serves_each_spike_value_as_a_new_series() {
+        const WINDOW: Duration = Duration::from_millis(1_500);
+        let (mut configs, base, spiked) = spike_example();
+        assert_eq!(
+            configs.len(),
+            2,
+            "the premise: a spiking and a steady metric"
+        );
+        assert_eq!(
+            spiked.len(),
+            20,
+            "the premise: the example's spike has 20 values"
+        );
+        let (spiking_base, steady_base) = (&base[0], &base[1]);
+        assert!(spiking_base.ends_with("/in-octets") && steady_base.ends_with("/out-octets"));
+        for config in &mut configs {
+            config.base.rate = 100.0;
+            for window in config.base.cardinality_spikes.iter_mut().flatten() {
+                window.every = "1h".to_string();
+                window.r#for = format!("{}ms", WINDOW.as_millis());
+            }
+        }
+
+        let target = target_with(1, |_| {}).await;
+        let mut client = open(
+            target.local_addr(),
+            on_change("/interfaces/.../in-octets", Duration::ZERO),
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(next(&mut client).await, Received::Sync, "an empty table");
+
+        let launch = LaunchId::next();
+        let cancel = CancellationToken::new();
+        let started = Instant::now();
+        let runs: Vec<_> = configs
+            .into_iter()
+            .map(|config| {
+                let mut sink: Box<dyn Sink> =
+                    Box::new(GnmiTargetSink::from_target(Arc::clone(&target), launch));
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    crate::schedule::runner::run_with_sink(&config, &mut sink, &cancel, None).await
+                })
+            })
+            .collect();
+        let paths = || -> std::collections::BTreeSet<String> {
+            target
+                .snapshot()
+                .iter()
+                .map(|s| s.path.path().to_string())
+                .collect()
+        };
+
+        let mut inside_window = spiked.clone();
+        inside_window.push(steady_base.clone());
+        let inside: std::collections::BTreeSet<String> = inside_window.into_iter().collect();
+        assert!(
+            eventually(|| paths() == inside).await,
+            "inside the window: each spike path and the steady base path, got {:?}",
+            paths()
+        );
+        assert!(
+            started.elapsed() < WINDOW,
+            "the premise: observed inside the window, at {:?}",
+            started.elapsed()
+        );
+        assert_eq!(target.series_count(), spiked.len() + 1);
+
+        let mut after_window = inside.clone();
+        after_window.insert(spiking_base.clone());
+        assert!(
+            eventually(|| paths() == after_window).await,
+            "after the window: the spiking base path joins and nothing leaves, got {:?}",
+            paths()
+        );
+        assert!(
+            started.elapsed() >= WINDOW,
+            "the base path appears after the window"
+        );
+        assert_eq!(target.series_count(), spiked.len() + 2);
+
+        let mut received = std::collections::BTreeSet::new();
+        let deadline = Instant::now() + PATIENCE;
+        while !received.contains(spiking_base) && Instant::now() < deadline {
+            if let Received::Update(path) = next(&mut client).await {
+                received.insert(path);
+            }
+        }
+        let mut wanted: std::collections::BTreeSet<String> = spiked.iter().cloned().collect();
+        wanted.insert(spiking_base.clone());
+        assert_eq!(
+            received, wanted,
+            "every in-octets path, and no out-octets path"
+        );
+
+        cancel.cancel();
+        for run in runs {
+            run.await.expect("the run task").expect("the scenario ran");
+        }
+    }
+
     /// A metrics scenario `name{ifName=if_name}` at `rate` Hz into `sink`.
     fn scenario(name: &str, if_name: &str, rate: f64, sink: SinkConfig) -> ScenarioConfig {
         ScenarioConfig {
