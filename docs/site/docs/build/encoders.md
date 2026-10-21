@@ -226,23 +226,64 @@ With that block, `in_octets{device="rtr-core-01", ifName="GigabitEthernet0/0/0"}
 - Segments are separated by `/`. A leading `/` is optional.
 - A segment is an element name, optionally followed by one or more `[key=value]` groups. Key names are literal, and a key appears at most once per segment.
 - An element name or a key value is either literal text or exactly one placeholder. A brace anywhere else is an error.
+- A key value may be an optional placeholder, `{label?}`. The key is rendered when the event carries the label and left out when it does not. An element name cannot be optional: an element is never left out.
 - `{name}` renders the metric name with `_` replaced by `-`, so `in_octets` becomes `in-octets`. Any other `{label}` renders that label's value as it is.
 - A template has no `origin:` prefix; the origin comes from `origin`. A colon anywhere else, in a module-prefixed element name or in a key value, is literal text.
 - A rendered element name must be non-empty and contain no `/`, `[` or `]`. Key values may contain `/`, as in `GigabitEthernet0/0/0`.
 
 Every label must be accounted for, so that two series never share a path. This covers each key in an entry's `labels` and `dynamic_labels`, and every `cardinality_spikes` label. Each one must be either:
 
-- referenced by the entry's template,
+- referenced by the entry's template, as `{label}` or as an optional `{label?}`,
 - the `target_label`, or
 - listed in `drop_labels`.
 
-A file that breaks this is refused with the label named. A `cardinality_spikes` label exists only inside its window, so it cannot be a placeholder. Unless it is the `target_label`, or shares its key with a label the template references, it goes in `drop_labels`.
+A file that breaks this is refused with the label named. A `cardinality_spikes` label exists only inside its window, so it cannot be a required `{label}`. Reference it as an optional key, as in [Cardinality spikes as new series](#cardinality-spikes-as-new-series), or list it in `drop_labels`; it needs neither when it is the `target_label` or shares its key with a label the template references. An optional placeholder may name a label an entry never carries: its key is always left out, so one template can serve entries with and without the spike.
 
 Histogram and summary entries take the encoder too:
 
 - **Histogram:** emits `<name>_bucket` with an `le` label, plus `<name>_sum` and `<name>_count`. The bucket template must reference `{le}`, and `le` may not be dropped.
 - **Summary:** emits `<name>` with a `quantile` label, plus `<name>_sum` and `<name>_count`. The template must reference `{quantile}`, and `quantile` may not be dropped.
-- **`_sum` and `_count`:** these series carry no `le` or `quantile`, so they need a template without `{le}` or `{quantile}`. That is either their own `paths:` entries (`<name>_sum`, `<name>_count`), or `path` when the bucket or quantile series has a `paths:` entry of its own. Validation names any series whose template uses a key it does not carry.
+- **`_sum` and `_count`:** these series carry no `le` or `quantile`, so they need a template without `{le}` or `{quantile}`. That is either their own `paths:` entries (`<name>_sum`, `<name>_count`), `path` when the bucket or quantile series has a `paths:` entry of its own, or one `path` for all three that writes the key as `[le={le?}]` or `[quantile={quantile?}]`. Validation names any series whose template uses a key it does not carry.
+
+### Cardinality spikes as new series
+
+A `cardinality_spikes` label referenced as an optional key gives every spike value a path of its own. Inside the window a gNMI client sees one new series per value beside the base path; outside it the key is left out and the metric is written to its base path. The complete scenario is [`examples/gnmi-spike.yaml`](https://github.com/davidban77/sonda/blob/main/examples/gnmi-spike.yaml):
+
+```yaml title="examples/gnmi-spike.yaml (excerpt)"
+# sonda:static - excerpt only; a gnmi_target listens for a client, which the browser playground cannot provide
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+    path: "/interfaces/interface[name={ifName}][spike={spike?}]/state/counters/{name}"
+    values:
+      in_octets: uint
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: { type: step, start: 0, step_size: 125000 }
+    labels: { device: rtr-edge-01, ifName: GigabitEthernet0/0/0 }
+    cardinality_spikes:
+      - label: spike
+        every: 2m
+        for: 30s
+        cardinality: 20
+```
+
+For the first 30 seconds of every 2 minutes, `in_octets` is sent on 20 paths, `/interfaces/interface[name=GigabitEthernet0/0/0][spike=spike_0]/state/counters/in-octets` to `[spike=spike_19]`. For the rest of each cycle it is sent on `/interfaces/interface[name=GigabitEthernet0/0/0]/state/counters/in-octets`.
+
+A series a spike creates keeps its last value until the scenario that publishes it stops. It is not removed when the window closes, so after the first window the target serves the base path and all 20 spike paths. [Sinks — gnmi_target](sinks.md#gnmi_target) describes when a series leaves the target.
+
+Every shape a template can render is checked against every other metric's paths. Here those shapes are the base path and one path per spike value. A metric whose path equals the base path is refused, just as two metrics on one path are.
 
 ### Value types
 

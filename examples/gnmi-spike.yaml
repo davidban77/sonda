@@ -1,0 +1,53 @@
+# An interface whose counters suddenly fan out into many series: a
+# cardinality spike, served as a gNMI target.
+#
+# in_octets carries a `spike` label for the first 30 s of every 2 minutes,
+# taking 20 values (spike_0 to spike_19). The path template references it as
+# an optional key, [spike={spike?}]: inside the window each value renders a
+# path of its own, so a collector sees 20 new series appear beside the base
+# path; outside it the key is left out and in_octets is written to its base
+# path again. The spike series keep their last value until sonda stops: a
+# series leaves the target only when the scenario that publishes it stops.
+# out_octets carries no spike label, so its key is always left out.
+#
+# Usage (runs until stopped; release binaries include the gnmi feature):
+#   sonda run examples/gnmi-spike.yaml
+#
+# Watch each spike value arrive as a new series:
+#   gnmic -a 127.0.0.1:57400 --insecure subscribe \
+#     --path '/interfaces/.../in-octets' --mode stream --stream-mode on_change
+#
+# sonda:static - a gnmi_target listens for a client, which the browser playground cannot provide
+
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+    path: "/interfaces/interface[name={ifName}][spike={spike?}]/state/counters/{name}"
+    values:
+      in_octets: uint
+      out_octets: uint
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+
+scenarios:
+  - signal_type: metrics
+    name: in_octets
+    generator: { type: step, start: 0, step_size: 125000 }
+    labels: { device: rtr-edge-01, ifName: GigabitEthernet0/0/0 }
+    cardinality_spikes:
+      - label: spike
+        every: 2m
+        for: 30s
+        cardinality: 20
+
+  - signal_type: metrics
+    name: out_octets
+    generator: { type: step, start: 0, step_size: 62500 }
+    labels: { device: rtr-edge-01, ifName: GigabitEthernet0/0/0 }

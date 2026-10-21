@@ -15,8 +15,14 @@
 //!   segment.
 //! - An element name or a key value is either a literal or exactly one
 //!   placeholder `{x}`. A brace anywhere else is an error.
+//! - A key value may also be an optional placeholder `{x?}`: the key is
+//!   rendered when the event carries label `x` and left out when it does not,
+//!   so `[spike={spike?}]` renders `[spike=spike_3]` inside a cardinality
+//!   spike window and nothing outside it. An element name cannot be optional:
+//!   an element is never left out.
 //! - `{name}` renders the metric name with `_` replaced by `-`. Any other
-//!   `{label}` renders that label's value verbatim.
+//!   `{label}` renders that label's value verbatim; a required `{label}` the
+//!   event does not carry rejects the event.
 
 use std::collections::BTreeMap;
 
@@ -32,6 +38,37 @@ pub const NAME_PLACEHOLDER: &str = "name";
 enum Part {
     Literal(String),
     Placeholder(String),
+    /// `{x?}`, as a key value only: the key is left out when the label is
+    /// absent.
+    Optional(String),
+}
+
+impl Part {
+    /// The placeholder this part is, if any.
+    fn placeholder(&self) -> Option<Placeholder<'_>> {
+        match self {
+            Part::Literal(_) => None,
+            Part::Placeholder(name) => Some(Placeholder {
+                name,
+                optional: false,
+            }),
+            Part::Optional(name) => Some(Placeholder {
+                name,
+                optional: true,
+            }),
+        }
+    }
+}
+
+/// One placeholder of a [`PathTemplate`], as
+/// [`PathTemplate::placeholders`] yields it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placeholder<'a> {
+    /// The label it renders, or [`NAME_PLACEHOLDER`] for the metric name.
+    pub name: &'a str,
+    /// Whether it is written `{name?}`: a key value whose key is left out of
+    /// the path when the event does not carry the label.
+    pub optional: bool,
 }
 
 /// One `/`-separated element of a template.
@@ -52,7 +89,8 @@ impl PathTemplate {
     ///
     /// Returns [`SondaError::Config`] naming the template and the problem for
     /// an empty template, an `origin:` prefix, an empty segment, a malformed
-    /// `[key=value]` group, or a brace that is not a whole-part placeholder.
+    /// `[key=value]` group, a brace that is not a whole-part placeholder, or
+    /// an optional placeholder as an element name.
     pub fn parse(template: &str) -> Result<Self, SondaError> {
         let invalid = |reason: &str| {
             SondaError::Config(ConfigError::invalid(format!(
@@ -80,46 +118,46 @@ impl PathTemplate {
 
     /// Placeholders this template references, for validation against an entry's labels.
     ///
-    /// Yields each placeholder name in template order, including
-    /// [`NAME_PLACEHOLDER`] when present. Duplicates are yielded once per use.
-    pub fn placeholders(&self) -> impl Iterator<Item = &str> {
+    /// Yields each placeholder in template order with whether it is
+    /// optional, including [`NAME_PLACEHOLDER`] when present. Duplicates are
+    /// yielded once per use.
+    pub fn placeholders(&self) -> impl Iterator<Item = Placeholder<'_>> {
         self.segments.iter().flat_map(|segment| {
             std::iter::once(&segment.name)
                 .chain(segment.keys.iter().map(|(_, value)| value))
-                .filter_map(|part| match part {
-                    Part::Placeholder(p) => Some(p.as_str()),
-                    Part::Literal(_) => None,
-                })
+                .filter_map(Part::placeholder)
         })
     }
 
     /// Placeholders in element-name position, in template order. Placeholders
-    /// in key values are not included: those may render to any text.
+    /// in key values are not included: those may render to any text. None is
+    /// optional.
     pub(crate) fn element_name_placeholders(&self) -> impl Iterator<Item = &str> {
         self.segments
             .iter()
-            .filter_map(|segment| match &segment.name {
-                Part::Placeholder(p) => Some(p.as_str()),
-                Part::Literal(_) => None,
-            })
+            .filter_map(|segment| segment.name.placeholder().map(|p| p.name))
     }
 
     /// Render into a `proto::Path` for this series. Allocates; called once per series.
     ///
-    /// The returned path has empty `origin` and `target`. Returns
-    /// [`EncoderError::EventRejected`] when a placeholder names a label that
-    /// `labels` does not contain, or when a placeholder in element-name
-    /// position resolves to an empty string or one containing `/`, `[` or
-    /// `]`, which would not read back as a single element. Key values may
-    /// contain any of these.
+    /// The returned path has empty `origin` and `target`. A key whose value
+    /// is an optional placeholder is left out when `labels` does not contain
+    /// the label. Returns [`EncoderError::EventRejected`] when a required
+    /// placeholder names a label that `labels` does not contain, or when a
+    /// placeholder in element-name position resolves to an empty string or
+    /// one containing `/`, `[` or `]`, which would not read back as a single
+    /// element. Key values may contain any of these.
     pub fn render(&self, name: &str, labels: &Labels) -> Result<proto::Path, SondaError> {
         let mut elem = Vec::with_capacity(self.segments.len());
         for segment in &self.segments {
             let mut key = BTreeMap::new();
             for (k, v) in &segment.keys {
-                key.insert(k.clone(), resolve(v, name, labels)?);
+                if let Some(value) = resolve(v, name, labels)? {
+                    key.insert(k.clone(), value);
+                }
             }
-            let element = resolve(&segment.name, name, labels)?;
+            let element = resolve(&segment.name, name, labels)?
+                .ok_or_else(|| missing_label(&segment.name, name))?;
             if !is_valid_element_name(&element) {
                 return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
                     "metric {name:?} renders gnmi path element {element:?}; an element name \
@@ -143,22 +181,36 @@ pub(crate) fn is_valid_element_name(element: &str) -> bool {
     !element.is_empty() && !element.contains(['/', '[', ']'])
 }
 
-/// Resolve one part of a segment for a series.
-fn resolve(part: &Part, name: &str, labels: &Labels) -> Result<String, SondaError> {
-    match part {
-        Part::Literal(s) => Ok(s.clone()),
-        Part::Placeholder(p) if p == NAME_PLACEHOLDER => Ok(name.replace('_', "-")),
-        Part::Placeholder(p) => labels
+/// Resolve one part of a segment for a series: `None` for an optional
+/// placeholder whose label `labels` does not contain.
+fn resolve(part: &Part, name: &str, labels: &Labels) -> Result<Option<String>, SondaError> {
+    let label = |p: &str| {
+        labels
             .iter()
-            .find(|(k, _)| *k == p.as_str())
+            .find(|(k, _)| *k == p)
             .map(|(_, v)| v.to_string())
-            .ok_or_else(|| {
-                SondaError::Encoder(EncoderError::EventRejected(format!(
-                    "gnmi path template placeholder {{{p}}} names a label that metric \
-                     {name:?} does not carry"
-                )))
-            }),
+    };
+    match part {
+        Part::Literal(s) => Ok(Some(s.clone())),
+        Part::Placeholder(p) | Part::Optional(p) if p == NAME_PLACEHOLDER => {
+            Ok(Some(name.replace('_', "-")))
+        }
+        Part::Placeholder(p) => label(p).map(Some).ok_or_else(|| missing_label(part, name)),
+        Part::Optional(p) => Ok(label(p)),
     }
+}
+
+/// The error for `part` naming a label that metric `name` does not carry.
+fn missing_label(part: &Part, name: &str) -> SondaError {
+    let shown = match part {
+        Part::Literal(s) => s.clone(),
+        Part::Placeholder(p) => format!("{{{p}}}"),
+        Part::Optional(p) => format!("{{{p}?}}"),
+    };
+    SondaError::Encoder(EncoderError::EventRejected(format!(
+        "gnmi path template placeholder {shown} names a label that metric {name:?} does not \
+         carry"
+    )))
 }
 
 /// Split an `origin:` prefix off a path string.
@@ -211,6 +263,12 @@ fn parse_segment(raw: &str) -> Result<Segment, String> {
         return Err(format!("unmatched ']' in segment {raw:?}"));
     }
     let name = parse_part(name)?;
+    if let Part::Optional(label) = &name {
+        return Err(format!(
+            "element name {{{label}?}} in segment {raw:?} is optional; only a key value may \
+             be optional, as in [key={{{label}?}}], because an element cannot be left out"
+        ));
+    }
 
     let mut keys = Vec::new();
     while !rest.is_empty() {
@@ -248,13 +306,21 @@ fn parse_segment(raw: &str) -> Result<Segment, String> {
     Ok(Segment { name, keys })
 }
 
-/// Parse a literal or a whole-part `{placeholder}`.
+/// Parse a literal, a whole-part `{placeholder}` or an optional `{placeholder?}`.
 fn parse_part(s: &str) -> Result<Part, String> {
     if let Some(inner) = s.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
-        if inner.is_empty() || inner.contains(['{', '}']) {
+        let (label, optional) = match inner.strip_suffix('?') {
+            Some(label) => (label, true),
+            None => (inner, false),
+        };
+        if label.is_empty() || label.contains(['{', '}', '?']) {
             return Err(format!("malformed placeholder {s:?}"));
         }
-        return Ok(Part::Placeholder(inner.to_string()));
+        return Ok(if optional {
+            Part::Optional(label.to_string())
+        } else {
+            Part::Placeholder(label.to_string())
+        });
     }
     if s.contains(['{', '}']) {
         return Err(format!(
@@ -417,6 +483,9 @@ mod tests {
     #[case::module_prefixed_elem("/openconfig-interfaces:interfaces/state",                   "m",            Ok(vec![elem("openconfig-interfaces:interfaces", &[]), elem("state", &[])]))]
     #[case::colon_in_key_value(  "/a[k=Ethernet1:1]",                                         "m",            Ok(vec![elem("a", &[("k", "Ethernet1:1")])]))]
     #[case::colon_slash_in_key(  "/a[k=x:/y]",                                                "m",            Ok(vec![elem("a", &[("k", "x:/y")])]))]
+    #[case::optional_present(    "/a[k={device?}][j={subif}]/b",                              "m",            Ok(vec![elem("a", &[("j", "0"), ("k", "rtr-1")]), elem("b", &[])]))]
+    #[case::optional_absent(     "/a[k={nope?}][j={subif}]/b",                                "m",            Ok(vec![elem("a", &[("j", "0")]), elem("b", &[])]))]
+    #[case::optional_name(       "/a[k={name?}]",                                             "in_octets",    Ok(vec![elem("a", &[("k", "in-octets")])]))]
     fn template_renders(
         #[case] template: &str,
         #[case] metric: &str,
@@ -474,8 +543,58 @@ mod tests {
     fn placeholders_lists_names_and_key_values_in_order() {
         let template =
             PathTemplate::parse("/{root}/interface[name={ifName}][kind=eth]/state/{name}").unwrap();
-        let got: Vec<&str> = template.placeholders().collect();
+        let got: Vec<&str> = template.placeholders().map(|p| p.name).collect();
         assert_eq!(got, vec!["root", "ifName", "name"]);
+    }
+
+    /// `placeholders` yields whether each placeholder is optional.
+    #[test]
+    fn placeholders_carry_whether_they_are_optional() {
+        let template = PathTemplate::parse("/a[k={x?}][j={y}]/b[s={x}]/{name}").unwrap();
+        let got: Vec<(&str, bool)> = template
+            .placeholders()
+            .map(|p| (p.name, p.optional))
+            .collect();
+        assert_eq!(
+            got,
+            [("x", true), ("y", false), ("x", false), ("name", false)]
+        );
+    }
+
+    /// `[spike={spike?}]` renders the key when the event carries the label
+    /// and leaves it out when it does not; the rest of the path is the same.
+    #[test]
+    fn an_optional_key_is_rendered_only_when_the_label_is_present() {
+        let template =
+            PathTemplate::parse("/interfaces/interface[name={ifName}][spike={spike?}]/state")
+                .expect("an optional key value parses");
+        let inside = Labels::from_pairs(&[("ifName", "eth0"), ("spike", "spike_3")]).unwrap();
+        let outside = Labels::from_pairs(&[("ifName", "eth0")]).unwrap();
+        assert_eq!(
+            template.render("m", &inside).unwrap().to_string(),
+            "/interfaces/interface[name=eth0][spike=spike_3]/state"
+        );
+        assert_eq!(
+            template.render("m", &outside).unwrap().to_string(),
+            "/interfaces/interface[name=eth0]/state"
+        );
+    }
+
+    /// An optional placeholder as an element name is a parse error that
+    /// names the rule; malformed optional placeholders are refused.
+    #[rstest]
+    #[case::element("/{x?}/b", "only a key value may be optional")]
+    #[case::name_element("/a/{name?}", "only a key value may be optional")]
+    #[case::bare_question_mark("/a[k={?}]", "malformed placeholder")]
+    #[case::two_question_marks("/a[k={x??}]", "malformed placeholder")]
+    fn an_optional_placeholder_is_a_key_value_only(#[case] template: &str, #[case] needle: &str) {
+        let err = PathTemplate::parse(template).unwrap_err();
+        assert!(matches!(err, SondaError::Config(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(needle),
+            "{template:?}: {msg:?} should contain {needle:?}"
+        );
     }
 
     #[test]
