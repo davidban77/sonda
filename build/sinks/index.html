@@ -1208,6 +1208,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="gnmi_target">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gnmi-encodings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encodings
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tls-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TLS and credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2616,6 +2644,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="gnmi_target">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gnmi-encodings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encodings
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tls-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TLS and credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3447,19 +3503,33 @@
 <td>duration string</td>
 <td>no</td>
 <td><code>1s</code></td>
-<td>Shortest sample interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval.</td>
+<td>Shortest sample and heartbeat interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval, and a shorter heartbeat interval is raised to it.</td>
 </tr>
 <tr>
 <td><code>subscriber_buffer</code></td>
 <td>integer</td>
 <td>no</td>
 <td><code>1024</code></td>
-<td>Capacity of the broadcast that ON_CHANGE subscriptions read, 1 to 65536. The target refuses ON_CHANGE, so the value changes nothing a subscriber receives.</td>
+<td>Changes an ON_CHANGE subscription may fall behind before it is resynced, 1 to 65536.</td>
+</tr>
+<tr>
+<td><code>tls</code></td>
+<td>object</td>
+<td>no</td>
+<td>--</td>
+<td>Serve over TLS: <code>cert</code> and <code>key</code> PEM files, and <code>client_ca</code> to require client certificates. See <a href="#tls-and-credentials">TLS and credentials</a>.</td>
+</tr>
+<tr>
+<td><code>credentials</code></td>
+<td>object</td>
+<td>no</td>
+<td>--</td>
+<td>Require a <code>username</code> and <code>password</code> on every RPC. Needs <code>tls</code>. See <a href="#tls-and-credentials">TLS and credentials</a>.</td>
 </tr>
 </tbody>
 </table>
-<p>Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set <code>max_subscribers</code>, <code>sample_floor</code> and <code>subscriber_buffer</code> alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.</p>
-<p>The listener serves plaintext gRPC:</p>
+<p>Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set <code>max_subscribers</code>, <code>sample_floor</code>, <code>subscriber_buffer</code>, <code>tls</code> and <code>credentials</code> alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.</p>
+<p>The listener serves gRPC, over TLS when <code>tls</code> is set:</p>
 <table>
 <thead>
 <tr>
@@ -3470,22 +3540,42 @@
 <tbody>
 <tr>
 <td><code>Capabilities</code></td>
-<td>Answers gNMI version <code>0.10.0</code> and the one encoding <code>PROTO</code>.</td>
-</tr>
-<tr>
-<td><code>Subscribe</code>, STREAM with SAMPLE</td>
-<td>Sends the latest value of every matching series, then <code>sync_response</code>. After that it resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. <code>TARGET_DEFINED</code> is served as SAMPLE.</td>
+<td>Answers gNMI version <code>0.10.0</code> and the encodings <code>PROTO</code> and <code>JSON_IETF</code>.</td>
 </tr>
 <tr>
 <td><code>Subscribe</code>, ONCE</td>
 <td>Sends the latest value of every matching series and <code>sync_response</code>, then ends the <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr>.</td>
 </tr>
 <tr>
+<td><code>Subscribe</code>, STREAM</td>
+<td>Sends the latest value of every matching series, then <code>sync_response</code>, once for the whole request even when it mixes modes. After that each subscription is served by its mode.</td>
+</tr>
+<tr>
+<td>SAMPLE</td>
+<td>Resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule.</td>
+</tr>
+<tr>
+<td>SAMPLE, <code>suppress_redundant: true</code></td>
+<td>At each sample interval, sends a matching series only when its value changed since the subscription last sent it. The initial values count as sent; a series first seen at a sample is sent. Ignored on the other modes.</td>
+</tr>
+<tr>
+<td>ON_CHANGE</td>
+<td>Sends a matching series each time its value changes, including a series first published after the subscription started. A value that holds sends nothing.</td>
+</tr>
+<tr>
+<td>TARGET_DEFINED</td>
+<td>Decides per series from the kind of value its first publish carried. A series with a string value (the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>'s <code>string</code> and <code>enum</code> values) is served as ON_CHANGE, any other as SAMPLE at the subscription's sample interval.</td>
+</tr>
+<tr>
+<td><code>heartbeat_interval</code></td>
+<td>On ON_CHANGE, on TARGET_DEFINED's string series, and on SAMPLE with <code>suppress_redundant</code>, resends the latest value of every matching series at this interval, changed or not. <code>0</code> sends none. Not read for SAMPLE without <code>suppress_redundant</code>, where every sample already sends every series.</td>
+</tr>
+<tr>
 <td><code>updates_only: true</code></td>
 <td>Skips the initial values; the first message is <code>sync_response</code>.</td>
 </tr>
 <tr>
-<td>POLL, ON_CHANGE</td>
+<td>POLL</td>
 <td>Refused with <code>UNIMPLEMENTED</code>, naming the mode.</td>
 </tr>
 <tr>
@@ -3493,16 +3583,22 @@
 <td>Served in <code>PROTO</code>. <code>JSON</code> is also what a request that sets no encoding carries.</td>
 </tr>
 <tr>
-<td>Encoding <code>JSON_IETF</code>, <code>BYTES</code> or <code>ASCII</code></td>
-<td>Refused with <code>UNIMPLEMENTED</code>, naming the encoding and <code>PROTO</code>.</td>
+<td>Encoding <code>JSON_IETF</code></td>
+<td>Served in <code>JSON_IETF</code>: every value is a <code>json_ietf_val</code>. See <a href="#gnmi-encodings">Encodings</a>.</td>
+</tr>
+<tr>
+<td>Encoding <code>BYTES</code> or <code>ASCII</code></td>
+<td>Refused with <code>UNIMPLEMENTED</code>, naming the encoding, <code>PROTO</code> and <code>JSON_IETF</code>.</td>
 </tr>
 </tbody>
 </table>
-<p>A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of <code>*</code>, or a key the subscription leaves out, matches any value: <code>/interfaces/interface/state/counters</code> matches every interface's counters. An empty origin or target in the subscription matches any. Element wildcards (<code>*</code> or <code>...</code> as an element name) are refused with <code>UNIMPLEMENTED</code>.</p>
+<p>A series leaves the target when the last <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> publishing it stops (scenarios of one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose <code>delete</code> names the path, split into <code>prefix</code> and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with <code>suppress_redundant</code> matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE never receives one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.</p>
+<p>A change is a new value: the update's encoded <code>TypedValue</code> differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than <code>subscriber_buffer</code> changes behind is resynced with the latest value of every series it matches, without a second <code>sync_response</code>. A change the initial values, a resync or a heartbeat already sent is not sent again.</p>
+<p>A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of <code>*</code>, or a key the subscription leaves out, matches any value: <code>/interfaces/interface/state/counters</code> matches every interface's counters. An empty origin or target in the subscription matches any. An element named <code>*</code> matches any one element, keeping its own keys: <code>/interfaces/*/state/counters</code> matches <code>/interfaces/interface[name=eth0]/state/counters/in-octets</code> but not a path with two elements in its place. An element named <code>...</code> matches any run of elements, none included: <code>/interfaces/.../in-octets</code> matches every interface's <code>in-octets</code> counter and nothing else, and <code>/interfaces/...</code> matches everything under <code>/interfaces</code>. A <code>...</code> element with keys is refused with <code>INVALID_ARGUMENT</code>.</p>
 <p>A subscription ends with <code>UNAVAILABLE</code> when:</p>
 <ul>
 <li><strong>The run stops.</strong> The status follows the updates already queued, and the listener closes.</li>
-<li><strong>The client stalls.</strong> The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.</li>
+<li><strong>The client stalls.</strong> The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions has the 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.</li>
 </ul>
 <p>The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.</p>
 <p>The example below is a router with four interfaces, served to <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>. Only the first interface is shown here; the complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <a href="https://github.com/davidban77/sonda/blob/main/examples/gnmi-telegraf.yaml"><code>examples/gnmi-telegraf.yaml</code></a>:</p>
@@ -3548,7 +3644,7 @@
 </span><span id="__span-27-40"><a id="__codelineno-27-40" name="__codelineno-27-40" href="#__codelineno-27-40"></a><span class="w">      </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oper_state</span>
 </span><span id="__span-27-41"><a id="__codelineno-27-41" name="__codelineno-27-41" href="#__codelineno-27-41"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-core-01</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
 </span></code></pre></div>
-<p>The <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> side subscribes to the counters and the oper-status. Both subscriptions use SAMPLE mode:</p>
+<p>The <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> side samples the counters every 10 seconds. It subscribes to the oper-status ON_CHANGE, so it receives the oper-status when it changes and every 30 seconds while it holds:</p>
 <div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf.conf (excerpt)</span><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="k">[[inputs.gnmi]]</span>
 </span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span><span class="n">addresses</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"sonda:57400"</span><span class="p">]</span>
 </span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">  </span><span class="n">encoding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"proto"</span>
@@ -3565,8 +3661,8 @@
 </span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifstate"</span>
 </span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a><span class="w">    </span><span class="n">origin</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"openconfig-interfaces"</span>
 </span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16" href="#__codelineno-28-16"></a><span class="w">    </span><span class="n">path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/interfaces/interface/state/oper-status"</span>
-</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a><span class="w">    </span><span class="n">subscription_mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"sample"</span>
-</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18" href="#__codelineno-28-18"></a><span class="w">    </span><span class="n">sample_interval</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1s"</span>
+</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a><span class="w">    </span><span class="n">subscription_mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"on_change"</span>
+</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18" href="#__codelineno-28-18"></a><span class="w">    </span><span class="n">heartbeat_interval</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"30s"</span>
 </span></code></pre></div>
 <p>Each subscription's <code>name</code> becomes the measurement, the interface key becomes the <code>name</code> tag, and the address <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> dialed becomes <code>source</code>. The full <code>telegraf.conf</code> maps oper-status <code>UP</code>/<code>DOWN</code> to <code>1</code>/<code>2</code> with <code>processors.enum</code>, so <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> writes these lines:</p>
 <div class="language-text highlight"><span class="filename">What Telegraf emits</span><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>ifcounters,name=GigabitEthernet0/0/0,source=sonda in_octets=1250000i 1792339482653260154
@@ -3577,21 +3673,147 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>gnmi<span class="w"> </span>up<span class="w"> </span>-d
 </span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/gnmi-telegraf.yaml
 </span></code></pre></div>
-<p>Without <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>, gnmic reads the same target directly:</p>
+<p>Without <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>, gnmic reads the same target directly, once or as each oper-status changes:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces<span class="w"> </span>--mode<span class="w"> </span>once
+</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces/interface/state/oper-status<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="w">  </span>--stream-mode<span class="w"> </span>on-change
 </span></code></pre></div>
+<h3 id="gnmi-encodings">Encodings<a class="headerlink" href="#gnmi-encodings" title="Permanent link">&para;</a></h3>
+<p>The request's <code>encoding</code> decides how the values of its subscriptions are sent. One target serves <code>PROTO</code> and <code>JSON_IETF</code> requests at once.</p>
+<ul>
+<li><strong><code>PROTO</code></strong>, and <code>JSON</code> or no encoding: each value is the <code>TypedValue</code> field the <a href="../encoders/#gnmi"><code>gnmi</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr></a> wrote.</li>
+<li><strong><code>JSON_IETF</code></strong>: each value is a <code>json_ietf_val</code> holding the value's JSON text, written as RFC 7951 writes it. The timestamp, prefix and path are those a <code>PROTO</code> request receives.</li>
+</ul>
+<p>Deletes and <code>sync_response</code> carry no value and are the same in both.</p>
+<table>
+<thead>
+<tr>
+<th>Encoder value</th>
+<th><code>PROTO</code></th>
+<th><code>JSON_IETF</code> text</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uint</code></td>
+<td><code>uint_val</code></td>
+<td>A JSON string: <code>"18446744073709551615"</code>.</td>
+</tr>
+<tr>
+<td><code>int</code></td>
+<td><code>int_val</code></td>
+<td>A JSON string: <code>"-42"</code>.</td>
+</tr>
+<tr>
+<td><code>double</code></td>
+<td><code>double_val</code></td>
+<td>A JSON number in decimal notation: <code>1.5</code>, <code>2</code>. NaN and the infinities, which JSON has no number for, are the strings <code>"NaN"</code>, <code>"Infinity"</code> and <code>"-Infinity"</code>.</td>
+</tr>
+<tr>
+<td><code>bool</code></td>
+<td><code>bool_val</code></td>
+<td><code>true</code> or <code>false</code>.</td>
+</tr>
+<tr>
+<td><code>string</code>, <code>enum</code></td>
+<td><code>string_val</code></td>
+<td>A JSON string, escaped as RFC 8259 requires: <code>"UP"</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Integers arrive as strings: RFC 7951 writes 64-bit integers as JSON strings, so a client that reads the text with a plain JSON parser gets a string, not a number. gnmic asks for <code>JSON_IETF</code> with <code>-e json_ietf</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>-e<span class="w"> </span>json_ietf<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces<span class="w"> </span>--mode<span class="w"> </span>once
+</span></code></pre></div>
+<h3 id="tls-and-credentials">TLS and credentials<a class="headerlink" href="#tls-and-credentials" title="Permanent link">&para;</a></h3>
+<p>With <code>tls</code>, the target serves TLS from a certificate and key, and can require client certificates. With <code>credentials</code>, every RPC must carry a username and password:</p>
+<div class="language-yaml highlight"><span class="filename">examples/gnmi-telegraf-tls.yaml (sink)</span><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a><span class="c1"># sonda:static - excerpt only; the certificate files are made locally</span>
+</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gnmi_target</span>
+</span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a><span class="w">  </span><span class="nt">listen</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0:57401</span>
+</span><span id="__span-33-5"><a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a><span class="w">  </span><span class="nt">tls</span><span class="p">:</span>
+</span><span id="__span-33-6"><a id="__codelineno-33-6" name="__codelineno-33-6" href="#__codelineno-33-6"></a><span class="w">    </span><span class="nt">cert</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">examples/telegraf/certs/server.pem</span>
+</span><span id="__span-33-7"><a id="__codelineno-33-7" name="__codelineno-33-7" href="#__codelineno-33-7"></a><span class="w">    </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">examples/telegraf/certs/server-key.pem</span>
+</span><span id="__span-33-8"><a id="__codelineno-33-8" name="__codelineno-33-8" href="#__codelineno-33-8"></a><span class="w">  </span><span class="nt">credentials</span><span class="p">:</span>
+</span><span id="__span-33-9"><a id="__codelineno-33-9" name="__codelineno-33-9" href="#__codelineno-33-9"></a><span class="w">    </span><span class="nt">username</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda</span>
+</span><span id="__span-33-10"><a id="__codelineno-33-10" name="__codelineno-33-10" href="#__codelineno-33-10"></a><span class="w">    </span><span class="nt">password</span><span class="p">:</span><span class="w"> </span><span class="s">"sonda-uat"</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tls.cert</code></td>
+<td>yes</td>
+<td>PEM file holding the certificate chain the target presents, its own certificate first.</td>
+</tr>
+<tr>
+<td><code>tls.key</code></td>
+<td>yes</td>
+<td>PEM file holding the private key of <code>cert</code>.</td>
+</tr>
+<tr>
+<td><code>tls.client_ca</code></td>
+<td>no</td>
+<td>PEM file of CA certificates. When set, every client must present a certificate signed by one of them; when unset, any client may connect.</td>
+</tr>
+<tr>
+<td><code>credentials.username</code></td>
+<td>yes</td>
+<td>The username every RPC must carry.</td>
+</tr>
+<tr>
+<td><code>credentials.password</code></td>
+<td>yes</td>
+<td>The password every RPC must carry. Quote it: YAML reads an unquoted number as a number, and the target then compares its rewritten text (<code>0x1F</code> as <code>31</code>).</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>TLS.</strong> Every connection to the <code>listen</code> address is TLS, and a plaintext client is refused at the handshake. A connection that has not finished its handshake 10 seconds after it was accepted is closed. The files are read when the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is validated, so <code>--dry-run</code> reports a file that cannot be read, or holds no PEM certificate or private key, naming the field and the file. A key that is not <code>cert</code>'s is reported the same way. Relative paths resolve against the directory Sonda runs in.</li>
+<li><strong>Credentials need TLS.</strong> A <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> with <code>credentials</code> and no <code>tls</code> is refused, because the password would cross the wire in clear.</li>
+<li><strong>Every RPC is checked.</strong> <code>Capabilities</code> and <code>Subscribe</code> alike must carry the gRPC metadata <code>username</code> and <code>password</code>, equal to the configured pair. A request without them, or with another pair, is refused with <code>UNAUTHENTICATED</code> and the message <code>credentials required</code>. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.</li>
+<li><strong>One address, one identity.</strong> Every entry on one address names the same <code>tls</code> files and the same <code>credentials</code>; a different set is refused, naming the files and usernames that differ but no password.</li>
+</ul>
+<p>gnmic trusts the target's CA with <code>--tls-ca</code> and sends the pair with <code>-u</code> and <code>-p</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57401<span class="w"> </span>--tls-ca<span class="w"> </span>examples/telegraf/certs/ca.pem<span class="w"> </span>-u<span class="w"> </span>sonda<span class="w"> </span>-p<span class="w"> </span>sonda-uat<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-34-2"><a id="__codelineno-34-2" name="__codelineno-34-2" href="#__codelineno-34-2"></a><span class="w">  </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces<span class="w"> </span>--mode<span class="w"> </span>once
+</span></code></pre></div>
+<p>When the target sets <code>client_ca</code>, gnmic also presents its own certificate with <code>--tls-cert</code> and <code>--tls-key</code>.</p>
+<p><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>inputs.gnmi</code> turns TLS on with <code>tls_enable</code>, trusts the CA with <code>tls_ca</code>, and sends <code>username</code> and <code>password</code>. With <code>client_ca</code> on the target, it presents <code>tls_cert</code> and <code>tls_key</code> as well:</p>
+<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf-tls.conf (excerpt)</span><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a><span class="k">[global_tags]</span>
+</span><span id="__span-35-2"><a id="__codelineno-35-2" name="__codelineno-35-2" href="#__codelineno-35-2"></a><span class="w">  </span><span class="n">gnmi_row</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"tls"</span>
+</span><span id="__span-35-3"><a id="__codelineno-35-3" name="__codelineno-35-3" href="#__codelineno-35-3"></a>
+</span><span id="__span-35-4"><a id="__codelineno-35-4" name="__codelineno-35-4" href="#__codelineno-35-4"></a><span class="k">[[inputs.gnmi]]</span>
+</span><span id="__span-35-5"><a id="__codelineno-35-5" name="__codelineno-35-5" href="#__codelineno-35-5"></a><span class="w">  </span><span class="n">addresses</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"sonda:57401"</span><span class="p">]</span>
+</span><span id="__span-35-6"><a id="__codelineno-35-6" name="__codelineno-35-6" href="#__codelineno-35-6"></a><span class="w">  </span><span class="n">encoding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"json_ietf"</span>
+</span><span id="__span-35-7"><a id="__codelineno-35-7" name="__codelineno-35-7" href="#__codelineno-35-7"></a><span class="w">  </span><span class="n">redial</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"10s"</span>
+</span><span id="__span-35-8"><a id="__codelineno-35-8" name="__codelineno-35-8" href="#__codelineno-35-8"></a><span class="w">  </span><span class="n">tls_enable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-35-9"><a id="__codelineno-35-9" name="__codelineno-35-9" href="#__codelineno-35-9"></a><span class="w">  </span><span class="n">tls_ca</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/etc/telegraf/certs/ca.pem"</span>
+</span><span id="__span-35-10"><a id="__codelineno-35-10" name="__codelineno-35-10" href="#__codelineno-35-10"></a><span class="w">  </span><span class="n">username</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"sonda"</span>
+</span><span id="__span-35-11"><a id="__codelineno-35-11" name="__codelineno-35-11" href="#__codelineno-35-11"></a><span class="w">  </span><span class="n">password</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"sonda-uat"</span>
+</span></code></pre></div>
+<p>This client asks for <code>JSON_IETF</code>, so the counters arrive as <a href="#gnmi-encodings">JSON strings</a>. <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> writes them as string fields (<code>in_octets="1250000"</code>), which <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> stores as numbers; a backend that does not needs <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>processors.converter</code> to turn them into integers first. The <code>gnmi_row="tls"</code> tag tells this client's metrics apart from those of <code>telegraf.conf</code>, which carry the same <code>source</code>.</p>
+<p>The compose stack's <code>gnmi-tls</code> profile runs this <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>, with <code>examples/telegraf/certs/</code> mounted at <code>/etc/telegraf/certs</code>. The certificates are not committed: make them first with the <code>openssl</code> commands in the header of <code>examples/gnmi-telegraf-tls.yaml</code>, for the names <code>sonda</code>, <code>localhost</code> and <code>127.0.0.1</code>. Then start the profile:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>gnmi-tls<span class="w"> </span>up<span class="w"> </span>-d
+</span></code></pre></div>
+<p>and, from the repository root, <code>sonda run examples/gnmi-telegraf-tls.yaml</code>. Without the certificates, that command and its <code>--dry-run</code> stop with <code>gnmi_target tls cert "examples/telegraf/certs/server.pem" cannot be read</code>.</p>
 <h2 id="retry-with-backoff">Retry with backoff<a class="headerlink" href="#retry-with-backoff" title="Permanent link">&para;</a></h2>
 <p>Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does <strong>not</strong> retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a <code>retry:</code> block to any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
 <p>Retry applies to these sinks: <code>http_push</code>, <code>remote_write</code>, <code>loki</code>, <code>otlp_grpc</code>, <code>kafka</code>, <code>tcp</code>. It does <strong>not</strong> apply to <code>stdout</code>, <code>file</code>, or <code>udp</code>.</p>
 <h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
 <p>Add the <code>retry:</code> block inside any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> definition:</p>
-<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
-</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
-</span><span id="__span-32-5"><a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
-</span><span id="__span-32-6"><a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
-</span><span id="__span-32-7"><a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
+<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
+</span><span id="__span-37-3"><a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-37-4"><a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
+</span><span id="__span-37-5"><a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
+</span><span id="__span-37-6"><a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
+</span><span id="__span-37-7"><a id="__codelineno-37-7" name="__codelineno-37-7" href="#__codelineno-37-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
 </span></code></pre></div>
 <p>All three fields are required when <code>retry:</code> is present:</p>
 <table>
@@ -3622,13 +3844,13 @@
 </table>
 <h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
 <p>Sonda uses <strong>exponential backoff with full jitter</strong>:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
-</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>sleep = random(0, base)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
+</span><span id="__span-38-2"><a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>sleep = random(0, base)
 </span></code></pre></div>
 <p>The jitter prevents synchronized retries when several sinks retry at the same time ("thundering herd"). Each retry attempt is logged to stderr:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
-</span><span id="__span-34-2"><a id="__codelineno-34-2" name="__codelineno-34-2" href="#__codelineno-34-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
-</span><span id="__span-34-3"><a id="__codelineno-34-3" name="__codelineno-34-3" href="#__codelineno-34-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
+</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
+</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
 </span></code></pre></div>
 <p>If every retry is exhausted, the batch is <strong>discarded</strong>. Sonda generates synthetic data, so losing a batch is acceptable and prevents unbounded buffer growth.</p>
 <h3 id="error-classification">Error classification<a class="headerlink" href="#error-classification" title="Permanent link">&para;</a></h3>
@@ -3689,7 +3911,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 18, 2026 18:47:21 UTC">October 18, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 22, 2026 11:33:56 UTC">October 22, 2026</span>
   </span>
 
     

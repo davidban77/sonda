@@ -1084,6 +1084,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cardinality-spikes-as-new-series" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cardinality spikes as new series
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#value-types" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2409,6 +2420,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cardinality-spikes-as-new-series" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cardinality spikes as new series
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#value-types" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2748,23 +2770,57 @@
 <li>Segments are separated by <code>/</code>. A leading <code>/</code> is optional.</li>
 <li>A segment is an element name, optionally followed by one or more <code>[key=value]</code> groups. Key names are literal, and a key appears at most once per segment.</li>
 <li>An element name or a key value is either literal text or exactly one placeholder. A brace anywhere else is an error.</li>
+<li>A key value may be an optional placeholder, <code>{label?}</code>. The key is rendered when the event carries the label and left out when it does not. An element name cannot be optional: an element is never left out.</li>
 <li><code>{name}</code> renders the metric name with <code>_</code> replaced by <code>-</code>, so <code>in_octets</code> becomes <code>in-octets</code>. Any other <code>{label}</code> renders that label's value as it is.</li>
 <li>A template has no <code>origin:</code> prefix; the origin comes from <code>origin</code>. A colon anywhere else, in a module-prefixed element name or in a key value, is literal text.</li>
 <li>A rendered element name must be non-empty and contain no <code>/</code>, <code>[</code> or <code>]</code>. Key values may contain <code>/</code>, as in <code>GigabitEthernet0/0/0</code>.</li>
 </ul>
 <p>Every label must be accounted for, so that two series never share a path. This covers each key in an entry's <code>labels</code> and <code>dynamic_labels</code>, and every <code>cardinality_spikes</code> label. Each one must be either:</p>
 <ul>
-<li>referenced by the entry's template,</li>
+<li>referenced by the entry's template, as <code>{label}</code> or as an optional <code>{label?}</code>,</li>
 <li>the <code>target_label</code>, or</li>
 <li>listed in <code>drop_labels</code>.</li>
 </ul>
-<p>A file that breaks this is refused with the label named. A <code>cardinality_spikes</code> label exists only inside its window, so it cannot be a placeholder. Unless it is the <code>target_label</code>, or shares its key with a label the template references, it goes in <code>drop_labels</code>.</p>
+<p>A file that breaks this is refused with the label named. A <code>cardinality_spikes</code> label exists only inside its window, so it cannot be a required <code>{label}</code>. Reference it as an optional key, as in <a href="#cardinality-spikes-as-new-series">Cardinality spikes as new series</a>, or list it in <code>drop_labels</code>; it needs neither when it is the <code>target_label</code> or shares its key with a label the template references. An optional placeholder may name a label an entry never carries: its key is always left out, so one template can serve entries with and without the spike.</p>
 <p>Histogram and <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> entries take the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> too:</p>
 <ul>
 <li><strong>Histogram:</strong> emits <code>&lt;name&gt;_bucket</code> with an <code>le</code> label, plus <code>&lt;name&gt;_sum</code> and <code>&lt;name&gt;_count</code>. The bucket template must reference <code>{le}</code>, and <code>le</code> may not be dropped.</li>
 <li><strong>Summary:</strong> emits <code>&lt;name&gt;</code> with a <code>quantile</code> label, plus <code>&lt;name&gt;_sum</code> and <code>&lt;name&gt;_count</code>. The template must reference <code>{quantile}</code>, and <code>quantile</code> may not be dropped.</li>
-<li><strong><code>_sum</code> and <code>_count</code>:</strong> these series carry no <code>le</code> or <code>quantile</code>, so they need a template without <code>{le}</code> or <code>{quantile}</code>. That is either their own <code>paths:</code> entries (<code>&lt;name&gt;_sum</code>, <code>&lt;name&gt;_count</code>), or <code>path</code> when the bucket or quantile series has a <code>paths:</code> entry of its own. Validation names any series whose template uses a key it does not carry.</li>
+<li><strong><code>_sum</code> and <code>_count</code>:</strong> these series carry no <code>le</code> or <code>quantile</code>, so they need a template without <code>{le}</code> or <code>{quantile}</code>. That is either their own <code>paths:</code> entries (<code>&lt;name&gt;_sum</code>, <code>&lt;name&gt;_count</code>), <code>path</code> when the bucket or quantile series has a <code>paths:</code> entry of its own, or one <code>path</code> for all three that writes the key as <code>[le={le?}]</code> or <code>[quantile={quantile?}]</code>. Validation names any series whose template uses a key it does not carry.</li>
 </ul>
+<h3 id="cardinality-spikes-as-new-series">Cardinality spikes as new series<a class="headerlink" href="#cardinality-spikes-as-new-series" title="Permanent link">&para;</a></h3>
+<p>A <code>cardinality_spikes</code> label referenced as an optional key gives every spike value a path of its own. Inside the window a gNMI client sees one new series per value beside the base path; outside it the key is left out and the metric is written to its base path. The complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <a href="https://github.com/davidban77/sonda/blob/main/examples/gnmi-spike.yaml"><code>examples/gnmi-spike.yaml</code></a>:</p>
+<div class="language-yaml highlight"><span class="filename">examples/gnmi-spike.yaml (excerpt)</span><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># sonda:static - excerpt only; a gnmi_target listens for a client, which the browser playground cannot provide</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gnmi</span>
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a><span class="w">    </span><span class="nt">origin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openconfig-interfaces</span>
+</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a><span class="w">    </span><span class="nt">target_label</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">device</span>
+</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">"/interfaces/interface[name={ifName}][spike={spike?}]/state/counters/{name}"</span>
+</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a><span class="w">    </span><span class="nt">values</span><span class="p">:</span>
+</span><span id="__span-18-13"><a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a><span class="w">      </span><span class="nt">in_octets</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uint</span>
+</span><span id="__span-18-14"><a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-18-15"><a id="__codelineno-18-15" name="__codelineno-18-15" href="#__codelineno-18-15"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gnmi_target</span>
+</span><span id="__span-18-16"><a id="__codelineno-18-16" name="__codelineno-18-16" href="#__codelineno-18-16"></a><span class="w">    </span><span class="nt">listen</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0:57400</span>
+</span><span id="__span-18-17"><a id="__codelineno-18-17" name="__codelineno-18-17" href="#__codelineno-18-17"></a>
+</span><span id="__span-18-18"><a id="__codelineno-18-18" name="__codelineno-18-18" href="#__codelineno-18-18"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-18-19"><a id="__codelineno-18-19" name="__codelineno-18-19" href="#__codelineno-18-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-18-20"><a id="__codelineno-18-20" name="__codelineno-18-20" href="#__codelineno-18-20"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">in_octets</span>
+</span><span id="__span-18-21"><a id="__codelineno-18-21" name="__codelineno-18-21" href="#__codelineno-18-21"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">step</span><span class="p p-Indicator">,</span><span class="nt"> start</span><span class="p">:</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="nt"> step_size</span><span class="p">:</span><span class="w"> </span><span class="nv">125000</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-18-22"><a id="__codelineno-18-22" name="__codelineno-18-22" href="#__codelineno-18-22"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-edge-01</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-18-23"><a id="__codelineno-18-23" name="__codelineno-18-23" href="#__codelineno-18-23"></a><span class="w">    </span><span class="nt">cardinality_spikes</span><span class="p">:</span>
+</span><span id="__span-18-24"><a id="__codelineno-18-24" name="__codelineno-18-24" href="#__codelineno-18-24"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">label</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spike</span>
+</span><span id="__span-18-25"><a id="__codelineno-18-25" name="__codelineno-18-25" href="#__codelineno-18-25"></a><span class="w">        </span><span class="nt">every</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2m</span>
+</span><span id="__span-18-26"><a id="__codelineno-18-26" name="__codelineno-18-26" href="#__codelineno-18-26"></a><span class="w">        </span><span class="nt">for</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
+</span><span id="__span-18-27"><a id="__codelineno-18-27" name="__codelineno-18-27" href="#__codelineno-18-27"></a><span class="w">        </span><span class="nt">cardinality</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
+</span></code></pre></div>
+<p>For the first 30 seconds of every 2 minutes, <code>in_octets</code> is sent on 20 paths, <code>/interfaces/interface[name=GigabitEthernet0/0/0][spike=spike_0]/state/counters/in-octets</code> to <code>[spike=spike_19]</code>. For the rest of each cycle it is sent on <code>/interfaces/interface[name=GigabitEthernet0/0/0]/state/counters/in-octets</code>.</p>
+<p>A series a spike creates keeps its last value until the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> that publishes it stops. It is not removed when the window closes, so after the first window the target serves the base path and all 20 spike paths. <a href="../sinks/#gnmi_target">Sinks — gnmi_target</a> describes when a series leaves the target.</p>
+<p>Every path the metric's events can write is checked against every other metric's paths: here, the base path and one path per spike value. A metric whose path equals the base path is refused, just as two metrics on one path are.</p>
 <h3 id="value-types">Value types<a class="headerlink" href="#value-types" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -2818,9 +2874,9 @@
 <li><strong>Effect</strong>: values are rounded to the specified number of decimal places using standard rounding.</li>
 </ul>
 <p>Set <code>precision</code> on the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> block in your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML:</p>
-<div class="language-yaml highlight"><span class="filename">precision-formatting.yaml (encoder fragment)</span><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nt">encoder</span><span class="p">:</span>
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
-</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">    </span><span class="c1"># 99.60573 becomes 99.61</span>
+<div class="language-yaml highlight"><span class="filename">precision-formatting.yaml (encoder fragment)</span><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">    </span><span class="c1"># 99.60573 becomes 99.61</span>
 </span></code></pre></div>
 <p>The <code>syslog</code>, <code>remote_write</code>, <code>otlp</code>, and <code>gnmi</code> encoders do not support <code>precision</code>. Syslog encodes log events only, with no numeric values; remote write, <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> and gNMI use binary protobuf encoding.</p>
 <p>See <a href="https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml"><code>examples/precision-formatting.yaml</code></a> for a complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> that uses precision with several encoders.</p>
@@ -2907,7 +2963,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 18, 2026 18:47:21 UTC">October 18, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 22, 2026 11:33:56 UTC">October 22, 2026</span>
   </span>
 
     
