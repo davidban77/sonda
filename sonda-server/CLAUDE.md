@@ -31,10 +31,17 @@ src/
 ├── routes/
 │   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health, /ready),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
-│                         /scenarios/metrics, /metrics), and protected control (/scenarios POST/GET,
+│                         /scenarios/metrics, /metrics, and /gnmi/targets with the gnmi feature),
+│                         and protected control (/scenarios POST/GET,
 │                         /scenarios/{id} GET/DELETE, /events). Auth + request-metrics middleware
 │                         applied per protected sub-router; the control sub-router additionally
 │                         carries the timeout + body-limit + global-concurrency tower stack.
+│   ├── gnmi.rs         ← (gnmi feature) GET /gnmi/targets → every live target from
+│                         sonda_core's registry().targets(), in address order: listen, tls,
+│                         credentials, series, subscribers, max_subscribers, get_requests,
+│                         stalled_subscribers_total, and subscriber_list (peer, mode,
+│                         encoding, since, last_drained, stalled; times RFC 3339 UTC to the
+│                         second, via chrono, which the gnmi feature enables). Read-only.
 │   ├── health.rs       ← GET /health → {"status": "ok"} (static liveness signal)
 │   ├── ready.rs        ← GET /ready → sweep phase + started/expected counts. 200 when the
 │                         autostart sweep has nothing pending (not configured, or finished —
@@ -112,6 +119,7 @@ tests/
 | GET    | /scenarios/{id}/stats   | Detailed live stats: rate, target_rate, events, gap/burst state, uptime |
 | GET    | /scenarios/{id}/metrics | Latest metrics in Prometheus text format (scrapeable)   |
 | DELETE | /scenarios/{id}         | Stop a running scenario, return final stats, remove from map |
+| GET    | /gnmi/targets           | (`gnmi` feature; a 404 without it) The running gnmi targets with their settings, series and subscriber counts, Get and stall counters, and each subscriber's peer, mode, encoding, start and last drain. Read-only, behind the API key like the other observability routes. |
 | POST   | /events                 | Emit one log or metric event synchronously. Body is a `signal_type`-tagged JSON object (`logs` or `metrics`) carrying `labels`, the per-branch payload (`log` or `metric`), `encoder`, and `sink`. The handler builds the event, delegates encoding + delivery to `sonda_core::emit::{emit_log, emit_metric}` inside `tokio::task::spawn_blocking`, and returns `{sent, signal_type, latency_ms, warnings}` once the sink ACKs. Sink-push 5xx → 502; sink/encoder config validation failure → 422; malformed body / unknown `signal_type` / missing per-branch field → 400. |
 
 ## Error Handling

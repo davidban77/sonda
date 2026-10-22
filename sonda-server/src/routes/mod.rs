@@ -1,6 +1,8 @@
 //! HTTP route definitions for sonda-server.
 
 pub mod events;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 pub mod health;
 pub mod metrics;
 pub mod ready;
@@ -52,14 +54,17 @@ pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
         .route("/health", get(health::health))
         .route("/ready", get(ready::ready));
 
-    let protected_observability = Router::new()
+    let observability = Router::new()
         .route("/scenarios/{id}/stats", get(scenarios::get_scenario_stats))
         .route(
             "/scenarios/{id}/metrics",
             get(scenarios::get_scenario_metrics),
         )
         .route("/scenarios/metrics", get(scenarios::get_aggregate_metrics))
-        .route("/metrics", get(metrics::get_metrics))
+        .route("/metrics", get(metrics::get_metrics));
+    #[cfg(feature = "gnmi")]
+    let observability = observability.route("/gnmi/targets", get(gnmi::list_targets));
+    let protected_observability = observability
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             record_request_metrics,
@@ -129,6 +134,23 @@ mod tests {
     /// Helper: build the router with API key authentication enabled.
     fn test_router_with_key(key: &str) -> Router {
         router(AppState::with_api_key(Some(key.to_string())))
+    }
+
+    /// Without the `gnmi` feature `GET /gnmi/targets` is an unknown route,
+    /// while `/metrics`, on the same sub-router, answers.
+    #[cfg(not(feature = "gnmi"))]
+    #[tokio::test]
+    async fn gnmi_targets_is_not_found_without_the_gnmi_feature() {
+        let get = |uri: &'static str| {
+            Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let metrics = test_router().oneshot(get("/metrics")).await.unwrap();
+        assert_eq!(metrics.status(), StatusCode::OK, "the premise");
+        let targets = test_router().oneshot(get("/gnmi/targets")).await.unwrap();
+        assert_eq!(targets.status(), StatusCode::NOT_FOUND);
     }
 
     /// GET /health returns HTTP 200.

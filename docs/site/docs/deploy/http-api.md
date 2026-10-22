@@ -233,6 +233,62 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
 
     Use that query as a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel. If you need a different staleness window than the built-in 30 seconds, threshold `total_sink_failures` and the age of `last_successful_write_at` from this endpoint yourself.
 
+### `GET /gnmi/targets`
+
+The [`gnmi_target`](../build/sinks.md#gnmi_target) listeners running in the server, with their series and the clients subscribed to them. Read-only. The route exists in builds with the `gnmi` feature (release binaries and the Docker image); without it the path is a 404 like any unknown route. It sits behind the API key when one is set.
+
+```bash
+curl -s http://localhost:8080/gnmi/targets | jq .
+```
+
+```json title="Response"
+{
+  "targets": [
+    {
+      "listen": "0.0.0.0:57400",
+      "tls": false,
+      "credentials": false,
+      "series": 12,
+      "subscribers": 1,
+      "max_subscribers": 16,
+      "get_requests": 3,
+      "stalled_subscribers_total": 0,
+      "subscriber_list": [
+        {
+          "peer": "172.18.0.4:51022",
+          "mode": "STREAM/SAMPLE",
+          "encoding": "PROTO",
+          "since": "2026-10-22T10:00:00Z",
+          "last_drained": "2026-10-22T10:00:09Z",
+          "stalled": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+Targets are listed in address order; each target's subscribers in the order they subscribed.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `listen` | string | The address the target listens on, with a `:0` port resolved to the port it bound. |
+| `tls` | bool | Whether the target serves TLS (its sink has a `tls:` block). |
+| `credentials` | bool | Whether every RPC must carry the sink's `credentials:`. |
+| `series` | integer | Distinct paths the target serves. |
+| `subscribers` | integer | Subscriptions the target serves now, each holding one of its `max_subscribers` places. |
+| `max_subscribers` | integer | The most subscriptions the target serves at once. |
+| `get_requests` | integer | `Get` calls received since the target started, counted once past the credential check, whether served or refused. A `Get` takes no subscriber place, so a client that polls by `Get` shows here and nowhere else. |
+| `stalled_subscribers_total` | integer | Subscriptions the target ended because their client drained nothing for the stall limit. |
+| `subscriber_list[].peer` | string \| null | The client's address, or `null` when the connection reports none. |
+| `subscriber_list[].mode` | string | `ONCE`, `POLL`, or `STREAM/` followed by the subscriptions' mode: `SAMPLE`, `ON_CHANGE`, `TARGET_DEFINED`, or `MIXED` when one list asks for several. |
+| `subscriber_list[].encoding` | string | `PROTO` or `JSON_IETF`, as served. A list asking for `JSON` is served, and listed, as `PROTO`. |
+| `subscriber_list[].since` | string | When the subscription started, RFC 3339 UTC. |
+| `subscriber_list[].last_drained` | string \| null | When a response last left the subscription's queue for the client, RFC 3339 UTC to the second; `null` before the first. |
+| `subscriber_list[].stalled` | bool | `true` while the subscription is being ended as stalled. |
+
+A subscriber whose `last_drained` stops moving while its window fills is reading nothing. Until the client's HTTP/2 receive window is spent its connection accepts data whether or not the application reads it, so `last_drained` keeps moving for a while after a client stops reading; once it stops, the subscription is ended after its stall limit and `stalled_subscribers_total` rises.
+
 ## Scenarios
 
 | Method | Path | Description |

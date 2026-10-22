@@ -7,6 +7,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -296,6 +297,78 @@ struct SeriesTable {
 /// The error the listener task exited with, if any.
 type ServeError = Arc<Mutex<Option<String>>>;
 
+/// One subscription a target serves, as [`GnmiTarget::subscribers`] reports
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SubscriberInfo {
+    /// The client's address, when the connection reports one.
+    pub peer: Option<SocketAddr>,
+    /// The subscription list's mode: `ONCE`, `POLL`, or `STREAM/` followed
+    /// by the subscriptions' mode (`SAMPLE`, `ON_CHANGE`, `TARGET_DEFINED`),
+    /// or `STREAM/MIXED` when they differ.
+    pub mode: &'static str,
+    /// The encoding the subscription is served in: `PROTO` or `JSON_IETF`.
+    pub encoding: &'static str,
+    /// When the subscription took its place.
+    pub since: SystemTime,
+    /// When a response last left the subscription's queue for the client;
+    /// `None` before the first.
+    pub last_drained: Option<SystemTime>,
+    /// Whether the subscription is being ended as stalled.
+    pub stalled: bool,
+}
+
+/// Key of one subscription in a target's subscriber table.
+type SubscriberId = u64;
+
+/// The subscriptions a target serves, and how many it ended as stalled.
+#[derive(Debug, Default)]
+struct Subscribers {
+    next_id: AtomicU64,
+    table: Mutex<HashMap<SubscriberId, SubscriberInfo>>,
+    stalled_total: AtomicU64,
+}
+
+impl Subscribers {
+    fn table(&self) -> std::sync::MutexGuard<'_, HashMap<SubscriberId, SubscriberInfo>> {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// One subscription's entry in its target's subscriber table, from
+/// [`GnmiTarget::register`]; dropping it removes the entry.
+pub(crate) struct SubscriberRecord {
+    subscribers: Arc<Subscribers>,
+    id: SubscriberId,
+}
+
+impl SubscriberRecord {
+    /// Record that a response left the subscription's queue now.
+    pub(crate) fn drained(&self) {
+        if let Some(info) = self.subscribers.table().get_mut(&self.id) {
+            info.last_drained = Some(SystemTime::now());
+        }
+    }
+
+    /// Mark the subscription stalled and count it in the target's
+    /// [`stalled_subscribers_total`](GnmiTarget::stalled_subscribers_total).
+    pub(crate) fn stalled(&self) {
+        if let Some(info) = self.subscribers.table().get_mut(&self.id) {
+            info.stalled = true;
+        }
+        self.subscribers
+            .stalled_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for SubscriberRecord {
+    fn drop(&mut self) {
+        self.subscribers.table().remove(&self.id);
+    }
+}
+
 /// The latest value of every series published on one listen address, keyed
 /// by the series' path, the broadcast that carries changed values and
 /// removed series to subscribers, and the gRPC listener.
@@ -324,6 +397,10 @@ pub struct GnmiTarget {
     token: CancellationToken,
     state: watch::Receiver<TargetState>,
     error: ServeError,
+    /// The subscriptions served now, each registered by its producer.
+    subscriber_records: Arc<Subscribers>,
+    /// Get requests the target's service has received.
+    get_requests: AtomicU64,
 }
 
 impl GnmiTarget {
@@ -377,6 +454,8 @@ impl GnmiTarget {
                 token,
                 state,
                 error,
+                subscriber_records: Arc::default(),
+                get_requests: AtomicU64::new(0),
             }
         }))
     }
@@ -396,6 +475,78 @@ impl GnmiTarget {
     /// `None` when the target already serves `max_subscribers`.
     pub(crate) fn admit(&self) -> Option<OwnedSemaphorePermit> {
         Arc::clone(&self.subscribers).try_acquire_owned().ok()
+    }
+
+    /// The subscriptions the target serves now, sorted by when each took
+    /// its place.
+    pub fn subscribers(&self) -> Vec<SubscriberInfo> {
+        let mut subscribers: Vec<(SubscriberId, SubscriberInfo)> = self
+            .subscriber_records
+            .table()
+            .iter()
+            .map(|(id, info)| (*id, info.clone()))
+            .collect();
+        subscribers.sort_by_key(|(id, info)| (info.since, *id));
+        subscribers.into_iter().map(|(_, info)| info).collect()
+    }
+
+    /// Enter a subscription in the target's subscriber table, as served to
+    /// `peer` in `mode` and `encoding` since now. The entry stays until the
+    /// returned record drops.
+    pub(crate) fn register(
+        &self,
+        peer: Option<SocketAddr>,
+        mode: &'static str,
+        encoding: &'static str,
+    ) -> SubscriberRecord {
+        let subscribers = Arc::clone(&self.subscriber_records);
+        let id = subscribers.next_id.fetch_add(1, Ordering::Relaxed);
+        subscribers.table().insert(
+            id,
+            SubscriberInfo {
+                peer,
+                mode,
+                encoding,
+                since: SystemTime::now(),
+                last_drained: None,
+                stalled: false,
+            },
+        );
+        SubscriberRecord { subscribers, id }
+    }
+
+    /// Get requests the target's service has received: every one the
+    /// credential check let through, whether then served or refused.
+    pub fn get_requests(&self) -> u64 {
+        self.get_requests.load(Ordering::Relaxed)
+    }
+
+    /// Count one Get request.
+    pub(crate) fn count_get_request(&self) {
+        self.get_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Subscriptions the target has ended because their client drained
+    /// nothing for their stall limit.
+    pub fn stalled_subscribers_total(&self) -> u64 {
+        self.subscriber_records
+            .stalled_total
+            .load(Ordering::Relaxed)
+    }
+
+    /// Whether the target serves TLS.
+    pub fn tls(&self) -> bool {
+        self.settings.tls.is_some()
+    }
+
+    /// Whether every request must carry the target's credentials.
+    pub fn requires_credentials(&self) -> bool {
+        self.settings.credentials.is_some()
+    }
+
+    /// The most subscriptions the target serves at once.
+    pub fn max_subscribers(&self) -> usize {
+        self.settings.max_subscribers
     }
 
     /// Distinct series paths in the table.
