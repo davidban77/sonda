@@ -761,8 +761,8 @@ impl Sink for GnmiTargetSink {
         true
     }
 
-    /// Publish `encoded` as the latest value of the event's series. Never
-    /// awaits.
+    /// Publish `encoded` as the latest value of the event's series, copied
+    /// into one of the [`PublishBuffers`] of the series' path. Never awaits.
     ///
     /// # Errors
     ///
