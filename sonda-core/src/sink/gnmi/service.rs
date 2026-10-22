@@ -5018,6 +5018,119 @@ mod tests {
         }
     }
 
+    /// `examples/gnmi-pack.yaml` through a target on an ephemeral port, at
+    /// 10 events per second: a ONCE subscription to `/interfaces` returns one
+    /// series per pack metric per interface, at the pack's hinted paths and
+    /// with its value types (`oper_status` a string, `in_octets` a uint).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pack_example_serves_each_metric_of_each_interface_at_its_hinted_path() {
+        use crate::catalog::builtin::BuiltinPackResolver;
+        use crate::config::ScenarioEntry;
+
+        const LEAVES: [&str; 11] = [
+            "state/counters/in-octets",
+            "state/counters/out-octets",
+            "state/counters/in-pkts",
+            "state/counters/out-pkts",
+            "state/counters/in-errors",
+            "state/counters/out-errors",
+            "state/counters/in-discards",
+            "state/counters/out-discards",
+            "state/counters/carrier-transitions",
+            "state/oper-status",
+            "state/admin-status",
+        ];
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/gnmi-pack.yaml");
+        let yaml = std::fs::read_to_string(file).expect("the pack example");
+        let entries = crate::compile_scenario_file(&yaml, &BuiltinPackResolver::new())
+            .expect("the example compiles");
+        let wanted: std::collections::BTreeSet<String> = ["Ethernet1", "Ethernet2"]
+            .iter()
+            .flat_map(|if_name| {
+                LEAVES.iter().map(move |leaf| {
+                    format!("openconfig-interfaces:/interfaces/interface[name={if_name}]/{leaf}")
+                })
+            })
+            .collect();
+        assert_eq!(
+            entries.len(),
+            wanted.len(),
+            "the premise: one entry per metric per interface"
+        );
+
+        let target = target_with(1, |_| {}).await;
+        let launch = LaunchId::next();
+        let cancel = CancellationToken::new();
+        let runs: Vec<_> = entries
+            .into_iter()
+            .map(|entry| {
+                let ScenarioEntry::Metrics(mut config) = entry else {
+                    panic!("the pack expands to metrics entries");
+                };
+                config.base.rate = 10.0;
+                let mut sink: Box<dyn Sink> =
+                    Box::new(GnmiTargetSink::from_target(Arc::clone(&target), launch));
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    crate::schedule::runner::run_with_sink(&config, &mut sink, &cancel, None).await
+                })
+            })
+            .collect();
+        assert!(
+            eventually(|| target.series_count() == wanted.len()).await,
+            "every series published, got {}",
+            target.series_count()
+        );
+
+        let mut client = open(target.local_addr(), once("/interfaces"))
+            .await
+            .expect("subscribed");
+        let mut values = HashMap::new();
+        loop {
+            let message = tokio::time::timeout(PATIENCE, client.responses.message())
+                .await
+                .expect("a response in time")
+                .expect("no error on the stream")
+                .expect("the stream is open");
+            match message.response {
+                Some(subscribe_response::Response::Update(notification)) => {
+                    let value = notification.update[0]
+                        .val
+                        .clone()
+                        .and_then(|v| v.value)
+                        .expect("a value");
+                    values.insert(series_path(&notification), value);
+                }
+                Some(subscribe_response::Response::SyncResponse(true)) => break,
+                other => panic!("an update or the sync marker, got {other:?}"),
+            }
+        }
+        assert_eq!(next(&mut client).await, Received::End);
+        let served: std::collections::BTreeSet<String> = values.keys().cloned().collect();
+        assert_eq!(served, wanted);
+        for if_name in ["Ethernet1", "Ethernet2"] {
+            let at = |leaf: &str| {
+                &values
+                    [&format!("openconfig-interfaces:/interfaces/interface[name={if_name}]/{leaf}")]
+            };
+            assert_eq!(at("state/oper-status"), &Value::StringVal("UP".to_string()));
+            assert_eq!(
+                at("state/admin-status"),
+                &Value::StringVal("UP".to_string())
+            );
+            assert!(
+                matches!(at("state/counters/in-octets"), Value::UintVal(_)),
+                "in-octets is a uint, got {:?}",
+                at("state/counters/in-octets")
+            );
+        }
+
+        cancel.cancel();
+        for run in runs {
+            run.await.expect("the run task").expect("the scenario ran");
+        }
+    }
+
     /// A metrics scenario `name{ifName=if_name}` at `rate` Hz into `sink`.
     fn scenario(name: &str, if_name: &str, rate: f64, sink: SinkConfig) -> ScenarioConfig {
         ScenarioConfig {

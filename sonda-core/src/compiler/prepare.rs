@@ -988,18 +988,21 @@ scenarios:
                     id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+                    gnmi: None,
                 },
                 MetricSpec {
                     name: "m2".to_string(),
                     id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 2.0 }),
+                    gnmi: None,
                 },
                 MetricSpec {
                     name: "m3".to_string(),
                     id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 3.0 }),
+                    gnmi: None,
                 },
             ],
         };

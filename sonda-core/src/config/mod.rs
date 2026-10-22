@@ -6,7 +6,7 @@
 //! serialization and parsing are gated.
 
 pub mod aliases;
-#[cfg(all(feature = "config", feature = "gnmi"))]
+#[cfg(feature = "config")]
 pub(crate) mod scalar_text;
 pub mod validate;
 
