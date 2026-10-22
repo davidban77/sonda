@@ -1,11 +1,12 @@
 //! The gRPC service a [`GnmiTarget`] serves: a hand-written router over
 //! `http::Request` in place of generated server code.
 //!
-//! `Capabilities` answers with the target's static capabilities.
-//! `Subscribe` serves STREAM subscriptions in SAMPLE, ON_CHANGE and
-//! TARGET_DEFINED mode, and ONCE subscriptions, from the target's
-//! latest-value table and its broadcast of changed values. Every other
-//! method answers `UNIMPLEMENTED`.
+//! `Capabilities` answers with the target's static capabilities. `Get`
+//! answers with the latest value of every requested series in the target's
+//! latest-value table. `Subscribe` serves STREAM subscriptions in SAMPLE,
+//! ON_CHANGE and TARGET_DEFINED mode, and ONCE and POLL subscriptions, from
+//! that table and its broadcast of changed values. Every other method
+//! answers `UNIMPLEMENTED`.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,14 +29,16 @@ use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::Status;
 use tower::Service;
 
-use super::matcher::SubscriptionMatcher;
+use super::matcher::{served_encoding, SubscriptionMatcher};
 use super::notification::ValueKind;
 use super::target::{
     delete_notification, GnmiTarget, PathKey, SeriesEvent, SeriesId, SeriesSnapshot, SeriesUpdate,
     TargetState,
 };
 use super::GnmiCredentials;
-use crate::encoder::gnmi::proto::{self, subscribe_request, subscription_list, SubscriptionMode};
+use crate::encoder::gnmi::proto::{
+    self, get_request, subscribe_request, subscription_list, Encoding, SubscriptionMode,
+};
 use crate::sink::grpc_codec::{PreEncoded, PreEncodedCodec, ProstCodec};
 use crate::util::constant_time_eq;
 
@@ -60,11 +63,15 @@ const MATCHED_PRUNE_FLOOR: usize = 1024;
 /// The HTTP/2 path of `gNMI.Capabilities`.
 const CAPABILITIES_PATH: &str = "/gnmi.gNMI/Capabilities";
 
+/// The HTTP/2 path of `gNMI.Get`.
+const GET_PATH: &str = "/gnmi.gNMI/Get";
+
 /// The HTTP/2 path of `gNMI.Subscribe`.
 const SUBSCRIBE_PATH: &str = "/gnmi.gNMI/Subscribe";
 
-/// The key of `SubscribeResponse.update` (field 1, length-delimited).
-const UPDATE_KEY: u8 = (1 << 3) | 2;
+/// The key of `SubscribeResponse.update` and of `GetResponse.notification`:
+/// field 1, length-delimited.
+const NOTIFICATION_KEY: u8 = (1 << 3) | 2;
 
 /// `SubscribeResponse { sync_response: true }`: field 3, varint, 1.
 const SYNC_RESPONSE: &[u8] = &[(3 << 3), 1];
@@ -133,6 +140,11 @@ impl Service<http::Request<tonic::body::Body>> for GnmiService {
                     >::default())
                     .unary(CapabilitiesHandler, req)
                     .await
+                }
+                GET_PATH => {
+                    Grpc::new(PreEncodedCodec::<proto::GetRequest>::default())
+                        .unary(GetHandler { target }, req)
+                        .await
                 }
                 SUBSCRIBE_PATH => {
                     Grpc::new(PreEncodedCodec::<proto::SubscribeRequest>::default())
@@ -206,6 +218,86 @@ impl Service<tonic::Request<proto::CapabilityRequest>> for CapabilitiesHandler {
     }
 }
 
+/// Answers `gNMI.Get` from the target's table.
+#[derive(Clone)]
+struct GetHandler {
+    target: Weak<GnmiTarget>,
+}
+
+impl Service<tonic::Request<proto::GetRequest>> for GetHandler {
+    type Response = tonic::Response<PreEncoded>;
+    type Error = Status;
+    type Future = std::future::Ready<Result<Self::Response, Status>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: tonic::Request<proto::GetRequest>) -> Self::Future {
+        std::future::ready(get(&self.target, &req.into_inner()).map(tonic::Response::new))
+    }
+}
+
+/// The encoded `GetResponse` to `request`: the latest notification of every
+/// series in `target`'s table that a requested path, joined to the
+/// request's prefix, matches, as [`SubscriptionMatcher::matches`] matches;
+/// each series once, whichever paths match it. Each notification is in the
+/// request's encoding as [`served_encoding`] serves it: as stored for
+/// `PROTO`, with its value as `json_ietf_val` for `JSON_IETF`. Data types
+/// `ALL`, `STATE` and `OPERATIONAL` are served alike; `CONFIG` gets a
+/// response with no notification.
+///
+/// # Errors
+///
+/// - `INVALID_ARGUMENT` when the data type is a number gNMI does not
+///   define, or as [`SubscriptionMatcher::from_paths`] and
+///   [`served_encoding`] refuse the request.
+/// - `UNIMPLEMENTED` as [`served_encoding`] refuses the encoding.
+/// - `NOT_FOUND`, naming the first requested path joined to the prefix,
+///   when no requested path matches a series.
+/// - `UNAVAILABLE` once the target is gone.
+fn get(target: &Weak<GnmiTarget>, request: &proto::GetRequest) -> Result<PreEncoded, Status> {
+    let data_type = get_request::DataType::try_from(request.r#type).map_err(|_| {
+        Status::invalid_argument(format!("unknown get data type {}", request.r#type))
+    })?;
+    let encoding = served_encoding(request.encoding)?;
+    let matcher = SubscriptionMatcher::from_paths(request.prefix.as_ref(), &request.path)?;
+    if data_type == get_request::DataType::Config {
+        return Ok(get_response(&[]));
+    }
+    let target = target.upgrade().ok_or_else(target_stopped)?;
+    let matched: Vec<SeriesSnapshot> = target
+        .snapshot()
+        .into_iter()
+        .filter(|series| matcher.matches(series.path.path()))
+        .collect();
+    if matched.is_empty() {
+        let requested = matcher.paths();
+        let first = requested
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let others = if requested.len() > 1 {
+            " or any other requested path"
+        } else {
+            ""
+        };
+        return Err(Status::not_found(format!(
+            "no series matches {first}{others}"
+        )));
+    }
+    let notifications: Vec<Bytes> = matched
+        .into_iter()
+        .filter_map(|series| match encoding {
+            Encoding::JsonIetf => {
+                target.json_ietf_of(series.series_id, series.version, &series.latest)
+            }
+            _ => Some(series.latest),
+        })
+        .collect();
+    Ok(get_response(&notifications))
+}
+
 /// The responses of one subscription, as tonic streams them to the client.
 type SubscribeStream = Responses;
 
@@ -260,8 +352,9 @@ impl Service<tonic::Request<Streaming<proto::SubscribeRequest>>> for SubscribeHa
 /// Start one subscription.
 ///
 /// Reads the first request, which must carry a `SubscriptionList`, and
-/// refuses or [starts](start) it. Spawns a task reading the rest of
-/// `inbound` and the producer task, and returns the producer's response
+/// refuses or [starts](start) it. Spawns a task [reading the rest of
+/// `inbound`](read_requests), which forwards a POLL list's polls to the
+/// producer, and the producer task, and returns the producer's response
 /// stream.
 async fn subscribe(
     target: Weak<GnmiTarget>,
@@ -283,12 +376,30 @@ async fn subscribe(
             ))
         }
     };
-    let (producer, responses) = start(target, peer, &list)?;
-    // Further requests are read and ignored, outside any `select!`. The
-    // request stream ending does not end the subscription.
-    let draining = tokio::spawn(async move { while let Ok(Some(_)) = inbound.message().await {} });
+    let (mut producer, responses) = start(target, peer, &list)?;
+    let polls = producer.poll_requests();
+    let draining = tokio::spawn(read_requests(inbound, polls));
     tokio::spawn(producer.run(draining));
     Ok(tonic::Response::new(responses))
+}
+
+/// Read `inbound` until it ends or fails, outside any `select!`, sending
+/// one message on `polls` for each `poll` request when `polls` is given and
+/// ignoring every other request. Returning drops `polls`.
+async fn read_requests(
+    mut inbound: Streaming<proto::SubscribeRequest>,
+    polls: Option<mpsc::Sender<()>>,
+) {
+    while let Ok(Some(request)) = inbound.message().await {
+        let Some(polls) = polls.as_ref() else {
+            continue;
+        };
+        if matches!(request.request, Some(subscribe_request::Request::Poll(_)))
+            && polls.send(()).await.is_err()
+        {
+            return;
+        }
+    }
 }
 
 /// The producer serving `list` and the response stream it feeds.
@@ -306,10 +417,11 @@ fn start(
 ) -> Result<(Producer, Responses), Status> {
     let matcher = SubscriptionMatcher::new(list)?;
     let once = list.mode == subscription_list::Mode::Once as i32;
+    let poll = list.mode == subscription_list::Mode::Poll as i32;
 
     let held = target.upgrade().ok_or_else(target_stopped)?;
     let settings = held.settings();
-    let plan = if once {
+    let plan = if once || poll {
         Plan::default()
     } else {
         plan_groups(list, settings.sample_floor)?
@@ -347,6 +459,8 @@ fn start(
         target,
         matcher,
         once,
+        poll,
+        polls: None,
         updates_only: list.updates_only,
         samples: plan.samples,
         heartbeats: plan.heartbeats,
@@ -800,6 +914,15 @@ async fn next_change(on_change: &mut Option<OnChangeSet>) -> Result<SeriesEvent,
     }
 }
 
+/// The next message on a POLL list's channel of polls, `None` once its
+/// client sends no more; never resolves when there is no channel.
+async fn next_poll(polls: &mut Option<mpsc::Receiver<()>>) -> Option<()> {
+    match polls {
+        Some(polls) => polls.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// One entry of a subscription's queue.
 enum QueueEntry {
     /// A response encoded when it was queued.
@@ -876,8 +999,9 @@ impl Pending {
 
 /// How long a subscription with responses waiting may go without its client
 /// draining one: three of its longest sample periods, and never less than
-/// `floor`. A ONCE list, and a list with only ON_CHANGE subscriptions, has no
-/// sample periods, so its limit is `floor`; heartbeat periods do not count.
+/// `floor`. A ONCE or POLL list, and a list with only ON_CHANGE
+/// subscriptions, has no sample periods, so its limit is `floor`; heartbeat
+/// periods do not count.
 ///
 /// The limit runs from when the client's receive window is spent. Until then
 /// the client's HTTP/2 layer accepts data whether or not the application
@@ -893,12 +1017,33 @@ fn stall_limit(periods: impl Iterator<Item = Duration>, floor: Duration) -> Dura
 
 /// `SubscribeResponse { update }` around one encoded `gnmi.Notification`.
 fn update_response(notification: &Bytes) -> PreEncoded {
-    let len = notification.len();
-    let mut buf = BytesMut::with_capacity(1 + prost::length_delimiter_len(len) + len);
-    buf.put_u8(UPDATE_KEY);
-    prost::encoding::encode_varint(len as u64, &mut buf);
-    buf.put_slice(notification);
+    let mut buf = BytesMut::with_capacity(framed_len(notification));
+    put_notification(&mut buf, notification);
     PreEncoded(buf.freeze())
+}
+
+/// `GetResponse { notification }` around each of `notifications`, one
+/// encoded `gnmi.Notification` each, in order.
+fn get_response(notifications: &[Bytes]) -> PreEncoded {
+    let mut buf = BytesMut::with_capacity(notifications.iter().map(|n| framed_len(n)).sum());
+    for notification in notifications {
+        put_notification(&mut buf, notification);
+    }
+    PreEncoded(buf.freeze())
+}
+
+/// The bytes [`put_notification`] writes for `notification`.
+fn framed_len(notification: &[u8]) -> usize {
+    1 + prost::length_delimiter_len(notification.len()) + notification.len()
+}
+
+/// Write `notification`, one encoded `gnmi.Notification`, to `buf` as the
+/// length-delimited field 1 that `SubscribeResponse.update` and
+/// `GetResponse.notification` both are.
+fn put_notification(buf: &mut BytesMut, notification: &[u8]) {
+    buf.put_u8(NOTIFICATION_KEY);
+    prost::encoding::encode_varint(notification.len() as u64, buf);
+    buf.put_slice(notification);
 }
 
 /// `SubscribeResponse { sync_response: true }`.
@@ -983,6 +1128,10 @@ enum Step {
     Sample,
     /// A heartbeat group is due.
     Heartbeat,
+    /// The client of a POLL list sent a poll.
+    Polled,
+    /// The client of a POLL list will send no more polls.
+    PollsEnded,
     /// The ON_CHANGE set's broadcast delivered a change, or reported a lag.
     Change(Result<SeriesEvent, RecvError>),
 }
@@ -992,6 +1141,12 @@ struct Producer {
     target: Weak<GnmiTarget>,
     matcher: SubscriptionMatcher,
     once: bool,
+    /// The list is a POLL list.
+    poll: bool,
+    /// For a POLL list, one message per poll its client sends, from when
+    /// [`Producer::poll_requests`] made the channel until the client sends
+    /// no more; `None` otherwise.
+    polls: Option<mpsc::Receiver<()>>,
     /// The initial sync sends only the sync marker.
     updates_only: bool,
     samples: Vec<Group>,
@@ -1017,13 +1172,34 @@ struct Producer {
 }
 
 impl Producer {
+    /// For a POLL list, the sender of the channel the producer reads its
+    /// client's polls from, one message per poll; dropping it tells the
+    /// producer the client sends no more. `None` for any other list.
+    fn poll_requests(&mut self) -> Option<mpsc::Sender<()>> {
+        if !self.poll {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel(1);
+        self.polls = Some(rx);
+        Some(tx)
+    }
+
+    /// Whether the subscription ends with `OK` once its queue is empty: a
+    /// ONCE list, and a POLL list whose client sends no more polls.
+    fn ends_when_drained(&self) -> bool {
+        self.once || (self.poll && self.polls.is_none())
+    }
+
     /// Send the initial sync — the latest value of every matching series
     /// (none with `updates_only`), then the sync marker — and, for a STREAM
     /// list: every series a sample group matches each time the group is
     /// due; every change to a series the ON_CHANGE set matches, including a
     /// series first published after the subscription started; and the
     /// latest value of every series a heartbeat group matches each time the
-    /// group is due, changed or not.
+    /// group is due, changed or not. For a POLL list, each poll its client
+    /// sends, taken only once the queue is empty, queues the latest value
+    /// of every matching series again, changed or not and whatever
+    /// `updates_only` says, then a sync marker.
     ///
     /// A series has at most one value waiting: a newer change or heartbeat
     /// replaces it in place. A change is queued only when its version is
@@ -1052,16 +1228,19 @@ impl Producer {
     /// no delete; it stops appearing.
     ///
     /// Returns when the client stops receiving, after the sync marker for a
-    /// ONCE list, and when the target's listener stops or the target is
+    /// ONCE list, once the queue is empty after a POLL list's client sends
+    /// no more polls, and when the target's listener stops or the target is
     /// gone, in which case the stream ends with `UNAVAILABLE` after the
     /// responses already sent. Also returns, ending the stream with
     /// `UNAVAILABLE` and logging the client's address, when responses wait
     /// for `stall_limit` with none taken from the queue. Responses leave the
     /// queue only as the client grants HTTP/2 flow-control credit, so a
     /// client that grants some within the limit, however little, is not
-    /// ended. The client's request stream ending does not end a
-    /// subscription. Returning gives the subscriber place back, ends the
-    /// response stream and aborts `draining`.
+    /// ended. A POLL list's queue is empty between polls, so a client that
+    /// stops polling is not ended either. The client's request stream
+    /// ending ends a POLL subscription, once its queue is empty, and no
+    /// other. Returning gives the subscriber place back, ends the response
+    /// stream and aborts `draining`.
     async fn run(mut self, draining: JoinHandle<()>) {
         let stopped = listener_stopped(self.state.clone());
         tokio::pin!(stopped);
@@ -1071,7 +1250,7 @@ impl Producer {
                 // When the queue last became non-empty or last sent a response.
                 let mut waiting_since = Instant::now();
                 loop {
-                    if self.once && pending.is_empty() {
+                    if pending.is_empty() && self.ends_when_drained() {
                         break None;
                     }
                     let next_sample = (pending.responses == 0)
@@ -1101,6 +1280,11 @@ impl Producer {
                             if next_sample.is_some() => Step::Sample,
                         _ = tokio::time::sleep_until(next_heartbeat.unwrap_or_else(Instant::now)),
                             if next_heartbeat.is_some() => Step::Heartbeat,
+                        polled = next_poll(&mut self.polls),
+                            if self.polls.is_some() && pending.is_empty() => match polled {
+                            Some(()) => Step::Polled,
+                            None => Step::PollsEnded,
+                        },
                     };
                     let served = match step {
                         Step::ClientDone => break None,
@@ -1122,6 +1306,11 @@ impl Producer {
                         }
                         Step::Sample => self.sample(&mut pending),
                         Step::Heartbeat => self.heartbeat(&mut pending),
+                        Step::Polled => self.poll_batch(&mut pending),
+                        Step::PollsEnded => {
+                            self.polls = None;
+                            true
+                        }
                         Step::Change(Ok(event)) => {
                             let served = match event {
                                 SeriesEvent::Changed(update) => self.offer(update, &mut pending),
@@ -1251,6 +1440,34 @@ impl Producer {
         for id in due.removed {
             self.delivered.queue_delete(id, pending);
         }
+        true
+    }
+
+    /// Queue the latest value of every matching series through the list's
+    /// delivery index, without indexing it, then the sync marker. `false`
+    /// once the target is gone.
+    fn poll_batch(&mut self, pending: &mut Pending) -> bool {
+        let Some(target) = self.target.upgrade() else {
+            return false;
+        };
+        let snapshot = target.snapshot();
+        drop(target);
+        for series in snapshot {
+            if self.matcher.matches(series.path.path()) {
+                self.delivered.queue_value(
+                    Queued {
+                        id: series.series_id,
+                        path: &series.path,
+                        latest: series.latest,
+                        version: series.version,
+                        placement: Placement::InPlace,
+                    },
+                    false,
+                    pending,
+                );
+            }
+        }
+        pending.push_response(sync_response());
         true
     }
 
@@ -1694,8 +1911,8 @@ mod tests {
     struct Client {
         responses: Streaming<proto::SubscribeResponse>,
         /// Holds the request stream open; `None` when it ended after the
-        /// list.
-        _requests: Option<mpsc::Sender<proto::SubscribeRequest>>,
+        /// list. Setting it to `None` half-closes the stream.
+        requests: Option<mpsc::Sender<proto::SubscribeRequest>>,
         _channel: Channel,
     }
 
@@ -1742,7 +1959,7 @@ mod tests {
             .into_inner();
         Ok(Client {
             responses,
-            _requests: requests,
+            requests,
             _channel: channel,
         })
     }
@@ -1939,13 +2156,13 @@ mod tests {
         let status = grpc
             .unary(
                 tonic::Request::new(proto::CapabilityRequest {}),
-                http::uri::PathAndQuery::from_static("/gnmi.gNMI/Get"),
+                http::uri::PathAndQuery::from_static("/gnmi.gNMI/Set"),
                 ProstCodec::<proto::CapabilityRequest, proto::CapabilityResponse>::default(),
             )
             .await
-            .expect_err("Get is not served");
+            .expect_err("Set is not served");
         assert_eq!(status.code(), tonic::Code::Unimplemented);
-        assert!(status.message().contains("/gnmi.gNMI/Get"), "{status}");
+        assert!(status.message().contains("/gnmi.gNMI/Set"), "{status}");
     }
 
     /// The password the credential tests configure.
@@ -2468,26 +2685,26 @@ mod tests {
         );
     }
 
+    /// Every list mode gNMI defines is served: the initial sync arrives.
     #[rustfmt::skip]
     #[rstest::rstest]
-    #[case::poll(subscription_list::Mode::Poll, SubscriptionMode::Sample, "POLL")]
+    #[case::stream(subscription_list::Mode::Stream)]
+    #[case::once(subscription_list::Mode::Once)]
+    #[case::poll(subscription_list::Mode::Poll)]
     #[tokio::test]
-    async fn unsupported_mode_is_unimplemented_with_mode_named(
-        #[case] list_mode: subscription_list::Mode,
-        #[case] mode: SubscriptionMode,
-        #[case] named: &str,
-    ) {
-        let sink = sink(None, None).await;
+    async fn every_list_mode_is_served(#[case] list_mode: subscription_list::Mode) {
+        let mut sink = sink(None, Some("10s")).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
         let mut list = stream("/interfaces", Duration::ZERO);
         list.mode = list_mode as i32;
-        list.subscription[0].mode = mode as i32;
-        let status = match open(sink.target().local_addr(), list).await {
-            Ok(_) => panic!("{named} is served"),
-            Err(status) => status,
-        };
-        assert_eq!(status.code(), tonic::Code::Unimplemented, "{status}");
-        assert!(status.message().contains(named), "{status}");
-        assert_eq!(sink.target().subscriber_count(), 0, "nothing was counted");
+        let mut client = open(sink.target().local_addr(), list)
+            .await
+            .unwrap_or_else(|status| panic!("{list_mode:?} is refused: {status}"));
+        assert_eq!(
+            next(&mut client).await,
+            Received::Update(counter("eth0", "in-octets"))
+        );
+        assert_eq!(next(&mut client).await, Received::Sync);
     }
 
     #[tokio::test]
@@ -5287,5 +5504,639 @@ mod tests {
         };
         assert_eq!(status.code(), tonic::Code::Unimplemented);
         assert!(status.message().contains(named), "{}", status.message());
+    }
+
+    /// A PROTO Get of every data type for `paths`, without a prefix.
+    fn get_request(paths: &[&str]) -> proto::GetRequest {
+        proto::GetRequest {
+            prefix: None,
+            path: paths
+                .iter()
+                .map(|p| parse_client_path(p).expect("a valid path"))
+                .collect(),
+            r#type: get_request::DataType::All as i32,
+            encoding: proto::Encoding::Proto as i32,
+        }
+    }
+
+    /// `Get` on `addr` with `metadata`.
+    async fn get_with(
+        addr: SocketAddr,
+        request: proto::GetRequest,
+        metadata: &[(&'static str, &str)],
+    ) -> Result<proto::GetResponse, Status> {
+        let mut grpc = tonic::client::Grpc::new(connect(addr).await);
+        grpc.ready().await.expect("the channel is ready");
+        grpc.unary(
+            with_metadata(request, metadata),
+            http::uri::PathAndQuery::from_static(GET_PATH),
+            ProstCodec::<proto::GetRequest, proto::GetResponse>::default(),
+        )
+        .await
+        .map(tonic::Response::into_inner)
+    }
+
+    /// `Get` on `addr`.
+    async fn get_on(
+        addr: SocketAddr,
+        request: proto::GetRequest,
+    ) -> Result<proto::GetResponse, Status> {
+        get_with(addr, request, &[]).await
+    }
+
+    /// Each notification of `response` as its series path and value,
+    /// sorted.
+    fn got_values(response: &proto::GetResponse) -> Vec<(String, Value)> {
+        let mut values: Vec<(String, Value)> = response
+            .notification
+            .iter()
+            .map(|n| (series_path(n), value_of(n)))
+            .collect();
+        values.sort_by_key(|v| format!("{v:?}"));
+        values
+    }
+
+    /// A sink holding `in_octets` of eth0 at 1 and eth1 at 2, and
+    /// `out_octets` of eth0 at 3.
+    async fn three_series() -> GnmiTargetSink {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        publish(&mut sink, "in_octets", "eth1", 2.0).await;
+        publish(&mut sink, "out_octets", "eth0", 3.0).await;
+        assert_eq!(sink.target().series_count(), 3, "the premise: three series");
+        sink
+    }
+
+    /// A Get of one series' exact path returns that series' stored
+    /// notification, timestamp included, and nothing else.
+    #[tokio::test]
+    async fn get_of_an_exact_path_returns_the_stored_notification() {
+        let sink = three_series().await;
+        let eth0 = counter("eth0", "in-octets");
+        let stored = sink
+            .target()
+            .snapshot()
+            .into_iter()
+            .find(|s| s.path.path().to_string() == eth0)
+            .expect("the premise: the series is stored");
+        let response = get_on(
+            sink.target().local_addr(),
+            get_request(&["/interfaces/interface[name=eth0]/state/counters/in-octets"]),
+        )
+        .await
+        .expect("served");
+        assert_eq!(
+            response.notification,
+            [proto::Notification::decode(stored.latest.as_ref()).expect("decodes")]
+        );
+    }
+
+    /// A Get of a path with wildcards returns every series it matches, each
+    /// once.
+    #[tokio::test]
+    async fn get_of_a_wildcard_path_returns_every_matching_series() {
+        let sink = three_series().await;
+        let addr = sink.target().local_addr();
+        let in_octets = [
+            (counter("eth0", "in-octets"), Value::DoubleVal(1.0)),
+            (counter("eth1", "in-octets"), Value::DoubleVal(2.0)),
+        ];
+        for path in [
+            "/interfaces/interface[name=*]/state/counters/in-octets",
+            "/interfaces/*/state/counters/in-octets",
+            "/interfaces/.../in-octets",
+        ] {
+            let response = get_on(addr, get_request(&[path])).await.expect("served");
+            assert_eq!(got_values(&response), in_octets, "{path}");
+        }
+        let overlapping = get_request(&["/interfaces", "/interfaces/.../in-octets"]);
+        let response = get_on(addr, overlapping).await.expect("served");
+        assert_eq!(
+            got_values(&response),
+            [
+                (counter("eth0", "in-octets"), Value::DoubleVal(1.0)),
+                (counter("eth0", "out-octets"), Value::DoubleVal(3.0)),
+                (counter("eth1", "in-octets"), Value::DoubleVal(2.0)),
+            ],
+            "each series once"
+        );
+    }
+
+    /// A Get's prefix is joined to each of its paths.
+    #[tokio::test]
+    async fn get_joins_the_prefix_to_each_path() {
+        let sink = three_series().await;
+        let mut request = get_request(&["/in-octets", "/out-octets"]);
+        request.prefix = Some(
+            parse_client_path("openconfig:/interfaces/interface[name=eth0]/state/counters")
+                .expect("a valid path"),
+        );
+        let response = get_on(sink.target().local_addr(), request)
+            .await
+            .expect("served");
+        assert_eq!(
+            got_values(&response),
+            [
+                (counter("eth0", "in-octets"), Value::DoubleVal(1.0)),
+                (counter("eth0", "out-octets"), Value::DoubleVal(3.0)),
+            ]
+        );
+    }
+
+    /// A Get is served in the encoding it asks for: PROTO, and JSON or no
+    /// encoding as PROTO; JSON_IETF with every value as `json_ietf_val`.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::unset(proto::Encoding::Json, Value::DoubleVal(1.5))]
+    #[case::proto(proto::Encoding::Proto, Value::DoubleVal(1.5))]
+    #[case::json_ietf(proto::Encoding::JsonIetf, json("1.5"))]
+    #[tokio::test]
+    async fn get_serves_the_requested_encoding(
+        #[case] encoding: proto::Encoding,
+        #[case] value: Value,
+    ) {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.5).await;
+        let mut request = get_request(&["/interfaces"]);
+        request.encoding = encoding as i32;
+        let response = get_on(sink.target().local_addr(), request).await.expect("served");
+        assert_eq!(got_values(&response), [(counter("eth0", "in-octets"), value)]);
+    }
+
+    /// ALL, STATE and OPERATIONAL data are served alike; CONFIG gets an
+    /// empty response, also for a path no series matches.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::all(get_request::DataType::All, 1)]
+    #[case::config(get_request::DataType::Config, 0)]
+    #[case::state(get_request::DataType::State, 1)]
+    #[case::operational(get_request::DataType::Operational, 1)]
+    #[tokio::test]
+    async fn get_serves_every_data_type_but_config(
+        #[case] data_type: get_request::DataType,
+        #[case] notifications: usize,
+    ) {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let addr = sink.target().local_addr();
+        let mut request = get_request(&["/interfaces"]);
+        request.r#type = data_type as i32;
+        let response = get_on(addr, request).await.expect("served");
+        assert_eq!(response.notification.len(), notifications);
+
+        let mut unmatched = get_request(&["/system"]);
+        unmatched.r#type = data_type as i32;
+        let result = get_on(addr, unmatched).await;
+        if data_type == get_request::DataType::Config {
+            assert!(result.expect("served").notification.is_empty());
+        } else {
+            assert_eq!(result.expect_err("nothing matches").code(), tonic::Code::NotFound);
+        }
+    }
+
+    /// A Get none of whose paths matches a series is `NOT_FOUND`, naming
+    /// the first path.
+    #[tokio::test]
+    async fn get_matching_no_series_is_not_found_naming_the_first_path() {
+        let sink = three_series().await;
+        let addr = sink.target().local_addr();
+        let status = get_on(addr, get_request(&["/system"]))
+            .await
+            .expect_err("nothing matches");
+        assert_eq!(status.code(), tonic::Code::NotFound, "{status}");
+        assert_eq!(status.message(), "no series matches /system");
+
+        let status = get_on(
+            addr,
+            get_request(&["/interfaces/interface[name=eth9]", "/system"]),
+        )
+        .await
+        .expect_err("nothing matches");
+        assert_eq!(status.code(), tonic::Code::NotFound, "{status}");
+        assert_eq!(
+            status.message(),
+            "no series matches /interfaces/interface[name=eth9] or any other requested path"
+        );
+    }
+
+    /// A Get some of whose paths match a series returns what matched.
+    #[tokio::test]
+    async fn get_with_some_paths_matching_returns_what_matched() {
+        let sink = three_series().await;
+        let response = get_on(
+            sink.target().local_addr(),
+            get_request(&["/system", "/interfaces/interface[name=eth1]"]),
+        )
+        .await
+        .expect("served");
+        assert_eq!(
+            got_values(&response),
+            [(counter("eth1", "in-octets"), Value::DoubleVal(2.0))]
+        );
+    }
+
+    /// A Get on a target holding no series is `NOT_FOUND`.
+    #[tokio::test]
+    async fn get_on_a_target_with_no_series_is_not_found() {
+        let sink = sink(None, None).await;
+        assert_eq!(sink.target().series_count(), 0, "the premise: no series");
+        let status = get_on(sink.target().local_addr(), get_request(&["/"]))
+            .await
+            .expect_err("nothing matches");
+        assert_eq!(status.code(), tonic::Code::NotFound, "{status}");
+    }
+
+    /// A Get refuses what a subscription refuses, and a data type gNMI does
+    /// not define.
+    #[tokio::test]
+    async fn get_refuses_bad_requests_by_name() {
+        let sink = three_series().await;
+        let addr = sink.target().local_addr();
+        let request = |adjust: fn(&mut proto::GetRequest)| {
+            let mut request = get_request(&["/interfaces"]);
+            adjust(&mut request);
+            request
+        };
+        let cases: [(proto::GetRequest, tonic::Code, &str); 6] = [
+            (
+                request(|r| r.encoding = proto::Encoding::Bytes as i32),
+                tonic::Code::Unimplemented,
+                "BYTES",
+            ),
+            (
+                request(|r| r.encoding = proto::Encoding::Ascii as i32),
+                tonic::Code::Unimplemented,
+                "ASCII",
+            ),
+            (
+                request(|r| r.encoding = 9),
+                tonic::Code::InvalidArgument,
+                "encoding 9",
+            ),
+            (
+                request(|r| r.r#type = 9),
+                tonic::Code::InvalidArgument,
+                "data type 9",
+            ),
+            (
+                request(|r| r.path.clear()),
+                tonic::Code::InvalidArgument,
+                "no paths",
+            ),
+            (
+                request(|r| {
+                    r.path = vec![parse_client_path("/interfaces/...[name=eth0]").unwrap()]
+                }),
+                tonic::Code::InvalidArgument,
+                "`...`",
+            ),
+        ];
+        for (request, code, named) in cases {
+            let status = get_on(addr, request).await.expect_err("refused");
+            assert_eq!(status.code(), code, "{status}");
+            assert!(status.message().contains(named), "{status}");
+        }
+    }
+
+    /// With credentials configured, a Get without them, or with a wrong
+    /// pair, is refused before it is served, and with the right pair it is
+    /// served.
+    #[tokio::test]
+    async fn get_needs_the_credentials_the_target_requires() {
+        let target = credentialed_target().await;
+        publish_into(&target, "in_octets", "eth0");
+        let addr = target.local_addr();
+        let request = || get_request(&["/interfaces"]);
+        assert_refused(get_with(addr, request(), &[]).await);
+        assert_refused(get_with(addr, request(), &[("username", "sonda")]).await);
+        let wrong = [("username", "sonda"), ("password", "s3cret-pasS")];
+        assert_refused(get_with(addr, request(), &wrong).await);
+        let right = [("username", "sonda"), ("password", PASSWORD)];
+        let response = get_with(addr, request(), &right).await.expect("served");
+        assert_eq!(
+            got_values(&response),
+            [(counter("eth0", "in-octets"), Value::DoubleVal(1.0))]
+        );
+    }
+
+    /// A Get returns the same values a ONCE subscription to the same path
+    /// does, in PROTO and in JSON_IETF.
+    #[tokio::test]
+    async fn get_returns_what_a_once_subscription_does() {
+        let sink = three_series().await;
+        let addr = sink.target().local_addr();
+        for encoding in [proto::Encoding::Proto, proto::Encoding::JsonIetf] {
+            let mut list = once("/interfaces");
+            list.encoding = encoding as i32;
+            let mut client = open(addr, list).await.expect("subscribed");
+            let mut once_values = Vec::new();
+            while let Some(value) = next_value(&mut client).await {
+                once_values.push(value);
+            }
+            once_values.sort_by_key(|v| format!("{v:?}"));
+            assert_eq!(
+                once_values.len(),
+                3,
+                "the premise: the sync of {encoding:?}"
+            );
+
+            let mut request = get_request(&["/interfaces"]);
+            request.encoding = encoding as i32;
+            let response = get_on(addr, request).await.expect("served");
+            assert_eq!(got_values(&response), once_values, "{encoding:?}");
+        }
+    }
+
+    /// The encoded Get response decodes as one notification per stored
+    /// notification, in order.
+    #[test]
+    fn get_response_decodes_as_a_get_response() {
+        let notifications = [
+            proto::Notification {
+                timestamp: 7,
+                ..Default::default()
+            },
+            proto::Notification {
+                timestamp: 8,
+                atomic: true,
+                ..Default::default()
+            },
+        ];
+        let encoded: Vec<Bytes> = notifications
+            .iter()
+            .map(|n| Bytes::from(n.encode_to_vec()))
+            .collect();
+        let decoded = proto::GetResponse::decode(get_response(&encoded).0).expect("decodes");
+        assert_eq!(decoded.notification, notifications);
+        assert!(get_response(&[]).0.is_empty());
+    }
+
+    /// A POLL list for `path`.
+    fn poll_list(path: &str) -> proto::SubscriptionList {
+        proto::SubscriptionList {
+            mode: subscription_list::Mode::Poll as i32,
+            ..stream(path, Duration::ZERO)
+        }
+    }
+
+    /// Send one poll on `client`'s request stream.
+    async fn send_poll(client: &Client) {
+        client
+            .requests
+            .as_ref()
+            .expect("the request stream is open")
+            .send(proto::SubscribeRequest {
+                request: Some(subscribe_request::Request::Poll(proto::Poll {})),
+            })
+            .await
+            .expect("queue the poll");
+    }
+
+    /// The values up to the next sync marker, sorted.
+    async fn batch(client: &mut Client) -> Vec<(String, Value)> {
+        let mut values = Vec::new();
+        while let Some(value) = next_value(client).await {
+            values.push(value);
+        }
+        values.sort_by_key(|v| format!("{v:?}"));
+        values
+    }
+
+    /// A POLL subscription sends the initial sync and its marker, then for
+    /// each poll every matching series, unchanged values included, and a
+    /// marker; nothing between polls.
+    #[tokio::test]
+    async fn poll_sends_the_initial_sync_then_one_batch_per_poll() {
+        let sink = three_series().await;
+        let mut client = open(
+            sink.target().local_addr(),
+            poll_list("/interfaces/interface/state/counters/in-octets"),
+        )
+        .await
+        .expect("subscribed");
+        let expected = [
+            (counter("eth0", "in-octets"), Value::DoubleVal(1.0)),
+            (counter("eth1", "in-octets"), Value::DoubleVal(2.0)),
+        ];
+        assert_eq!(batch(&mut client).await, expected, "the initial sync");
+        assert_eq!(
+            value_within(&mut client, QUIET).await,
+            None,
+            "nothing before a poll"
+        );
+
+        for _ in 0..3 {
+            send_poll(&client).await;
+        }
+        for poll in 1..=3 {
+            assert_eq!(batch(&mut client).await, expected, "poll {poll}");
+        }
+        assert_eq!(
+            value_within(&mut client, QUIET).await,
+            None,
+            "one batch per poll"
+        );
+        assert_eq!(sink.target().subscriber_count(), 1);
+    }
+
+    /// Polls sent together, each answered with more responses than the
+    /// subscription's outbound queue holds, still get one whole batch and
+    /// one marker each, in order: a poll is taken only once the previous
+    /// batch has left the queue.
+    #[tokio::test]
+    async fn polls_sent_together_get_one_whole_batch_each() {
+        const SERIES: usize = 4 * OUTBOUND_CAPACITY;
+        let mut sink = sink(None, None).await;
+        for i in 0..SERIES {
+            publish(&mut sink, "in_octets", &format!("eth{i}"), 1.0).await;
+        }
+        assert_eq!(sink.target().series_count(), SERIES);
+        let mut client = open(sink.target().local_addr(), poll_list("/interfaces"))
+            .await
+            .expect("subscribed");
+        for _ in 0..3 {
+            send_poll(&client).await;
+        }
+        for batch_number in 0..=3 {
+            let values = batch(&mut client).await;
+            let series: std::collections::HashSet<&String> =
+                values.iter().map(|(path, _)| path).collect();
+            assert_eq!(
+                (values.len(), series.len()),
+                (SERIES, SERIES),
+                "batch {batch_number}: every series once"
+            );
+        }
+        assert_eq!(
+            value_within(&mut client, QUIET).await,
+            None,
+            "one batch per poll"
+        );
+    }
+
+    /// A poll sends the value at the time of the poll; a change between
+    /// polls sends nothing by itself.
+    #[tokio::test]
+    async fn a_value_changed_between_polls_is_the_new_one() {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let mut client = open(sink.target().local_addr(), poll_list("/interfaces"))
+            .await
+            .expect("subscribed");
+        let eth0 = counter("eth0", "in-octets");
+        assert_eq!(
+            batch(&mut client).await,
+            [(eth0.clone(), Value::DoubleVal(1.0))]
+        );
+        send_poll(&client).await;
+        assert_eq!(
+            batch(&mut client).await,
+            [(eth0.clone(), Value::DoubleVal(1.0))]
+        );
+
+        publish(&mut sink, "in_octets", "eth0", 5.0).await;
+        assert_eq!(
+            value_within(&mut client, QUIET).await,
+            None,
+            "a change is not sent before a poll"
+        );
+        send_poll(&client).await;
+        assert_eq!(batch(&mut client).await, [(eth0, Value::DoubleVal(5.0))]);
+    }
+
+    /// A POLL client that half-closes its request stream after its last
+    /// poll receives that poll's batch, then the stream ends with `OK`; one
+    /// that half-closes right after the list receives the initial sync, then
+    /// `OK`.
+    #[tokio::test]
+    async fn half_closing_after_the_last_poll_ends_the_stream_ok() {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let addr = sink.target().local_addr();
+        let expected = [(counter("eth0", "in-octets"), Value::DoubleVal(1.0))];
+        let mut client = open(addr, poll_list("/interfaces"))
+            .await
+            .expect("subscribed");
+        assert_eq!(batch(&mut client).await, expected, "the initial sync");
+        send_poll(&client).await;
+        send_poll(&client).await;
+        client.requests = None;
+        assert_eq!(batch(&mut client).await, expected, "the first poll");
+        assert_eq!(batch(&mut client).await, expected, "the last poll");
+        assert_eq!(next(&mut client).await, Received::End);
+        let target = Arc::clone(sink.target());
+        assert!(eventually(|| target.subscriber_count() == 0).await);
+
+        let mut client = open_half_closed(addr, poll_list("/interfaces"))
+            .await
+            .expect("subscribed");
+        assert_eq!(batch(&mut client).await, expected, "the initial sync");
+        assert_eq!(next(&mut client).await, Received::End);
+    }
+
+    /// A POLL client that never polls holds its place past the stall limit,
+    /// since nothing waits for it, and is still served when it polls; it
+    /// gives the place back when it goes.
+    #[tokio::test]
+    async fn a_poll_client_that_never_polls_holds_its_place_until_it_goes() {
+        let target = target_with(1, |settings| settings.stall_floor = STALL_TEST_FLOOR).await;
+        publish_into(&target, "in_octets", "eth0");
+        let mut client = open(target.local_addr(), poll_list("/interfaces"))
+            .await
+            .expect("subscribed");
+        let expected = [(counter("eth0", "in-octets"), Value::DoubleVal(1.0))];
+        assert_eq!(batch(&mut client).await, expected, "the initial sync");
+
+        tokio::time::sleep(5 * STALL_TEST_FLOOR).await;
+        assert_eq!(
+            target.subscriber_count(),
+            1,
+            "ended while nothing waited for it"
+        );
+        send_poll(&client).await;
+        assert_eq!(batch(&mut client).await, expected, "served after the wait");
+
+        drop(client);
+        assert!(eventually(|| target.subscriber_count() == 0).await);
+    }
+
+    /// A POLL client that polls and then drains nothing is ended as stalled
+    /// once the poll's responses have waited the stall limit.
+    #[tokio::test]
+    async fn a_poll_client_that_drains_nothing_after_a_poll_is_ended_as_stalled() {
+        let target = stall_target().await;
+        let mut list = poll_list("/interfaces");
+        list.updates_only = true;
+        let mut client = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            list,
+            true,
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(next(&mut client).await, Received::Sync, "an empty sync");
+        tokio::time::sleep(2 * STALL_TEST_FLOOR).await;
+        assert_eq!(target.subscriber_count(), 1, "ended before it polled");
+
+        send_poll(&client).await;
+        assert!(
+            within(4 * STALL_TEST_FLOOR, || target.subscriber_count() == 0).await,
+            "a client that drains nothing after a poll still holds its place"
+        );
+        let mut updates = 0usize;
+        let ending = loop {
+            match tokio::time::timeout(PATIENCE, client.responses.message())
+                .await
+                .expect("a response in time")
+            {
+                Ok(Some(_)) => updates += 1,
+                ending => break ending,
+            }
+        };
+        assert!(updates > 0, "the poll was answered");
+        assert!(updates < STALL_SERIES, "the stall cut the poll short");
+        let status = ending.expect_err("the stream ends with a status, not OK");
+        assert_eq!(status.code(), tonic::Code::Unavailable, "{status}");
+        assert!(status.message().contains("stalled"), "{status}");
+    }
+
+    /// With `updates_only` a POLL subscription's initial sync is the marker
+    /// alone, and every poll sends every matching series.
+    #[tokio::test]
+    async fn updates_only_gives_an_empty_initial_sync_and_full_polls() {
+        let sink = three_series().await;
+        let mut list = poll_list("/interfaces/interface[name=eth0]");
+        list.updates_only = true;
+        let mut client = open(sink.target().local_addr(), list)
+            .await
+            .expect("subscribed");
+        assert_eq!(next(&mut client).await, Received::Sync, "an empty sync");
+        let expected = [
+            (counter("eth0", "in-octets"), Value::DoubleVal(1.0)),
+            (counter("eth0", "out-octets"), Value::DoubleVal(3.0)),
+        ];
+        for poll in 1..=2 {
+            send_poll(&client).await;
+            assert_eq!(batch(&mut client).await, expected, "poll {poll}");
+        }
+    }
+
+    /// A JSON_IETF POLL client gets its initial sync and its polls as
+    /// `json_ietf_val`.
+    #[tokio::test]
+    async fn a_json_ietf_poll_client_gets_json_ietf_values() {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let mut client = open(
+            sink.target().local_addr(),
+            in_json_ietf(poll_list("/interfaces")),
+        )
+        .await
+        .expect("subscribed");
+        let eth0 = counter("eth0", "in-octets");
+        assert_eq!(batch(&mut client).await, [(eth0.clone(), json("1"))]);
+        publish(&mut sink, "in_octets", "eth0", 2.0).await;
+        send_poll(&client).await;
+        assert_eq!(batch(&mut client).await, [(eth0, json("2"))]);
     }
 }
