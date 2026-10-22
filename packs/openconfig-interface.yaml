@@ -1,0 +1,93 @@
+# OpenConfig interface metrics pack.
+#
+# Models the interface state leaves of the OpenConfig `openconfig-interfaces`
+# YANG model (/interfaces/interface/state): the counters container,
+# oper-status and admin-status. Each metric carries a `gnmi:` hint with its
+# OpenConfig path and value type, so a scenario that encodes this pack with
+# the gnmi encoder needs no `paths:` or `values:` of its own:
+#
+#   encoder: { type: gnmi, origin: openconfig-interfaces, target_label: device }
+#
+# Entries the scenario's encoder block does write in `paths:` or `values:`
+# win over the hints. Under any other encoder the hints are not used.
+#
+# oper_status and admin_status are enum codes: 1 UP, 2 DOWN, 3 TESTING.
+
+version: 2
+kind: composable
+name: openconfig_interface
+description: "OpenConfig interface counters and status, with gNMI paths"
+category: network
+
+shared_labels:
+  device: ""
+  ifName: ""
+
+metrics:
+  - name: in_octets
+    generator: { type: step, start: 0.0, step_size: 125000.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/in-octets"
+      value: uint
+
+  - name: out_octets
+    generator: { type: step, start: 0.0, step_size: 62500.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/out-octets"
+      value: uint
+
+  - name: in_pkts
+    generator: { type: step, start: 0.0, step_size: 120.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/in-pkts"
+      value: uint
+
+  - name: out_pkts
+    generator: { type: step, start: 0.0, step_size: 80.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/out-pkts"
+      value: uint
+
+  - name: in_errors
+    generator: { type: step, start: 0.0, step_size: 0.2 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/in-errors"
+      value: uint
+
+  - name: out_errors
+    generator: { type: step, start: 0.0, step_size: 0.1 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/out-errors"
+      value: uint
+
+  - name: in_discards
+    generator: { type: step, start: 0.0, step_size: 0.5 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/in-discards"
+      value: uint
+
+  - name: out_discards
+    generator: { type: step, start: 0.0, step_size: 0.3 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/out-discards"
+      value: uint
+
+  - name: carrier_transitions
+    generator: { type: constant, value: 0.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/counters/carrier-transitions"
+      value: uint
+
+  - name: oper_status
+    generator: { type: constant, value: 1.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/oper-status"
+      value:
+        enum: { 1: UP, 2: DOWN, 3: TESTING }
+
+  - name: admin_status
+    generator: { type: constant, value: 1.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/admin-status"
+      value:
+        enum: { 1: UP, 2: DOWN, 3: TESTING }

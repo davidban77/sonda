@@ -221,6 +221,23 @@ With that block, `in_octets{device="rtr-core-01", ifName="GigabitEthernet0/0/0"}
 
 `oper_status` uses its own path from `paths:` and is sent as the string `UP` or `DOWN`.
 
+### Paths and values from a pack
+
+A pack's metrics can carry a `gnmi:` hint, a path template and a value type:
+
+```yaml title="A pack metric with a gNMI hint"
+# sonda:static - a pack fragment, not a scenario
+metrics:
+  - name: oper_status
+    generator: { type: constant, value: 1.0 }
+    gnmi:
+      path: "/interfaces/interface[name={ifName}]/state/oper-status"
+      value:
+        enum: { 1: UP, 2: DOWN, 3: TESTING }
+```
+
+When a pack entry's encoder is `gnmi`, each hint fills `paths:` and `values:` for its metric. Your entries win: a `paths:` entry for a metric replaces its hint's path, a `values:` entry its hint's value type, each on its own. Metrics without a hint use `path` and the `double` default as usual. Under any other encoder the hints are not used. The built-in [`openconfig_interface`](builtin-packs.md#openconfig_interface) pack carries a hint on every metric, so its encoder block needs only `origin` and `target_label`.
+
 ### Path templates
 
 - Segments are separated by `/`. A leading `/` is optional.
