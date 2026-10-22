@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.25.0](https://github.com/davidban77/sonda/compare/v1.24.0...v1.25.0) (2026-10-22)
+
+
+### Features
+
+* **gnmi:** ON_CHANGE, deletes, TLS, JSON_IETF and wildcard subscriptions for the gNMI target ([#682](https://github.com/davidban77/sonda/issues/682)) ([f510c2b](https://github.com/davidban77/sonda/commit/f510c2bacbec5338651737d2bd4f888087e286e9))
+
+
+### Bug Fixes
+
+* **deps:** rustls-webpki 0.103.16 and webpki-roots 1.0.10 for RUSTSEC-2026-0381/0382/0383 ([#676](https://github.com/davidban77/sonda/issues/676)) ([1d072fe](https://github.com/davidban77/sonda/commit/1d072fe2049d9213a509b8a4714b69cad0e7152b))
+
 ## [1.24.0](https://github.com/davidban77/sonda/compare/v1.23.1...v1.24.0) (2026-10-18)
 
 
