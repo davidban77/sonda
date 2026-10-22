@@ -486,29 +486,41 @@ Pair this sink with the [`gnmi` encoder](encoders.md#gnmi), which renders each s
 |-----------|------|----------|---------|-------------|
 | `listen` | string | yes | -- | Address to listen on, for example `"0.0.0.0:57400"`. |
 | `max_subscribers` | integer | no | `16` | Subscriptions served at once, at least 1. One more is refused with `RESOURCE_EXHAUSTED`. |
-| `sample_floor` | duration string | no | `1s` | Shortest sample interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval. |
-| `subscriber_buffer` | integer | no | `1024` | Capacity of the broadcast that ON_CHANGE subscriptions read, 1 to 65536. The target refuses ON_CHANGE, so the value changes nothing a subscriber receives. |
+| `sample_floor` | duration string | no | `1s` | Shortest sample and heartbeat interval served. A SAMPLE subscription that asks for less, or for 0, is sampled at this interval, and a shorter heartbeat interval is raised to it. |
+| `subscriber_buffer` | integer | no | `1024` | Changes an ON_CHANGE subscription may fall behind before it is resynced, 1 to 65536. |
+| `tls` | object | no | -- | Serve over TLS: `cert` and `key` PEM files, and `client_ca` to require client certificates. See [TLS and credentials](#tls-and-credentials). |
+| `credentials` | object | no | -- | Require a `username` and `password` on every RPC. Needs `tls`. See [TLS and credentials](#tls-and-credentials). |
 
-Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set `max_subscribers`, `sample_floor` and `subscriber_buffer` alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.
+Every entry on one address shares one listener and one table of latest values, so the scenarios of a file are one device to the client. Entries on one address must set `max_subscribers`, `sample_floor`, `subscriber_buffer`, `tls` and `credentials` alike. A series belongs to the run that publishes it: another run publishing the same path while the first is live is a configuration error.
 
-The listener serves plaintext gRPC:
+The listener serves gRPC, over TLS when `tls` is set:
 
 | Request | What the target does |
 |---------|----------------------|
-| `Capabilities` | Answers gNMI version `0.10.0` and the one encoding `PROTO`. |
-| `Subscribe`, STREAM with SAMPLE | Sends the latest value of every matching series, then `sync_response`. After that it resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. `TARGET_DEFINED` is served as SAMPLE. |
+| `Capabilities` | Answers gNMI version `0.10.0` and the encodings `PROTO` and `JSON_IETF`. |
 | `Subscribe`, ONCE | Sends the latest value of every matching series and `sync_response`, then ends the stream. |
+| `Subscribe`, STREAM | Sends the latest value of every matching series, then `sync_response`, once for the whole request even when it mixes modes. After that each subscription is served by its mode. |
+| SAMPLE | Resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. |
+| SAMPLE, `suppress_redundant: true` | At each sample interval, sends a matching series only when its value changed since the subscription last sent it. The initial values count as sent; a series first seen at a sample is sent. Ignored on the other modes. |
+| ON_CHANGE | Sends a matching series each time its value changes, including a series first published after the subscription started. A value that holds sends nothing. |
+| TARGET_DEFINED | Decides per series from the kind of value its first publish carried. A series with a string value (the encoder's `string` and `enum` values) is served as ON_CHANGE, any other as SAMPLE at the subscription's sample interval. |
+| `heartbeat_interval` | On ON_CHANGE, on TARGET_DEFINED's string series, and on SAMPLE with `suppress_redundant`, resends the latest value of every matching series at this interval, changed or not. `0` sends none. Not read for SAMPLE without `suppress_redundant`, where every sample already sends every series. |
 | `updates_only: true` | Skips the initial values; the first message is `sync_response`. |
-| POLL, ON_CHANGE | Refused with `UNIMPLEMENTED`, naming the mode. |
+| POLL | Refused with `UNIMPLEMENTED`, naming the mode. |
 | Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
-| Encoding `JSON_IETF`, `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding and `PROTO`. |
+| Encoding `JSON_IETF` | Served in `JSON_IETF`: every value is a `json_ietf_val`. See [Encodings](#gnmi-encodings). |
+| Encoding `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding, `PROTO` and `JSON_IETF`. |
 
-A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of `*`, or a key the subscription leaves out, matches any value: `/interfaces/interface/state/counters` matches every interface's counters. An empty origin or target in the subscription matches any. Element wildcards (`*` or `...` as an element name) are refused with `UNIMPLEMENTED`.
+A series leaves the target when the last scenario publishing it stops (scenarios of one scenario file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose `delete` names the path, split into `prefix` and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with `suppress_redundant` matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE never receives one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.
+
+A change is a new value: the update's encoded `TypedValue` differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than `subscriber_buffer` changes behind is resynced with the latest value of every series it matches, without a second `sync_response`. A change the initial values, a resync or a heartbeat already sent is not sent again.
+
+A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of `*`, or a key the subscription leaves out, matches any value: `/interfaces/interface/state/counters` matches every interface's counters. An empty origin or target in the subscription matches any. An element named `*` matches any one element, keeping its own keys: `/interfaces/*/state/counters` matches `/interfaces/interface[name=eth0]/state/counters/in-octets` but not a path with two elements in its place. An element named `...` matches any run of elements, none included: `/interfaces/.../in-octets` matches every interface's `in-octets` counter and nothing else, and `/interfaces/...` matches everything under `/interfaces`. A `...` element with keys is refused with `INVALID_ARGUMENT`.
 
 A subscription ends with `UNAVAILABLE` when:
 
 - **The run stops.** The status follows the updates already queued, and the listener closes.
-- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
+- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions has the 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
 
 The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.
 
@@ -558,7 +570,7 @@ scenarios:
     labels: { device: rtr-core-01, ifName: GigabitEthernet0/0/0 }
 ```
 
-The Telegraf side subscribes to the counters and the oper-status. Both subscriptions use SAMPLE mode:
+The Telegraf side samples the counters every 10 seconds. It subscribes to the oper-status ON_CHANGE, so it receives the oper-status when it changes and every 30 seconds while it holds:
 
 ```toml title="examples/telegraf/telegraf.conf (excerpt)"
 [[inputs.gnmi]]
@@ -577,8 +589,8 @@ The Telegraf side subscribes to the counters and the oper-status. Both subscript
     name = "ifstate"
     origin = "openconfig-interfaces"
     path = "/interfaces/interface/state/oper-status"
-    subscription_mode = "sample"
-    sample_interval = "1s"
+    subscription_mode = "on_change"
+    heartbeat_interval = "30s"
 ```
 
 Each subscription's `name` becomes the measurement, the interface key becomes the `name` tag, and the address Telegraf dialed becomes `source`. The full `telegraf.conf` maps oper-status `UP`/`DOWN` to `1`/`2` with `processors.enum`, so Telegraf writes these lines:
@@ -596,11 +608,101 @@ docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up 
 sonda run examples/gnmi-telegraf.yaml
 ```
 
-Without Telegraf, gnmic reads the same target directly:
+Without Telegraf, gnmic reads the same target directly, once or as each oper-status changes:
 
 ```bash
 gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode once
+gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces/interface/state/oper-status \
+  --stream-mode on-change
 ```
+
+### Encodings { #gnmi-encodings }
+
+The request's `encoding` decides how the values of its subscriptions are sent. One target serves `PROTO` and `JSON_IETF` requests at once.
+
+- **`PROTO`**, and `JSON` or no encoding: each value is the `TypedValue` field the [`gnmi` encoder](encoders.md#gnmi) wrote.
+- **`JSON_IETF`**: each value is a `json_ietf_val` holding the value's JSON text, written as RFC 7951 writes it. The timestamp, prefix and path are those a `PROTO` request receives.
+
+Deletes and `sync_response` carry no value and are the same in both.
+
+| Encoder value | `PROTO` | `JSON_IETF` text |
+|---------------|---------|------------------|
+| `uint` | `uint_val` | A JSON string: `"18446744073709551615"`. |
+| `int` | `int_val` | A JSON string: `"-42"`. |
+| `double` | `double_val` | A JSON number in decimal notation: `1.5`, `2`. NaN and the infinities, which JSON has no number for, are the strings `"NaN"`, `"Infinity"` and `"-Infinity"`. |
+| `bool` | `bool_val` | `true` or `false`. |
+| `string`, `enum` | `string_val` | A JSON string, escaped as RFC 8259 requires: `"UP"`. |
+
+Integers arrive as strings: RFC 7951 writes 64-bit integers as JSON strings, so a client that reads the text with a plain JSON parser gets a string, not a number. gnmic asks for `JSON_IETF` with `-e json_ietf`:
+
+```bash
+gnmic -a 127.0.0.1:57400 --insecure -e json_ietf subscribe --path /interfaces --mode once
+```
+
+### TLS and credentials
+
+With `tls`, the target serves TLS from a certificate and key, and can require client certificates. With `credentials`, every RPC must carry a username and password:
+
+```yaml title="examples/gnmi-telegraf-tls.yaml (sink)"
+# sonda:static - excerpt only; the certificate files are made locally
+sink:
+  type: gnmi_target
+  listen: 0.0.0.0:57401
+  tls:
+    cert: examples/telegraf/certs/server.pem
+    key: examples/telegraf/certs/server-key.pem
+  credentials:
+    username: sonda
+    password: "sonda-uat"
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `tls.cert` | yes | PEM file holding the certificate chain the target presents, its own certificate first. |
+| `tls.key` | yes | PEM file holding the private key of `cert`. |
+| `tls.client_ca` | no | PEM file of CA certificates. When set, every client must present a certificate signed by one of them; when unset, any client may connect. |
+| `credentials.username` | yes | The username every RPC must carry. |
+| `credentials.password` | yes | The password every RPC must carry. Quote it: YAML reads an unquoted number as a number, and the target then compares its rewritten text (`0x1F` as `31`). |
+
+- **TLS.** Every connection to the `listen` address is TLS, and a plaintext client is refused at the handshake. A connection that has not finished its handshake 10 seconds after it was accepted is closed. The files are read when the scenario is validated, so `--dry-run` reports a file that cannot be read, or holds no PEM certificate or private key, naming the field and the file. A key that is not `cert`'s is reported the same way. Relative paths resolve against the directory Sonda runs in.
+- **Credentials need TLS.** A sink with `credentials` and no `tls` is refused, because the password would cross the wire in clear.
+- **Every RPC is checked.** `Capabilities` and `Subscribe` alike must carry the gRPC metadata `username` and `password`, equal to the configured pair. A request without them, or with another pair, is refused with `UNAUTHENTICATED` and the message `credentials required`. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.
+- **One address, one identity.** Every entry on one address names the same `tls` files and the same `credentials`; a different set is refused, naming the files and usernames that differ but no password.
+
+gnmic trusts the target's CA with `--tls-ca` and sends the pair with `-u` and `-p`:
+
+```bash
+gnmic -a 127.0.0.1:57401 --tls-ca examples/telegraf/certs/ca.pem -u sonda -p sonda-uat \
+  subscribe --path /interfaces --mode once
+```
+
+When the target sets `client_ca`, gnmic also presents its own certificate with `--tls-cert` and `--tls-key`.
+
+Telegraf's `inputs.gnmi` turns TLS on with `tls_enable`, trusts the CA with `tls_ca`, and sends `username` and `password`. With `client_ca` on the target, it presents `tls_cert` and `tls_key` as well:
+
+```toml title="examples/telegraf/telegraf-tls.conf (excerpt)"
+[global_tags]
+  gnmi_row = "tls"
+
+[[inputs.gnmi]]
+  addresses = ["sonda:57401"]
+  encoding = "json_ietf"
+  redial = "10s"
+  tls_enable = true
+  tls_ca = "/etc/telegraf/certs/ca.pem"
+  username = "sonda"
+  password = "sonda-uat"
+```
+
+This client asks for `JSON_IETF`, so the counters arrive as [JSON strings](#gnmi-encodings). Telegraf writes them as string fields (`in_octets="1250000"`), which VictoriaMetrics stores as numbers; a backend that does not needs Telegraf's `processors.converter` to turn them into integers first. The `gnmi_row="tls"` tag tells this client's metrics apart from those of `telegraf.conf`, which carry the same `source`.
+
+The compose stack's `gnmi-tls` profile runs this Telegraf, with `examples/telegraf/certs/` mounted at `/etc/telegraf/certs`. The certificates are not committed: make them first with the `openssl` commands in the header of `examples/gnmi-telegraf-tls.yaml`, for the names `sonda`, `localhost` and `127.0.0.1`. Then start the profile:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi-tls up -d
+```
+
+and, from the repository root, `sonda run examples/gnmi-telegraf-tls.yaml`. Without the certificates, that command and its `--dry-run` stop with `gnmi_target tls cert "examples/telegraf/certs/server.pem" cannot be read`.
 
 ## Retry with backoff
 

@@ -90,6 +90,39 @@ pub(crate) fn random_spike_value(prefix: &str, seed: u64, index: u64) -> String 
     format!("{prefix}{:016x}", random_spike_hash(seed, index))
 }
 
+/// Installs rustls's ring provider as the process-wide default crypto
+/// provider when no default is installed yet, and leaves an installed one,
+/// whoever installed it, in place.
+///
+/// The default is process state: once set, every rustls configuration in
+/// the process that does not name a provider uses it, and it cannot be
+/// replaced. If another thread installs one between the check and the
+/// install, its provider stays the default. Release builds compile ring
+/// alone; a build that compiles both of rustls's providers has no default
+/// until one is installed.
+#[cfg(any(feature = "kafka", feature = "gnmi"))]
+pub(crate) fn ensure_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
+/// Whether `a` and `b` hold the same bytes. Slices of different lengths
+/// are unequal at once; slices of one length are compared in full, every
+/// byte pair XORed into one accumulator, so the time taken does not depend
+/// on where they first differ.
+#[cfg(feature = "gnmi")]
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a
+        .iter()
+        .zip(b)
+        .fold(0u8, |acc, (x, y)| std::hint::black_box(acc | (x ^ y)));
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +256,42 @@ mod tests {
             any_high_set,
             "at least one output in 0..100 must have high 32 bits set"
         );
+    }
+
+    /// `constant_time_eq` answers as `==` does on 1 000 pairs of random
+    /// bytes, a third of them equal and a third differing in one byte, and
+    /// on slices of different lengths.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn constant_time_eq_agrees_with_eq() {
+        let byte = |seed: u64, i: usize| splitmix64(seed ^ i as u64) as u8;
+        let (mut equal, mut unequal) = (0, 0);
+        for pair in 0..1_000u64 {
+            let len = (splitmix64(pair) % 33) as usize;
+            let a: Vec<u8> = (0..len).map(|i| byte(pair, i)).collect();
+            let mut b = match pair % 3 {
+                0 => a.clone(),
+                _ => (0..len).map(|i| byte(!pair, i)).collect(),
+            };
+            if pair % 3 == 1 && len > 0 {
+                b = a.clone();
+                b[(splitmix64(!pair) % len as u64) as usize] ^= 1;
+            }
+            assert_eq!(constant_time_eq(&a, &b), a == b, "{a:?} and {b:?}");
+            if a == b {
+                equal += 1;
+            } else {
+                unequal += 1;
+            }
+        }
+        assert!(
+            equal > 300 && unequal > 600,
+            "the premise: both outcomes occur ({equal} equal, {unequal} unequal)"
+        );
+
+        assert!(!constant_time_eq(b"secret", b"secret!"));
+        assert!(!constant_time_eq(b"secret!", b"secret"));
+        assert!(!constant_time_eq(b"", b"s"));
+        assert!(constant_time_eq(b"", b""));
     }
 }

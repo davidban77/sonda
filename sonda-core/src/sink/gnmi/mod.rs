@@ -6,21 +6,46 @@
 //! [`registry`](registry::registry), so their series appear as one device.
 //!
 //! The sink takes events through [`Sink::write_metric_event`] and never awaits
-//! a client: publishing is a table upsert and a non-blocking broadcast send.
+//! a client: publishing is a table upsert, a compare with the series' previous
+//! value and, when the value changed, a non-blocking broadcast send.
+//!
+//! A series leaves the target when the last sink of its launch that published
+//! it drops, and at no other time; a series that stops being updated stays.
+//! When a series leaves, ON_CHANGE subscriptions that matched it, and SAMPLE
+//! subscriptions with `suppress_redundant` that had sent it, receive one
+//! notification deleting its path. A SAMPLE subscription with
+//! `suppress_redundant` is sent a series only when its value changed since
+//! the subscription last sent it, and its `heartbeat_interval` resends every
+//! series it matches regardless.
+//!
+//! With `tls` set, every connection to the target is TLS, optionally
+//! requiring client certificates; with `credentials` set, every RPC must
+//! carry them as gRPC metadata. Every sink on one address uses the same.
+//! Validating or binding a target with `tls` installs rustls's ring provider
+//! as the process-wide default crypto provider when none is installed; an
+//! application that installs its own must do so first.
 //!
 //! Requires the `gnmi` feature flag.
 
 pub(crate) mod matcher;
+pub(crate) mod notification;
 pub mod registry;
 pub mod service;
 pub mod target;
+#[cfg(test)]
+pub(crate) mod test_tls;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
 use crate::config::validate::{parse_duration, prepend_context};
 use crate::model::metric::{MetricEvent, MetricKey};
@@ -28,6 +53,7 @@ use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
 use crate::schedule::LaunchId;
+pub use notification::ValueKind;
 pub use registry::{registry, GnmiTargetRegistry};
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
 use target::{Owner, PathKey};
@@ -75,22 +101,179 @@ pub struct GnmiTargetConfig {
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_subscribers: Option<usize>,
-    /// Broadcast capacity per target, 1 to 65536. Only ON_CHANGE
-    /// subscriptions read the broadcast, and the target refuses them, so the
-    /// value changes nothing a subscriber receives. Default 1024. Every sink
-    /// on one address must use the same value.
+    /// Broadcast capacity per target, 1 to 65536: the number of changes an
+    /// ON_CHANGE subscriber may fall behind before it is resynced with the
+    /// latest value of every series it matches. Default 1024. Every sink on
+    /// one address must use the same value.
     #[cfg_attr(feature = "config", serde(default))]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = MAX_SUBSCRIBER_BUFFER)))]
     pub subscriber_buffer: Option<usize>,
-    /// Shortest sample interval the target serves, a duration of at least
-    /// one microsecond such as `"1s"`: a SAMPLE subscription asking for less,
-    /// or for 0, is sampled at this interval. Default `"1s"`. Every sink on
-    /// one address must use the same value.
+    /// Shortest sample and heartbeat interval the target serves, a duration
+    /// of at least one microsecond such as `"1s"`: a SAMPLE subscription
+    /// asking for less, or for 0, is sampled at this interval, and a shorter
+    /// heartbeat interval is raised to it. Default `"1s"`. Every sink on one
+    /// address must use the same value.
     #[cfg_attr(
         feature = "config",
         serde(default, deserialize_with = "crate::config::scalar_text::optional")
     )]
     pub sample_floor: Option<String>,
+    /// Serve over TLS from these PEM files. Every sink on one address must
+    /// name the same files.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub tls: Option<GnmiTlsConfig>,
+    /// Require every RPC to carry this username and password as gRPC
+    /// metadata. Needs `tls`. Every sink on one address must use the same
+    /// pair.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub credentials: Option<GnmiCredentials>,
+}
+
+/// The `tls:` block of a [`GnmiTargetConfig`]: the PEM files a target
+/// serves TLS from.
+///
+/// With `tls` set, every connection to the listen address is TLS, and a
+/// plaintext client is refused at the handshake. Validation reads the files
+/// to check them; a target serves the files as they were when it bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GnmiTlsConfig {
+    /// PEM file holding the certificate chain the target presents, its own
+    /// certificate first.
+    #[cfg_attr(
+        feature = "config",
+        serde(deserialize_with = "crate::config::scalar_text::required")
+    )]
+    pub cert: String,
+    /// PEM file holding the private key of `cert`.
+    #[cfg_attr(
+        feature = "config",
+        serde(deserialize_with = "crate::config::scalar_text::required")
+    )]
+    pub key: String,
+    /// PEM file of CA certificates. When set, every client must present a
+    /// certificate signed by one of them; when unset, any client may
+    /// connect.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, deserialize_with = "crate::config::scalar_text::optional")
+    )]
+    pub client_ca: Option<String>,
+}
+
+/// The `credentials:` block of a [`GnmiTargetConfig`]: the username and
+/// password every RPC must carry as gRPC metadata `username` and
+/// `password`.
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GnmiCredentials {
+    /// The username clients must send.
+    pub username: String,
+    /// The password clients must send.
+    #[cfg_attr(feature = "schema", schemars(extend("writeOnly" = true)))]
+    pub password: String,
+}
+
+/// The fields of a `credentials:` block as written. The derive's errors name
+/// this struct, `GnmiCredentials`.
+#[cfg(feature = "config")]
+mod credentials_fields {
+    /// Each field a scalar read as text, and no other key.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct GnmiCredentials {
+        #[serde(deserialize_with = "crate::config::scalar_text::required")]
+        pub(super) username: String,
+        #[serde(deserialize_with = "crate::config::scalar_text::required")]
+        pub(super) password: String,
+    }
+}
+
+/// The error for a `credentials:` value that is not a map. It names no part
+/// of the value.
+#[cfg(feature = "config")]
+const CREDENTIALS_NOT_A_MAP: &str =
+    "gnmi_target credentials must be a map with username and password";
+
+/// Reads a map with `username` and `password` (or the two as a sequence),
+/// refusing any other key. Any other value is refused with
+/// [`CREDENTIALS_NOT_A_MAP`], which does not repeat the value.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for GnmiCredentials {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+        use serde::de::{Error, MapAccess, SeqAccess, Visitor};
+
+        struct CredentialsVisitor;
+        impl CredentialsVisitor {
+            fn refuse<E: Error>(self) -> Result<GnmiCredentials, E> {
+                Err(E::custom(CREDENTIALS_NOT_A_MAP))
+            }
+        }
+        impl<'de> Visitor<'de> for CredentialsVisitor {
+            type Value = GnmiCredentials;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map with username and password")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                <credentials_fields::GnmiCredentials as serde::Deserialize>::deserialize(
+                    MapAccessDeserializer::new(map),
+                )
+                .map(Into::into)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                <credentials_fields::GnmiCredentials as serde::Deserialize>::deserialize(
+                    SeqAccessDeserializer::new(seq),
+                )
+                .map(Into::into)
+            }
+            fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+        }
+        // `deserialize_any`, because a buffered sink block answers
+        // `deserialize_struct` for a scalar with an error quoting it.
+        deserializer.deserialize_any(CredentialsVisitor)
+    }
+}
+
+#[cfg(feature = "config")]
+impl From<credentials_fields::GnmiCredentials> for GnmiCredentials {
+    fn from(fields: credentials_fields::GnmiCredentials) -> Self {
+        Self {
+            username: fields.username,
+            password: fields.password,
+        }
+    }
+}
+
+/// Prints the username, and `"***"` in place of the password.
+impl fmt::Debug for GnmiCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GnmiCredentials")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
 }
 
 impl GnmiTargetConfig {
@@ -101,16 +284,20 @@ impl GnmiTargetConfig {
             max_subscribers: None,
             subscriber_buffer: None,
             sample_floor: None,
+            tls: None,
+            credentials: None,
         }
     }
 
     /// Resolve the config into the settings a target runs with.
     ///
     /// This is the one place the fields are checked; validation and
-    /// [`GnmiTargetSink::new`] both call it. Returns [`SondaError::Config`]
-    /// when `listen` is not a socket address, `sample_floor` is not a
-    /// duration of at least one microsecond, `max_subscribers` is 0, or
-    /// `subscriber_buffer` is outside 1 to [`MAX_SUBSCRIBER_BUFFER`].
+    /// [`GnmiTargetSink::new`] both call it. Reads the `tls` files. Returns
+    /// [`SondaError::Config`] when `listen` is not a socket address,
+    /// `sample_floor` is not a duration of at least one microsecond,
+    /// `max_subscribers` is 0, `subscriber_buffer` is outside 1 to
+    /// [`MAX_SUBSCRIBER_BUFFER`], `credentials` is set without `tls`, or a
+    /// `tls` file cannot be read or does not hold what its field needs.
     pub(crate) fn settings(&self) -> Result<TargetSettings, SondaError> {
         let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
         let listen: SocketAddr = self.listen.parse().map_err(|_| {
@@ -150,14 +337,27 @@ impl GnmiTargetConfig {
                 floor
             }
         };
+        if self.credentials.is_some() && self.tls.is_none() {
+            return Err(invalid(
+                "gnmi_target credentials need tls: without it the password would cross the \
+                 wire in clear"
+                    .to_string(),
+            ));
+        }
+        let tls = self.tls.as_ref().map(TlsIdentity::read).transpose()?;
         Ok(TargetSettings {
             listen,
             max_subscribers,
             subscriber_buffer,
             sample_floor,
+            tls,
+            credentials: self.credentials.clone(),
             keepalive_interval: target::KEEPALIVE_INTERVAL,
             keepalive_timeout: target::KEEPALIVE_TIMEOUT,
+            tls_handshake_timeout: target::TLS_HANDSHAKE_TIMEOUT,
             stall_floor: service::STALL_FLOOR,
+            #[cfg(test)]
+            probe: Arc::default(),
         })
     }
 }
@@ -170,6 +370,9 @@ pub(crate) struct TargetSettings {
     pub(crate) max_subscribers: usize,
     pub(crate) subscriber_buffer: usize,
     pub(crate) sample_floor: Duration,
+    /// The TLS files, read and checked.
+    pub(crate) tls: Option<TlsIdentity>,
+    pub(crate) credentials: Option<GnmiCredentials>,
     /// How long an HTTP/2 connection may be silent before the server pings
     /// it. [`target::KEEPALIVE_INTERVAL`] except in tests; not configurable.
     pub(crate) keepalive_interval: Duration,
@@ -177,10 +380,149 @@ pub(crate) struct TargetSettings {
     /// connection. [`target::KEEPALIVE_TIMEOUT`] except in tests; not
     /// configurable.
     pub(crate) keepalive_timeout: Duration,
+    /// How long a TLS target waits for a connection to finish its TLS
+    /// handshake before it closes the connection.
+    /// [`target::TLS_HANDSHAKE_TIMEOUT`] except in tests; not configurable.
+    pub(crate) tls_handshake_timeout: Duration,
     /// The least time a subscription may go without its client draining a
     /// response before it is ended as stalled. [`service::STALL_FLOOR`]
     /// except in tests; not configurable.
     pub(crate) stall_floor: Duration,
+    /// Counts what the target's subscriptions did.
+    #[cfg(test)]
+    pub(crate) probe: Arc<service::Probe>,
+}
+
+/// The files of a `tls:` block, read and checked: each holds what its field
+/// needs, and together they make a TLS server configuration.
+///
+/// `Debug` prints the paths only.
+#[derive(Clone)]
+pub(crate) struct TlsIdentity {
+    /// The paths as configured. Two targets serve the same TLS when these
+    /// are equal.
+    pub(crate) paths: GnmiTlsConfig,
+    cert: Vec<u8>,
+    key: Vec<u8>,
+    client_ca: Option<Vec<u8>>,
+}
+
+impl TlsIdentity {
+    /// Read and check the files `paths` names.
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Config`] naming the field and the file when a file
+    /// cannot be read, `cert` or `client_ca` holds no PEM certificate, `key`
+    /// holds no PEM private key, or the three do not make a TLS server
+    /// configuration (a key that is not `cert`'s, for one).
+    fn read(paths: &GnmiTlsConfig) -> Result<Self, SondaError> {
+        let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
+        let read = |field: &str, path: &str| {
+            std::fs::read(path).map_err(|e| {
+                invalid(format!(
+                    "gnmi_target tls {field} {path:?} cannot be read: {e}"
+                ))
+            })
+        };
+        let certificates = |field: &str, path: &str, pem: &[u8]| {
+            let certificates = CertificateDer::pem_slice_iter(pem)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    invalid(format!(
+                        "gnmi_target tls {field} {path:?} is not a PEM certificate file: {e}"
+                    ))
+                })?;
+            if certificates.is_empty() {
+                return Err(invalid(format!(
+                    "gnmi_target tls {field} {path:?} holds no PEM certificate"
+                )));
+            }
+            Ok(())
+        };
+        let cert = read("cert", &paths.cert)?;
+        certificates("cert", &paths.cert, &cert)?;
+        let key = read("key", &paths.key)?;
+        if PrivateKeyDer::from_pem_slice(&key).is_err() {
+            return Err(invalid(format!(
+                "gnmi_target tls key {:?} holds no PEM private key",
+                paths.key
+            )));
+        }
+        let client_ca = match paths.client_ca.as_deref() {
+            Some(path) => {
+                let pem = read("client_ca", path)?;
+                certificates("client_ca", path, &pem)?;
+                Some(pem)
+            }
+            None => None,
+        };
+        let identity = Self {
+            paths: paths.clone(),
+            cert,
+            key,
+            client_ca,
+        };
+        tonic::transport::Server::builder()
+            .tls_config(identity.server_config())
+            .map_err(|e| {
+                invalid(format!(
+                    "gnmi_target tls files {} cannot serve TLS: {}",
+                    describe_tls_paths(paths),
+                    error_chain(&e)
+                ))
+            })?;
+        Ok(identity)
+    }
+
+    /// The tonic server TLS configuration for these files: the identity
+    /// from `cert` and `key`, and `client_ca` as the root client
+    /// certificates must chain to, when set.
+    ///
+    /// tonic builds the server's rustls configuration from the process's
+    /// default crypto provider; this installs the ring provider as that
+    /// default when none is installed
+    /// ([`ensure_crypto_provider`](crate::util::ensure_crypto_provider)).
+    pub(crate) fn server_config(&self) -> ServerTlsConfig {
+        crate::util::ensure_crypto_provider();
+        let config = ServerTlsConfig::new().identity(Identity::from_pem(&self.cert, &self.key));
+        match &self.client_ca {
+            Some(ca) => config.client_ca_root(Certificate::from_pem(ca)),
+            None => config,
+        }
+    }
+}
+
+impl fmt::Debug for TlsIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsIdentity")
+            .field("paths", &self.paths)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `error` followed by each of its sources, separated by `": "`.
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(e) = source {
+        text.push_str(": ");
+        text.push_str(&e.to_string());
+        source = e.source();
+    }
+    text
+}
+
+/// A `tls:` block's files as messages name them:
+/// `{cert "a.pem", key "b.pem"}`, with `client_ca` when set.
+fn describe_tls_paths(paths: &GnmiTlsConfig) -> String {
+    match &paths.client_ca {
+        None => format!("{{cert {:?}, key {:?}}}", paths.cert, paths.key),
+        Some(ca) => format!(
+            "{{cert {:?}, key {:?}, client_ca {:?}}}",
+            paths.cert, paths.key, ca
+        ),
+    }
 }
 
 /// Whether listeners on `a` and `b` would contend for one port: the same
@@ -219,25 +561,52 @@ pub(crate) fn covers(wild: SocketAddr, other: SocketAddr) -> bool {
 
 impl TargetSettings {
     /// Whether a target running with `self` can also serve `other`: every
-    /// setting but the listen address is equal.
+    /// setting but the listen address is equal, the `tls` files by their
+    /// paths.
     pub(crate) fn serves(&self, other: &TargetSettings) -> bool {
         self.max_subscribers == other.max_subscribers
             && self.subscriber_buffer == other.subscriber_buffer
             && self.sample_floor == other.sample_floor
+            && self.tls.as_ref().map(|tls| &tls.paths) == other.tls.as_ref().map(|tls| &tls.paths)
+            && self.credentials == other.credentials
     }
 
     /// `self`'s settings beside `other`'s, for an error saying they differ:
     /// `max_subscribers 16 and 4, subscriber_buffer 1024 and 1024, sample_floor
-    /// 1s and 1s`. Both address-sharing checks word the conflict with it.
+    /// 1s and 1s, tls none and none, credentials none and none`. Credentials
+    /// are named by username; a pair differing only in password reads
+    /// `username "a" and username "a" with another password`. Both
+    /// address-sharing checks word the conflict with it.
     pub(crate) fn beside(&self, other: &TargetSettings) -> String {
+        let tls = |tls: &Option<TlsIdentity>| {
+            tls.as_ref()
+                .map_or_else(|| "none".to_string(), |tls| describe_tls_paths(&tls.paths))
+        };
+        let username = |credentials: &Option<GnmiCredentials>| {
+            credentials.as_ref().map_or_else(
+                || "none".to_string(),
+                |c| format!("username {:?}", c.username),
+            )
+        };
+        let password = match (&self.credentials, &other.credentials) {
+            (Some(a), Some(b)) if a.username == b.username && a.password != b.password => {
+                " with another password"
+            }
+            _ => "",
+        };
         format!(
-            "max_subscribers {} and {}, subscriber_buffer {} and {}, sample_floor {:?} and {:?}",
+            "max_subscribers {} and {}, subscriber_buffer {} and {}, sample_floor {:?} and {:?}, \
+             tls {} and {}, credentials {} and {}{password}",
             self.max_subscribers,
             other.max_subscribers,
             self.subscriber_buffer,
             other.subscriber_buffer,
             self.sample_floor,
             other.sample_floor,
+            tls(&self.tls),
+            tls(&other.tls),
+            username(&self.credentials),
+            username(&other.credentials),
         )
     }
 }
@@ -251,7 +620,8 @@ impl TargetSettings {
 /// reuse the id the target returned. A series is owned by the launch whose
 /// sink created it and held while any sink of that launch has published it:
 /// the sinks of that launch share it, a sink of another launch is refused
-/// it, and it leaves the target when the last of its publishers drops. A
+/// it, and it leaves the target, with a delete broadcast to its subscribers,
+/// when the last of its publishers drops. A
 /// path with no live publisher is free; a scenario refused it in that window
 /// shows why in its stats. Dropping the last sink on an address stops its
 /// listener.
@@ -264,14 +634,46 @@ pub struct GnmiTargetSink {
     owner: Owner,
     /// Each series key's entry in `published`.
     owned: HashMap<MetricKey, usize>,
-    /// Every path this sink has published, once each, with its series id.
-    /// Series keys rendering one path share its entry, so an id that changes
-    /// changes for all of them.
-    published: Vec<(SeriesId, PathKey)>,
+    /// Every path this sink has published, once each. Series keys rendering
+    /// one path share its entry, so an id that changes changes for all of
+    /// them.
+    published: Vec<Publication>,
     /// Each path's entry in `published`, looked up on a key's first event.
     paths: HashMap<PathKey, usize>,
     last_delivered: bool,
     joined: bool,
+}
+
+/// A path this sink has published: the series id the target gave it, the
+/// table's key for it, and the buffers its notifications are copied into.
+struct Publication {
+    id: SeriesId,
+    path: PathKey,
+    buffers: PublishBuffers,
+}
+
+/// Two buffers used in turn: each notification of a path is copied into the
+/// buffer used two notifications earlier and frozen into the `Bytes` the
+/// target stores. The table has dropped the `Bytes` it stored before the
+/// latest one, so the copy reuses that buffer's allocation unless a
+/// subscriber still holds it, and allocates once then.
+#[derive(Default)]
+struct PublishBuffers {
+    buffers: [BytesMut; 2],
+    next: usize,
+}
+
+impl PublishBuffers {
+    /// `encoded`, copied into the next buffer and frozen.
+    fn frozen(&mut self, encoded: &[u8]) -> Bytes {
+        let buffer = &mut self.buffers[self.next];
+        self.next ^= 1;
+        // Rewinds to the start of the allocation when nothing else holds it;
+        // otherwise the copy below allocates.
+        let _ = buffer.try_reclaim(encoded.len());
+        buffer.extend_from_slice(encoded);
+        buffer.split().freeze()
+    }
 }
 
 impl GnmiTargetSink {
@@ -359,13 +761,13 @@ impl Sink for GnmiTargetSink {
         true
     }
 
-    /// Publish `encoded` as the latest value of the event's series. Never
-    /// awaits.
+    /// Publish `encoded` as the latest value of the event's series, copied
+    /// into one of the [`PublishBuffers`] of the series' path. Never awaits.
     ///
     /// # Errors
     ///
     /// [`SondaError::Sink`] when the target's listener task has exited, or
-    /// when the first event of a series is not a gnmi notification;
+    /// when an event is not a gnmi notification whose update has a value;
     /// [`SondaError::Config`] when the event's path belongs to another launch,
     /// or a joined sink's event names a path the target does not serve.
     async fn write_metric_event(
@@ -377,7 +779,11 @@ impl Sink for GnmiTargetSink {
         self.target.check_serving()?;
         if self.joined {
             let path = PathKey::decode(encoded)?;
-            if self.target.overwrite(&path, encoded).is_none() {
+            if self
+                .target
+                .overwrite(&path, Bytes::copy_from_slice(encoded))?
+                .is_none()
+            {
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "no running scenario serves the gnmi path `{}` on {}",
                     path.path(),
@@ -399,12 +805,18 @@ impl Sink for GnmiTargetSink {
                         entry
                     }
                     None => {
+                        let mut buffers = PublishBuffers::default();
+                        let encoded = buffers.frozen(encoded);
                         let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
                         // Cache the table's own key, which a sibling may have
                         // made, so later publishes match it by pointer.
                         let path = self.target.path_of(id).unwrap_or(path);
                         let entry = self.published.len();
-                        self.published.push((id, path.clone()));
+                        self.published.push(Publication {
+                            id,
+                            path: path.clone(),
+                            buffers,
+                        });
                         self.paths.insert(path, entry);
                         self.owned.insert(key, entry);
                         self.last_delivered = true;
@@ -413,9 +825,12 @@ impl Sink for GnmiTargetSink {
                 }
             }
         };
-        let (id, path) = &mut self.published[entry];
-        let (published, _) = self.target.publish(self.owner, Some(*id), path, encoded)?;
-        *id = published;
+        let publication = &mut self.published[entry];
+        let encoded = publication.buffers.frozen(encoded);
+        let (id, _) =
+            self.target
+                .publish(self.owner, Some(publication.id), &publication.path, encoded)?;
+        publication.id = id;
         self.last_delivered = true;
         Ok(())
     }
@@ -426,7 +841,7 @@ impl Drop for GnmiTargetSink {
     fn drop(&mut self) {
         if !self.published.is_empty() {
             self.target
-                .release(self.owner, self.published.iter().map(|(id, _)| *id));
+                .release(self.owner, self.published.iter().map(|p| p.id));
         }
     }
 }
@@ -482,6 +897,102 @@ mod tests {
             settings.listen,
             "127.0.0.1:57400".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    /// The credentials `username` / `password`.
+    fn credentials(username: &str, password: &str) -> GnmiCredentials {
+        GnmiCredentials {
+            username: username.to_string(),
+            password: password.to_string(),
+        }
+    }
+
+    #[test]
+    fn credentials_debug_prints_the_username_and_not_the_password() {
+        let debug = format!("{:?}", credentials("sonda", "hunter2"));
+        assert_eq!(
+            debug,
+            r#"GnmiCredentials { username: "sonda", password: "***" }"#
+        );
+        let config = GnmiTargetConfig {
+            credentials: Some(credentials("sonda", "hunter2")),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        };
+        let debug = format!("{config:?}");
+        assert!(
+            debug.contains("sonda") && !debug.contains("hunter2"),
+            "{debug}"
+        );
+    }
+
+    /// Settings with `credentials` set directly: [`GnmiTargetConfig::settings`]
+    /// refuses credentials without TLS, and these tests need neither.
+    fn settings_with(credentials: Option<GnmiCredentials>) -> TargetSettings {
+        let mut settings = GnmiTargetConfig::new("127.0.0.1:57400")
+            .settings()
+            .expect("valid settings");
+        settings.credentials = credentials;
+        settings
+    }
+
+    /// `beside` names differing credentials by username, says when only
+    /// the passwords differ, and prints neither password.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::other_password(Some(credentials("sonda", "first-secret")), Some(credentials("sonda", "second-secret")), r#"credentials username "sonda" and username "sonda" with another password"#)]
+    #[case::other_user(Some(credentials("sonda", "first-secret")), Some(credentials("admin", "second-secret")), r#"credentials username "sonda" and username "admin""#)]
+    #[case::none_and_some(None, Some(credentials("sonda", "second-secret")), r#"credentials none and username "sonda""#)]
+    fn beside_names_credentials_without_their_passwords(
+        #[case] a: Option<GnmiCredentials>,
+        #[case] b: Option<GnmiCredentials>,
+        #[case] expected: &str,
+    ) {
+        let (a, b) = (settings_with(a), settings_with(b));
+        assert!(!a.serves(&b) && !b.serves(&a), "the premise: they differ");
+        let text = a.beside(&b);
+        assert!(text.ends_with(expected), "{text}");
+        assert!(
+            !text.contains("first-secret") && !text.contains("second-secret"),
+            "{text}"
+        );
+    }
+
+    /// `serves` compares `tls` by its paths and `credentials` by both
+    /// fields; settings equal in both serve each other.
+    #[test]
+    fn serves_compares_tls_paths_and_credentials() {
+        let files = test_tls::TlsFiles::new();
+        let tls = |tls: GnmiTlsConfig| GnmiTargetConfig {
+            tls: Some(tls),
+            credentials: Some(credentials("sonda", "secret")),
+            ..GnmiTargetConfig::new("127.0.0.1:57400")
+        };
+        let base = tls(files.tls()).settings().expect("valid settings");
+        let same = tls(files.tls()).settings().expect("valid settings");
+        assert!(base.serves(&same));
+
+        let copy = files.write(
+            "copy.pem",
+            &std::fs::read_to_string(files.path("server.pem")).expect("cert"),
+        );
+        let moved = tls(GnmiTlsConfig {
+            cert: copy,
+            ..files.tls()
+        })
+        .settings()
+        .expect("valid settings");
+        assert!(!base.serves(&moved), "another cert path");
+        let mutual = tls(files.mutual_tls()).settings().expect("valid settings");
+        assert!(!base.serves(&mutual), "a client_ca");
+        let mut other_password = same.clone();
+        other_password.credentials = Some(credentials("sonda", "other"));
+        assert!(!base.serves(&other_password), "another password");
+        let mut plain = same;
+        plain.tls = None;
+        assert!(!base.serves(&plain), "no tls");
+        assert!(base
+            .beside(&mutual)
+            .contains(&format!("client_ca {:?}", files.path("ca.pem"))));
     }
 
     /// `covers` is one way: a wildcard covers the addresses of the families
@@ -656,6 +1167,29 @@ mod tests {
         assert_eq!(sink.target().series_count(), 0);
     }
 
+    /// A series' later event that is not a notification with a value is
+    /// refused too, and the series keeps its latest value.
+    #[tokio::test]
+    async fn a_later_event_that_is_not_a_notification_is_an_error() {
+        let mut sink = sink().await;
+        let up = event("up");
+        let first = notification(&up);
+        sink.write_metric_event(&up, &first)
+            .await
+            .expect("the first write succeeds");
+        let err = sink
+            .write_metric_event(&up, b"not protobuf")
+            .await
+            .expect_err("every event needs a value");
+        assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("not a gnmi notification"),
+            "got {err}"
+        );
+        assert!(!sink.last_write_delivered());
+        assert_eq!(sink.target().snapshot()[0].latest, first.as_slice());
+    }
+
     /// Dropping a sink removes the series it published and leaves another
     /// sink's series, on the same target, in place.
     #[tokio::test]
@@ -755,7 +1289,10 @@ mod tests {
         publish(&mut first, "up").await;
         publish(&mut second, "up").await;
         assert_eq!(target.series_count(), 1, "one launch, one shared series");
-        let cached = |sink: &GnmiTargetSink| sink.published.first().cloned().expect("cached");
+        let cached = |sink: &GnmiTargetSink| {
+            let publication = sink.published.first().expect("cached");
+            (publication.id, publication.path.clone())
+        };
         let ((id, first_key), (_, second_key)) = (cached(&first), cached(&second));
         let held = target.path_of(id).expect("the series is served");
         assert!(

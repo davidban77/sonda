@@ -59,6 +59,16 @@ fn has_scenario_keys(path: &std::path::Path, text: &str) -> bool {
 
 // ---- every example ------------------------------------------------------------
 
+/// Examples whose `tls:` files are made locally and never committed, each
+/// with the first file its dry-run reads. A build with the gnmi feature
+/// reads that file at dry-run, so these examples are dry-run from a
+/// directory without it.
+#[cfg(feature = "gnmi")]
+const GENERATED_TLS_FILES: &[(&str, &str)] = &[(
+    "gnmi-telegraf-tls.yaml",
+    "examples/telegraf/certs/server.pem",
+)];
+
 /// Every scenario in `examples/` passes `--dry-run`, and its display names
 /// each generator, encoder and sink: no field falls back to `unknown (...)`.
 ///
@@ -78,12 +88,22 @@ fn every_example_dry_runs_and_names_each_kind() {
             path.display()
         );
     }
-    let examples: Vec<PathBuf> = scenarios.into_iter().map(|(path, _)| path).collect();
+    #[allow(unused_mut)]
+    let mut examples: Vec<PathBuf> = scenarios.into_iter().map(|(path, _)| path).collect();
     assert!(!examples.is_empty(), "no v2 scenario files under examples/");
     assert!(
         examples.contains(&example("gnmi-telegraf.yaml")),
         "gnmi-telegraf.yaml is not among the scenarios found: {examples:?}"
     );
+    #[cfg(feature = "gnmi")]
+    for (name, _) in GENERATED_TLS_FILES {
+        let path = example(name);
+        assert!(
+            examples.contains(&path),
+            "{name} is not among the scenarios found: {examples:?}"
+        );
+        examples.retain(|p| *p != path);
+    }
 
     for path in &examples {
         let output = Command::new(sonda_bin())
@@ -113,6 +133,31 @@ fn every_example_dry_runs_and_names_each_kind() {
             !shown.contains("unknown ("),
             "{} has a field displayed as unknown: {shown}",
             path.display()
+        );
+    }
+}
+
+/// An example whose `tls:` files are made locally fails `--dry-run` where
+/// they are absent, with an error naming the field and the file.
+#[cfg(feature = "gnmi")]
+#[test]
+fn an_example_without_its_generated_tls_files_names_the_missing_file() {
+    let empty = tempfile::tempdir().expect("a temporary directory");
+    for (name, file) in GENERATED_TLS_FILES {
+        let output = Command::new(sonda_bin())
+            .current_dir(empty.path())
+            .args(["--dry-run", "run"])
+            .arg(example(name))
+            .output()
+            .expect("sonda binary must launch");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "{name} dry-runs without {file}; stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("gnmi_target tls cert {file:?} cannot be read")),
+            "{name}: {stderr}"
         );
     }
 }

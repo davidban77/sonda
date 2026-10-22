@@ -9,7 +9,8 @@ use crate::encoder::gnmi::proto::{self, subscription_list, Encoding, Subscriptio
 ///
 /// A subscription path is the prefix's elements followed by the
 /// subscription's own, with the subscription's origin (the prefix's when the
-/// subscription has none) and the prefix's target.
+/// subscription has none) and the prefix's target. An element named `*`
+/// stands for any one element and `...` for any run of zero or more.
 #[derive(Debug, Clone)]
 pub struct SubscriptionMatcher {
     paths: Vec<proto::Path>,
@@ -21,22 +22,26 @@ impl SubscriptionMatcher {
     /// # Errors
     ///
     /// - `INVALID_ARGUMENT` when the list has no subscriptions, a path has
-    ///   an element with an empty name, or the list's encoding or mode, or in
-    ///   a `STREAM` list a subscription's mode, is a number gNMI does not
-    ///   define. A `ONCE` list's subscription modes are not read.
-    /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list, an
-    ///   `ON_CHANGE` subscription in a `STREAM` list, a `BYTES`, `ASCII` or
-    ///   `JSON_IETF` encoding, or a path element named `*` or `...`.
+    ///   an element with an empty name or a `...` element with keys, or the
+    ///   list's encoding or mode, or in a `STREAM` list a subscription's mode,
+    ///   is a number gNMI does not define. A `ONCE` list's subscription modes
+    ///   are not read.
+    /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list or a
+    ///   `BYTES` or `ASCII` encoding.
     ///
-    /// `PROTO` and `JSON` are accepted and both served as `PROTO`: `JSON` is
-    /// encoding 0, which is also what a list that sets no encoding carries.
+    /// `PROTO`, `JSON_IETF` and `JSON` are accepted. `JSON` is served as
+    /// `PROTO`: it is encoding 0, which is also what a list that sets no
+    /// encoding carries.
     pub fn new(list: &proto::SubscriptionList) -> Result<Self, Status> {
         let encoding = Encoding::try_from(list.encoding).map_err(|_| {
             Status::invalid_argument(format!("unknown gnmi encoding {}", list.encoding))
         })?;
-        if !matches!(encoding, Encoding::Proto | Encoding::Json) {
+        if !matches!(
+            encoding,
+            Encoding::Proto | Encoding::JsonIetf | Encoding::Json
+        ) {
             return Err(Status::unimplemented(format!(
-                "encoding {} is not supported; this target encodes PROTO only",
+                "encoding {} is not supported; this target encodes PROTO and JSON_IETF",
                 encoding_name(encoding)
             )));
         }
@@ -57,37 +62,27 @@ impl SubscriptionMatcher {
         let mut paths = Vec::with_capacity(list.subscription.len());
         for subscription in &list.subscription {
             if mode == subscription_list::Mode::Stream {
-                let sub_mode = SubscriptionMode::try_from(subscription.mode).map_err(|_| {
+                SubscriptionMode::try_from(subscription.mode).map_err(|_| {
                     Status::invalid_argument(format!(
                         "unknown subscription mode {}",
                         subscription.mode
                     ))
                 })?;
-                if sub_mode == SubscriptionMode::OnChange {
-                    return Err(Status::unimplemented(
-                        "subscription mode ON_CHANGE is not supported; use SAMPLE or \
-                         TARGET_DEFINED",
-                    ));
-                }
             }
             let own = subscription.path.clone().unwrap_or_default();
             let mut elem = prefix.elem.clone();
             elem.extend(own.elem);
             for element in &elem {
-                match element.name.as_str() {
-                    "" => {
-                        return Err(Status::invalid_argument(
-                            "a subscription path has an element with an empty name",
-                        ))
-                    }
-                    "*" | "..." => {
-                        return Err(Status::unimplemented(format!(
-                            "path element wildcard {:?} is not supported; use a key \
-                             wildcard such as [name=*]",
-                            element.name
-                        )))
-                    }
-                    _ => {}
+                if element.name.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "a subscription path has an element with an empty name",
+                    ));
+                }
+                if element.name == ANY_RUN && !element.key.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "a subscription path has a `...` element with keys; `...` stands \
+                         for any run of elements and takes no keys",
+                    ));
                 }
             }
             let origin = if own.origin.is_empty() {
@@ -104,11 +99,15 @@ impl SubscriptionMatcher {
         Ok(Self { paths })
     }
 
-    /// True if `series_path` is under any subscription path. Prefix match on elements;
-    /// a subscription key of "*" or an absent key matches any value.
+    /// True if `series_path` is any subscription path or below one.
     ///
-    /// An empty subscription origin or target matches any; otherwise it
-    /// must equal the series'.
+    /// The subscription's elements are aligned with the series' first
+    /// elements: a named element with an element of that name, `*` with any
+    /// one element, `...` with any run of zero or more. A subscription key of
+    /// `*` or an absent key matches any value; a key on a named element or on
+    /// `*` must otherwise equal the series element's. An empty subscription
+    /// origin or target matches any; otherwise it must equal the series'.
+    /// Allocates nothing.
     pub fn matches(&self, series_path: &proto::Path) -> bool {
         self.paths.iter().any(|path| is_under(series_path, path))
     }
@@ -125,22 +124,59 @@ fn encoding_name(encoding: Encoding) -> &'static str {
     }
 }
 
+/// The element name that stands for any one element.
+const ANY_ONE: &str = "*";
+
+/// The element name that stands for any run of zero or more elements.
+const ANY_RUN: &str = "...";
+
 /// Whether `series` is `subscribed` or below it.
 fn is_under(series: &proto::Path, subscribed: &proto::Path) -> bool {
     (subscribed.origin.is_empty() || subscribed.origin == series.origin)
         && (subscribed.target.is_empty() || subscribed.target == series.target)
-        && subscribed.elem.len() <= series.elem.len()
-        && subscribed
-            .elem
+        && aligns(&subscribed.elem, &series.elem)
+}
+
+/// Whether `wanted` aligns with the first elements of `series`, as
+/// [`SubscriptionMatcher::matches`] describes. Each `...` first takes no
+/// elements; on a mismatch the latest `...` takes one more and the elements
+/// after it are aligned again, which finds an alignment whenever one exists.
+fn aligns(wanted: &[proto::PathElem], series: &[proto::PathElem]) -> bool {
+    let (mut w, mut s) = (0, 0);
+    // The latest `...`, and the series position its run ends at.
+    let mut run: Option<(usize, usize)> = None;
+    loop {
+        let Some(element) = wanted.get(w) else {
+            return true;
+        };
+        if element.name == ANY_RUN {
+            run = Some((w, s));
+            w += 1;
+        } else if series.get(s).is_some_and(|e| element_matches(element, e)) {
+            w += 1;
+            s += 1;
+        } else {
+            match run {
+                Some((at, end)) if end < series.len() => {
+                    run = Some((at, end + 1));
+                    w = at + 1;
+                    s = end + 1;
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
+/// Whether the subscription element `wanted`, a name or `*`, matches the
+/// series element `elem`: the same name unless `*`, and each of its keys `*`
+/// or equal to `elem`'s.
+fn element_matches(wanted: &proto::PathElem, elem: &proto::PathElem) -> bool {
+    (wanted.name == ANY_ONE || wanted.name == elem.name)
+        && wanted
+            .key
             .iter()
-            .zip(&series.elem)
-            .all(|(wanted, elem)| {
-                wanted.name == elem.name
-                    && wanted
-                        .key
-                        .iter()
-                        .all(|(k, v)| v == "*" || elem.key.get(k) == Some(v))
-            })
+            .all(|(k, v)| v == "*" || elem.key.get(k) == Some(v))
 }
 
 #[cfg(test)]
@@ -272,7 +308,6 @@ mod tests {
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::poll_list(subscription_list::Mode::Poll as i32, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "POLL")]
-    #[case::on_change(subscription_list::Mode::Stream as i32, SubscriptionMode::OnChange as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "ON_CHANGE")]
     #[case::unknown_list_mode(9, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_mode(subscription_list::Mode::Stream as i32, 9, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_encoding(subscription_list::Mode::Stream as i32, SubscriptionMode::Sample as i32, 9, tonic::Code::InvalidArgument, "encoding 9")]
@@ -293,13 +328,12 @@ mod tests {
     }
 
     /// An encoding this target does not serve is refused, naming it and
-    /// the one served.
+    /// the ones served.
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::bytes(Encoding::Bytes, "BYTES")]
     #[case::ascii(Encoding::Ascii, "ASCII")]
-    #[case::json_ietf(Encoding::JsonIetf, "JSON_IETF")]
-    fn refused_encodings_name_the_request_and_proto(
+    fn refused_encodings_name_the_request_and_the_served(
         #[case] encoding: Encoding,
         #[case] named: &str,
     ) {
@@ -308,14 +342,15 @@ mod tests {
         let status = SubscriptionMatcher::new(&list).expect_err("refused");
         assert_eq!(status.code(), tonic::Code::Unimplemented, "{}", status.message());
         assert!(status.message().contains(named), "{}", status.message());
-        assert!(status.message().contains("PROTO"), "{}", status.message());
+        assert!(status.message().contains("PROTO and JSON_IETF"), "{}", status.message());
     }
 
-    /// PROTO is accepted, and so is JSON: encoding 0, which a list that sets
-    /// no encoding also carries.
+    /// PROTO and JSON_IETF are accepted, and so is JSON: encoding 0, which a
+    /// list that sets no encoding also carries.
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::proto(Encoding::Proto)]
+    #[case::json_ietf(Encoding::JsonIetf)]
     #[case::json_or_unset(Encoding::Json)]
     fn served_encodings_are_accepted(#[case] encoding: Encoding) {
         let mut list = list(&["/interfaces"]);
@@ -328,6 +363,7 @@ mod tests {
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::stream_sample(subscription_list::Mode::Stream, SubscriptionMode::Sample)]
+    #[case::stream_on_change(subscription_list::Mode::Stream, SubscriptionMode::OnChange)]
     #[case::stream_target_defined(subscription_list::Mode::Stream, SubscriptionMode::TargetDefined)]
     #[case::once(subscription_list::Mode::Once, SubscriptionMode::OnChange)]
     fn supported_modes_are_accepted(
@@ -342,11 +378,237 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest::rstest]
-    #[case::element_wildcard("/interfaces/*/state", tonic::Code::Unimplemented)]
-    #[case::multi_level_wildcard("/interfaces/.../state", tonic::Code::Unimplemented)]
-    fn element_wildcards_are_refused(#[case] p: &str, #[case] code: tonic::Code) {
-        let status = SubscriptionMatcher::new(&list(&[p])).expect_err("refused");
-        assert_eq!(status.code(), code, "{}", status.message());
+    #[case::element_wildcard("/interfaces/*/state", "/interfaces/interface[name=eth0]/state/oper-status")]
+    #[case::multi_level_wildcard("/interfaces/.../state", "/interfaces/interface[name=eth0]/state/oper-status")]
+    fn element_wildcards_are_accepted(#[case] p: &str, #[case] series: &str) {
+        let m = SubscriptionMatcher::new(&list(&[p])).expect("accepted");
+        assert!(m.matches(&path(series)), "{p} matches {series}");
+    }
+
+    /// Every path `examples/gnmi-telegraf.yaml` renders, counters and
+    /// oper-status, with its metric's name: each metrics entry rendered
+    /// through its encoder, with the origin and the target label's value on
+    /// the path.
+    #[cfg(feature = "config")]
+    fn gnmi_telegraf_example_paths() -> Vec<(String, proto::Path)> {
+        use crate::compiler::expand::InMemoryPackResolver;
+        use crate::config::ScenarioEntry;
+        use crate::encoder::gnmi::GnmiEncoder;
+        use crate::encoder::EncoderConfig;
+        use crate::model::metric::Labels;
+
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/gnmi-telegraf.yaml"
+        );
+        let yaml = std::fs::read_to_string(file).expect("examples/gnmi-telegraf.yaml");
+        let entries = crate::compile_scenario_file(&yaml, &InMemoryPackResolver::new())
+            .expect("the example compiles");
+        entries
+            .iter()
+            .map(|entry| {
+                let ScenarioEntry::Metrics(config) = entry else {
+                    panic!("the example holds metrics entries only");
+                };
+                let EncoderConfig::Gnmi(cfg) = &config.encoder else {
+                    panic!("the example encodes gnmi");
+                };
+                let static_labels = config.labels.clone().unwrap_or_default();
+                let pairs: Vec<(&str, &str)> = static_labels
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                let labels = Labels::from_pairs(&pairs).expect("valid labels");
+                let encoder = GnmiEncoder::new(cfg).expect("a valid encoder");
+                let mut rendered = encoder
+                    .template_for(&config.name)
+                    .and_then(|t| t.render(&config.name, &labels))
+                    .expect("the path renders");
+                rendered.origin.clone_from(&cfg.origin);
+                rendered.target = static_labels[&cfg.target_label].clone();
+                (config.name.clone(), rendered)
+            })
+            .collect()
+    }
+
+    /// `/interfaces/.../in-octets` matches the `in-octets` path
+    /// `examples/gnmi-telegraf.yaml` renders on every interface and nothing
+    /// else; `/interfaces/.../counters` matches its counter paths and not its
+    /// oper-status paths.
+    #[cfg(feature = "config")]
+    #[test]
+    fn a_run_wildcard_matches_the_gnmi_telegraf_example_counters() {
+        let paths = gnmi_telegraf_example_paths();
+        let names: std::collections::BTreeSet<&str> =
+            paths.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["in_octets", "oper_status", "out_octets"].into(),
+            "the premise: the example's metrics"
+        );
+        assert_eq!(
+            paths.len(),
+            12,
+            "the premise: four interfaces, three metrics each"
+        );
+
+        let in_octets = matcher(&["/interfaces/.../in-octets"]);
+        let counters = matcher(&["/interfaces/.../counters"]);
+        for (name, series) in &paths {
+            assert_eq!(
+                in_octets.matches(series),
+                name == "in_octets",
+                "{name}: {series}"
+            );
+            assert_eq!(
+                counters.matches(series),
+                name != "oper_status",
+                "{name}: {series}"
+            );
+        }
+    }
+
+    /// `*` stands for exactly one element of any name: not none, not two.
+    #[test]
+    fn an_element_wildcard_stands_for_exactly_one_element() {
+        let m = matcher(&["/interfaces/*/state/counters"]);
+        assert!(m.matches(&path(
+            "/interfaces/interface[name=eth0]/state/counters/in-octets"
+        )));
+        assert!(m.matches(&path("/interfaces/subinterface/state/counters")));
+        assert!(
+            !m.matches(&path("/interfaces/interface/subinterface/state/counters")),
+            "two elements where `*` stands for one"
+        );
+        assert!(
+            !m.matches(&path("/interfaces/state/counters")),
+            "no element where `*` stands for one"
+        );
+    }
+
+    /// `...` stands for any run of elements, none included; a named element
+    /// after it must still appear, with its keys.
+    #[test]
+    fn a_run_wildcard_stands_for_zero_or_more_elements() {
+        let eth0 = path("/interfaces/interface[name=eth0]/state/counters/in-octets");
+        let eth1 = path("/interfaces/interface[name=eth1]/state/counters/in-octets");
+        assert!(
+            matcher(&["/interfaces/.../interface/state"]).matches(&eth0),
+            "`...` takes no elements"
+        );
+        assert!(matcher(&["/interfaces/.../counters"]).matches(&eth0));
+        assert!(
+            matcher(&["/..."]).matches(&eth0),
+            "`...` alone matches everything"
+        );
+        assert!(
+            matcher(&["/interfaces/..."]).matches(&path("/interfaces")),
+            "a trailing `...` takes no elements"
+        );
+        assert!(
+            !matcher(&["/interfaces/.../config"]).matches(&eth0),
+            "a named element after `...` that never appears"
+        );
+        assert!(
+            !matcher(&["/system/..."]).matches(&eth0),
+            "the elements before `...` still apply"
+        );
+
+        let keyed = matcher(&["/interfaces/.../interface[name=eth0]/state"]);
+        assert!(keyed.matches(&eth0));
+        assert!(!keyed.matches(&eth1), "keys after `...` still apply");
+        let keyed_any = matcher(&["/interfaces/*[name=eth0]/state"]);
+        assert!(keyed_any.matches(&eth0));
+        assert!(!keyed_any.matches(&eth1), "keys on `*` still apply");
+    }
+
+    /// An alignment that needs `...` to take more than its first try: the
+    /// first `b` is followed by `x`, not `c`.
+    #[test]
+    fn a_run_wildcard_takes_more_elements_when_the_first_try_fails() {
+        assert!(matcher(&["/a/.../b/c"]).matches(&path("/a/b/x/b/c/d")));
+        assert!(matcher(&["/.../b/.../d"]).matches(&path("/a/b/c/d")));
+        assert!(!matcher(&["/.../b/.../d"]).matches(&path("/a/c/d")));
+    }
+
+    /// Whether `wanted` aligns with the first elements of `series`, by the
+    /// definition: an empty subscription aligns; `...` aligns when the rest
+    /// aligns after it takes any number of elements; any other element
+    /// aligns when it matches the series' first element and the rest aligns
+    /// after it.
+    fn aligns_by_definition(wanted: &[proto::PathElem], series: &[proto::PathElem]) -> bool {
+        match wanted.split_first() {
+            None => true,
+            Some((first, rest)) if first.name == ANY_RUN => {
+                (0..=series.len()).any(|taken| aligns_by_definition(rest, &series[taken..]))
+            }
+            Some((first, rest)) => series.split_first().is_some_and(|(elem, after)| {
+                element_matches(first, elem) && aligns_by_definition(rest, after)
+            }),
+        }
+    }
+
+    /// Every element sequence of length up to `max` over `names`.
+    fn sequences(names: &[&str], max: usize) -> Vec<Vec<proto::PathElem>> {
+        let mut all = vec![Vec::new()];
+        let mut last = vec![Vec::new()];
+        for _ in 0..max {
+            last = last
+                .iter()
+                .flat_map(|prefix: &Vec<proto::PathElem>| {
+                    names.iter().map(move |name| {
+                        let mut next = prefix.clone();
+                        next.push(proto::PathElem {
+                            name: name.to_string(),
+                            key: Default::default(),
+                        });
+                        next
+                    })
+                })
+                .collect();
+            all.extend(last.iter().cloned());
+        }
+        all
+    }
+
+    /// The alignment agrees with its definition for every subscription of up
+    /// to five elements over `a`, `b`, `*` and `...` and every series of up
+    /// to six elements over `a` and `b`.
+    #[test]
+    fn the_alignment_agrees_with_its_definition() {
+        let wanted = sequences(&["a", "b", ANY_ONE, ANY_RUN], 5);
+        let series = sequences(&["a", "b"], 6);
+        assert_eq!(
+            (wanted.len(), series.len()),
+            (1365, 127),
+            "the premise: the inputs"
+        );
+        let mut matched = 0usize;
+        for w in &wanted {
+            for s in &series {
+                let expected = aligns_by_definition(w, s);
+                assert_eq!(aligns(w, s), expected, "{w:?} against {s:?}");
+                matched += usize::from(expected);
+            }
+        }
+        assert!(
+            matched > 0 && matched < wanted.len() * series.len(),
+            "the premise: both outcomes occur ({matched})"
+        );
+    }
+
+    /// A `...` element with keys is refused: it stands for a run of elements.
+    #[test]
+    fn a_run_wildcard_with_keys_is_an_invalid_argument() {
+        let status = SubscriptionMatcher::new(&list(&["/interfaces/...[name=eth0]/state"]))
+            .expect_err("refused");
+        assert_eq!(
+            status.code(),
+            tonic::Code::InvalidArgument,
+            "{}",
+            status.message()
+        );
+        assert!(status.message().contains("`...`"), "{}", status.message());
     }
 
     #[test]

@@ -331,12 +331,25 @@ fn validate_gnmi_target_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result
 ///   a leaf, an entry on port 0 binds a target of its own, and an entry whose
 ///   `listen` does not parse is left to per-entry validation. Series on one
 ///   address are compared pairwise.
+/// - A key whose value is an optional placeholder (`[key={x?}]`), on a
+///   label the template references only that way, is left out of the leaf
+///   when no event carries the label, and may be left out when the label is
+///   a cardinality spike over nothing, which is absent outside its window.
+///   Any other label is always present. Two elements with an optional key
+///   meet when, for each key name, both carry the key with values that can
+///   be equal, or every side that carries it may leave it out; so a series
+///   outside its spike window meets what its base path meets. The error
+///   shows the leaf with the keys left out that the meeting leaves out.
 ///
-/// Two comparisons are approximate:
+/// Three comparisons are approximate:
 ///
 /// - Each element name, key value and target is compared on its own, so a
 ///   label used in two places is matched in each place separately. This can
 ///   reject two series that never write the same leaf, and never misses one.
+/// - Each optional key is taken as present or absent on its own, so two
+///   series can meet on a combination of keys their events never produce,
+///   such as one of two spikes whose windows always open together. This
+///   too can reject and never misses.
 /// - A counter label against a `random` cardinality spike of more than
 ///   [`MAX_ENUMERATED_SPIKE`](crate::config::MAX_ENUMERATED_SPIKE) values:
 ///   the spike's values are compared by their shape only, its prefix
@@ -445,6 +458,17 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         /// Each label placeholder of the leaf, with its label's values; the
         /// label the runner adds to this series takes the values it gives it.
         labels: Vec<(String, Option<LabelValueSet>)>,
+        /// The labels whose keys the leaf may leave out: referenced only as
+        /// optional keys, and absent from some of the series' events.
+        absent: Vec<String>,
+    }
+
+    /// Whether `writer` may leave out a key whose value is `rendered`.
+    fn may_leave_out(writer: &Writer<'_>, rendered: &str) -> bool {
+        rendered
+            .strip_prefix('{')
+            .and_then(|r| r.strip_suffix('}'))
+            .is_some_and(|label| writer.absent.iter().any(|absent| absent == label))
     }
 
     /// One element name or key value of a leaf.
@@ -494,9 +518,37 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         }
     }
 
-    /// Whether element name or key value `x` of `a` can equal `y` of `b`.
-    /// A meeting by a random spike's shape records the labels whose values
-    /// are compared by shape in `shaped`.
+    /// How element name or key value `x` of `a` and `y` of `b` can be equal.
+    fn term_overlap(a: &Writer<'_>, x: &str, b: &Writer<'_>, y: &str) -> Overlap {
+        match (term(a, x), term(b, y)) {
+            (Term::Literal(x), Term::Literal(y)) if x == y => Overlap::Certain,
+            (Term::Literal(value), Term::Label(_, Some(set)))
+            | (Term::Label(_, Some(set)), Term::Literal(value)) => set.meets_value(value),
+            (Term::Label(_, Some(set)), Term::Label(_, Some(other))) => set.meets(other),
+            _ => Overlap::Disjoint,
+        }
+    }
+
+    /// Record in `shaped` each label of `x` of `a` and `y` of `b` whose
+    /// values are compared by a random spike's shape.
+    fn record_shaped<'a>(
+        a: &'a Writer<'_>,
+        x: &'a str,
+        b: &'a Writer<'_>,
+        y: &'a str,
+        shaped: &mut Vec<(&'a str, &'a str)>,
+    ) {
+        for (writer, side) in [(a, term(a, x)), (b, term(b, y))] {
+            if let Term::Label(label, Some(set)) = side {
+                if set.compared_by_shape() {
+                    shaped.push((writer.name, label));
+                }
+            }
+        }
+    }
+
+    /// Whether `x` of `a` can equal `y` of `b`, recording in `shaped` the
+    /// labels of a meeting by a random spike's shape.
     fn terms_meet<'a>(
         a: &'a Writer<'_>,
         x: &'a str,
@@ -504,42 +556,83 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         y: &'a str,
         shaped: &mut Vec<(&'a str, &'a str)>,
     ) -> bool {
-        let (left, right) = (term(a, x), term(b, y));
-        let overlap = match (&left, &right) {
-            (Term::Literal(x), Term::Literal(y)) if x == y => Overlap::Certain,
-            (Term::Literal(value), Term::Label(_, Some(set)))
-            | (Term::Label(_, Some(set)), Term::Literal(value)) => set.meets_value(value),
-            (Term::Label(_, Some(set)), Term::Label(_, Some(other))) => set.meets(other),
-            _ => Overlap::Disjoint,
-        };
+        let overlap = term_overlap(a, x, b, y);
         if overlap == Overlap::ByShape {
-            for (writer, side) in [(a, &left), (b, &right)] {
-                if let Term::Label(label, Some(set)) = side {
-                    if set.compared_by_shape() {
-                        shaped.push((writer.name, label));
+            record_shaped(a, x, b, y, shaped);
+        }
+        overlap != Overlap::Disjoint
+    }
+
+    /// A key a meeting leaves out: the element's index, the key, and
+    /// whether `a` and `b` leave it out.
+    type LeftOut<'a> = (usize, &'a str, bool, bool);
+
+    /// Whether the leaves of `a` and `b` can be one leaf: the same origin and
+    /// number of elements, element names that can be equal, and for each key
+    /// name of an element, either both carry the key with values that can be
+    /// equal, or every side that carries it may leave it out. A key both
+    /// sides may leave out is left out unless its values are certainly
+    /// equal. Records the keys left out in `left_out` and the labels of a
+    /// meeting by a random spike's shape in `shaped`.
+    fn leaves_meet<'a>(
+        a: &'a Writer<'_>,
+        b: &'a Writer<'_>,
+        left_out: &mut Vec<LeftOut<'a>>,
+        shaped: &mut Vec<(&'a str, &'a str)>,
+    ) -> bool {
+        if a.leaf.origin != b.leaf.origin || a.leaf.elem.len() != b.leaf.elem.len() {
+            return false;
+        }
+        for (at, (x, y)) in a.leaf.elem.iter().zip(&b.leaf.elem).enumerate() {
+            if !terms_meet(a, &x.name, b, &y.name, shaped) {
+                return false;
+            }
+            let only_in_y = y.key.keys().filter(|key| !x.key.contains_key(*key));
+            for key in x.key.keys().chain(only_in_y) {
+                match (x.key.get(key), y.key.get(key)) {
+                    (Some(vx), Some(vy)) => {
+                        let overlap = term_overlap(a, vx, b, vy);
+                        if overlap == Overlap::Certain {
+                            continue;
+                        }
+                        if may_leave_out(a, vx) && may_leave_out(b, vy) {
+                            left_out.push((at, key, true, true));
+                        } else if overlap == Overlap::ByShape {
+                            record_shaped(a, vx, b, vy, shaped);
+                        } else {
+                            return false;
+                        }
                     }
+                    (Some(vx), None) if may_leave_out(a, vx) => {
+                        left_out.push((at, key, true, false));
+                    }
+                    (None, Some(vy)) if may_leave_out(b, vy) => {
+                        left_out.push((at, key, false, true));
+                    }
+                    _ => return false,
                 }
             }
         }
-        overlap != Overlap::Disjoint
+        true
+    }
+
+    /// `writer`'s leaf without the keys `left_out` says it leaves out.
+    fn shown(writer: &Writer<'_>, left_out: &[LeftOut<'_>], first: bool) -> Path {
+        let mut leaf = writer.leaf.clone();
+        for &(at, key, in_a, in_b) in left_out {
+            if (first && in_a) || (!first && in_b) {
+                leaf.elem[at].key.remove(key);
+            }
+        }
+        leaf
     }
 
     /// The error for two series that can write the same leaf on the same
     /// target, or `None` when they cannot.
     fn collision(other: &Writer<'_>, writer: &Writer<'_>) -> Option<String> {
         let mut shaped = Vec::new();
-        let leaves_meet = other.leaf.origin == writer.leaf.origin
-            && other.leaf.elem.len() == writer.leaf.elem.len()
-            && other.leaf.elem.iter().zip(&writer.leaf.elem).all(|(x, y)| {
-                x.key.len() == y.key.len()
-                    && terms_meet(other, &x.name, writer, &y.name, &mut shaped)
-                    && x.key.iter().all(|(key, value)| {
-                        y.key.get(key).is_some_and(|theirs| {
-                            terms_meet(other, value, writer, theirs, &mut shaped)
-                        })
-                    })
-            });
-        if !leaves_meet {
+        let mut left_out = Vec::new();
+        if !leaves_meet(other, writer, &mut left_out, &mut shaped) {
             return None;
         }
         match other.target.meets(&writer.target) {
@@ -554,10 +647,14 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             Overlap::Certain => {}
         }
 
-        let spelled = if other.leaf == writer.leaf {
+        let (other_leaf, writer_leaf) = (
+            shown(other, &left_out, true),
+            shown(writer, &left_out, false),
+        );
+        let spelled = if other_leaf == writer_leaf {
             String::new()
         } else {
-            format!(" (`{}` writes it as `{}`)", writer.name, writer.leaf)
+            format!(" (`{}` writes it as `{}`)", writer.name, writer_leaf)
         };
         let on_target = match (&other.target, &writer.target) {
             (LabelValueSet::Static(value), LabelValueSet::Static(_)) if value.is_empty() => {
@@ -589,7 +686,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             return Some(format!(
                 "metrics `{}` and `{}` would both write the gnmi leaf `{}`{spelled}{on_target}, \
                  each overwriting the other; {advice}",
-                other.name, writer.name, other.leaf
+                other.name, writer.name, other_leaf
             ));
         }
         shaped.sort_unstable();
@@ -604,7 +701,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
              compared with a counter by their prefix and 16 hex digits only; {advice}",
             other.name,
             writer.name,
-            other.leaf,
+            other_leaf,
             random_labels.join(" and "),
             MAX_ENUMERATED_SPIKE
         ))
@@ -630,11 +727,44 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
             let Ok(template) = encoder.template_for(name) else {
                 continue;
             };
-            let symbols: Vec<(&str, String)> = template
-                .placeholders()
-                .filter(|p| *p != NAME_PLACEHOLDER)
-                .map(|p| (p, format!("{{{p}}}")))
-                .collect();
+            // Each label placeholder once: its values, and whether every use
+            // of it is optional.
+            let mut values: Vec<(String, Option<LabelValueSet>)> = Vec::new();
+            let mut optional_only: Vec<bool> = Vec::new();
+            for placeholder in template.placeholders() {
+                if placeholder.name == NAME_PLACEHOLDER {
+                    continue;
+                }
+                match values
+                    .iter()
+                    .position(|(known, _)| known == placeholder.name)
+                {
+                    Some(at) => optional_only[at] &= placeholder.optional,
+                    None => {
+                        let set = match &one.injected {
+                            Some((key, injected)) if *key == placeholder.name => {
+                                Some(injected.clone())
+                            }
+                            _ => base.label_value_set(placeholder.name),
+                        };
+                        values.push((placeholder.name.to_string(), set));
+                        optional_only.push(placeholder.optional);
+                    }
+                }
+            }
+            // A label referenced only optionally is rendered when an event
+            // can carry it, and its key may be left out when an event can
+            // lack it.
+            let mut symbols: Vec<(&str, String)> = Vec::new();
+            let mut absent: Vec<String> = Vec::new();
+            for ((label, set), optional) in values.iter().zip(&optional_only) {
+                if !*optional || set.is_some() {
+                    symbols.push((label.as_str(), format!("{{{label}}}")));
+                }
+                if *optional && set.as_ref().is_some_and(may_be_absent) {
+                    absent.push(label.clone());
+                }
+            }
             let pairs: Vec<(&str, &str)> = symbols.iter().map(|(k, v)| (*k, v.as_str())).collect();
             let Ok(labels) = Labels::from_pairs(&pairs) else {
                 continue;
@@ -643,17 +773,6 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
                 continue;
             };
             leaf.origin.clone_from(&cfg.origin);
-            let mut values: Vec<(String, Option<LabelValueSet>)> = Vec::new();
-            for (label, _) in &symbols {
-                if values.iter().any(|(known, _)| known == label) {
-                    continue;
-                }
-                let set = match &one.injected {
-                    Some((key, injected)) if key == label => Some(injected.clone()),
-                    _ => base.label_value_set(label),
-                };
-                values.push((label.to_string(), set));
-            }
 
             let writer = Writer {
                 address,
@@ -662,6 +781,7 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
                 target_label: cfg.target_label.as_str(),
                 target: target.clone(),
                 labels: values,
+                absent,
             };
             if let Some(message) = writers
                 .iter()
@@ -674,6 +794,20 @@ fn validate_gnmi_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaEr
         }
     }
     Ok(())
+}
+
+/// Whether an event may lack a label whose values are `set`: a cardinality
+/// spike over nothing, outside its window.
+#[cfg(feature = "gnmi")]
+fn may_be_absent(set: &crate::config::LabelValueSet) -> bool {
+    use crate::config::LabelValueSet;
+    match set {
+        LabelValueSet::SpikeCounter { outside, .. }
+        | LabelValueSet::RandomShape { outside, .. } => {
+            outside.as_deref().is_none_or(may_be_absent)
+        }
+        _ => false,
+    }
 }
 
 /// The name in `names` closest to `key` by [`edit_distance`], if one is within
@@ -3326,6 +3460,206 @@ scenarios:
                 assert!(msg.contains(text), "{msg}");
             }
         }
+    }
+
+    /// A metrics entry `name` with a counter spike over `spike`: `spike_0`
+    /// to `spike_2` while its window is open, and no `spike` label outside it.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn spiking_yaml(name: &str) -> String {
+        format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n      - label: spike\n        every: 10s\n        for: 5s\n        cardinality: 3\n")
+    }
+
+    /// `spiking_yaml` with spike values `{prefix}0` to `{prefix}2`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn prefixed_spiking_yaml(name: &str, prefix: &str) -> String {
+        spiking_yaml(name) + &format!("        prefix: {prefix}\n")
+    }
+
+    /// A metrics entry `name` with two counter spikes over `spike`, the
+    /// second over the first: inside either window a `spike` value, outside
+    /// both no `spike` label.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn spiking_twice_yaml(name: &str) -> String {
+        format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n      - label: spike\n        every: 10s\n        for: 5s\n        cardinality: 3\n      - label: spike\n        every: 20s\n        for: 5s\n        cardinality: 2\n        prefix: other_\n")
+    }
+
+    /// A metrics entry `name` whose events always carry `ifName: eth0`.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    fn eth0_yaml(name: &str) -> String {
+        format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    labels:\n      ifName: eth0\n")
+    }
+
+    /// A template with an optional key gives a series one leaf per shape
+    /// its events can take, and every shape is compared: a spiking metric
+    /// writes its base leaf outside the window and one leaf per spike value
+    /// inside it; a label every event carries is never absent. `None` means
+    /// the file prepares; otherwise the error contains the given text.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::a_static_series_on_the_base_path_of_a_spiking_metric(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0]/state")], &[]),
+        spiking_yaml("spiking") + &metric_yaml("steady"),
+        Some("metrics `spiking` and `steady` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
+    )]
+    #[case::a_static_series_before_a_spiking_metric_on_its_base_path(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0]/state")], &[]),
+        metric_yaml("steady") + &spiking_yaml("spiking"),
+        Some("metrics `steady` and `spiking` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
+    )]
+    #[case::a_key_on_a_label_no_event_carries(
+        leaf_paths(&[("in_octets", "/interfaces/interface[name=eth0][spike={spike?}]/state/{name}"), ("out_octets", "/interfaces/interface[name=eth0]/state/in-octets")], &[]),
+        metric_yaml("in_octets") + &metric_yaml("out_octets"),
+        Some("metrics `in_octets` and `out_octets` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state/in-octets` with no target, each overwriting the other"),
+    )]
+    #[case::a_static_series_on_the_base_path_of_a_spike_over_a_spike(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0]/state")], &[]),
+        spiking_twice_yaml("spiking") + &metric_yaml("steady"),
+        Some("metrics `spiking` and `steady` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
+    )]
+    #[case::two_spiking_metrics_on_distinct_base_paths(
+        leaf_paths(&[("a", "/interfaces/interface[name=eth0][spike={spike?}]/state/a"), ("b", "/interfaces/interface[name=eth0][spike={spike?}]/state/b")], &[]),
+        spiking_yaml("a") + &spiking_yaml("b"),
+        None,
+    )]
+    #[case::two_spiking_metrics_on_one_base_path(
+        leaf_paths(&[("a", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("b", "/interfaces/interface[name=eth0][spike={spike?}]/state")], &[]),
+        spiking_yaml("a") + &spiking_yaml("b"),
+        Some("metrics `a` and `b` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0][spike={spike}]/state` with no target"),
+    )]
+    #[case::two_spiking_metrics_with_distinct_spike_values_on_one_base_path(
+        leaf_paths(&[("a", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("b", "/interfaces/interface[name=eth0][spike={spike?}]/state")], &[]),
+        prefixed_spiking_yaml("a", "a_") + &prefixed_spiking_yaml("b", "b_"),
+        Some("metrics `a` and `b` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0]/state` with no target, each overwriting the other"),
+    )]
+    #[case::a_literal_on_a_spike_value(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0][spike=spike_1]/state")], &[]),
+        spiking_yaml("spiking") + &metric_yaml("steady"),
+        Some("metrics `spiking` and `steady` would both write the gnmi leaf `openconfig:/interfaces/interface[name=eth0][spike={spike}]/state` (`steady` writes it as `openconfig:/interfaces/interface[name=eth0][spike=spike_1]/state`) with no target"),
+    )]
+    #[case::a_literal_on_no_spike_value(
+        leaf_paths(&[("spiking", "/interfaces/interface[name=eth0][spike={spike?}]/state"), ("steady", "/interfaces/interface[name=eth0][spike=spike_3]/state")], &[]),
+        spiking_yaml("spiking") + &metric_yaml("steady"),
+        None,
+    )]
+    #[case::an_optional_key_on_a_label_every_event_carries(
+        leaf_paths(&[("labelled", "/interfaces/interface[name={ifName?}]/state"), ("bare", "/interfaces/interface/state")], &[]),
+        eth0_yaml("labelled") + &metric_yaml("bare"),
+        None,
+    )]
+    #[case::an_optional_key_on_a_label_every_event_carries_and_its_value(
+        leaf_paths(&[("labelled", "/interfaces/interface[name={ifName?}]/state"), ("literal", "/interfaces/interface[name=eth0]/state")], &[]),
+        eth0_yaml("labelled") + &metric_yaml("literal"),
+        Some("metrics `labelled` and `literal` would both write the gnmi leaf `openconfig:/interfaces/interface[name={ifName}]/state` (`literal` writes it as `openconfig:/interfaces/interface[name=eth0]/state`) with no target"),
+    )]
+    fn gnmi_every_shape_of_an_optional_key_is_compared(
+        #[case] paths: String,
+        #[case] scenarios: String,
+        #[case] rejected_with: Option<&str>,
+    ) {
+        let entries = compile_entries(&shared_encoder_file(&paths, &scenarios), &Default::default());
+        assert_eq!(entries.len(), 2, "the file must compile to both entries");
+        match rejected_with {
+            None => {
+                prepare_entries(entries).expect("no shape of one meets a shape of the other");
+            }
+            Some(text) => {
+                let msg = prepare_entries(entries)
+                    .expect_err("a shape of one meets a shape of the other")
+                    .to_string();
+                assert!(msg.contains(text), "{msg}");
+            }
+        }
+    }
+
+    /// Two metrics sharing a template with 14 optional spike keys validate
+    /// in under a second: each series' leaf is compared once, with each
+    /// optional key present or left out on its own, not once per combination
+    /// of its keys (2^14 per series). A third metric on the first one's base
+    /// path is refused, so the two were compared.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_fourteen_optional_keys_validate_in_under_a_second() {
+        const KEYS: usize = 14;
+        let template: String = (0..KEYS)
+            .map(|i| format!("[s{i}={{s{i}?}}]"))
+            .collect::<String>();
+        let template = format!("/if{template}/{{name}}");
+        let spikes: String = (0..KEYS)
+            .map(|i| format!("      - label: s{i}\n        every: 10s\n        for: 5s\n        cardinality: 2\n"))
+            .collect();
+        let entry = |name: &str| {
+            format!("  - signal_type: metrics\n    name: {name}\n    generator: {{type: constant, value: 1.0}}\n    cardinality_spikes:\n{spikes}")
+        };
+        let yaml = shared_encoder_file(
+            &leaf_paths(
+                &[
+                    ("in_octets", template.as_str()),
+                    ("out_octets", template.as_str()),
+                    ("base", "/if/in-octets"),
+                ],
+                &[],
+            ),
+            &(entry("in_octets") + &entry("out_octets") + &metric_yaml("base")),
+        );
+        let entries = compile_entries(&yaml, &Default::default());
+        assert_eq!(entries.len(), 3, "the premise: three metrics");
+        let ScenarioEntry::Metrics(config) = &entries[0] else {
+            panic!("a metrics entry");
+        };
+        assert_eq!(
+            config.cardinality_spikes.as_ref().map(Vec::len),
+            Some(KEYS),
+            "the premise: each metric has {KEYS} spike labels"
+        );
+        let started = std::time::Instant::now();
+        let refused = prepare_entries(entries);
+        let took = started.elapsed();
+        let msg = refused
+            .expect_err("`base` writes `in_octets`'s leaf outside every window")
+            .to_string();
+        assert!(
+            msg.contains("metrics `in_octets` and `base` would both write the gnmi leaf `openconfig:/if/in-octets` with no target"),
+            "{msg}"
+        );
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "validation took {took:?}"
+        );
+    }
+
+    /// Every series of a spiking histogram must reference the spike label as
+    /// an optional key, or drop it: `_sum` and `_count` with their own
+    /// `paths:` entries are checked too. One template with `{le?}` and
+    /// `{spike?}` serves all three series, `_sum` and `_count` leaving `le` out.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_every_series_of_a_spiking_histogram_references_the_spike() {
+        let spiking_histogram = histogram_yaml("h", "[0.5, 2.0]")
+            + "    cardinality_spikes:\n      - label: spike\n        every: 10s\n        for: 5s\n        cardinality: 3\n";
+        let own_sum_and_count = leaf_paths(
+            &[("h_bucket", "/h[le={le}][spike={spike?}]/{name}")],
+            &["h"],
+        );
+        let entries = compile_entries(
+            &shared_encoder_file(&own_sum_and_count, &spiking_histogram),
+            &Default::default(),
+        );
+        assert_eq!(entries.len(), 1, "the premise: one histogram");
+        let msg = prepare_entries(entries)
+            .expect_err("h_sum carries the spike label unreferenced")
+            .to_string();
+        assert!(
+            msg.contains("series \"h_sum\" has cardinality_spikes label `spike`"),
+            "{msg}"
+        );
+
+        let one_template = format!(
+            "version: 2\nkind: runnable\ndefaults:\n  rate: 1\n  duration: 1s\n  encoder:\n    type: gnmi\n    path: \"/h[le={{le?}}][spike={{spike?}}]/{{name}}\"\n  sink:\n    type: gnmi_target\n    listen: 127.0.0.1:57400\nscenarios:\n{spiking_histogram}"
+        );
+        let entries = compile_entries(&one_template, &Default::default());
+        prepare_entries(entries)
+            .expect("one template with optional le and spike keys serves every series");
     }
 
     #[cfg(all(feature = "gnmi", feature = "config"))]

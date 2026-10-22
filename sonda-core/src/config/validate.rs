@@ -657,16 +657,21 @@ impl GnmiSeries {
 ///   every `paths:` entry parse as templates (via
 ///   [`GnmiEncoder::new`](crate::encoder::gnmi::GnmiEncoder::new)).
 /// - A template exists for the series' metric name: its `paths:` entry or `path`.
-/// - Every placeholder in that template is `name`, a key of the entry's
-///   `labels` or `dynamic_labels`, or the label the runner adds to the series
-///   (`le` on a histogram's `_bucket` series, `quantile` on a summary's
-///   quantile series) — labels every event of the series carries. A
-///   `cardinality_spikes` label is not accepted: the runner adds it only while
-///   the spike window is open, so rendering would fail once the window closed.
+/// - Every required placeholder `{x}` in that template is `name`, a key of
+///   the entry's `labels` or `dynamic_labels`, or the label the runner adds
+///   to the series (`le` on a histogram's `_bucket` series, `quantile` on a
+///   summary's quantile series) — labels every event of the series carries.
+///   A `cardinality_spikes` label is not accepted as a required placeholder:
+///   the runner adds it only while the spike window is open, so rendering
+///   would fail once the window closed. An optional placeholder `{x?}` may
+///   name any label: its key is left out of the path of an event that does
+///   not carry it. A label the entry carries but the template misspells is
+///   caught by the coverage rule below.
 /// - The series with `le` or `quantile` references it, and `drop_labels` does
 ///   not list it: each value is a series of its own. The `_sum` and `_count`
-///   series carry neither, so their template must not reference it; they
-///   need `paths:` entries of their own when `path` does.
+///   series carry neither, so their template must not reference it as a
+///   required placeholder; they need `paths:` entries of their own when
+///   `path` does, unless `path` references it as `{le?}` or `{quantile?}`.
 /// - A template that uses `{name}` is rejected when the entry also carries a
 ///   label called `name`, because `{name}` always renders the metric name and
 ///   every series would collapse onto one path. The exceptions are
@@ -676,9 +681,10 @@ impl GnmiSeries {
 /// - Every key in `labels` and `dynamic_labels` is referenced by the template,
 ///   is the encoder's `target_label`, or is listed in its `drop_labels`.
 ///   Otherwise series that differ only in that label would share one path.
-/// - Every `cardinality_spikes` label is covered the same way. It cannot be
-///   referenced as a placeholder, so in practice it is the target label, a
-///   referenced static label of the same key, or listed in `drop_labels`.
+/// - Every `cardinality_spikes` label is covered the same way: referenced as
+///   an optional placeholder, the target label, a referenced static label of
+///   the same key, or listed in `drop_labels`. A series whose events carry
+///   the label inside the window then gets a path of its own there.
 /// - Every value a label used as an element-name placeholder can render to
 ///   reads back as one element: non-empty, with no `/`, `[` or `]`. That is
 ///   the static value (unless a dynamic label of the same key replaces it),
@@ -741,7 +747,7 @@ fn validate_gnmi_series(
     let entry_label = |key: &str| entry_labels.binary_search(&key).is_ok();
     let spike_label = |key: &str| spike_labels.binary_search(&key).is_ok();
 
-    if template.placeholders().any(|p| p == NAME_PLACEHOLDER)
+    if template.placeholders().any(|p| p.name == NAME_PLACEHOLDER)
         && !encoder.label_needs_no_reference(NAME_PLACEHOLDER)
         && (entry_label(NAME_PLACEHOLDER) || spike_label(NAME_PLACEHOLDER))
     {
@@ -754,7 +760,10 @@ fn validate_gnmi_series(
     }
 
     if let Some(key) = series.lacks {
-        if template.placeholders().any(|p| p == key) {
+        if template
+            .placeholders()
+            .any(|p| p.name == key && !p.optional)
+        {
             return Err(SondaError::Config(ConfigError::invalid(format!(
                 "gnmi path template for series {:?} uses {{{key}}}, but that series carries \
                  no `{key}` label; give it its own paths: entry without {{{key}}}",
@@ -763,7 +772,7 @@ fn validate_gnmi_series(
         }
     }
     if let Some(&(key, _)) = series.injected.as_ref() {
-        if !template.placeholders().any(|p| p == key) {
+        if !template.placeholders().any(|p| p.name == key) {
             return Err(SondaError::Config(ConfigError::invalid(format!(
                 "gnmi path template for series {:?} does not reference {{{key}}}; every \
                  `{key}` value is a series of its own, so the template must place it, for \
@@ -783,7 +792,8 @@ fn validate_gnmi_series(
     let known = |placeholder: &str| placeholder == NAME_PLACEHOLDER || entry_label(placeholder);
     if let Some(spiked) = template
         .placeholders()
-        .find(|p| !known(p) && spike_label(p))
+        .find(|p| !p.optional && !known(p.name) && spike_label(p.name))
+        .map(|p| p.name)
     {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "gnmi path template for series {:?} uses placeholder {{{spiked}}}, a \
@@ -792,11 +802,14 @@ fn validate_gnmi_series(
             series.name
         ))));
     }
-    if let Some(unknown) = template.placeholders().find(|p| !known(p)) {
+    if let Some(unknown) = template
+        .placeholders()
+        .find(|p| !p.optional && !known(p.name))
+    {
         return Err(SondaError::Config(ConfigError::invalid(format!(
-            "gnmi path template for series {:?} uses placeholder {{{unknown}}}, which is \
+            "gnmi path template for series {:?} uses placeholder {{{}}}, which is \
              neither {{name}} nor a label of this entry",
-            series.name
+            series.name, unknown.name
         ))));
     }
 
@@ -878,8 +891,9 @@ fn validate_gnmi_series(
     if let Some(spiked) = encoder.uncovered_label(template, spike_labels.iter().copied()) {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "series {:?} has cardinality_spikes label `{spiked}`, which events carry while \
-             the spike window is open but the gnmi path template cannot reference; list it \
-             in the encoder's drop_labels",
+             the spike window is open but the gnmi path template does not reference; list it \
+             in the encoder's drop_labels, or reference it as an optional key value, for \
+             example [{spiked}={{{spiked}?}}]",
             series.name
         ))));
     }
@@ -2819,6 +2833,73 @@ generator:
         validate_gnmi_encoder(&config).expect("a static label of the same key is always present");
     }
 
+    /// A spike label referenced as an optional key value needs no
+    /// drop_labels: its key is left out while the window is closed. Referenced
+    /// as `{burst}` it is still refused with the message above, and not
+    /// referenced at all it still must be dropped.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_spike_label_referenced_as_an_optional_key_needs_no_drop_labels() {
+        let mut config = gnmi_config(Some("/a[if={ifName}][burst={burst?}]/{name}"));
+        config.base.cardinality_spikes = Some(vec![spike("burst")]);
+        validate_gnmi_encoder(&config).expect("an optional key may name a spike label");
+        assert!(
+            gnmi_cfg(&mut config).drop_labels.is_empty(),
+            "the premise: nothing dropped"
+        );
+
+        gnmi_cfg(&mut config).path = Some("/a[if={ifName}][burst={burst}]/{name}".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains(
+                "uses placeholder {burst}, a cardinality_spikes label; it exists only \
+                          while the spike window is open"
+            ),
+            "a required reference keeps its message: {msg}"
+        );
+
+        gnmi_cfg(&mut config).path = Some("/a[if={ifName}]/{name}".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains("cardinality_spikes label `burst`"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("list it in the encoder's drop_labels"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("[burst={burst?}]"),
+            "the optional form is named: {msg}"
+        );
+    }
+
+    /// An optional placeholder may name a label the entry never carries:
+    /// its key is always left out, so a template with `[spike={spike?}]`
+    /// can serve entries without a spike. A misspelled reference to a spike
+    /// label the entry does carry leaves that label unreferenced, which the
+    /// coverage rule refuses. A required placeholder still names a label.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_optional_placeholder_may_name_a_label_the_entry_never_carries() {
+        let mut config = gnmi_config(Some("/a[if={ifName}][spike={spike?}]/{name}"));
+        validate_gnmi_encoder(&config).expect("no event carries `spike`; its key is left out");
+
+        config.base.cardinality_spikes = Some(vec![spike("spike")]);
+        validate_gnmi_encoder(&config).expect("the spike's events render the key");
+        gnmi_cfg(&mut config).path = Some("/a[if={ifName}][spike={spkie?}]/{name}".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(
+            msg.contains("cardinality_spikes label `spike`"),
+            "got: {msg}"
+        );
+
+        gnmi_cfg(&mut config).path = Some("/a[if={ifName}][k={nope}]/{name}".to_string());
+        let msg = err_msg(validate_gnmi_encoder(&config));
+        assert!(msg.contains("placeholder {nope}"), "got: {msg}");
+        assert!(msg.contains("neither {name} nor a label"), "got: {msg}");
+    }
+
     #[cfg(feature = "gnmi")]
     #[rustfmt::skip]
     #[rstest::rstest]
@@ -3146,6 +3227,8 @@ generator:
             max_subscribers: Some(1),
             subscriber_buffer: Some(65_536),
             sample_floor: Some("100ms".into()),
+            tls: None,
+            credentials: None,
         };
         validate_sink_config(&SinkConfig::GnmiTarget(cfg)).expect("every field at a bound");
     }
@@ -3194,6 +3277,142 @@ generator:
         )
         .expect_err("a misspelt key is refused");
         assert!(err.to_string().contains("listen_addr"), "got: {err}");
+    }
+
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::tls("tls: {cert: a.pem, key: b.pem, client-ca: c.pem}", "client-ca")]
+    #[case::credentials("credentials: {username: u, pasword: p}", "pasword")]
+    fn gnmi_target_tls_and_credentials_reject_unknown_keys(
+        #[case] block: &str,
+        #[case] misspelt: &str,
+    ) {
+        let err = serde_yaml_ng::from_str::<SinkConfig>(&format!(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n{block}\n"
+        ))
+        .expect_err("a misspelt key is refused");
+        assert!(err.to_string().contains(misspelt), "got: {err}");
+    }
+
+    /// Every field of the two blocks parses from YAML; numbers parse as text,
+    /// as the schema allows.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[test]
+    fn gnmi_target_tls_and_credentials_parse() {
+        let sink: SinkConfig = serde_yaml_ng::from_str(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n\
+             tls: {cert: a.pem, key: b.pem, client_ca: c.pem}\n\
+             credentials: {username: sonda, password: 1234}\n",
+        )
+        .expect("parses");
+        let SinkConfig::GnmiTarget(cfg) = &sink else {
+            panic!("got {sink:?}");
+        };
+        assert_eq!(
+            cfg.tls,
+            Some(crate::sink::gnmi::GnmiTlsConfig {
+                cert: "a.pem".into(),
+                key: "b.pem".into(),
+                client_ca: Some("c.pem".into()),
+            })
+        );
+        let credentials = cfg.credentials.as_ref().expect("credentials");
+        assert_eq!(
+            (credentials.username.as_str(), credentials.password.as_str()),
+            ("sonda", "1234")
+        );
+    }
+
+    /// A `credentials:` value that is not a map is refused with an error that
+    /// does not repeat the value.
+    #[cfg(all(feature = "gnmi", feature = "config"))]
+    #[rstest::rstest]
+    #[case::string("\"sonda:Hunter2Secret\"", "Hunter2Secret")]
+    #[case::number("424242", "424242")]
+    fn gnmi_target_credentials_that_are_not_a_map_are_not_echoed(
+        #[case] value: &str,
+        #[case] secret: &str,
+    ) {
+        let err = serde_yaml_ng::from_str::<SinkConfig>(&format!(
+            "type: gnmi_target\nlisten: 127.0.0.1:57400\n\
+             tls: {{cert: a.pem, key: b.pem}}\ncredentials: {value}\n"
+        ))
+        .expect_err("a scalar is not credentials");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("credentials must be a map with username and password"),
+            "got: {msg}"
+        );
+        assert!(!msg.contains(secret), "got: {msg}");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_target_credentials_without_tls_are_refused() {
+        let cfg = GnmiTargetConfig {
+            credentials: Some(crate::sink::gnmi::GnmiCredentials {
+                username: "sonda".into(),
+                password: "hunter2".into(),
+            }),
+            ..GnmiTargetConfig::new("127.0.0.1:57400")
+        };
+        let msg = err_msg(validate_sink_config(&SinkConfig::GnmiTarget(cfg)));
+        assert!(
+            msg.contains("credentials need tls")
+                && msg.contains("the password would cross the wire in clear"),
+            "got: {msg}"
+        );
+        assert!(!msg.contains("hunter2"), "got: {msg}");
+    }
+
+    /// Each `tls` file that cannot be read, or does not hold what its field
+    /// needs, fails validation with an error naming the field and the file.
+    #[cfg(feature = "gnmi")]
+    #[rstest::rstest]
+    #[case::cert_missing("cert", None, "cannot be read")]
+    #[case::cert_not_pem("cert", Some("not a certificate\n"), "holds no PEM certificate")]
+    #[case::cert_holds_a_key("cert", Some("@key"), "holds no PEM certificate")]
+    #[case::key_missing("key", None, "cannot be read")]
+    #[case::key_holds_a_certificate("key", Some("@cert"), "holds no PEM private key")]
+    #[case::key_of_another_certificate("key", Some("@client-key"), "cannot serve TLS")]
+    #[case::client_ca_missing("client_ca", None, "cannot be read")]
+    #[case::client_ca_not_pem("client_ca", Some("garbage\n"), "holds no PEM certificate")]
+    #[rustfmt::skip]
+    fn gnmi_target_tls_files_are_checked_at_validation(
+        #[case] field: &str,
+        #[case] contents: Option<&str>,
+        #[case] needle: &str,
+    ) {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let mut cfg = GnmiTargetConfig {
+            tls: Some(files.mutual_tls()),
+            ..GnmiTargetConfig::new("127.0.0.1:57400")
+        };
+        validate_sink_config(&SinkConfig::GnmiTarget(cfg.clone())).expect("the baseline validates");
+
+        let pem = |name: &str| std::fs::read_to_string(files.path(name)).expect("a test file");
+        let path = match contents {
+            None => files.path("absent.pem"),
+            Some("@key") => files.write("replaced.pem", &pem("server-key.pem")),
+            Some("@cert") => files.write("replaced.pem", &pem("server.pem")),
+            Some("@client-key") => files.write("replaced.pem", &files.client_key_pem),
+            Some(text) => files.write("replaced.pem", text),
+        };
+        let tls = cfg.tls.as_mut().expect("tls");
+        match field {
+            "cert" => tls.cert = path.clone(),
+            "key" => tls.key = path.clone(),
+            _ => tls.client_ca = Some(path.clone()),
+        }
+        let msg = err_msg(validate_sink_config(&SinkConfig::GnmiTarget(cfg)));
+        assert!(msg.contains(needle), "got: {msg}");
+        assert!(msg.contains(&format!("{path:?}")), "names the file: {msg}");
+        let named_field = match field {
+            // The pair is named together when only the combination fails.
+            "key" if needle == "cannot serve TLS" => "key".to_string(),
+            field => format!("tls {field} "),
+        };
+        assert!(msg.contains(&named_field), "names the field: {msg}");
     }
 
     /// `validate_config` runs the gnmi checks, so an invalid block reports its

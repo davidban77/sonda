@@ -37,3 +37,8 @@ __pycache__/
 /assets/
 dist/
 /extracted-*
+
+# Certificates for the gnmi-tls example and UAT row, made locally with openssl
+# (see examples/gnmi-telegraf-tls.yaml). Never committed: one holds a private
+# key.
+examples/telegraf/certs/

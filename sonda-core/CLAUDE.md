@@ -18,7 +18,13 @@ src/
 │                          ConfigError. A joined write only overwrites a path the target
 │                          already serves and owns nothing; an unserved path is a
 │                          ConfigError. Used by the sonda-server `POST /events` handler.
-├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
+├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash;
+│                          constant_time_eq under gnmi: length check, then an XOR-fold over
+│                          every byte pair; ensure_crypto_provider under kafka or gnmi:
+│                          installs rustls's ring provider as the PROCESS-WIDE default when
+│                          none is, for every rustls config in the process, embedder's
+│                          included. Release builds compile ring alone; a workspace build
+│                          also compiles aws-lc-rs, so rustls cannot pick one by itself)
 ├── packs/
 │   ├── extend.rs       ← materialize(extension, base) -> MetricPackDef: the pure pre-pass that
 │   │                      folds one `extends:` link. `metrics:` is additive and refuses a
@@ -112,6 +118,11 @@ src/
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
 │   │                      share a port, and every gnmi encoder agrees with its entries.
+│   │                      Its leaf check gives a series one leaf (keys of labels used only
+│   │                      as {x?} that no event carries left out) and the set of keys it may
+│   │                      leave out (a spike over nothing); two elements meet when each key
+│   │                      is on both with values that can be equal, or every side that has
+│   │                      it may leave it out. Per pair O(elements x keys), never 2^k shapes.
 │   │                      check_running_sinks() checks entries against sinks already
 │   │                      running in the process (gnmi_target via registry().check());
 │   │                      both multi-launch paths call it (POST /scenarios through
@@ -133,7 +144,15 @@ src/
 │   │   ├── mod.rs      ←   GnmiEncoder, GnmiEncoderConfig (deny_unknown_fields; drop_labels),
 │   │   │                   GnmiValueType (hand-written Deserialize: enum codes as ints or
 │   │   │                   integer strings; enum labels as any scalar, stored as text).
-│   │   │                   Per-series path bytes cached on first sight;
+│   │   │                   Path bytes cached per series on first sight; a series is the
+│   │   │                   metric name and the labels its template sees (all but the
+│   │   │                   target_label and drop_labels, unless the template references
+│   │   │                   them), found by a DefaultHasher fingerprint of those, then
+│   │   │                   compared label by label: a hit allocates nothing. A path
+│   │   │                   rejection (uncovered label, missing placeholder label, invalid
+│   │   │                   element name) is cached as its text, and later events get it
+│   │   │                   back without a render (one allocation: the text). A value
+│   │   │                   rejection is per event and not cached.
 │   │   │                   uncovered_label + template_for are the ONE coverage and
 │   │   │                   template rules validation also calls. Output is one Notification
 │   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
@@ -143,10 +162,18 @@ src/
 │   │   │                   with `le`, _sum, _count; summary: <name> with `quantile`,
 │   │   │                   _sum, _count). The `le`/`quantile` template must reference
 │   │   │                   the key and may not drop it; _sum/_count need a template
-│   │   │                   without it: their own paths: entries, or path when the
-│   │   │                   bucket/quantile series has its own paths: entry. Logs
-│   │   │                   entries refuse both encoder and sink.
+│   │   │                   without it: their own paths: entries, path when the
+│   │   │                   bucket/quantile series has its own paths: entry, or a path
+│   │   │                   that writes it optionally ([le={le?}]). A cardinality_spikes
+│   │   │                   label is a template's only as an optional key. Logs
+│   │   │                   entries refuse both encoder and sink. encode_delete (pub(crate)) writes a
+│   │   │                   Notification deleting a full path: origin and target on the prefix, the
+│   │   │                   elements on delete[0], split as an update's prefix and path are.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
+│   │   │                   placeholders() yields Placeholder { name, optional }. An
+│   │   │                   optional key value [key={x?}] renders the key only when the
+│   │   │                   event carries x (render leaves it out; never an error); an
+│   │   │                   optional element name is a parse error.
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike
 │   │   │                   value an element-name placeholder can render to) both apply
@@ -171,18 +198,41 @@ src/
 │   ├── gnmi/           ← gnmi_target sink (feature = "gnmi"):
 │   │   ├── mod.rs      ←   GnmiTargetConfig (deny_unknown_fields; settings() is the ONE
 │   │   │                   field check validation and the sink both call; it returns
-│   │   │                   an IPv4-mapped listen as the IPv4 address it maps),
+│   │   │                   an IPv4-mapped listen as the IPv4 address it maps).
+│   │   │                   tls: GnmiTlsConfig { cert, key, client_ca } and credentials:
+│   │   │                   GnmiCredentials { username, password }, both deny_unknown_fields;
+│   │   │                   the password is writeOnly in the schema and Debug prints "***".
+│   │   │                   GnmiCredentials' Deserialize is hand-written (deserialize_any
+│   │   │                   over credentials_fields::GnmiCredentials, a private derive of the
+│   │   │                   same name, so its errors name GnmiCredentials): a value that is
+│   │   │                   not a map is refused
+│   │   │                   with a fixed message, because a buffered sink block answers
+│   │   │                   deserialize_struct on a scalar with an error quoting it.
+│   │   │                   settings() refuses credentials without tls, and reads each tls
+│   │   │                   file into TlsIdentity (paths + PEM bytes; Debug prints the
+│   │   │                   paths): every file parsed on its own (rustls-pki-types) so an
+│   │   │                   error names field and file, then tonic's server TLS config built
+│   │   │                   once, so a key that is not cert's fails at validation, not bind.
+│   │   │                   server_config() calls util::ensure_crypto_provider: tonic's
+│   │   │                   server TLS reads the process default provider.
+│   │   │                   serves() compares tls by its paths and credentials by both fields;
+│   │   │                   beside() names credentials by username only.
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
 │   │   │                   synchronously from write_metric_event; write() is an error.
-│   │   │                   Keeps one (SeriesId, PathKey) entry per path it published
-│   │   │                   (`published`), each MetricKey pointing at its entry: the
+│   │   │                   Keeps one Publication { id, path, buffers } per path it
+│   │   │                   published (`published`), each MetricKey pointing at its entry: the
 │   │   │                   first event of a key decodes its path, a second key on a
 │   │   │                   known path shares the entry, so an id that changes changes
 │   │   │                   for all. A write is delivered once upserted. A sink's Owner
 │   │   │                   is its launch (LaunchId): sinks of one launch share a path,
 │   │   │                   another launch's path is a ConfigError at the first write.
 │   │   │                   Drop releases each entry's id once (joined sinks have none).
-│   │   │                   A joined sink (join()) owns nothing: overwrite() only.
+│   │   │                   A joined sink (join()) owns nothing: overwrite() only, of a copy.
+│   │   │                   PublishBuffers: two BytesMut per publication used in turn; each
+│   │   │                   notification is copied into the one used two notifications
+│   │   │                   earlier (try_reclaim, extend, split().freeze()), which reuses
+│   │   │                   its allocation unless a subscriber still holds the Bytes last
+│   │   │                   frozen from it, and allocates once then.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems; its hash is
 │   │   │                   computed once in new() and Hash writes that u64, Eq compares
@@ -197,15 +247,40 @@ src/
 │   │   │                   A sink caches the table's PathKey (path_of) so siblings
 │   │   │                   compare by pointer.
 │   │   │                   overwrite() takes nothing. publish()
-│   │   │                   copies the encoded bytes once, takes the broadcast lock once
-│   │   │                   with no broadcast receiver and twice with one, never awaits.
-│   │   │                   Store and broadcast happen under the series' lock, so
-│   │   │                   receivers see a series' updates in table order. SAMPLE and
-│   │   │                   ONCE subscriptions hold no receiver (subscribe() is for
-│   │   │                   ON_CHANGE): they hold a permit of the target's
-│   │   │                   max_subscribers Semaphore (admit()); subscriber_count() is
-│   │   │                   permits taken. snapshot() shares each slot's PathKey and
-│   │   │                   Bytes, copying no path. The server pings an HTTP/2
+│   │   │                   locates the value (value_span), refusing bytes without one on
+│   │   │                   every event, stores the Bytes it is given (no copy), keeps the value's
+│   │   │                   range in them, and compares it with the previous value:
+│   │   │                   Published { receivers, changed } (the timestamp is not part of
+│   │   │                   the value; a first publish is a change) is the one definition
+│   │   │                   of "changed". Only a change with a receiver is broadcast (the
+│   │   │                   one Bytes clone). A slot's ValueKind is its first publish's.
+│   │   │                   Latest.json is the value as JSON_IETF (json_ietf_value), made
+│   │   │                   by the first GnmiTarget::json_ietf_value after the value
+│   │   │                   changed, under the series' lock; a change clears it, an
+│   │   │                   unchanged publish keeps it, and a publisher never makes it.
+│   │   │                   json_ietf_value(id, version, latest) answers from the cache
+│   │   │                   when the slot holds `version`, and makes it from `latest`
+│   │   │                   without caching when the slot moved on; None for an unknown
+│   │   │                   id. json_ietf_of() splices that value into the caller's
+│   │   │                   `latest` (with_value), so each response keeps its own
+│   │   │                   timestamp.
+│   │   │                   Each change raises the series' version by one (1 for its
+│   │   │                   first value), set with the value under the series' lock;
+│   │   │                   SeriesUpdate and SeriesSnapshot carry it (both
+│   │   │                   #[non_exhaustive], as is ValueKind).
+│   │   │                   The broadcast carries SeriesEvent (pub(crate), #[non_exhaustive]):
+│   │   │                   Changed(SeriesUpdate), or Removed { series_id, bytes } when release()
+│   │   │                   removes a slot and a receiver exists: the delete (delete_notification,
+│   │   │                   stamped now) is encoded once and sent under the table write lock, so no
+│   │   │                   receiver gets a value for the series after its delete. A series leaves
+│   │   │                   with its launch's last publisher and never on idle.
+│   │   │                   Never awaits. Store and broadcast happen under the series'
+│   │   │                   lock, so receivers see a series' updates in table order.
+│   │   │                   Only ON_CHANGE (and TARGET_DEFINED) lists hold a receiver
+│   │   │                   (subscribe()); every subscription holds a permit of the
+│   │   │                   target's max_subscribers Semaphore (admit());
+│   │   │                   subscriber_count() is permits taken. snapshot() shares each
+│   │   │                   slot's PathKey and Bytes, copying no path. The server pings an HTTP/2
 │   │   │                   connection silent for KEEPALIVE_INTERVAL (30 s) and closes it
 │   │   │                   after KEEPALIVE_TIMEOUT (20 s) unanswered; TargetSettings
 │   │   │                   carries both so tests can shorten them (no config). Accepted
@@ -213,7 +288,13 @@ src/
 │   │   │                   refused/aborted/reset connection backs off 100 ms. The
 │   │   │                   listener task owns a StoppedOnDrop guard, so the target
 │   │   │                   reads Stopped however the task ends (panic, runtime drop);
-│   │   │                   is_serving() is state == Listening.
+│   │   │                   is_serving() is state == Listening. bind() builds the tonic
+│   │   │                   Server (keepalives, and tls_config from TlsIdentity when set,
+│   │   │                   timing out a handshake after TLS_HANDSHAKE_TIMEOUT (10 s), carried
+│   │   │                   in TargetSettings so tests can shorten it; no config)
+│   │   │                   before binding the socket; a TLS error is SondaError::Sink naming
+│   │   │                   the address and binds nothing. serve_with_incoming does the TLS
+│   │   │                   handshake on each accepted Connection and drops failed ones.
 │   │   │                   Teardown: dropping the last Arc cancels the
 │   │   │                   root token; the listening socket closes at once (Incoming
 │   │   │                   ends), connections still open after DRAIN_GRACE are closed
@@ -223,7 +304,8 @@ src/
 │   │   │                   is not live; before binding it waits (≤ 2 s in all, never
 │   │   │                   under the bind lock) for a stopped target's socket on an
 │   │   │                   overlapping address to close. join() never binds
-│   │   │                   (emit_metric) and compares only the settings it sets; it finds
+│   │   │                   (emit_metric) and compares only the settings it sets (tls and
+│   │   │                   credentials included); it finds
 │   │   │                   a live wildcard target covering the address. Differing
 │   │   │                   settings, or a second listener contending for a port
 │   │   │                   (listen_overlap: same address, or a wildcard covering the
@@ -232,35 +314,110 @@ src/
 │   │   │                   new target. check() answers as acquire() would, binding
 │   │   │                   nothing. listen_overlap assumes a dual-stack [::].
 │   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's paths joined to its
-│   │   │                   prefix; matches() is a prefix match on elements, a key of "*"
+│   │   │                   prefix; matches() aligns the subscription's elements with the
+│   │   │                   series' first ones (aligns(): `*` is any one element, its keys
+│   │   │                   still apply; `...` any run of zero or more, tried shortest
+│   │   │                   first and lengthened on a mismatch; no allocation), a key of "*"
 │   │   │                   or an absent key matching any value, an empty origin or target
 │   │   │                   matching any. new() refuses (UNIMPLEMENTED, named) POLL,
-│   │   │                   ON_CHANGE in a STREAM list, BYTES, ASCII and JSON_IETF
-│   │   │                   encodings and element wildcards; INVALID_ARGUMENT for an empty
-│   │   │                   list, an empty element name, or an unknown list encoding or
-│   │   │                   mode or (STREAM lists only) subscription mode. JSON (encoding
-│   │   │                   0, also an unset encoding) is accepted and served as PROTO.
+│   │   │                   BYTES and ASCII encodings; INVALID_ARGUMENT for an
+│   │   │                   empty list, an empty element name, a `...` with keys, or an
+│   │   │                   unknown list encoding or
+│   │   │                   mode or (STREAM lists only) subscription mode. PROTO and
+│   │   │                   JSON_IETF are accepted; JSON (encoding 0, also an unset
+│   │   │                   encoding) is accepted and served as PROTO. pub(crate).
+│   │   ├── test_tls.rs ←   (cfg(test)) TlsFiles: a CA, and a server (localhost, 127.0.0.1) and
+│   │   │                   a client certificate it signed, made with rcgen (a dev-dependency)
+│   │   │                   and written to a temp dir; tls()/mutual_tls() blocks, a TLS channel,
+│   │   │                   and once_syncs() for the TLS tests.
+│   │   ├── notification.rs ← value_span(): the byte range of an encoded Notification's
+│   │   │                   first update's val (the TypedValue without key and length)
+│   │   │                   and its ValueKind (the first field's number); walks keys and
+│   │   │                   lengths, decodes no path, allocates nothing.
+│   │   │                   json_ietf_value(): that val as a TypedValue { json_ietf_val },
+│   │   │                   one allocation; json_text is the ONE RFC 7951 rendering: uint
+│   │   │                   and int as JSON strings, double as a JSON number (NaN and
+│   │   │                   the infinities as the strings "NaN", "Infinity",
+│   │   │                   "-Infinity"), bool as true/false, string as an escaped JSON
+│   │   │                   string, a json_ietf_val as it is; any other kind is None.
+│   │   │                   with_value(): the notification with its first update's val
+│   │   │                   replaced and every other field copied, one allocation.
 │   │   │                   pub(crate).
 │   │   └── service.rs  ←   GnmiService: tower::Service router served with
 │   │                       serve_with_incoming (never add_service). Holds the target
 │   │                       WEAKLY (so does every handler and subscription task): nothing a
 │   │                       client does keeps a target alive; a request after it is gone is
-│   │                       UNAVAILABLE. Capabilities: 0.10.0, [PROTO], no models.
-│   │                       Subscribe: first message must be a SubscriptionList; a place is
-│   │                       taken with target.admit() or the request is RESOURCE_EXHAUSTED,
-│   │                       and the producer holds it until it returns. One task reads and
+│   │                       UNAVAILABLE. When the target's settings carry credentials,
+│   │                       the router checks the `username` and `password` metadata of
+│   │                       every request before dispatch (authenticated(): both compared
+│   │                       with constant_time_eq); a missing or wrong pair is
+│   │                       UNAUTHENTICATED "credentials required", logged once at warn with
+│   │                       the peer (TCP or TLS connect info) and the method, never a value.
+│   │                       Capabilities: 0.10.0, [PROTO, JSON_IETF], no models.
+│   │                       Subscribe: first message must be a SubscriptionList; start()
+│   │                       plans it, takes a place with target.admit() (or the request
+│   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns)
+│   │                       and the broadcast receiver, and builds the producer, which
+│   │                       subscribe() then spawns. One task reads and
 │   │                       ignores the rest of the inbound stream (never polled in a
 │   │                       select!); its end does not end the subscription. A producer
 │   │                       task sends the initial sync (matching snapshot, none with
-│   │                       updates_only, then sync_response) and, for STREAM, re-reads the
-│   │                       table per sample group (period = max(sample_interval,
-│   │                       sample_floor), one group per distinct period; next_due skips
-│   │                       missed periods in one step), framing each stored Notification
-│   │                       as SubscribeResponse.update bytes. Its select! arms: listener
-│   │                       left Listening (state()), tx.closed(), tx.reserve() (mpsc of
-│   │                       64: a client that stops reading parks only its own task) under
-│   │                       a timeout of stall_limit = max(3 x the list's longest sample
-│   │                       period, stall_floor), the next sample. stall_floor is
+│   │                       updates_only, then sync_response). plan_groups splits a STREAM
+│   │                       list: SAMPLE into sample groups; ON_CHANGE into the ON_CHANGE
+│   │                       set plus a heartbeat group when heartbeat_interval > 0;
+│   │                       TARGET_DEFINED into both, the set and heartbeat for string_val
+│   │                       series (KindFilter::Strings), a sample group for the rest
+│   │                       (NonStrings). Periods are max(interval, sample_floor), one group
+│   │                       per (period, kinds, suppress); next_due skips missed periods in
+│   │                       one step. SAMPLE with suppress_redundant: a group whose sent map
+│   │                       (SeriesId -> version) is seeded
+│   │                       by the initial sync; due() sends a series only when its version differs
+│   │                       from the recorded one and reports each recorded series gone from the
+│   │                       snapshot, which sample() deletes through the index; its heartbeat_interval adds
+│   │                       a heartbeat group. Without suppress_redundant SAMPLE's heartbeat_interval
+│   │                       is not read; TARGET_DEFINED's sample groups never suppress. The set's broadcast
+│   │                       receiver is taken before the initial snapshot; a series is
+│   │                       matched once, when first seen (snapshot path, or PathKey::decode
+│   │                       of the update), cached by SeriesId (Seen { path, queued }: path is
+│   │                       Some only for a matched series) and pruned to the table past 2 x its
+│   │                       live size (at least 1024). queued is the version of the value last queued for the
+│   │                       series, by the initial sync, a resync, a heartbeat or a change;
+│   │                       offer() drops a change whose version is not newer, so a change
+│   │                       racing a snapshot is sent once. Heartbeats are never filtered
+│   │                       and set queued. Delivered is the list's delivery index: PathKey ->
+│   │                       SeriesId for every path queued a value and not yet a delete, and
+│   │                       SeriesId -> Option<PathKey> (None: deleted, its Removed unread).
+│   │                       Every value goes through Delivered::queue_value, as one Queued { id,
+│   │                       version, path, latest, placement } (Placement::InPlace for sync,
+│   │                       resync, heartbeat and change; Last for samples): a path
+│   │                       indexed under another id gets that id's delete first. A JSON_IETF
+│   │                       list's Delivered holds the target (weakly) and queues each value as
+│   │                       target.json_ietf_of(id, version, latest) returns it, nothing when
+│   │                       that is None; a PROTO list's queues the stored bytes. Indexed: values
+│   │                       of series the set matches or a suppressing group sends; never a value
+│   │                       only a plain SAMPLE sends. queue_delete deletes only an indexed id;
+│   │                       with a receiver the id is then remembered as deleted. Removed of an
+│   │                       indexed id queues the broadcast's bytes; of a remembered id, nothing
+│   │                       (and forgets it). offer() skips a remembered id and a path indexed
+│   │                       under another id (that change predates the indexed series). The
+│   │                       prune on a change and every resync sweep(): delete each indexed id
+│   │                       absent from the snapshot. Pending::push_delete
+│   │                       drops a queued value for it and queues the delete last. Lagged(n) moves the set to a
+│   │                       receiver at the broadcast's tail (resubscribe(), dropping the
+│   │                       backlog it fell behind on), sweeps, then re-queues the latest
+│   │                       of every matched series (no second sync marker; debug log with
+│   │                       n); forget_after(rx.len()) forgets every remembered delete once the
+│   │                       new receiver has read what it held at the snapshot (read_one counts). Pending queues encoded responses (sync marker, samples) and
+│   │                       series values, at most one per series: a newer change,
+│   │                       heartbeat or resync replaces it in place. Each stored
+│   │                       Notification is framed as SubscribeResponse.update bytes. Its
+│   │                       select! arms: listener left Listening (state()), tx.closed(),
+│   │                       tx.reserve() (mpsc of 64: a client that stops reading parks only
+│   │                       its own task) under a deadline stall_limit after the queue last
+│   │                       became non-empty or last sent, the broadcast (always read), the
+│   │                       next sample (only while no encoded response waits), the next
+│   │                       heartbeat. stall_limit = max(3 x the list's longest sample period,
+│   │                       stall_floor); heartbeats do not count. stall_floor is
 │   │                       STALL_FLOOR (10 s), carried in TargetSettings so tests can
 │   │                       shorten it (no config). Responses waiting a whole stall_limit
 │   │                       with none taken from the queue end the subscription UNAVAILABLE
@@ -272,11 +429,14 @@ src/
 │   │                       until then its HTTP/2 layer accepts data whether or not the
 │   │                       application reads it, so the server cannot see a reader that
 │   │                       stopped. max_subscribers is the lever.
+│   │                       Probe (cfg(test)) carries the after_resubscribe, before_heartbeat
+│   │                       and before_sample hooks the window tests publish and release from.
 │   │                       STREAM runs until the client goes, stalls or the target stops;
 │   │                       ONCE ends with OK after the sync marker. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the
 │   │                       producer sends the status on a oneshot, and Responses yields it
-│   │                       after the queue drains. Publishes wake no subscriber task.
+│   │                       after the queue drains. A publish wakes only ON_CHANGE
+│   │                       subscriber tasks, and only when the value changed.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
@@ -393,7 +553,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream` and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
+| `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain

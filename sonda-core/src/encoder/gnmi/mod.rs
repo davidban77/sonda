@@ -2,7 +2,11 @@
 //!
 //! The update path is rendered from a [`PathTemplate`] the first time a series
 //! is seen and cached as encoded `Path` bytes; later events for that series
-//! copy those bytes and encode only the timestamp, prefix and typed value.
+//! copy those bytes and encode only the timestamp, prefix and typed value. A
+//! series is its metric name and the labels its template can see, so events
+//! that differ only in the target label or a `drop_labels` label share one
+//! entry. A series whose path cannot be rendered is cached with the reason,
+//! and its later events are rejected without rendering again.
 //!
 //! Requires the `gnmi` feature flag.
 
@@ -10,13 +14,14 @@ pub mod path;
 pub mod proto;
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::UNIX_EPOCH;
 
 use prost::encoding::{self, encode_key, encode_varint, encoded_len_varint, key_len, WireType};
 use prost::Message;
 
-use crate::model::metric::{is_valid_metric_name, MetricEvent, MetricKey};
+use crate::model::metric::{is_valid_metric_name, Labels, MetricEvent, ValidatedMetricName};
 use crate::{ConfigError, EncoderError, SondaError};
 
 use super::Encoder;
@@ -333,12 +338,83 @@ impl Default for GnmiEncoderConfig {
 pub struct GnmiEncoder {
     origin: String,
     target_label: String,
-    template: Option<PathTemplate>,
-    overrides: HashMap<String, PathTemplate>,
+    template: Option<Template>,
+    overrides: HashMap<String, Template>,
     values: HashMap<String, GnmiValueType>,
     drop_labels: Vec<String>,
-    /// Encoded `Path` bytes per series, filled on first sight.
-    paths: RwLock<HashMap<MetricKey, Arc<[u8]>>>,
+    /// Each series' encoded `Path` bytes or rejection, filled on first sight,
+    /// keyed by the series' [fingerprint](Template::fingerprint).
+    paths: RwLock<HashMap<u64, Vec<CachedPath>>>,
+    /// Paths rendered, for tests.
+    #[cfg(test)]
+    renders: std::sync::atomic::AtomicUsize,
+}
+
+/// A path template and the labels it cannot see: the `target_label` and the
+/// `drop_labels` labels it does not reference.
+struct Template {
+    template: PathTemplate,
+    unseen: Vec<String>,
+}
+
+impl Template {
+    /// `template`, seeing every label but `target_label` and `drop_labels`
+    /// unless it references them.
+    fn new(template: PathTemplate, target_label: &str, drop_labels: &[String]) -> Self {
+        let referenced = |label: &str| {
+            template
+                .placeholders()
+                .any(|p| p.name != path::NAME_PLACEHOLDER && p.name == label)
+        };
+        let unseen = std::iter::once(target_label)
+            .chain(drop_labels.iter().map(String::as_str))
+            .filter(|label| !referenced(label))
+            .map(str::to_string)
+            .collect();
+        Self { template, unseen }
+    }
+
+    /// The labels of `labels` this template can see, in key order.
+    fn seen<'a>(&'a self, labels: &'a Labels) -> impl Iterator<Item = (&'a str, &'a str)> {
+        labels
+            .iter()
+            .filter(|(key, _)| !self.unseen.iter().any(|unseen| unseen == key))
+    }
+
+    /// A hash of `name` and the labels of `labels` this template can see.
+    fn fingerprint(&self, name: &str, labels: &Labels) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        for (key, value) in self.seen(labels) {
+            key.hash(&mut hasher);
+            value.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
+/// One series' cache entry: the name and labels of its first event, and its
+/// encoded `Path` bytes or the text it is rejected with.
+struct CachedPath {
+    name: ValidatedMetricName,
+    labels: Arc<Labels>,
+    path: Result<Arc<[u8]>, String>,
+}
+
+impl CachedPath {
+    /// Whether an event named `name` with `labels` is this entry's series
+    /// under `template`.
+    fn is_series(&self, template: &Template, name: &str, labels: &Labels) -> bool {
+        *self.name == *name && template.seen(&self.labels).eq(template.seen(labels))
+    }
+
+    /// The cached path, or the cached rejection as an
+    /// [`EncoderError::EventRejected`].
+    fn path(&self) -> Result<Arc<[u8]>, SondaError> {
+        self.path
+            .clone()
+            .map_err(|reason| SondaError::Encoder(EncoderError::EventRejected(reason)))
+    }
 }
 
 impl GnmiEncoder {
@@ -374,7 +450,13 @@ impl GnmiEncoder {
                 ))));
             }
         }
-        let template = cfg.path.as_deref().map(PathTemplate::parse).transpose()?;
+        let template_of = |template| Template::new(template, &cfg.target_label, &cfg.drop_labels);
+        let template = cfg
+            .path
+            .as_deref()
+            .map(PathTemplate::parse)
+            .transpose()?
+            .map(template_of);
         let overrides = cfg
             .paths
             .iter()
@@ -382,7 +464,7 @@ impl GnmiEncoder {
             .into_iter()
             .map(|(metric, t)| {
                 check_key("paths", metric)?;
-                Ok((metric.clone(), PathTemplate::parse(t)?))
+                Ok((metric.clone(), template_of(PathTemplate::parse(t)?)))
             })
             .collect::<Result<HashMap<_, _>, SondaError>>()?;
 
@@ -394,12 +476,19 @@ impl GnmiEncoder {
             values: cfg.values.clone(),
             drop_labels: cfg.drop_labels.clone(),
             paths: RwLock::new(HashMap::new()),
+            #[cfg(test)]
+            renders: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
     /// The template used for `metric`: its `paths:` entry if present, else
     /// `path`. Returns [`SondaError::Config`] when neither covers the metric.
     pub(crate) fn template_for(&self, metric: &str) -> Result<&PathTemplate, SondaError> {
+        self.template_of(metric).map(|t| &t.template)
+    }
+
+    /// [`template_for`](Self::template_for), with the labels it cannot see.
+    fn template_of(&self, metric: &str) -> Result<&Template, SondaError> {
         self.overrides
             .get(metric)
             .or(self.template.as_ref())
@@ -433,24 +522,73 @@ impl GnmiEncoder {
             !self.label_needs_no_reference(key)
                 && !template
                     .placeholders()
-                    .any(|p| p != path::NAME_PLACEHOLDER && p == *key)
+                    .any(|p| p.name != path::NAME_PLACEHOLDER && p.name == *key)
         })
     }
 
     /// Encoded `Path` bytes for the event's series, rendering and caching them on first sight.
+    ///
+    /// A series is the event's metric name and the labels its template can
+    /// see: every label but the `target_label` and those in `drop_labels`,
+    /// unless the template references them. Events of one series share one
+    /// entry whatever values those other labels take. A hit allocates
+    /// nothing: the entry is found by a hash of the name and the labels the
+    /// template sees, then compared label by label.
+    ///
+    /// A series whose path is rejected ([`EncoderError::EventRejected`]: a
+    /// label the template does not cover, a placeholder whose label the
+    /// event lacks, or an element name that is not valid) is cached with the
+    /// rejection's text, and each later event of it gets that text without
+    /// the path being rendered again. Returns [`SondaError::Config`], and
+    /// caches nothing, when the metric has no template.
     fn path_bytes(&self, event: &MetricEvent) -> Result<Arc<[u8]>, SondaError> {
-        let key: MetricKey = (event.name.clone(), Arc::clone(&event.labels));
-        if let Some(bytes) = self
-            .paths
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-        {
-            return Ok(Arc::clone(bytes));
+        let name: &str = &event.name;
+        let template = self.template_of(name)?;
+        let fingerprint = template.fingerprint(name, &event.labels);
+        let cached = |paths: &HashMap<u64, Vec<CachedPath>>| {
+            paths.get(&fingerprint).and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.is_series(template, name, &event.labels))
+                    .map(CachedPath::path)
+            })
+        };
+        if let Some(path) = cached(&self.paths.read().unwrap_or_else(PoisonError::into_inner)) {
+            return path;
         }
 
+        let path = match self.render_path(template, event) {
+            Ok(bytes) => Ok(bytes),
+            Err(SondaError::Encoder(EncoderError::EventRejected(reason))) => Err(reason),
+            Err(other) => return Err(other),
+        };
+        let mut paths = self.paths.write().unwrap_or_else(PoisonError::into_inner);
+        // Another thread may have cached the series since the read.
+        if let Some(path) = cached(&paths) {
+            return path;
+        }
+        let entry = CachedPath {
+            name: event.name.clone(),
+            labels: Arc::clone(&event.labels),
+            path,
+        };
+        let path = entry.path();
+        paths.entry(fingerprint).or_default().push(entry);
+        path
+    }
+
+    /// The event's path under `template`, encoded: rejected when the event
+    /// carries a label the template does not cover, or the render fails.
+    fn render_path(
+        &self,
+        template: &Template,
+        event: &MetricEvent,
+    ) -> Result<Arc<[u8]>, SondaError> {
+        #[cfg(test)]
+        self.renders
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let name: &str = &event.name;
-        let template = self.template_for(name)?;
+        let template = &template.template;
         if let Some(label) = self.uncovered_label(template, event.labels.iter().map(|(k, _)| k)) {
             return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
                 "metric {name:?} carries label `{label}`, which the gnmi path template does \
@@ -458,12 +596,18 @@ impl GnmiEncoder {
                  drop_labels"
             ))));
         }
-        let bytes: Arc<[u8]> = template.render(name, &event.labels)?.encode_to_vec().into();
+        Ok(template.render(name, &event.labels)?.encode_to_vec().into())
+    }
+
+    /// How many series the path cache holds.
+    #[cfg(test)]
+    fn cached_series(&self) -> usize {
         self.paths
-            .write()
+            .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(key, Arc::clone(&bytes));
-        Ok(bytes)
+            .values()
+            .map(Vec::len)
+            .sum()
     }
 }
 
@@ -583,7 +727,9 @@ impl Encoder for GnmiEncoder {
     ///
     /// The label checks run only when a series is first seen and its path is
     /// rendered and cached; later events for the same series skip them, so
-    /// they cost nothing in steady state.
+    /// they cost nothing in steady state. A series rejected by them, or by
+    /// its render, is rejected with the same text on every later event
+    /// without being rendered again.
     ///
     /// The output is not length-prefixed, so it is only usable by a sink that
     /// takes one notification per write. Validation rejects pairing this
@@ -686,6 +832,40 @@ impl Encoder for GnmiEncoder {
     }
 }
 
+/// Append one prost-encoded `Notification` deleting the series at `path` —
+/// NOT length-prefixed — into `buf`.
+///
+/// `path` is a series' full path, as the sink's table keys it: its origin
+/// and target go on the notification prefix and its elements on `delete[0]`,
+/// split as [`GnmiEncoder`] splits an update's prefix and path. A timestamp of
+/// 0 is omitted.
+pub(crate) fn encode_delete(buf: &mut Vec<u8>, path: &proto::Path, timestamp_ns: i64) {
+    // Notification { timestamp = 1, prefix = 2, delete = 5 }
+    //   prefix: Path { origin = 2, target = 4 }
+    //   delete: Path { elem = 3 }
+    let prefix_len = str_field_len(2, &path.origin) + str_field_len(4, &path.target);
+    let delete_len: usize = path
+        .elem
+        .iter()
+        .map(|elem| encoding::message::encoded_len(3, elem))
+        .sum();
+    buf.reserve(
+        encoding::int64::encoded_len(1, &timestamp_ns)
+            + delimited_field_len(2, prefix_len)
+            + delimited_field_len(5, delete_len),
+    );
+    if timestamp_ns != 0 {
+        encoding::int64::encode(1, &timestamp_ns, buf);
+    }
+    encode_delimited_header(2, prefix_len, buf);
+    encode_str_field(2, &path.origin, buf);
+    encode_str_field(4, &path.target, buf);
+    encode_delimited_header(5, delete_len, buf);
+    for elem in &path.elem {
+        encoding::message::encode(3, elem, buf);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +934,43 @@ mod tests {
             "/interfaces/interface[name=Gi0/0/0]/state/counters/in-octets"
         );
         assert_eq!(only_value(&n), Value::DoubleVal(1.5));
+    }
+
+    /// A delete for a series the encoder rendered carries the update's
+    /// prefix and, as its one deleted path, the update's path: the full path
+    /// joined from the update the way the sink's table joins it splits back
+    /// the same way.
+    #[test]
+    fn a_delete_splits_its_path_as_the_update_does() {
+        let custom = GnmiEncoderConfig {
+            origin: "openconfig-interfaces".to_string(),
+            ..config()
+        };
+        let cases = [
+            (config(), event("in_octets", 1.5)),
+            (
+                config(),
+                event_at("in_octets", 2.0, &[("ifName", "Gi0/0/1")], 7),
+            ),
+            (custom, event("out_octets", 3.0)),
+        ];
+        for (cfg, e) in cases {
+            let encoder = GnmiEncoder::new(&cfg).unwrap();
+            let mut update_bytes = Vec::new();
+            encoder.encode_metric(&e, &mut update_bytes).unwrap();
+            let update = proto::Notification::decode(update_bytes.as_slice()).unwrap();
+            let full = crate::sink::gnmi::target::PathKey::decode(&update_bytes).unwrap();
+
+            let mut delete_bytes = Vec::new();
+            encode_delete(&mut delete_bytes, full.path(), 1_700_000_000_000_000_001);
+            let delete = proto::Notification::decode(delete_bytes.as_slice()).unwrap();
+
+            assert_eq!(delete.timestamp, 1_700_000_000_000_000_001);
+            assert_eq!(delete.prefix, update.prefix, "{}", e.name);
+            assert_eq!(delete.delete.len(), 1, "{}", e.name);
+            assert_eq!(Some(&delete.delete[0]), update.update[0].path.as_ref());
+            assert!(delete.update.is_empty(), "{}", e.name);
+        }
     }
 
     #[test]
@@ -939,7 +1156,7 @@ mod tests {
         for _ in 0..3 {
             encoder.encode_metric(&event("m", 1.0), &mut buf).unwrap();
         }
-        assert_eq!(encoder.paths.read().unwrap().len(), 1);
+        assert_eq!(encoder.cached_series(), 1);
         encoder.encode_metric(&event("n", 1.0), &mut buf).unwrap();
         encoder
             .encode_metric(
@@ -947,7 +1164,189 @@ mod tests {
                 &mut buf,
             )
             .unwrap();
-        assert_eq!(encoder.paths.read().unwrap().len(), 3);
+        assert_eq!(encoder.cached_series(), 3);
+    }
+
+    /// The encoded path of `event`'s update.
+    fn path_of(encoder: &GnmiEncoder, event: &MetricEvent) -> String {
+        encode(encoder, event).update[0]
+            .path
+            .clone()
+            .expect("a path")
+            .to_string()
+    }
+
+    /// An encoder on [`TEMPLATE`] that drops `spike`.
+    fn dropping_spike() -> GnmiEncoder {
+        GnmiEncoder::new(&GnmiEncoderConfig {
+            drop_labels: vec!["spike".to_string()],
+            ..config()
+        })
+        .unwrap()
+    }
+
+    /// A spike of 1 000 values on a label in `drop_labels` leaves one cache
+    /// entry: every event renders the one path the template writes.
+    #[test]
+    fn a_dropped_label_spike_leaves_one_cache_entry() {
+        let encoder = dropping_spike();
+        let mut paths = std::collections::BTreeSet::new();
+        for i in 0..1_000 {
+            let value = format!("spike-{i}");
+            let event = event_at(
+                "in_octets",
+                1.0,
+                &[
+                    ("device", "rtr-1"),
+                    ("ifName", "Gi0/0/0"),
+                    ("spike", &value),
+                ],
+                1,
+            );
+            paths.insert(path_of(&encoder, &event));
+        }
+        assert_eq!(
+            paths.into_iter().collect::<Vec<_>>(),
+            ["/interfaces/interface[name=Gi0/0/0]/state/counters/in-octets"],
+            "the premise: every event renders one path"
+        );
+        assert_eq!(encoder.cached_series(), 1);
+        assert_eq!(
+            encoder.renders.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    /// Two events that differ only in a dropped label get the cache's one
+    /// copy of the path bytes.
+    #[test]
+    fn keys_differing_only_in_a_dropped_label_share_the_path_bytes() {
+        let encoder = dropping_spike();
+        let pairs = |spike| [("device", "rtr-1"), ("ifName", "Gi0/0/0"), ("spike", spike)];
+        let a = encoder
+            .path_bytes(&event_at("in_octets", 1.0, &pairs("a"), 1))
+            .unwrap();
+        let b = encoder
+            .path_bytes(&event_at("in_octets", 1.0, &pairs("b"), 1))
+            .unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "one cached path for both");
+        assert_eq!(encoder.cached_series(), 1);
+    }
+
+    /// Two events that differ in a label the template references render
+    /// their own paths and never share an entry.
+    #[test]
+    fn keys_differing_in_a_kept_label_never_share_an_entry() {
+        let encoder = dropping_spike();
+        let on = |if_name| {
+            event_at(
+                "in_octets",
+                1.0,
+                &[("device", "rtr-1"), ("ifName", if_name)],
+                1,
+            )
+        };
+        let (a, b) = (on("Gi0/0/0"), on("Gi0/0/1"));
+        assert_ne!(path_of(&encoder, &a), path_of(&encoder, &b));
+        assert!(!Arc::ptr_eq(
+            &encoder.path_bytes(&a).unwrap(),
+            &encoder.path_bytes(&b).unwrap()
+        ));
+        assert_eq!(encoder.cached_series(), 2);
+    }
+
+    /// The target label goes on the prefix, not the path: events that
+    /// differ only in it share the entry and keep their own targets.
+    #[test]
+    fn a_target_label_change_alone_shares_the_entry() {
+        let encoder = GnmiEncoder::new(&config()).unwrap();
+        let on = |device| {
+            event_at(
+                "in_octets",
+                1.0,
+                &[("device", device), ("ifName", "Gi0/0/0")],
+                1,
+            )
+        };
+        let (a, b) = (on("rtr-1"), on("rtr-2"));
+        assert!(Arc::ptr_eq(
+            &encoder.path_bytes(&a).unwrap(),
+            &encoder.path_bytes(&b).unwrap()
+        ));
+        assert_eq!(encoder.cached_series(), 1);
+        let target = |event| encode(&encoder, event).prefix.expect("a prefix").target;
+        assert_eq!(
+            (target(&a), target(&b)),
+            ("rtr-1".to_string(), "rtr-2".to_string())
+        );
+    }
+
+    /// A target label or dropped label the template references is part of
+    /// the series: events that differ in it render their own paths.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::target_label(GnmiEncoderConfig { path: Some("/devices/device[name={device}]/{name}".into()), ..GnmiEncoderConfig::default() }, "device")]
+    #[case::dropped_label(GnmiEncoderConfig { path: Some("/sites/site[name={site}]/{name}".into()), drop_labels: vec!["site".into()], ..GnmiEncoderConfig::default() }, "site")]
+    fn a_label_the_template_references_stays_in_the_series(
+        #[case] cfg: GnmiEncoderConfig,
+        #[case] label: &str,
+    ) {
+        let encoder = GnmiEncoder::new(&cfg).unwrap();
+        let first = path_of(&encoder, &event_at("up", 1.0, &[(label, "one")], 1));
+        let second = path_of(&encoder, &event_at("up", 1.0, &[(label, "two")], 1));
+        assert!(first.contains("[name=one]"), "{first}");
+        assert!(second.contains("[name=two]"), "{second}");
+        assert_eq!(encoder.cached_series(), 2);
+    }
+
+    /// A series rejected on first sight is rejected with the same text on
+    /// its 1 000th event, and its path is rendered once.
+    #[test]
+    fn a_rejected_series_is_rendered_once() {
+        let encoder = GnmiEncoder::new(&config()).unwrap();
+        // The template's {ifName} names a label this series lacks.
+        let event = event_at("in_octets", 1.0, &[("device", "rtr-1")], 1);
+        let mut buf = Vec::new();
+        let mut reasons = std::collections::BTreeSet::new();
+        for _ in 0..1_000 {
+            match encoder.encode_metric(&event, &mut buf) {
+                Err(SondaError::Encoder(EncoderError::EventRejected(reason))) => {
+                    reasons.insert(reason);
+                }
+                other => panic!("expected a rejection, got {other:?}"),
+            }
+        }
+        assert!(buf.is_empty(), "a rejected event writes nothing");
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(
+            reasons.iter().all(|reason| reason.contains("{ifName}")),
+            "{reasons:?}"
+        );
+        assert_eq!(
+            encoder.renders.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(encoder.cached_series(), 1);
+    }
+
+    /// A rejection of one event's value is not the series': the series'
+    /// next event with a value in range is encoded.
+    #[test]
+    fn a_rejected_value_is_not_cached() {
+        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+            values: HashMap::from([("in_octets".to_string(), GnmiValueType::Uint)]),
+            ..config()
+        })
+        .unwrap();
+        let mut buf = Vec::new();
+        assert!(matches!(
+            encoder.encode_metric(&event("in_octets", -5.0), &mut buf),
+            Err(SondaError::Encoder(EncoderError::EventRejected(_)))
+        ));
+        assert_eq!(
+            only_value(&encode(&encoder, &event("in_octets", 5.0))),
+            Value::UintVal(5)
+        );
     }
 
     #[test]

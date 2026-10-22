@@ -5,10 +5,11 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::net::SocketAddr;
+use std::ops::Range;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use prost::Message;
@@ -17,10 +18,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::transport::server::{Connected, TcpConnectInfo};
+use tonic::transport::Server;
 
+use super::notification::{self, value_span, ValueKind};
 use super::service::GnmiService;
-use super::TargetSettings;
-use crate::encoder::gnmi::proto;
+use super::{error_chain, TargetSettings};
+use crate::encoder::gnmi::{encode_delete, proto};
 use crate::schedule::LaunchId;
 use crate::{ConfigError, SondaError};
 
@@ -34,6 +37,10 @@ pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// How long the server waits for a ping's answer before it closes the
 /// connection, which ends that connection's subscriptions.
 pub(crate) const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a TLS target waits for a connection to finish its TLS
+/// handshake before it closes the connection.
+pub(crate) const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the listener waits before accepting again after an accept
 /// error that is not about one connection, such as running out of file
@@ -66,13 +73,66 @@ pub(crate) enum TargetState {
 /// A target-local series number, allocated on a series' first publish.
 pub type SeriesId = u32;
 
-/// A new latest value for one series, as broadcast to subscribers.
+/// A changed value for one series, as broadcast to subscribers.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SeriesUpdate {
     /// The series the value belongs to.
     pub series_id: SeriesId,
+    /// The kind of value the series carries, fixed at its first publish.
+    pub kind: ValueKind,
+    /// The series' version with this value: 1 for its first value, one more
+    /// for each change. Set under the series' lock, so one series' updates
+    /// are broadcast in the order of their versions.
+    pub version: u64,
     /// One encoded `gnmi.Notification`.
     pub bytes: Bytes,
+}
+
+/// What the target broadcasts to its subscribers.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub(crate) enum SeriesEvent {
+    /// A series' value changed.
+    Changed(SeriesUpdate),
+    /// A series left the table. `bytes` is one encoded `gnmi.Notification`
+    /// deleting its path, from [`delete_notification`].
+    Removed { series_id: SeriesId, bytes: Bytes },
+}
+
+/// One encoded `gnmi.Notification` deleting the series at `path`, stamped
+/// with the current time (0 before the epoch).
+pub(crate) fn delete_notification(path: &proto::Path) -> Bytes {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
+        });
+    let mut buf = Vec::new();
+    encode_delete(&mut buf, path, timestamp);
+    Bytes::from(buf)
+}
+
+/// What one publish did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Published {
+    /// Whether any broadcast receiver was subscribed.
+    pub(crate) receivers: bool,
+    /// Whether the value changed: its encoded `TypedValue` bytes differ from
+    /// the series' previous ones. The notification's timestamp is not part of
+    /// the value. A series' first publish is a change.
+    pub(crate) changed: bool,
+}
+
+/// [`SondaError::Sink`]: `encoded` is not a gnmi notification with an update
+/// that has a path and a value.
+fn not_a_notification(detail: impl std::fmt::Display) -> SondaError {
+    SondaError::Sink(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "gnmi_target received bytes that are not a gnmi notification with an update: {detail}"
+        ),
+    ))
 }
 
 /// The gNMI identity of a series: its full path, with the origin and target
@@ -115,24 +175,14 @@ impl PathKey {
     /// [`SondaError::Sink`] when `encoded` is not a notification with an
     /// update.
     pub(crate) fn decode(encoded: &[u8]) -> Result<Self, SondaError> {
-        let not_a_notification = |detail: String| {
-            SondaError::Sink(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "gnmi_target received bytes that are not a gnmi notification with an \
-                     update: {detail}"
-                ),
-            ))
-        };
-        let mut notification =
-            proto::Notification::decode(encoded).map_err(|e| not_a_notification(e.to_string()))?;
+        let mut notification = proto::Notification::decode(encoded).map_err(not_a_notification)?;
         let prefix = notification.prefix.take().unwrap_or_default();
         let elem = notification
             .update
             .into_iter()
             .next()
             .and_then(|update| update.path)
-            .ok_or_else(|| not_a_notification("no update path".to_string()))?
+            .ok_or_else(|| not_a_notification("no update path"))?
             .elem;
         Ok(Self::new(proto::Path {
             origin: prefix.origin,
@@ -176,12 +226,16 @@ impl Hash for PathKey {
 
 /// One series as held by the target, returned by [`GnmiTarget::snapshot`].
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[non_exhaustive]
 pub(crate) struct SeriesSnapshot {
     pub(crate) series_id: SeriesId,
     /// The series' full path: the notification prefix's origin and target
     /// with the update's elements. Shared with the table, not copied.
     pub(crate) path: PathKey,
+    /// The kind of value the series carries, fixed at its first publish.
+    pub(crate) kind: ValueKind,
+    /// The series' version with `latest`, as [`SeriesUpdate::version`].
+    pub(crate) version: u64,
     /// The latest encoded `gnmi.Notification`.
     pub(crate) latest: Bytes,
 }
@@ -199,12 +253,37 @@ impl From<LaunchId> for Owner {
 /// One series in the table.
 struct Slot {
     path: PathKey,
-    latest: Mutex<Bytes>,
+    latest: Mutex<Latest>,
+    /// The kind of the value of the series' first publish.
+    kind: ValueKind,
     /// The only launch whose sinks may publish the series.
     owner: Owner,
     /// Sinks of `owner` that have published the series; it leaves the table
     /// when the last of them is released.
     publishers: usize,
+}
+
+/// A series' latest encoded `gnmi.Notification`, where its value lies in
+/// it, the series' version, and the value's JSON_IETF form once a subscriber
+/// has asked for it.
+#[derive(Default)]
+struct Latest {
+    bytes: Bytes,
+    /// The range of the update's encoded `TypedValue` in `bytes`.
+    value: Range<usize>,
+    /// How many times the series' value has changed; 0 before its first.
+    version: u64,
+    /// The value as an encoded `TypedValue` holding `json_ietf_val`, made by
+    /// the first [`GnmiTarget::json_ietf_value`] after the value last changed;
+    /// `None` until then. A publish that does not change the value keeps it.
+    json: Option<Bytes>,
+}
+
+impl Latest {
+    /// The encoded `TypedValue`, borrowed from `bytes`.
+    fn value(&self) -> &[u8] {
+        self.bytes.get(self.value.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(Default)]
@@ -218,8 +297,8 @@ struct SeriesTable {
 type ServeError = Arc<Mutex<Option<String>>>;
 
 /// The latest value of every series published on one listen address, keyed
-/// by the series' path, the broadcast that carries new values to
-/// subscribers, and the gRPC listener.
+/// by the series' path, the broadcast that carries changed values and
+/// removed series to subscribers, and the gRPC listener.
 ///
 /// Obtained from the [`registry`](super::registry::registry). The listener
 /// runs on its own task until the last `Arc<GnmiTarget>` is dropped, which
@@ -227,15 +306,17 @@ type ServeError = Arc<Mutex<Option<String>>>;
 /// and connections still open after [`DRAIN_GRACE`] are closed.
 ///
 /// A series is owned by one launch and held while any sink of that launch
-/// has published it; it leaves when the last of those sinks drops, not when
-/// it stops being updated. A path with no live publisher is free: another
+/// has published it; it leaves when the last of those sinks drops, and at no
+/// other time: a series that stops being updated stays. When a series leaves
+/// and anyone is subscribed, a delete for its path is broadcast. A path with
+/// no live publisher is free: another
 /// launch may take it, and a scenario of the first launch refused it in that
 /// window shows why in its stats.
 pub struct GnmiTarget {
     local_addr: SocketAddr,
     settings: TargetSettings,
     table: RwLock<SeriesTable>,
-    tx: broadcast::Sender<SeriesUpdate>,
+    tx: broadcast::Sender<SeriesEvent>,
     /// One permit per subscription the target may serve at once.
     subscribers: Arc<Semaphore>,
     /// The permits `subscribers` started with.
@@ -246,9 +327,17 @@ pub struct GnmiTarget {
 }
 
 impl GnmiTarget {
-    /// Bind `settings.listen` and start serving on a spawned task.
+    /// Bind `settings.listen` and start serving on a spawned task, over TLS
+    /// when the settings carry it.
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Sink`] naming the address when the TLS files cannot
+    /// make a server configuration, or the address cannot be bound. Nothing
+    /// is bound when TLS fails.
     pub(crate) async fn bind(settings: TargetSettings) -> Result<Arc<Self>, SondaError> {
         let listen = settings.listen;
+        let server = server(&settings)?;
         let listener = TcpListener::bind(listen).await.map_err(|e| {
             SondaError::Sink(std::io::Error::new(
                 e.kind(),
@@ -264,7 +353,6 @@ impl GnmiTarget {
         let (tx, _) = broadcast::channel(settings.subscriber_buffer);
         // A limit beyond what a semaphore holds is no limit in practice.
         let subscriber_limit = settings.max_subscribers.min(Semaphore::MAX_PERMITS);
-        let keepalive = (settings.keepalive_interval, settings.keepalive_timeout);
         let token = CancellationToken::new();
         let (state_tx, state) = watch::channel(TargetState::Listening);
         let error = ServeError::default();
@@ -272,9 +360,9 @@ impl GnmiTarget {
         Ok(Arc::new_cyclic(|target| {
             let service = GnmiService::new(target.clone());
             tokio::spawn(serve(
+                server,
                 service,
                 listener,
-                keepalive,
                 token.clone(),
                 StoppedOnDrop(state_tx),
                 Arc::clone(&error),
@@ -367,14 +455,19 @@ impl GnmiTarget {
         self.token.cancel();
     }
 
+    /// Broadcast updates some receiver has yet to read.
+    #[cfg(test)]
+    pub(crate) fn broadcast_backlog(&self) -> usize {
+        self.tx.len()
+    }
+
     /// The settings the target was bound with.
     pub(crate) fn settings(&self) -> &TargetSettings {
         &self.settings
     }
 
     /// Upsert `encoded` as the latest notification of a series `owner`
-    /// publishes. Returns the series' id and whether any receiver was
-    /// subscribed.
+    /// publishes. Returns the series' id and what the publish did.
     ///
     /// With `id` naming a series `owner` holds, that series is updated under
     /// the read lock. Otherwise (no `id`, or one that no longer names this
@@ -383,35 +476,54 @@ impl GnmiTarget {
     /// `owner` as its owner, and counts one more publisher. Each publisher is
     /// [released](Self::release) once; the series leaves with the last.
     ///
-    /// Synchronous; `broadcast::Sender::send` never blocks. Copies `encoded`
-    /// once. The update is broadcast while the series is still locked, so
-    /// concurrent publishes of one path reach subscribers in the order the
-    /// table stores them.
+    /// Synchronous; `broadcast::Sender::send` never blocks. Locates the value
+    /// in `encoded`, stores `encoded` as the series' latest notification
+    /// without copying it, and compares the value with the series' previous
+    /// one; only a changed value is broadcast. The update is
+    /// broadcast while the series is still locked, so concurrent publishes of
+    /// one path reach subscribers in the order the table stores them.
     ///
     /// # Errors
     ///
-    /// [`SondaError::Config`] naming the path and the listen address when
-    /// another launch owns the series for `path`.
+    /// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
+    /// update has a value; [`SondaError::Config`] naming the path and the
+    /// listen address when another launch owns the series for `path`.
     pub(crate) fn publish(
         &self,
         owner: Owner,
         id: Option<SeriesId>,
         path: &PathKey,
-        encoded: &[u8],
-    ) -> Result<(SeriesId, bool), SondaError> {
-        self.store(owner, id, path, Bytes::copy_from_slice(encoded))
+        encoded: Bytes,
+    ) -> Result<(SeriesId, Published), SondaError> {
+        let (latest, kind) = latest(encoded)?;
+        self.store(owner, id, path, latest, kind)
     }
 
     /// Replace the latest notification of the series already in the table
     /// for `path`, whoever owns it, taking no ownership. Returns its id, or
-    /// `None` when no series has that path. Synchronous, and broadcast like
-    /// [`publish`](Self::publish).
-    pub(crate) fn overwrite(&self, path: &PathKey, encoded: &[u8]) -> Option<SeriesId> {
+    /// `None` when no series has that path. Synchronous, and compared and
+    /// broadcast like [`publish`](Self::publish).
+    ///
+    /// # Errors
+    ///
+    /// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
+    /// update has a value.
+    pub(crate) fn overwrite(
+        &self,
+        path: &PathKey,
+        encoded: Bytes,
+    ) -> Result<Option<SeriesId>, SondaError> {
+        let (latest, _) = latest(encoded)?;
         let table = self.read();
-        let id = *table.ids.get(path)?;
-        let slot = table.slots.get(&id)?;
-        self.replace(id, &mut lock(&slot.latest), Bytes::copy_from_slice(encoded));
-        Some(id)
+        let Some((id, slot)) = table
+            .ids
+            .get(path)
+            .and_then(|id| table.slots.get(id).map(|slot| (*id, slot)))
+        else {
+            return Ok(None);
+        };
+        self.replace(id, slot.kind, &mut lock(&slot.latest), latest);
+        Ok(Some(id))
     }
 
     /// How many publishers series `id` counts.
@@ -430,6 +542,12 @@ impl GnmiTarget {
     /// whose last publisher is released leaves the table. Ids that are unknown
     /// or owned by another launch are ignored. A sink releases each id it
     /// published once, when it drops.
+    ///
+    /// When a series leaves and a receiver exists, its delete is encoded once
+    /// and broadcast as [`SeriesEvent::Removed`] while the table's write lock
+    /// is held. Every publish holds the read lock, so no receiver gets a
+    /// value for the series after its delete. With no receiver nothing is
+    /// encoded.
     pub(crate) fn release(&self, owner: Owner, ids: impl IntoIterator<Item = SeriesId>) {
         let mut table = self.write();
         for id in ids {
@@ -440,16 +558,75 @@ impl GnmiTarget {
             if slot.publishers == 0 {
                 if let Some(slot) = table.slots.remove(&id) {
                     table.ids.remove(&slot.path);
+                    if self.tx.receiver_count() > 0 {
+                        // An error means every receiver has gone.
+                        let _ = self.tx.send(SeriesEvent::Removed {
+                            series_id: id,
+                            bytes: delete_notification(slot.path.path()),
+                        });
+                    }
                 }
             }
         }
     }
 
-    /// A receiver for every update published from now on. Subscribe before
-    /// taking a [`snapshot`](Self::snapshot): every value the snapshot does
-    /// not hold then arrives on the receiver.
-    #[allow(dead_code)] // read by ON_CHANGE subscriptions
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesUpdate> {
+    /// Series `id`'s value at `version` as an encoded `TypedValue` holding
+    /// `json_ietf_val` ([`notification::json_ietf_value`]), where `latest` is
+    /// the series' encoded notification at `version`.
+    ///
+    /// While `version` is the series' current version, the value is made once
+    /// and kept with the series, under the series' lock: the first call after
+    /// a change makes it, and every later call returns the same `Bytes` until
+    /// the value changes again. When the series has moved past `version`, the
+    /// value is made from `latest` and not kept. Publishers never make it.
+    ///
+    /// `None` when no series has `id`, or the value has no JSON_IETF form.
+    pub(crate) fn json_ietf_value(
+        &self,
+        id: SeriesId,
+        version: u64,
+        latest: &[u8],
+    ) -> Option<Bytes> {
+        let table = self.read();
+        let slot = table.slots.get(&id)?;
+        let mut current = lock(&slot.latest);
+        if current.version != version {
+            drop(current);
+            drop(table);
+            return self.made_json_ietf(latest);
+        }
+        if let Some(json) = &current.json {
+            return Some(json.clone());
+        }
+        let json = self.made_json_ietf(&current.bytes)?;
+        current.json = Some(json.clone());
+        Some(json)
+    }
+
+    /// The notification `latest`, series `id`'s at `version`, with its value
+    /// as JSON_IETF: [`notification::with_value`] of
+    /// [`json_ietf_value`](Self::json_ietf_value). The timestamp, prefix and
+    /// path are `latest`'s.
+    ///
+    /// `None` when no series has `id`, or the value has no JSON_IETF form.
+    pub(crate) fn json_ietf_of(&self, id: SeriesId, version: u64, latest: &[u8]) -> Option<Bytes> {
+        notification::with_value(latest, &self.json_ietf_value(id, version, latest)?)
+    }
+
+    /// [`notification::json_ietf_value`] of `encoded`, counted for tests.
+    fn made_json_ietf(&self, encoded: &[u8]) -> Option<Bytes> {
+        #[cfg(test)]
+        self.settings
+            .probe
+            .json_ietf_values
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        notification::json_ietf_value(encoded)
+    }
+
+    /// A receiver for every changed value and removed series from now on.
+    /// Subscribe before taking a [`snapshot`](Self::snapshot): every change
+    /// the snapshot does not hold then arrives on the receiver.
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SeriesEvent> {
         self.tx.subscribe()
     }
 
@@ -459,10 +636,15 @@ impl GnmiTarget {
         self.read()
             .slots
             .iter()
-            .map(|(id, slot)| SeriesSnapshot {
-                series_id: *id,
-                path: slot.path.clone(),
-                latest: lock(&slot.latest).clone(),
+            .map(|(id, slot)| {
+                let latest = lock(&slot.latest);
+                SeriesSnapshot {
+                    series_id: *id,
+                    path: slot.path.clone(),
+                    kind: slot.kind,
+                    version: latest.version,
+                    latest: latest.bytes.clone(),
+                }
             })
             .collect()
     }
@@ -472,8 +654,9 @@ impl GnmiTarget {
         owner: Owner,
         id: Option<SeriesId>,
         path: &PathKey,
-        latest: Bytes,
-    ) -> Result<(SeriesId, bool), SondaError> {
+        latest: Latest,
+        kind: ValueKind,
+    ) -> Result<(SeriesId, Published), SondaError> {
         if let Some(id) = id {
             let table = self.read();
             // A cached id names this path's series unless the id was freed
@@ -483,8 +666,8 @@ impl GnmiTarget {
                 .get(&id)
                 .filter(|slot| slot.owner == owner && slot.path == *path)
             {
-                let delivered = self.replace(id, &mut lock(&slot.latest), latest);
-                return Ok((id, delivered));
+                let published = self.replace(id, slot.kind, &mut lock(&slot.latest), latest);
+                return Ok((id, published));
             }
         }
         let mut table = self.write();
@@ -513,40 +696,60 @@ impl GnmiTarget {
         };
         let slot = table.slots.entry(id).or_insert_with(|| Slot {
             path: path.clone(),
-            latest: Mutex::new(Bytes::new()),
+            latest: Mutex::new(Latest::default()),
+            kind,
             owner,
             publishers: 0,
         });
         // Reaching here is a publisher's first publish of this path: with no
         // id, or with a cached id that no longer names its series.
         slot.publishers += 1;
+        let kind = slot.kind;
         let current = slot
             .latest
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        let delivered = self.replace(id, current, latest);
-        Ok((id, delivered))
+        let published = self.replace(id, kind, current, latest);
+        Ok((id, published))
     }
 
-    /// Store `latest` in `current` and, when anyone is subscribed, broadcast
-    /// it. The caller holds the series' lock, so the store, the check for
-    /// receivers and the broadcast are one step: a subscriber that takes a
-    /// snapshot after subscribing sees the stored value or receives it.
-    /// Returns whether any receiver was subscribed.
-    fn replace(&self, id: SeriesId, current: &mut Bytes, latest: Bytes) -> bool {
+    /// Store `latest` in `current` and, when its value differs from the one
+    /// it replaces, raise the series' version by one and, when anyone is
+    /// subscribed, broadcast it with that version. A series' first value
+    /// differs from the empty one its slot starts with. The caller holds the
+    /// series' lock, so the store, the version, the check for receivers and
+    /// the broadcast are one step: a subscriber that takes a snapshot after
+    /// subscribing sees the stored value or receives it, and a snapshot's
+    /// version is that of the value it holds.
+    fn replace(
+        &self,
+        id: SeriesId,
+        kind: ValueKind,
+        current: &mut Latest,
+        latest: Latest,
+    ) -> Published {
+        let changed = current.value() != latest.value();
+        let version = current.version + u64::from(changed);
+        let receivers = self.tx.receiver_count() > 0;
         // A clone shares the buffer but allocates its refcount on first use,
         // so it is made only when someone will receive it.
-        let update = (self.tx.receiver_count() > 0).then(|| latest.clone());
-        *current = latest;
-        let receivers = update.is_some();
+        let update = (changed && receivers).then(|| latest.bytes.clone());
+        let json = if changed { None } else { current.json.take() };
+        *current = Latest {
+            version,
+            json,
+            ..latest
+        };
         if let Some(bytes) = update {
             // An error means every receiver has gone; there is nobody to tell.
-            let _ = self.tx.send(SeriesUpdate {
+            let _ = self.tx.send(SeriesEvent::Changed(SeriesUpdate {
                 series_id: id,
+                kind,
+                version,
                 bytes,
-            });
+            }));
         }
-        receivers
+        Published { receivers, changed }
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SeriesTable> {
@@ -564,15 +767,41 @@ impl Drop for GnmiTarget {
     }
 }
 
-/// Serve `service` on `listener` until `token` is cancelled, then close the
-/// listening socket, give open connections [`DRAIN_GRACE`] to finish, and
-/// close the rest. Reports each step on `state`. A connection silent for
-/// the keepalive interval is pinged and closed when the ping goes
-/// unanswered for the keepalive timeout.
+/// The server a target with `settings` runs: a connection silent for the
+/// keepalive interval is pinged and closed when the ping goes unanswered for
+/// the keepalive timeout, and every connection is TLS when the settings carry
+/// TLS files, closed when its handshake has not finished within the TLS
+/// handshake timeout.
+///
+/// # Errors
+///
+/// [`SondaError::Sink`] naming the listen address when the TLS files cannot
+/// make a server configuration.
+fn server(settings: &TargetSettings) -> Result<Server, SondaError> {
+    let server = Server::builder()
+        .http2_keepalive_interval(Some(settings.keepalive_interval))
+        .http2_keepalive_timeout(Some(settings.keepalive_timeout));
+    match &settings.tls {
+        None => Ok(server),
+        Some(tls) => server
+            .tls_config(tls.server_config().timeout(settings.tls_handshake_timeout))
+            .map_err(|e| {
+                SondaError::Sink(io::Error::other(format!(
+                    "gnmi_target cannot serve TLS on {}: {}",
+                    settings.listen,
+                    error_chain(&e)
+                )))
+            }),
+    }
+}
+
+/// Serve `service` with `server` on `listener` until `token` is cancelled,
+/// then close the listening socket, give open connections [`DRAIN_GRACE`]
+/// to finish, and close the rest. Reports each step on `state`.
 async fn serve(
+    server: Server,
     service: GnmiService,
     listener: TcpListener,
-    (keepalive_interval, keepalive_timeout): (Duration, Duration),
     token: CancellationToken,
     state: StoppedOnDrop,
     error: ServeError,
@@ -590,11 +819,7 @@ async fn serve(
         backoff: None,
     };
     // Returns once `incoming` ends, which drops the listening socket.
-    let served = tonic::transport::Server::builder()
-        .http2_keepalive_interval(Some(keepalive_interval))
-        .http2_keepalive_timeout(Some(keepalive_timeout))
-        .serve_with_incoming(service, incoming)
-        .await;
+    let served = server.serve_with_incoming(service, incoming).await;
     if let Err(e) = served {
         tracing::warn!(error = %e, addr = ?local_addr, "gnmi_target server stopped with an error");
         *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
@@ -761,8 +986,27 @@ impl Connected for Connection {
     }
 }
 
-fn lock(latest: &Mutex<Bytes>) -> std::sync::MutexGuard<'_, Bytes> {
+fn lock(latest: &Mutex<Latest>) -> std::sync::MutexGuard<'_, Latest> {
     latest.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// `encoded` with its value located, and the value's kind.
+///
+/// # Errors
+///
+/// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
+/// update has a value.
+fn latest(encoded: Bytes) -> Result<(Latest, ValueKind), SondaError> {
+    let (value, kind) =
+        value_span(&encoded).ok_or_else(|| not_a_notification("no update value"))?;
+    let latest = Latest {
+        bytes: encoded,
+        value,
+        // Set when the value is stored.
+        version: 0,
+        json: None,
+    };
+    Ok((latest, kind))
 }
 
 #[cfg(test)]
@@ -775,7 +1019,15 @@ mod tests {
 
     /// The owner in tests that use one; no launch in a test process reaches it.
     const OWNER: Owner = Owner(u64::MAX);
-    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
+
+    /// The update `event` carries; a removal fails the test.
+    fn as_change(event: SeriesEvent) -> SeriesUpdate {
+        match event {
+            SeriesEvent::Changed(update) => update,
+            other => panic!("a change, got {other:?}"),
+        }
+    }
+    use crate::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig, GnmiValueType};
     use crate::encoder::Encoder;
     use crate::model::metric::{Labels, MetricEvent};
     use crate::sink::gnmi::GnmiTargetConfig;
@@ -813,22 +1065,47 @@ mod tests {
     /// One encoded notification for `labels`, through a gnmi encoder that
     /// places `ifName` and drops `job`.
     fn encoded(labels: &[(&str, &str)], value: f64) -> Vec<u8> {
-        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
-            origin: "openconfig".to_string(),
-            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
-            drop_labels: vec!["job".to_string()],
-            ..Default::default()
-        })
-        .expect("valid encoder");
         let event = MetricEvent::new(
             "in_octets".to_string(),
             value,
             Labels::from_pairs(labels).expect("valid labels"),
         )
         .expect("valid event");
+        encode(&event, GnmiValueType::Double)
+    }
+
+    /// `event` encoded with `in_octets` typed as `value_type`, through a
+    /// gnmi encoder that places `ifName` and drops `job`.
+    fn encode(event: &MetricEvent, value_type: GnmiValueType) -> Vec<u8> {
+        let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+            origin: "openconfig".to_string(),
+            path: Some("/interfaces/interface[name={ifName}]/{name}".to_string()),
+            drop_labels: vec!["job".to_string()],
+            values: std::collections::HashMap::from([("in_octets".to_string(), value_type)]),
+            ..Default::default()
+        })
+        .expect("valid encoder");
         let mut buf = Vec::new();
-        encoder.encode_metric(&event, &mut buf).expect("encodes");
+        encoder.encode_metric(event, &mut buf).expect("encodes");
         buf
+    }
+
+    /// An encoded notification carrying `value`, for publishing under any
+    /// path.
+    fn note(value: f64) -> Bytes {
+        Bytes::from(encoded(&[("ifName", "Gi0")], value))
+    }
+
+    /// `value` encoded as a double, stamped `nanos` after the epoch.
+    fn note_at(value: f64, nanos: u64) -> Bytes {
+        let event = MetricEvent::with_timestamp(
+            "in_octets".to_string(),
+            value,
+            Labels::from_pairs(&[("ifName", "Gi0")]).expect("valid labels"),
+            std::time::UNIX_EPOCH + Duration::from_nanos(nanos),
+        )
+        .expect("valid event");
+        Bytes::from(encode(&event, GnmiValueType::Double))
     }
 
     #[tokio::test]
@@ -837,12 +1114,15 @@ mod tests {
         let a = path("Gi0", "in-octets");
         let b = path("Gi1", "in-octets");
 
-        let (first, _) = target.publish(OWNER, None, &a, b"one").expect("one owner");
+        let (one, two, three) = (note(1.0), note(2.0), note(3.0));
+        let (first, _) = target
+            .publish(OWNER, None, &a, one.clone())
+            .expect("one owner");
         let (again, _) = target
-            .publish(OWNER, Some(first), &a, b"two")
+            .publish(OWNER, Some(first), &a, two.clone())
             .expect("one owner");
         let (other, _) = target
-            .publish(OWNER, None, &b, b"three")
+            .publish(OWNER, None, &b, three.clone())
             .expect("one owner");
 
         assert_eq!(first, again, "the same path keeps its id");
@@ -853,26 +1133,24 @@ mod tests {
             snapshot.sort_by_key(|s| s.series_id);
             snapshot.into_iter().map(|s| s.latest).collect()
         };
-        assert_eq!(
-            latest,
-            [Bytes::from_static(b"two"), Bytes::from_static(b"three")]
-        );
+        assert_eq!(latest, [two, three]);
     }
 
     #[tokio::test]
     async fn publish_never_blocks_without_receivers() {
         let target = bind(4).await;
         let series = path("Gi0", "in-octets");
+        let value = note(1.0);
         let (id, _) = target
-            .publish(OWNER, None, &series, b"value")
+            .publish(OWNER, None, &series, value.clone())
             .expect("one owner");
         let started = Instant::now();
         let mut published = 0usize;
         for _ in 0..10_000 {
-            let (_, receivers) = target
-                .publish(OWNER, Some(id), &series, b"value")
+            let (_, done) = target
+                .publish(OWNER, Some(id), &series, value.clone())
                 .expect("one owner");
-            assert!(!receivers);
+            assert!(!done.receivers);
             published += 1;
         }
         let elapsed = started.elapsed();
@@ -889,13 +1167,15 @@ mod tests {
         let target = bind(4).await;
         let mut receiver = target.subscribe();
         let series = path("Gi0", "in-octets");
-        let (id, receivers) = target
-            .publish(OWNER, None, &series, b"value")
+        let (id, done) = target
+            .publish(OWNER, None, &series, note(-1.0))
             .expect("one owner");
-        assert!(receivers, "the receiver counts as subscribed");
-        for _ in 0..1_000 {
+        assert!(done.receivers, "the receiver counts as subscribed");
+        // Each value differs from the last, so each is broadcast.
+        let values: Vec<Bytes> = (0..1_000).map(|i| note(f64::from(i))).collect();
+        for value in &values {
             target
-                .publish(OWNER, Some(id), &series, b"value")
+                .publish(OWNER, Some(id), &series, value.clone())
                 .expect("one owner");
         }
         match receiver.recv().await {
@@ -941,7 +1221,9 @@ mod tests {
         let key = PathKey::decode(&buf).expect("a notification with an update");
 
         let target = bind(16).await;
-        target.publish(OWNER, None, &key, &buf).expect("one owner");
+        target
+            .publish(OWNER, None, &key, Bytes::from(buf.clone()))
+            .expect("one owner");
         let snapshot = target.snapshot();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
@@ -960,7 +1242,9 @@ mod tests {
         for (job, value) in [("a", 1.0), ("b", 2.0), ("c", 3.0)] {
             last = encoded(&[("ifName", "Gi0"), ("job", job)], value);
             let key = PathKey::decode(&last).expect("decodes");
-            target.publish(OWNER, None, &key, &last).expect("one owner");
+            target
+                .publish(OWNER, None, &key, Bytes::from(last.clone()))
+                .expect("one owner");
         }
         assert_eq!(target.series_count(), 1, "`job` is dropped from the path");
         let snapshot = target.snapshot();
@@ -973,7 +1257,7 @@ mod tests {
                 OWNER,
                 None,
                 &PathKey::decode(&other).expect("decodes"),
-                &other,
+                Bytes::from(other.clone()),
             )
             .expect("one owner");
         assert_eq!(target.series_count(), 2);
@@ -986,18 +1270,19 @@ mod tests {
     async fn a_reused_id_does_not_write_into_another_path() {
         let target = bind(16).await;
         let (old_path, new_path) = (path("Gi0", "in-octets"), path("Gi1", "in-octets"));
+        let (old, new, old_again) = (note(1.0), note(2.0), note(3.0));
         let (stale, _) = target
-            .publish(OWNER, None, &old_path, b"old")
+            .publish(OWNER, None, &old_path, old.clone())
             .expect("one owner");
         target.release(OWNER, [stale]);
         target.write().next_id = stale;
         let (reused, _) = target
-            .publish(OWNER, None, &new_path, b"new")
+            .publish(OWNER, None, &new_path, new.clone())
             .expect("one owner");
         assert_eq!(reused, stale, "the premise: the id was handed out again");
 
         let (resolved, _) = target
-            .publish(OWNER, Some(stale), &old_path, b"old again")
+            .publish(OWNER, Some(stale), &old_path, old_again.clone())
             .expect("one owner");
         assert_ne!(resolved, stale);
         assert_eq!(
@@ -1012,10 +1297,9 @@ mod tests {
         );
         let mut latest: Vec<Bytes> = target.snapshot().into_iter().map(|s| s.latest).collect();
         latest.sort();
-        assert_eq!(
-            latest,
-            [Bytes::from_static(b"new"), Bytes::from_static(b"old again")]
-        );
+        let mut expected = [new, old_again];
+        expected.sort();
+        assert_eq!(latest, expected);
         target.release(OWNER, [resolved, reused]);
         assert_eq!(
             target.series_count(),
@@ -1034,11 +1318,12 @@ mod tests {
         let (owner, other) = (Owner::from(LaunchId::next()), Owner::from(LaunchId::next()));
         assert_ne!(owner, other, "each launch is its own owner");
         let shared = path("Gi0", "in-octets");
+        let (a, b, c) = (note(1.0), note(2.0), note(3.0));
         let (id, _) = target
-            .publish(owner, None, &shared, b"a")
+            .publish(owner, None, &shared, a.clone())
             .expect("new path");
         let (same, _) = target
-            .publish(owner, None, &shared, b"b")
+            .publish(owner, None, &shared, b.clone())
             .expect("own path");
         assert_eq!(
             id, same,
@@ -1046,20 +1331,20 @@ mod tests {
         );
 
         let err = target
-            .publish(other, None, &shared, b"c")
+            .publish(other, None, &shared, c.clone())
             .expect_err("another owner's path is refused");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
         let msg = err.to_string();
         assert!(msg.contains("interface[name=Gi0]/in-octets"), "got {msg}");
         assert!(msg.contains(&target.local_addr().to_string()), "got {msg}");
         let err = target
-            .publish(other, Some(id), &shared, b"c")
+            .publish(other, Some(id), &shared, c.clone())
             .expect_err("another owner's id is refused too");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
-        assert_eq!(target.snapshot()[0].latest, Bytes::from_static(b"b"));
+        assert_eq!(target.snapshot()[0].latest, b);
 
         let (own, _) = target
-            .publish(other, None, &path("Gi1", "in-octets"), b"d")
+            .publish(other, None, &path("Gi1", "in-octets"), note(4.0))
             .expect("a free path");
         assert_ne!(own, id);
         assert_eq!(target.series_count(), 2);
@@ -1077,7 +1362,7 @@ mod tests {
         target.release(owner, [id]);
         assert_eq!(target.series_count(), 1, "an unknown id is ignored");
         let (again, _) = target
-            .publish(other, None, &shared, b"e")
+            .publish(other, None, &shared, note(5.0))
             .expect("the path is free once its publishers left");
         target.release(other, [own, again]);
         assert_eq!(target.series_count(), 0);
@@ -1090,6 +1375,386 @@ mod tests {
         let empty = proto::Notification::default().encode_to_vec();
         let err = PathKey::decode(&empty).expect_err("no update");
         assert!(err.to_string().contains("no update path"), "got {err}");
+    }
+
+    /// Two publishes of one value are one change: the second, stamped later,
+    /// is stored but not broadcast. A different value is a change and is
+    /// broadcast once.
+    #[tokio::test]
+    async fn only_a_changed_value_is_broadcast() {
+        let target = bind(16).await;
+        let mut receiver = target.subscribe();
+        let series = path("Gi0", "in-octets");
+        let first = note_at(1.0, 1_000);
+        let (id, done) = target
+            .publish(OWNER, None, &series, first.clone())
+            .expect("one owner");
+        assert_eq!(
+            done,
+            Published {
+                receivers: true,
+                changed: true
+            },
+            "a series' first publish is a change"
+        );
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).bytes,
+            first
+        );
+
+        let same = note_at(1.0, 2_000);
+        assert_ne!(same, first, "the premise: the timestamps differ");
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, same.clone())
+            .expect("one owner");
+        assert!(done.receivers);
+        assert!(!done.changed, "only the timestamp differs");
+        assert_eq!(
+            receiver.try_recv().map(|e| as_change(e).bytes),
+            Err(broadcast::error::TryRecvError::Empty),
+            "an unchanged value is not broadcast"
+        );
+        assert_eq!(target.snapshot()[0].latest, same, "but it is stored");
+
+        let changed = note_at(2.0, 3_000);
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, changed.clone())
+            .expect("one owner");
+        assert!(done.changed);
+        let update = as_change(receiver.try_recv().expect("broadcast"));
+        assert_eq!((update.series_id, update.bytes), (id, changed));
+        assert_eq!(
+            receiver.try_recv().map(|e| as_change(e).bytes),
+            Err(broadcast::error::TryRecvError::Empty),
+            "one broadcast per change"
+        );
+
+        drop(receiver);
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, note_at(3.0, 4_000))
+            .expect("one owner");
+        assert_eq!(
+            done,
+            Published {
+                receivers: false,
+                changed: true
+            }
+        );
+    }
+
+    /// The full path a delete notification names: its prefix's origin and
+    /// target with the elements of its one deleted path.
+    fn deleted_path(bytes: &[u8]) -> PathKey {
+        let n = proto::Notification::decode(bytes).expect("a notification");
+        assert!(n.update.is_empty(), "a delete carries no update");
+        assert_eq!(n.delete.len(), 1, "one deleted path");
+        let prefix = n.prefix.unwrap_or_default();
+        PathKey::new(proto::Path {
+            origin: prefix.origin,
+            elem: n.delete[0].elem.clone(),
+            target: prefix.target,
+        })
+    }
+
+    /// Releasing a series' last publisher broadcasts exactly one removal,
+    /// whose notification deletes the series' path; the series is gone.
+    #[tokio::test]
+    async fn releasing_the_last_publisher_broadcasts_one_removal() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, note(1.0))
+            .expect("one owner");
+        let mut receiver = target.subscribe();
+        target.release(OWNER, [id]);
+        match receiver.try_recv().expect("a removal") {
+            SeriesEvent::Removed { series_id, bytes } => {
+                assert_eq!(series_id, id);
+                assert_eq!(deleted_path(&bytes), series);
+            }
+            other => panic!("a removal, got {other:?}"),
+        }
+        assert_eq!(
+            receiver.try_recv().map(|_| ()),
+            Err(broadcast::error::TryRecvError::Empty),
+            "one removal"
+        );
+        assert_eq!(target.series_count(), 0);
+    }
+
+    /// Releasing a publisher of a series another publisher still holds
+    /// broadcasts nothing, and the series stays.
+    #[tokio::test]
+    async fn releasing_a_publisher_that_is_not_the_last_broadcasts_nothing() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, note(1.0))
+            .expect("one owner");
+        target
+            .publish(OWNER, None, &series, note(1.0))
+            .expect("one owner");
+        assert_eq!(
+            target.publishers(id),
+            Some(2),
+            "the premise: two publishers"
+        );
+        let mut receiver = target.subscribe();
+        target.release(OWNER, [id]);
+        assert_eq!(
+            receiver.try_recv().map(|_| ()),
+            Err(broadcast::error::TryRecvError::Empty)
+        );
+        assert_eq!(target.series_count(), 1);
+    }
+
+    /// A series released while another thread keeps publishing it: the
+    /// receiver's last event for the released id is its removal, every
+    /// round. The publisher keeps the id each publish returns, so once the
+    /// series has left it publishes a new series on the same path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_value_is_received_after_a_series_removal() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        const ROUNDS: usize = 200;
+        let target = bind(1 << 16).await;
+        let mut receiver = target.subscribe();
+        let mut crossed = 0;
+        for round in 0..ROUNDS {
+            let series = path(&format!("Gi{round}"), "in-octets");
+            let (id, _) = target
+                .publish(OWNER, None, &series, note(0.0))
+                .expect("one owner");
+            let published = AtomicUsize::new(0);
+            let stop = AtomicBool::new(false);
+            let last_id = std::thread::scope(|scope| {
+                let publisher = scope.spawn(|| {
+                    let mut current = id;
+                    let mut value = 0.0;
+                    while !stop.load(Ordering::Relaxed) {
+                        value += 1.0;
+                        current = target
+                            .publish(OWNER, Some(current), &series, note(value))
+                            .expect("one owner")
+                            .0;
+                        published.fetch_add(1, Ordering::Relaxed);
+                    }
+                    current
+                });
+                while published.load(Ordering::Relaxed) < 10 {
+                    std::hint::spin_loop();
+                }
+                target.release(OWNER, [id]);
+                let after = published.load(Ordering::Relaxed);
+                while published.load(Ordering::Relaxed) < after + 10 {
+                    std::hint::spin_loop();
+                }
+                stop.store(true, Ordering::Relaxed);
+                publisher.join().expect("the publisher ran")
+            });
+            if last_id != id {
+                crossed += 1;
+            }
+            target.release(OWNER, [last_id]);
+            let mut last_for_id = None;
+            while let Ok(event) = receiver.try_recv() {
+                match event {
+                    SeriesEvent::Changed(update) if update.series_id == id => {
+                        last_for_id = Some("a value");
+                    }
+                    SeriesEvent::Removed { series_id, .. } if series_id == id => {
+                        assert_ne!(
+                            last_for_id,
+                            Some("a removal"),
+                            "round {round}: two removals"
+                        );
+                        last_for_id = Some("a removal");
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(last_for_id, Some("a removal"), "round {round}");
+        }
+        assert_eq!(
+            crossed, ROUNDS,
+            "the premise: publishes kept coming after the removal"
+        );
+    }
+
+    /// A series' version is 1 after its first value and rises by one with
+    /// each change, through a publish or an overwrite, with or without a
+    /// receiver; an unchanged value keeps it. A broadcast update carries the
+    /// version the snapshot then shows.
+    #[tokio::test]
+    async fn the_version_rises_by_one_with_each_change() {
+        let target = bind(16).await;
+        let mut receiver = target.subscribe();
+        let series = path("Gi0", "in-octets");
+        let version = || target.snapshot()[0].version;
+
+        let (id, _) = target
+            .publish(OWNER, None, &series, note_at(1.0, 1_000))
+            .expect("one owner");
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).version,
+            1
+        );
+        assert_eq!(version(), 1, "the first value");
+
+        target
+            .publish(OWNER, Some(id), &series, note_at(1.0, 2_000))
+            .expect("one owner");
+        assert_eq!(version(), 1, "an unchanged value keeps the version");
+
+        target
+            .publish(OWNER, Some(id), &series, note_at(2.0, 3_000))
+            .expect("one owner");
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).version,
+            2
+        );
+        assert_eq!(version(), 2, "a published change");
+
+        target
+            .overwrite(&series, note_at(3.0, 4_000))
+            .expect("a notification")
+            .expect("a served path");
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).version,
+            3
+        );
+        assert_eq!(version(), 3, "an overwritten change");
+
+        drop(receiver);
+        target
+            .publish(OWNER, Some(id), &series, note_at(4.0, 5_000))
+            .expect("one owner");
+        assert_eq!(version(), 4, "a change with no receiver");
+    }
+
+    /// The value a series is compared by lies inside its stored
+    /// notification: located, not copied.
+    #[tokio::test]
+    async fn the_value_is_a_slice_of_the_latest_notification() {
+        let target = bind(16).await;
+        let buf = note(7.0);
+        let (id, _) = target
+            .publish(OWNER, None, &path("Gi0", "in-octets"), buf.clone())
+            .expect("one owner");
+        let table = target.read();
+        let latest = lock(&table.slots[&id].latest);
+        let (bytes, value) = (latest.bytes.as_ptr_range(), latest.value().as_ptr_range());
+        assert!(
+            bytes.start <= value.start && value.end <= bytes.end && value.start < value.end,
+            "the value {value:?} is not inside the notification {bytes:?}"
+        );
+        let decoded = proto::TypedValue::decode(latest.value()).expect("a typed value");
+        assert_eq!(
+            decoded.value,
+            Some(proto::typed_value::Value::DoubleVal(7.0))
+        );
+    }
+
+    /// A series' kind is its first publish's; a later value of another kind
+    /// is stored without changing it.
+    #[tokio::test]
+    async fn the_kind_is_fixed_at_the_first_publish() {
+        let target = bind(16).await;
+        let mut receiver = target.subscribe();
+        let event = MetricEvent::new(
+            "in_octets".to_string(),
+            1.0,
+            Labels::from_pairs(&[("ifName", "Gi0")]).expect("valid labels"),
+        )
+        .expect("valid event");
+        let enumeration = GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())]));
+        let (as_string, as_uint) = (
+            encode(&event, enumeration),
+            encode(&event, GnmiValueType::Uint),
+        );
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, Bytes::from(as_string.clone()))
+            .expect("one owner");
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).kind,
+            ValueKind::String
+        );
+        let (_, done) = target
+            .publish(OWNER, Some(id), &series, Bytes::from(as_uint.clone()))
+            .expect("one owner");
+        assert!(done.changed, "another kind of value is another value");
+        assert_eq!(
+            as_change(receiver.try_recv().expect("broadcast")).kind,
+            ValueKind::String,
+            "broadcast with the first kind"
+        );
+        let snapshot = target.snapshot();
+        assert_eq!(snapshot[0].kind, ValueKind::String);
+        assert_eq!(snapshot[0].latest, as_uint.as_slice());
+
+        let (_, _) = target
+            .publish(
+                OWNER,
+                None,
+                &path("Gi1", "in-octets"),
+                Bytes::from(as_uint.clone()),
+            )
+            .expect("one owner");
+        let kinds: Vec<ValueKind> = {
+            let mut snapshot = target.snapshot();
+            snapshot.sort_by_key(|s| s.series_id);
+            snapshot.into_iter().map(|s| s.kind).collect()
+        };
+        assert_eq!(kinds, [ValueKind::String, ValueKind::Uint]);
+    }
+
+    /// Bytes without a locatable value are refused on every publish, a
+    /// series' first or a later one, and by an overwrite, and leave the
+    /// stored value as it was.
+    #[tokio::test]
+    async fn a_notification_without_a_value_is_refused_on_every_publish() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let no_value = proto::Notification {
+            timestamp: 1,
+            update: vec![proto::Update {
+                path: Some(series.path().clone()),
+                val: None,
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let refused = |err: SondaError| {
+            assert!(matches!(err, SondaError::Sink(_)), "got {err:?}");
+            assert!(
+                err.to_string().contains("not a gnmi notification"),
+                "got {err}"
+            );
+        };
+        refused(
+            target
+                .publish(OWNER, None, &series, Bytes::from(no_value.clone()))
+                .expect_err("a first publish without a value"),
+        );
+        assert_eq!(target.series_count(), 0, "nothing was stored");
+
+        let value = note(1.0);
+        let (id, _) = target
+            .publish(OWNER, None, &series, value.clone())
+            .expect("one owner");
+        for bytes in [no_value.as_slice(), b"bytes"] {
+            refused(
+                target
+                    .publish(OWNER, Some(id), &series, Bytes::copy_from_slice(bytes))
+                    .expect_err("a later publish without a value"),
+            );
+            refused(
+                target
+                    .overwrite(&series, Bytes::copy_from_slice(bytes))
+                    .expect_err("an overwrite without a value"),
+            );
+        }
+        assert_eq!(target.snapshot()[0].latest, value, "the value is kept");
     }
 
     /// A client that connects and never speaks does not hold the port or
@@ -1150,17 +1815,18 @@ mod tests {
     #[tokio::test]
     async fn ids_after_a_wrap_skip_live_series() {
         let target = bind(16).await;
+        let (a, b, c) = (note(1.0), note(2.0), note(3.0));
         let (first, _) = target
-            .publish(OWNER, None, &path("Gi0", "in-octets"), b"a")
+            .publish(OWNER, None, &path("Gi0", "in-octets"), a.clone())
             .expect("one owner");
         assert_eq!(first, 0);
         target.write().next_id = SeriesId::MAX;
         let (last, _) = target
-            .publish(OWNER, None, &path("Gi1", "in-octets"), b"b")
+            .publish(OWNER, None, &path("Gi1", "in-octets"), b.clone())
             .expect("one owner");
         assert_eq!(last, SeriesId::MAX);
         let (wrapped, _) = target
-            .publish(OWNER, None, &path("Gi2", "in-octets"), b"c")
+            .publish(OWNER, None, &path("Gi2", "in-octets"), c.clone())
             .expect("one owner");
         assert_ne!(wrapped, first, "id 0 is still in use");
         assert_eq!(wrapped, 1);
@@ -1170,14 +1836,7 @@ mod tests {
             snapshot.sort_by_key(|s| s.series_id);
             snapshot.into_iter().map(|s| s.latest).collect()
         };
-        assert_eq!(
-            latest,
-            [
-                Bytes::from_static(b"a"),
-                Bytes::from_static(b"c"),
-                Bytes::from_static(b"b")
-            ]
-        );
+        assert_eq!(latest, [a, c, b]);
     }
 
     /// Accepted connections have `TCP_NODELAY` set and keep vectored writes.
@@ -1229,12 +1888,21 @@ mod tests {
         let target = bind(16).await;
         let served = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &served, b"scenario")
+            .publish(OWNER, None, &served, note(1.0))
             .expect("one owner");
 
-        assert_eq!(target.overwrite(&served, b"posted"), Some(id));
-        assert_eq!(target.snapshot()[0].latest, Bytes::from_static(b"posted"));
-        assert_eq!(target.overwrite(&path("Gi9", "in-octets"), b"posted"), None);
+        let posted = note(2.0);
+        assert_eq!(
+            target.overwrite(&served, posted.clone()).expect("a value"),
+            Some(id)
+        );
+        assert_eq!(target.snapshot()[0].latest, posted);
+        assert_eq!(
+            target
+                .overwrite(&path("Gi9", "in-octets"), posted.clone())
+                .expect("a value"),
+            None
+        );
         assert_eq!(target.series_count(), 1, "an unknown path is not added");
 
         target.release(OWNER, [id]);
@@ -1258,27 +1926,33 @@ mod tests {
         let target = rt.block_on(bind(1 << 16));
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, b"seed")
+            .publish(OWNER, None, &series, note(-1.0))
             .expect("one owner");
+        // Every value is distinct, so every publish is a change.
+        let values: Vec<Bytes> = (0..ROUNDS * WRITERS).map(|i| note(i as f64)).collect();
         let barrier = Barrier::new(WRITERS);
         let (checked, mismatches) = (AtomicUsize::new(0), AtomicUsize::new(0));
         std::thread::scope(|scope| {
             for writer in 0..WRITERS {
-                let (target, series, barrier) = (&target, &series, &barrier);
+                let (target, series, barrier, values) = (&target, &series, &barrier, &values);
                 let (checked, mismatches) = (&checked, &mismatches);
                 scope.spawn(move || {
                     let mut receiver = (writer == 0).then(|| target.subscribe());
                     for round in 0..ROUNDS {
                         barrier.wait();
-                        let value = format!("{round}-{writer}");
                         target
-                            .publish(OWNER, Some(id), series, value.as_bytes())
+                            .publish(
+                                OWNER,
+                                Some(id),
+                                series,
+                                values[round * WRITERS + writer].clone(),
+                            )
                             .expect("one owner");
                         barrier.wait();
                         if let Some(receiver) = receiver.as_mut() {
                             let mut last = None;
-                            while let Ok(update) = receiver.try_recv() {
-                                last = Some(update.bytes);
+                            while let Ok(event) = receiver.try_recv() {
+                                last = Some(as_change(event).bytes);
                             }
                             if last != Some(target.snapshot()[0].latest.clone()) {
                                 mismatches.fetch_add(1, Ordering::Relaxed);
@@ -1318,31 +1992,33 @@ mod tests {
         let target = rt.block_on(bind(16));
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, b"seed")
+            .publish(OWNER, None, &series, note(-1.0))
             .expect("one owner");
+        // Every value is distinct, so every publish is a change.
+        let values: Vec<Bytes> = (0..ROUNDS).map(|i| note(i as f64)).collect();
         let barrier = Barrier::new(2);
         let missed = AtomicUsize::new(0);
         std::thread::scope(|scope| {
-            let (target, series, barrier) = (&target, &series, &barrier);
+            let (target, series, barrier, values) = (&target, &series, &barrier, &values);
             scope.spawn(move || {
-                for round in 0..ROUNDS {
+                for value in values {
                     barrier.wait();
                     target
-                        .publish(OWNER, Some(id), series, round.to_string().as_bytes())
+                        .publish(OWNER, Some(id), series, value.clone())
                         .expect("one owner");
                     barrier.wait();
                     barrier.wait();
                 }
             });
-            for round in 0..ROUNDS {
+            for published in values {
                 barrier.wait();
                 let mut receiver = target.subscribe();
                 let mut seen = target.snapshot()[0].latest.clone();
                 barrier.wait();
-                while let Ok(update) = receiver.try_recv() {
-                    seen = update.bytes;
+                while let Ok(event) = receiver.try_recv() {
+                    seen = as_change(event).bytes;
                 }
-                if seen != round.to_string().as_bytes() {
+                if seen != *published {
                     missed.fetch_add(1, Ordering::Relaxed);
                 }
                 drop(receiver);
@@ -1395,5 +2071,353 @@ mod tests {
         assert!(logs_contain("gnmi_target listening on an ephemeral port"));
         assert!(logs_contain(&addr));
         assert!(logs_contain("WARN"));
+    }
+
+    /// A target serving TLS from `tls`, on an ephemeral port.
+    async fn bind_tls(tls: crate::sink::gnmi::GnmiTlsConfig) -> Arc<GnmiTarget> {
+        let cfg = GnmiTargetConfig {
+            tls: Some(tls),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        };
+        GnmiTarget::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("bind an ephemeral port")
+    }
+
+    /// Connect to `addr` and subscribe ONCE; the error of whichever step
+    /// failed, as text. Fails the test when neither finishes within 5 s.
+    async fn attempt(
+        connect: impl Future<Output = Result<tonic::transport::Channel, tonic::transport::Error>>,
+    ) -> Result<bool, String> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let channel = connect.await.map_err(|e| error_chain(&e))?;
+            crate::sink::gnmi::test_tls::once_syncs(channel)
+                .await
+                .map_err(|s| s.to_string())
+        })
+        .await
+        .expect("the attempt ends with an answer, not a timeout")
+    }
+
+    #[tokio::test]
+    async fn a_tls_client_trusting_the_ca_receives_the_sync() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.tls()).await;
+        let synced = attempt(files.channel(target.local_addr(), false)).await;
+        assert_eq!(synced, Ok(true));
+    }
+
+    #[tokio::test]
+    async fn a_plaintext_client_is_refused_by_a_tls_target() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.tls()).await;
+        let addr = target.local_addr();
+        assert_eq!(
+            attempt(files.channel(addr, false)).await,
+            Ok(true),
+            "the premise: the target serves a TLS client"
+        );
+
+        let plaintext =
+            tonic::transport::Endpoint::from_shared(format!("http://{addr}")).expect("a valid uri");
+        let refused = attempt(plaintext.connect()).await;
+        assert!(
+            refused.is_err(),
+            "a plaintext client is served: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_client_ca_only_a_client_with_a_signed_certificate_is_served() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.mutual_tls()).await;
+        let addr = target.local_addr();
+
+        let refused = attempt(files.channel(addr, false)).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("CertificateRequired")),
+            "a client without a certificate is refused at the handshake: {refused:?}"
+        );
+        assert_eq!(attempt(files.channel(addr, true)).await, Ok(true));
+    }
+
+    #[tokio::test]
+    async fn without_client_ca_a_client_without_a_certificate_is_served() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let target = bind_tls(files.tls()).await;
+        assert_eq!(
+            attempt(files.channel(target.local_addr(), false)).await,
+            Ok(true)
+        );
+    }
+
+    /// A client that opens a TCP connection to a TLS target and sends
+    /// nothing is closed once the handshake timeout has passed.
+    #[tokio::test]
+    async fn a_connection_that_never_starts_its_handshake_is_closed_at_the_timeout() {
+        use tokio::io::AsyncReadExt;
+        const TIMEOUT: Duration = Duration::from_millis(200);
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let mut settings = GnmiTargetConfig {
+            tls: Some(files.tls()),
+            ..GnmiTargetConfig::new("127.0.0.1:0")
+        }
+        .settings()
+        .expect("valid settings");
+        settings.tls_handshake_timeout = TIMEOUT;
+        let target = GnmiTarget::bind(settings)
+            .await
+            .expect("bind an ephemeral port");
+
+        let mut socket = TcpStream::connect(target.local_addr())
+            .await
+            .expect("connect");
+        let connected = tokio::time::Instant::now();
+        let mut byte = [0u8; 1];
+        let early = tokio::time::timeout(TIMEOUT / 2, socket.read(&mut byte)).await;
+        assert!(
+            early.is_err(),
+            "the premise: the target holds the connection while the timeout runs: {early:?}"
+        );
+        let closed = tokio::time::timeout_at(connected + 2 * TIMEOUT, socket.read(&mut byte)).await;
+        assert!(
+            matches!(closed, Ok(Ok(0) | Err(_))),
+            "the connection is open {:?} after it was made: {closed:?}",
+            connected.elapsed()
+        );
+    }
+
+    /// TLS files that make no server configuration fail the bind with an
+    /// error naming the listen address.
+    #[tokio::test]
+    async fn a_tls_error_at_bind_names_the_address() {
+        let files = crate::sink::gnmi::test_tls::TlsFiles::new();
+        let mut settings = GnmiTargetConfig::new("127.0.0.1:0")
+            .settings()
+            .expect("valid settings");
+        settings.tls = Some(crate::sink::gnmi::TlsIdentity {
+            paths: files.tls(),
+            cert: b"not a certificate".to_vec(),
+            key: b"not a key".to_vec(),
+            client_ca: None,
+        });
+        let error = match GnmiTarget::bind(settings).await {
+            Ok(_) => panic!("TLS without a certificate binds"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, SondaError::Sink(_)), "got {error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot serve TLS on 127.0.0.1:0"),
+            "got {error}"
+        );
+    }
+
+    /// The `json_ietf_val` text of `value`, one encoded `TypedValue`.
+    fn json_ietf_text(value: &[u8]) -> String {
+        match proto::TypedValue::decode(value)
+            .expect("a typed value")
+            .value
+        {
+            Some(proto::typed_value::Value::JsonIetfVal(text)) => {
+                String::from_utf8(text).expect("UTF-8 text")
+            }
+            other => panic!("not a json_ietf_val: {other:?}"),
+        }
+    }
+
+    /// How many JSON_IETF values `target` has made.
+    fn json_ietf_values(target: &GnmiTarget) -> usize {
+        target
+            .settings
+            .probe
+            .json_ietf_values
+            .load(Ordering::Relaxed)
+    }
+
+    /// The only series' version and latest notification.
+    fn only_series(target: &GnmiTarget) -> (SeriesId, u64, Bytes) {
+        let mut snapshot = target.snapshot();
+        assert_eq!(snapshot.len(), 1, "the premise: one series");
+        let series = snapshot.remove(0);
+        (series.series_id, series.version, series.latest)
+    }
+
+    /// Sixteen callers asking at once for a series' JSON_IETF value make it
+    /// once and all hold the same buffer. A publish that does not change the
+    /// value keeps it; after a change the next caller makes the new one.
+    #[tokio::test]
+    async fn a_json_ietf_value_is_made_once_per_change() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, note_at(1.5, 1_000))
+            .expect("one owner");
+        let (_, version, latest) = only_series(&target);
+
+        let barrier = std::sync::Barrier::new(16);
+        let values: Vec<Bytes> = std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        target.json_ietf_value(id, version, &latest)
+                    })
+                })
+                .collect();
+            callers
+                .into_iter()
+                .map(|caller| caller.join().expect("caller").expect("a value"))
+                .collect()
+        });
+        assert_eq!(values.len(), 16);
+        assert_eq!(
+            json_ietf_values(&target),
+            1,
+            "made once for sixteen callers"
+        );
+        assert!(
+            values.iter().all(|v| v.as_ptr() == values[0].as_ptr()),
+            "every caller holds the same buffer"
+        );
+        assert_eq!(json_ietf_text(&values[0]), "1.5");
+
+        target
+            .publish(OWNER, Some(id), &series, note_at(1.5, 2_000))
+            .expect("one owner");
+        let (_, unchanged, republished) = only_series(&target);
+        assert_eq!(unchanged, version, "the premise: the value did not change");
+        assert_ne!(republished, latest, "the premise: the notification did");
+        let kept = target
+            .json_ietf_value(id, unchanged, &republished)
+            .expect("a value");
+        assert_eq!(
+            kept.as_ptr(),
+            values[0].as_ptr(),
+            "kept through the publish"
+        );
+        assert_eq!(json_ietf_values(&target), 1);
+
+        target
+            .publish(OWNER, Some(id), &series, note_at(2.5, 3_000))
+            .expect("one owner");
+        let (_, changed, newest) = only_series(&target);
+        assert_eq!(changed, version + 1, "the premise: a change");
+        let remade = target
+            .json_ietf_value(id, changed, &newest)
+            .expect("a value");
+        assert_eq!(json_ietf_values(&target), 2, "made again after the change");
+        assert_ne!(remade.as_ptr(), values[0].as_ptr());
+        assert_eq!(json_ietf_text(&remade), "2.5");
+    }
+
+    /// Publishing never makes a series' JSON_IETF value: with a receiver
+    /// subscribed, through changed and unchanged values, the slot holds none
+    /// until [`GnmiTarget::json_ietf_value`] asks for it.
+    #[tokio::test]
+    async fn a_publish_leaves_the_json_ietf_value_unmade() {
+        let target = bind(16).await;
+        let mut rx = target.subscribe();
+        let series = path("Gi0", "in-octets");
+        let json = |id| {
+            let table = target.read();
+            let slot = table.slots.get(&id).expect("the series is served");
+            let made = lock(&slot.latest).json.is_some();
+            made
+        };
+        let (id, published) = target
+            .publish(OWNER, None, &series, note_at(1.5, 1_000))
+            .expect("one owner");
+        assert!(published.receivers, "the premise: a receiver is subscribed");
+        assert!(!json(id));
+        for (value, nanos) in [(1.5, 2_000), (2.5, 3_000), (2.5, 4_000)] {
+            target
+                .publish(OWNER, Some(id), &series, note_at(value, nanos))
+                .expect("one owner");
+            assert!(!json(id), "after publishing {value} at {nanos}");
+        }
+        assert_eq!(json_ietf_values(&target), 0);
+        assert!(rx.try_recv().is_ok(), "the premise: changes were broadcast");
+
+        let (_, version, latest) = only_series(&target);
+        target
+            .json_ietf_value(id, version, &latest)
+            .expect("a value");
+        assert!(json(id), "made when asked for");
+    }
+
+    /// A caller holding a version the series has moved past gets that
+    /// version's value, made from the notification it holds and not kept.
+    /// An unknown id has none, and nothing is made for it.
+    #[tokio::test]
+    async fn a_json_ietf_value_of_a_past_version_is_made_from_the_callers_notification() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let first = note_at(1.5, 1_000);
+        let (id, _) = target
+            .publish(OWNER, None, &series, first.clone())
+            .expect("one owner");
+        target
+            .publish(OWNER, Some(id), &series, note_at(2.5, 2_000))
+            .expect("one owner");
+        let (_, version, latest) = only_series(&target);
+        assert_eq!(version, 2, "the premise: the series moved past version 1");
+
+        let past = target.json_ietf_value(id, 1, &first).expect("a value");
+        assert_eq!(json_ietf_text(&past), "1.5", "the value the caller holds");
+        let current = target
+            .json_ietf_value(id, version, &latest)
+            .expect("a value");
+        assert_eq!(
+            json_ietf_text(&current),
+            "2.5",
+            "the past value was not kept"
+        );
+        assert_eq!(json_ietf_values(&target), 2);
+
+        assert_eq!(target.json_ietf_value(id.wrapping_add(1), 1, &first), None);
+        assert_eq!(target.json_ietf_of(id.wrapping_add(1), 1, &first), None);
+        assert_eq!(
+            json_ietf_values(&target),
+            2,
+            "nothing made for an unknown id"
+        );
+    }
+
+    /// `json_ietf_of` is the caller's notification with the JSON_IETF value
+    /// in it: through a publish that does not change the value, the value is
+    /// made once and each notification keeps its own timestamp.
+    #[tokio::test]
+    async fn json_ietf_of_carries_the_callers_timestamp() {
+        let target = bind(16).await;
+        let series = path("Gi0", "in-octets");
+        let (id, _) = target
+            .publish(OWNER, None, &series, note_at(1.5, 1_000))
+            .expect("one owner");
+        let (_, version, first) = only_series(&target);
+        let at_first = target
+            .json_ietf_of(id, version, &first)
+            .expect("a notification");
+        target
+            .publish(OWNER, Some(id), &series, note_at(1.5, 2_000))
+            .expect("one owner");
+        let (_, unchanged, second) = only_series(&target);
+        assert_eq!(unchanged, version, "the premise: the value did not change");
+        let at_second = target
+            .json_ietf_of(id, unchanged, &second)
+            .expect("a notification");
+        assert_eq!(json_ietf_values(&target), 1, "the value was made once");
+
+        let json = Some(proto::TypedValue {
+            value: Some(proto::typed_value::Value::JsonIetfVal(b"1.5".to_vec())),
+        });
+        for (bytes, timestamp) in [(&at_first, 1_000), (&at_second, 2_000)] {
+            let notification = proto::Notification::decode(bytes.as_ref()).expect("decodes");
+            assert_eq!(notification.timestamp, timestamp);
+            assert_eq!(notification.update[0].val, json);
+        }
     }
 }
