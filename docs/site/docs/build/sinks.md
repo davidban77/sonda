@@ -498,7 +498,9 @@ The listener serves gRPC, over TLS when `tls` is set:
 | Request | What the target does |
 |---------|----------------------|
 | `Capabilities` | Answers gNMI version `0.10.0` and the encodings `PROTO` and `JSON_IETF`. |
+| `Get` | Answers with the latest value of every series a requested path matches, one notification per series, each series once, in the request's encoding. `ALL`, `STATE` and `OPERATIONAL` data are served alike; `CONFIG` gets an empty response, since the target holds no configuration. A request some of whose paths match nothing gets what the others matched; one none of whose paths matches a series is refused with `NOT_FOUND`, naming the first path. A request with no paths, or with a data type gNMI does not define, is refused with `INVALID_ARGUMENT`. |
 | `Subscribe`, ONCE | Sends the latest value of every matching series and `sync_response`, then ends the stream. |
+| `Subscribe`, POLL | Sends the latest value of every matching series and `sync_response`, then the same again for each `poll` the client sends: every matching series, changed or not, then `sync_response`. Nothing is sent between polls, deletes included. A poll is answered once the previous answer has been sent. `updates_only` skips the initial values only. When the client closes its side of the stream, the target answers the polls already sent, then ends the stream. |
 | `Subscribe`, STREAM | Sends the latest value of every matching series, then `sync_response`, once for the whole request even when it mixes modes. After that each subscription is served by its mode. |
 | SAMPLE | Resends every matching series each sample interval. Each distinct interval in the request runs on its own schedule. |
 | SAMPLE, `suppress_redundant: true` | At each sample interval, sends a matching series only when its value changed since the subscription last sent it. The initial values count as sent; a series first seen at a sample is sent. Ignored on the other modes. |
@@ -506,12 +508,11 @@ The listener serves gRPC, over TLS when `tls` is set:
 | TARGET_DEFINED | Decides per series from the kind of value its first publish carried. A series with a string value (the encoder's `string` and `enum` values) is served as ON_CHANGE, any other as SAMPLE at the subscription's sample interval. |
 | `heartbeat_interval` | On ON_CHANGE, on TARGET_DEFINED's string series, and on SAMPLE with `suppress_redundant`, resends the latest value of every matching series at this interval, changed or not. `0` sends none. Not read for SAMPLE without `suppress_redundant`, where every sample already sends every series. |
 | `updates_only: true` | Skips the initial values; the first message is `sync_response`. |
-| POLL | Refused with `UNIMPLEMENTED`, naming the mode. |
 | Encoding `PROTO` or `JSON` | Served in `PROTO`. `JSON` is also what a request that sets no encoding carries. |
 | Encoding `JSON_IETF` | Served in `JSON_IETF`: every value is a `json_ietf_val`. See [Encodings](#gnmi-encodings). |
 | Encoding `BYTES` or `ASCII` | Refused with `UNIMPLEMENTED`, naming the encoding, `PROTO` and `JSON_IETF`. |
 
-A series leaves the target when the last scenario publishing it stops (scenarios of one scenario file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose `delete` names the path, split into `prefix` and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with `suppress_redundant` matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE never receives one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.
+A series leaves the target when the last scenario publishing it stops (scenarios of one scenario file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose `delete` names the path, split into `prefix` and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with `suppress_redundant` matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE and POLL never receive one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.
 
 A change is a new value: the update's encoded `TypedValue` differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than `subscriber_buffer` changes behind is resynced with the latest value of every series it matches, without a second `sync_response`. A change the initial values, a resync or a heartbeat already sent is not sent again.
 
@@ -520,7 +521,7 @@ A series matches when its path starts with a subscription's path, joined to the 
 A subscription ends with `UNAVAILABLE` when:
 
 - **The run stops.** The status follows the updates already queued, and the listener closes.
-- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions has the 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
+- **The client stalls.** The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions, and a ONCE or POLL request, has the 10 seconds. The time counts only while responses wait, so a POLL client that sends no poll does not stall. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.
 
 The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.
 
@@ -608,13 +609,17 @@ docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up 
 sonda run examples/gnmi-telegraf.yaml
 ```
 
-Without Telegraf, gnmic reads the same target directly, once or as each oper-status changes:
+Without Telegraf, gnmic reads the same target directly: once, as each oper-status changes, with a `Get`, or each time you poll:
 
 ```bash
 gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode once
 gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces/interface/state/oper-status \
   --stream-mode on-change
+gnmic -a 127.0.0.1:57400 --insecure get --path /interfaces/interface/state/oper-status
+gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode poll
 ```
+
+In poll mode gnmic prints the initial values, then prompts for the target and subscription to poll; each choice sends one `poll`.
 
 ### Encodings { #gnmi-encodings }
 
@@ -666,7 +671,7 @@ sink:
 
 - **TLS.** Every connection to the `listen` address is TLS, and a plaintext client is refused at the handshake. A connection that has not finished its handshake 10 seconds after it was accepted is closed. The files are read when the scenario is validated, so `--dry-run` reports a file that cannot be read, or holds no PEM certificate or private key, naming the field and the file. A key that is not `cert`'s is reported the same way. Relative paths resolve against the directory Sonda runs in.
 - **Credentials need TLS.** A sink with `credentials` and no `tls` is refused, because the password would cross the wire in clear.
-- **Every RPC is checked.** `Capabilities` and `Subscribe` alike must carry the gRPC metadata `username` and `password`, equal to the configured pair. A request without them, or with another pair, is refused with `UNAUTHENTICATED` and the message `credentials required`. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.
+- **Every RPC is checked.** `Capabilities`, `Get` and `Subscribe` alike must carry the gRPC metadata `username` and `password`, equal to the configured pair. A request without them, or with another pair, is refused with `UNAUTHENTICATED` and the message `credentials required`. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.
 - **One address, one identity.** Every entry on one address names the same `tls` files and the same `credentials`; a different set is refused, naming the files and usernames that differ but no password.
 
 gnmic trusts the target's CA with `--tls-ca` and sends the pair with `-u` and `-p`:
