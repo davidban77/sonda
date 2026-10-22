@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
@@ -633,14 +634,46 @@ pub struct GnmiTargetSink {
     owner: Owner,
     /// Each series key's entry in `published`.
     owned: HashMap<MetricKey, usize>,
-    /// Every path this sink has published, once each, with its series id.
-    /// Series keys rendering one path share its entry, so an id that changes
-    /// changes for all of them.
-    published: Vec<(SeriesId, PathKey)>,
+    /// Every path this sink has published, once each. Series keys rendering
+    /// one path share its entry, so an id that changes changes for all of
+    /// them.
+    published: Vec<Publication>,
     /// Each path's entry in `published`, looked up on a key's first event.
     paths: HashMap<PathKey, usize>,
     last_delivered: bool,
     joined: bool,
+}
+
+/// A path this sink has published: the series id the target gave it, the
+/// table's key for it, and the buffers its notifications are copied into.
+struct Publication {
+    id: SeriesId,
+    path: PathKey,
+    buffers: PublishBuffers,
+}
+
+/// Two buffers used in turn: each notification of a path is copied into the
+/// buffer used two notifications earlier and frozen into the `Bytes` the
+/// target stores. The table has dropped the `Bytes` it stored before the
+/// latest one, so the copy reuses that buffer's allocation unless a
+/// subscriber still holds it, and allocates once then.
+#[derive(Default)]
+struct PublishBuffers {
+    buffers: [BytesMut; 2],
+    next: usize,
+}
+
+impl PublishBuffers {
+    /// `encoded`, copied into the next buffer and frozen.
+    fn frozen(&mut self, encoded: &[u8]) -> Bytes {
+        let buffer = &mut self.buffers[self.next];
+        self.next ^= 1;
+        // Rewinds to the start of the allocation when nothing else holds it;
+        // otherwise the copy below allocates.
+        let _ = buffer.try_reclaim(encoded.len());
+        buffer.extend_from_slice(encoded);
+        buffer.split().freeze()
+    }
 }
 
 impl GnmiTargetSink {
@@ -746,7 +779,11 @@ impl Sink for GnmiTargetSink {
         self.target.check_serving()?;
         if self.joined {
             let path = PathKey::decode(encoded)?;
-            if self.target.overwrite(&path, encoded)?.is_none() {
+            if self
+                .target
+                .overwrite(&path, Bytes::copy_from_slice(encoded))?
+                .is_none()
+            {
                 return Err(SondaError::Config(ConfigError::invalid(format!(
                     "no running scenario serves the gnmi path `{}` on {}",
                     path.path(),
@@ -768,12 +805,18 @@ impl Sink for GnmiTargetSink {
                         entry
                     }
                     None => {
+                        let mut buffers = PublishBuffers::default();
+                        let encoded = buffers.frozen(encoded);
                         let (id, _) = self.target.publish(self.owner, None, &path, encoded)?;
                         // Cache the table's own key, which a sibling may have
                         // made, so later publishes match it by pointer.
                         let path = self.target.path_of(id).unwrap_or(path);
                         let entry = self.published.len();
-                        self.published.push((id, path.clone()));
+                        self.published.push(Publication {
+                            id,
+                            path: path.clone(),
+                            buffers,
+                        });
                         self.paths.insert(path, entry);
                         self.owned.insert(key, entry);
                         self.last_delivered = true;
@@ -782,9 +825,12 @@ impl Sink for GnmiTargetSink {
                 }
             }
         };
-        let (id, path) = &mut self.published[entry];
-        let (published, _) = self.target.publish(self.owner, Some(*id), path, encoded)?;
-        *id = published;
+        let publication = &mut self.published[entry];
+        let encoded = publication.buffers.frozen(encoded);
+        let (id, _) =
+            self.target
+                .publish(self.owner, Some(publication.id), &publication.path, encoded)?;
+        publication.id = id;
         self.last_delivered = true;
         Ok(())
     }
@@ -795,7 +841,7 @@ impl Drop for GnmiTargetSink {
     fn drop(&mut self) {
         if !self.published.is_empty() {
             self.target
-                .release(self.owner, self.published.iter().map(|(id, _)| *id));
+                .release(self.owner, self.published.iter().map(|p| p.id));
         }
     }
 }
@@ -1243,7 +1289,10 @@ mod tests {
         publish(&mut first, "up").await;
         publish(&mut second, "up").await;
         assert_eq!(target.series_count(), 1, "one launch, one shared series");
-        let cached = |sink: &GnmiTargetSink| sink.published.first().cloned().expect("cached");
+        let cached = |sink: &GnmiTargetSink| {
+            let publication = sink.published.first().expect("cached");
+            (publication.id, publication.path.clone())
+        };
         let ((id, first_key), (_, second_key)) = (cached(&first), cached(&second));
         let held = target.path_of(id).expect("the series is served");
         assert!(

@@ -1,5 +1,5 @@
 //! Allocation surcharge of the `gnmi_target` sink over a plain sink, through
-//! the real runner.
+//! the real runner, and over 10 000 writes made directly.
 //!
 //! Lives in its own integration test rather than a `#[cfg(test)] mod tests`
 //! because `#[global_allocator]` replaces the allocator for the whole test
@@ -44,7 +44,7 @@ use sonda_core::encoder::gnmi::proto::{
 use sonda_core::encoder::gnmi::{GnmiEncoder, GnmiEncoderConfig};
 use sonda_core::encoder::{Encoder, EncoderConfig};
 use sonda_core::generator::GeneratorConfig;
-use sonda_core::model::metric::{Labels, MetricEvent};
+use sonda_core::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use sonda_core::schedule::stats::ScenarioStats;
 use sonda_core::sink::gnmi::{GnmiTarget, GnmiTargetConfig, GnmiTargetSink};
 use sonda_core::sink::{Sink, SinkConfig};
@@ -216,11 +216,11 @@ fn allocations_on_other_threads_are_not_counted() {
     assert_eq!(allocs, 0, "another thread's allocations were counted");
 }
 
-/// The `gnmi_target` sink costs less than 1.5 allocations per event more
-/// than a plain sink, with no subscriber connected. Publishing copies the
-/// encoded notification once.
+/// Through the runner, the `gnmi_target` sink costs less than half an
+/// allocation per event more than a plain sink, with no subscriber
+/// connected: each notification is copied into a buffer the sink reuses.
 #[test]
-fn gnmi_target_surcharge_over_a_plain_sink_is_under_one_and_a_half() {
+fn gnmi_target_surcharge_over_a_plain_sink_is_under_one_half() {
     let rt = current_thread_runtime();
 
     let delivered = Arc::new(AtomicUsize::new(0));
@@ -251,13 +251,173 @@ fn gnmi_target_surcharge_over_a_plain_sink_is_under_one_and_a_half() {
          surcharge {surcharge:.3}"
     );
     assert!(
-        surcharge < 1.5,
+        surcharge < 0.5,
         "the gnmi_target sink is over budget: {target_cost:.3} allocations per \
          event against {plain_cost:.3} for a plain sink, a surcharge of \
-         {surcharge:.3} (allowed < 1.5)"
+         {surcharge:.3} (allowed < 0.5)"
     );
     drop(sink);
     drop(target);
+}
+
+/// Publishes [`publish_cost`] counts, after its warm-up.
+const PUBLISHES: usize = 10_000;
+
+/// The allocations per event of writing `events` in turn, `PUBLISHES` times
+/// in all, after a warm-up of two writes per event: through
+/// [`Sink::write_metric_event`] when the sink takes metric events, else
+/// through [`Sink::write`], as the runner calls them. Each event is encoded
+/// into one reused buffer before its write.
+fn publish_cost(
+    rt: &tokio::runtime::Runtime,
+    sink: &mut Box<dyn Sink>,
+    events: &[MetricEvent],
+) -> f64 {
+    let encoder = GnmiEncoder::new(&GnmiEncoderConfig {
+        path: Some("/sites/site[name={site}]/{name}".to_string()),
+        ..GnmiEncoderConfig::default()
+    })
+    .expect("a valid encoder");
+    let mut buf = Vec::with_capacity(4096);
+    let mut write = |sink: &mut Box<dyn Sink>, event: &MetricEvent| {
+        buf.clear();
+        encoder.encode_metric(event, &mut buf).expect("encodes");
+        rt.block_on(async {
+            if sink.wants_metric_events() {
+                sink.write_metric_event(event, &buf).await
+            } else {
+                sink.write(&buf).await
+            }
+        })
+        .expect("the write succeeds");
+    };
+    for event in events.iter().chain(events) {
+        write(sink, event);
+    }
+    let mut written = 0usize;
+    let ((), allocs) = count_allocations(|| {
+        for event in events.iter().cycle().take(PUBLISHES) {
+            write(sink, event);
+            written += 1;
+        }
+    });
+    // Vacuity guard: every counted write ran.
+    assert_eq!(written, PUBLISHES);
+    allocs as f64 / written as f64
+}
+
+/// `series` events on distinct sites, built before any counted window.
+fn site_events(series: usize) -> Vec<MetricEvent> {
+    (0..series)
+        .map(|i| {
+            let site = format!("site-{i}");
+            MetricEvent::from_parts(
+                ValidatedMetricName::new("alloc_probe").expect("a valid name"),
+                1.0,
+                Arc::new(
+                    Labels::from_pairs(&[("device", "leaf-1"), ("site", &site)])
+                        .expect("valid labels"),
+                ),
+                std::time::SystemTime::now(),
+            )
+        })
+        .collect()
+}
+
+/// Over 10 000 publishes after a warm-up of two per series, with nobody
+/// subscribed, the `gnmi_target` sink allocates per event what a plain sink
+/// does: each path's notification is copied into one of two buffers the
+/// sink keeps for that path, whose last `Bytes` the table has dropped. That
+/// holds for a sink publishing one series and for one publishing two in
+/// turn.
+#[rstest::rstest]
+#[case::one_series(1)]
+#[case::two_series(2)]
+fn with_nobody_subscribed_the_gnmi_target_surcharge_is_zero(#[case] series: usize) {
+    let rt = current_thread_runtime();
+    let events = site_events(series);
+
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let mut plain: Box<dyn Sink> = Box::new(PlainSink {
+        delivered: Arc::clone(&delivered),
+    });
+    let plain_cost = publish_cost(&rt, &mut plain, &events);
+    assert!(delivered.load(Ordering::Relaxed) >= PUBLISHES);
+
+    let target_sink = rt
+        .block_on(GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0")))
+        .expect("bind an ephemeral port");
+    let target: Arc<GnmiTarget> = Arc::clone(target_sink.target());
+    let mut sink: Box<dyn Sink> = Box::new(target_sink);
+    let target_cost = publish_cost(&rt, &mut sink, &events);
+
+    // Vacuity guards: every event reached the target as its own series,
+    // and nobody was subscribed.
+    assert_eq!(target.series_count(), series);
+    assert_eq!(target.subscriber_count(), 0);
+
+    let surcharge = target_cost - plain_cost;
+    println!(
+        "allocations per publish, {series} series, nobody subscribed: plain {plain_cost:.3}, \
+         gnmi_target {target_cost:.3}, surcharge {surcharge:.3}"
+    );
+    assert!(
+        surcharge < 0.01,
+        "with nobody subscribed the gnmi_target sink allocates {surcharge:.3} per publish \
+         more than a plain sink (allowed < 0.01)"
+    );
+    drop(sink);
+}
+
+/// With a value that changes on every event and one ON_CHANGE subscriber
+/// reading every change, in PROTO or in JSON_IETF, the `gnmi_target` sink
+/// costs less than 1.5 allocations per event more than a plain sink. A
+/// publish allocates only when the subscriber still holds the `Bytes` last
+/// frozen from the buffer it reuses, so the figure depends on how fast the
+/// subscriber drains and is reported.
+#[rstest::rstest]
+#[case::proto(Encoding::Proto)]
+#[case::json_ietf(Encoding::JsonIetf)]
+fn a_draining_subscriber_costs_the_publisher_under_one_and_a_half(#[case] encoding: Encoding) {
+    let rt = current_thread_runtime();
+    let other = other_threads_runtime();
+    let config = scenario_of(GeneratorConfig::Step {
+        start: None,
+        step_size: 1.0,
+        max: None,
+    });
+
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let mut plain: Box<dyn Sink> = Box::new(PlainSink {
+        delivered: Arc::clone(&delivered),
+    });
+    let (plain_cost, _) = allocations_per_event_of(&rt, &mut plain, &config);
+
+    let (mut sink, target) = sink_on(&other);
+    let received = subscribe(&other, &target, encoding);
+    let (with_subscriber, events) = allocations_per_event_of(&rt, &mut sink, &config);
+
+    // Vacuity guards: the subscriber stayed and was sent the changes in its
+    // encoding.
+    assert_eq!(target.subscriber_count(), 1, "the subscriber stayed");
+    let values = received.values.load(Ordering::Relaxed) as u64;
+    assert!(
+        values >= events / 2,
+        "the subscriber received {values} values for {events} changes"
+    );
+    assert_eq!(received.foreign.load(Ordering::Relaxed), 0);
+
+    let surcharge = with_subscriber - plain_cost;
+    println!(
+        "allocations per event, value changing, one draining {encoding:?} subscriber: plain \
+         {plain_cost:.3}, gnmi_target {with_subscriber:.3}, surcharge {surcharge:.3}"
+    );
+    assert!(
+        surcharge < 1.5,
+        "a draining {encoding:?} subscriber costs the publisher {surcharge:.3} allocations per \
+         event over a plain sink (allowed < 1.5)"
+    );
+    drop(sink);
 }
 
 /// Dropping a sink releases its series. With nobody subscribed, the release
@@ -541,62 +701,5 @@ fn with_nobody_subscribed_a_change_costs_what_a_held_value_does() {
         (per_change - held).abs() < 0.05,
         "a change costs the publisher {per_change:.3} allocations per event against \
          {held:.3} for a held value"
-    );
-}
-
-/// With a value that changes on every event, an ON_CHANGE subscriber costs a
-/// change at most one allocation, the broadcast's share of the value, in
-/// PROTO and in JSON_IETF alike: the publisher never makes the JSON_IETF
-/// value.
-#[test]
-fn a_json_ietf_subscriber_costs_a_change_what_a_proto_subscriber_does() {
-    let rt = current_thread_runtime();
-    let other = other_threads_runtime();
-    let config = scenario_of(GeneratorConfig::Step {
-        start: None,
-        step_size: 1.0,
-        max: None,
-    });
-
-    let (mut sink, _alone_target) = sink_on(&other);
-    let (alone, _) = allocations_per_event_of(&rt, &mut sink, &config);
-    drop(sink);
-
-    let mut cost = Vec::new();
-    for encoding in [Encoding::Proto, Encoding::JsonIetf] {
-        let (mut sink, target) = sink_on(&other);
-        let received = subscribe(&other, &target, encoding);
-        let (with_subscriber, events) = allocations_per_event_of(&rt, &mut sink, &config);
-        // Vacuity guards: the subscriber stayed and was sent the changes in
-        // its encoding.
-        assert_eq!(
-            target.subscriber_count(),
-            1,
-            "the {encoding:?} subscriber stayed"
-        );
-        let values = received.values.load(Ordering::Relaxed) as u64;
-        assert!(
-            values >= events / 2,
-            "the {encoding:?} subscriber received {values} values for {events} changes"
-        );
-        assert_eq!(received.foreign.load(Ordering::Relaxed), 0);
-        cost.push(with_subscriber - alone);
-        drop(sink);
-    }
-    let (proto_cost, json_cost) = (cost[0], cost[1]);
-    println!(
-        "allocations per event, value changing: nobody subscribed {alone:.3}; a subscriber \
-         adds {proto_cost:.3} in PROTO, {json_cost:.3} in JSON_IETF"
-    );
-    for (encoding, cost) in [("PROTO", proto_cost), ("JSON_IETF", json_cost)] {
-        assert!(
-            cost < 1.5,
-            "a {encoding} subscriber costs the publisher {cost:.3} allocations per change \
-             (allowed < 1.5: the broadcast's share of the value)"
-        );
-    }
-    assert!(
-        (json_cost - proto_cost).abs() < 0.05,
-        "a JSON_IETF subscriber costs {json_cost:.3} per change against {proto_cost:.3} for PROTO"
     );
 }
