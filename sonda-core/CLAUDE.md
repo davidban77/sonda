@@ -38,9 +38,16 @@ src/
 │                          PackScenarioConfig, MetricOverride, expand_pack().
 │                          validate_pack() is the ONE definition of addressability: a metric
 │                          name is unique within a pack, or every spec sharing it declares a
-│                          unique `id:`; names may not contain `.`. An invalid pack does not
+│                          unique `id:`; names may not contain `.`. It also refuses specs
+│                          sharing a name with different `gnmi:` hints and (gnmi feature) a
+│                          hint path that is not a PathTemplate. An invalid pack does not
 │                          load, so MetricSelector/resolve_selector never meet an ambiguous
-│                          one and do not re-derive the rule. resolve_override_keys() is the
+│                          one and do not re-derive the rule.
+│                          MetricSpec.gnmi: Option<GnmiHint { path, value }> (deny_unknown_fields;
+│                          ungated). fold_gnmi_hints() is the ONE fold of hints into a gnmi
+│                          encoder's paths:/values: (an existing entry wins, each map on its
+│                          own; any other encoder unchanged), called by expand_pack and by
+│                          compiler/expand.rs once per pack entry. resolve_override_keys() is the
 │                          ONE definition of override keying — v1 expand_pack and the v2
 │                          compiler both call it, so they cannot drift; it also refuses two
 │                          keys reaching one spec, which addressability alone permits (a
@@ -141,9 +148,7 @@ src/
 │   │                      OtlpEncoder (Metric/LogRecord), parser helpers (feature = "otlp")
 │   ├── remote_write.rs ← Prometheus remote write protobuf (feature = "remote-write")
 │   ├── gnmi/           ← gNMI Notification encoder (feature = "gnmi"):
-│   │   ├── mod.rs      ←   GnmiEncoder, GnmiEncoderConfig (deny_unknown_fields; drop_labels),
-│   │   │                   GnmiValueType (hand-written Deserialize: enum codes as ints or
-│   │   │                   integer strings; enum labels as any scalar, stored as text).
+│   │   ├── mod.rs      ←   GnmiEncoder, GnmiEncoderConfig (deny_unknown_fields; drop_labels).
 │   │   │                   Path bytes cached per series on first sight; a series is the
 │   │   │                   metric name and the labels its template sees (all but the
 │   │   │                   target_label and drop_labels, unless the template references
@@ -169,6 +174,12 @@ src/
 │   │   │                   entries refuse both encoder and sink. encode_delete (pub(crate)) writes a
 │   │   │                   Notification deleting a full path: origin and target on the prefix, the
 │   │   │                   elements on delete[0], split as an update's prefix and path are.
+│   │   ├── value.rs    ←   GnmiValueType and its YAML shape (hand-written Deserialize: enum
+│   │   │                   codes as ints or integer strings; enum labels as any scalar,
+│   │   │                   stored as text). Compiled WITHOUT the gnmi feature too: without it,
+│   │   │                   encoder/mod.rs declares an inline `gnmi` module holding only this
+│   │   │                   file, so crate::encoder::gnmi::GnmiValueType names it in every
+│   │   │                   build. mod.rs re-exports it.
 │   │   ├── path.rs     ←   PathTemplate (parse/placeholders/render), parse_client_path;
 │   │   │                   placeholders() yields Placeholder { name, optional }. An
 │   │   │                   optional key value [key={x?}] renders the key only when the
@@ -528,9 +539,10 @@ src/
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_log_scenario (log_csv_replay rate derivation),
     │                      expand_entry (entry-level wrapper covering both)
-    ├── scalar_text.rs  ← ScalarText + required/optional deserialize_with: a string, number
-    │                      or boolean read as text. The ONE rule for text fields the schema
-    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor).
+    ├── scalar_text.rs  ← ScalarText (config feature) + required/optional deserialize_with
+    │                      (gnmi feature): a string, number or boolean read as text. The ONE
+    │                      rule for text fields the schema widens (gnmi enum labels,
+    │                      gnmi_target listen and sample_floor).
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
