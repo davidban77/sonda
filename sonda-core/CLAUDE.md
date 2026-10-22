@@ -188,7 +188,8 @@ src/
 │   │   │                   is_valid_element_name is the ONE element-name rule that
 │   │   │                   render and validation (every static, dynamic and spike
 │   │   │                   value an element-name placeholder can render to) both apply
-│   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto
+│   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto: Path, Notification,
+│   │                       the Capability, Get and Subscribe request/response messages
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory
@@ -324,19 +325,24 @@ src/
 │   │   │                   are a ConfigError; port 0 always binds a
 │   │   │                   new target. check() answers as acquire() would, binding
 │   │   │                   nothing. listen_overlap assumes a dual-stack [::].
-│   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's paths joined to its
-│   │   │                   prefix; matches() aligns the subscription's elements with the
+│   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's (new()) or a
+│   │   │                   GetRequest's (from_paths(prefix, paths)) paths joined to the
+│   │   │                   prefix by join(), the ONE path rule both use (INVALID_ARGUMENT
+│   │   │                   for an empty element name or a `...` with keys; from_paths
+│   │   │                   also for no paths); paths() returns them joined, in request
+│   │   │                   order. matches() aligns the requested elements with the
 │   │   │                   series' first ones (aligns(): `*` is any one element, its keys
 │   │   │                   still apply; `...` any run of zero or more, tried shortest
 │   │   │                   first and lengthened on a mismatch; no allocation), a key of "*"
 │   │   │                   or an absent key matching any value, an empty origin or target
-│   │   │                   matching any. new() refuses (UNIMPLEMENTED, named) POLL,
-│   │   │                   BYTES and ASCII encodings; INVALID_ARGUMENT for an
-│   │   │                   empty list, an empty element name, a `...` with keys, or an
-│   │   │                   unknown list encoding or
-│   │   │                   mode or (STREAM lists only) subscription mode. PROTO and
-│   │   │                   JSON_IETF are accepted; JSON (encoding 0, also an unset
-│   │   │                   encoding) is accepted and served as PROTO. pub(crate).
+│   │   │                   matching any. served_encoding() is the ONE encoding rule
+│   │   │                   Subscribe and Get apply: PROTO and JSON (encoding 0, also an
+│   │   │                   unset encoding) served as PROTO, JSON_IETF as JSON_IETF;
+│   │   │                   BYTES and ASCII UNIMPLEMENTED, named; an unknown number
+│   │   │                   INVALID_ARGUMENT. new() also refuses (INVALID_ARGUMENT) an
+│   │   │                   empty list, an unknown list mode, or (STREAM lists only) an
+│   │   │                   unknown subscription mode; STREAM, ONCE and POLL are
+│   │   │                   accepted. pub(crate).
 │   │   ├── test_tls.rs ←   (cfg(test)) TlsFiles: a CA, and a server (localhost, 127.0.0.1) and
 │   │   │                   a client certificate it signed, made with rcgen (a dev-dependency)
 │   │   │                   and written to a temp dir; tls()/mutual_tls() blocks, a TLS channel,
@@ -365,15 +371,35 @@ src/
 │   │                       UNAUTHENTICATED "credentials required", logged once at warn with
 │   │                       the peer (TCP or TLS connect info) and the method, never a value.
 │   │                       Capabilities: 0.10.0, [PROTO, JSON_IETF], no models.
+│   │                       Get (Grpc::unary, PreEncodedCodec<GetRequest>): get() answers
+│   │                       from one snapshot of the table, no subscriber place taken:
+│   │                       every series a from_paths matcher matches, once, as its stored
+│   │                       notification (PROTO) or json_ietf_of (JSON_IETF; a None is
+│   │                       skipped), framed by get_response() as GetResponse.notification
+│   │                       (field 1, the same framing as SubscribeResponse.update:
+│   │                       put_notification). ALL, STATE, OPERATIONAL served; CONFIG an
+│   │                       empty response; unknown data type INVALID_ARGUMENT; no series
+│   │                       matched NOT_FOUND "no series matches <first joined path>".
 │   │                       Subscribe: first message must be a SubscriptionList; start()
 │   │                       plans it, takes a place with target.admit() (or the request
 │   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns)
 │   │                       and the broadcast receiver, and builds the producer, which
-│   │                       subscribe() then spawns. One task reads and
-│   │                       ignores the rest of the inbound stream (never polled in a
-│   │                       select!); its end does not end the subscription. A producer
+│   │                       subscribe() then spawns. One task (read_requests) reads the
+│   │                       rest of the inbound stream (never polled in a select!): for a
+│   │                       POLL list it forwards each poll on an mpsc of 1 made by
+│   │                       Producer::poll_requests(), and ignores everything else; for
+│   │                       any other list it ignores everything, and its end does not end
+│   │                       the subscription. A producer
 │   │                       task sends the initial sync (matching snapshot, none with
-│   │                       updates_only, then sync_response). plan_groups splits a STREAM
+│   │                       updates_only, then sync_response). A POLL list then takes a
+│   │                       poll only while its queue is empty (select! arm guarded by
+│   │                       pending.is_empty()) and answers it with poll_batch(): every
+│   │                       matching series' latest through queue_value, not indexed
+│   │                       (no deletes, no suppression), then sync_response; updates_only
+│   │                       is ignored there. When the reader's sender drops (half-close)
+│   │                       the list ends OK once its queue is empty (ends_when_drained).
+│   │                       ONCE and POLL plan no groups, so their stall_limit is the floor,
+│   │                       and it runs only while responses wait. plan_groups splits a STREAM
 │   │                       list: SAMPLE into sample groups; ON_CHANGE into the ON_CHANGE
 │   │                       set plus a heartbeat group when heartbeat_interval > 0;
 │   │                       TARGET_DEFINED into both, the set and heartbeat for string_val
@@ -443,7 +469,9 @@ src/
 │   │                       Probe (cfg(test)) carries the after_resubscribe, before_heartbeat
 │   │                       and before_sample hooks the window tests publish and release from.
 │   │                       STREAM runs until the client goes, stalls or the target stops;
-│   │                       ONCE ends with OK after the sync marker. A subscription ended
+│   │                       ONCE ends with OK after the sync marker;
+│   │                       POLL runs until the client goes, half-closes (OK once the queue
+│   │                       is empty) or stalls after a poll, or the target stops. A subscription ended
 │   │                       by the target stopping or going away ends UNAVAILABLE too: the
 │   │                       producer sends the status on a oneshot, and Responses yields it
 │   │                       after the queue drains. A publish wakes only ON_CHANGE
