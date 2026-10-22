@@ -225,6 +225,54 @@ pub struct Subscription {
     pub heartbeat_interval: u64,
 }
 
+/// A request for a snapshot of the data at a set of paths.
+///
+/// Corresponds to `gnmi.GetRequest`. `use_models` (6) and `extension` (7)
+/// are omitted.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetRequest {
+    /// Prefix applied to every path in `path`.
+    #[prost(message, optional, tag = "1")]
+    pub prefix: Option<Path>,
+    /// The requested paths.
+    #[prost(message, repeated, tag = "2")]
+    pub path: Vec<Path>,
+    /// The kind of data requested. See [`get_request::DataType`].
+    #[prost(enumeration = "get_request::DataType", tag = "3")]
+    pub r#type: i32,
+    /// Requested encoding. See [`Encoding`].
+    #[prost(enumeration = "Encoding", tag = "5")]
+    pub encoding: i32,
+}
+
+/// Nested types of [`GetRequest`].
+pub mod get_request {
+    /// `gnmi.GetRequest.DataType`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+    #[repr(i32)]
+    pub enum DataType {
+        /// `ALL = 0`.
+        All = 0,
+        /// `CONFIG = 1`.
+        Config = 1,
+        /// `STATE = 2`.
+        State = 2,
+        /// `OPERATIONAL = 3`.
+        Operational = 3,
+    }
+}
+
+/// The snapshot a [`GetRequest`] asked for.
+///
+/// Corresponds to `gnmi.GetResponse`. The deprecated `error` (2) and
+/// `extension` (3) fields are omitted.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetResponse {
+    /// One notification per value returned.
+    #[prost(message, repeated, tag = "1")]
+    pub notification: Vec<Notification>,
+}
+
 /// `gnmi.CapabilityRequest`. `extension` (1) is omitted.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct CapabilityRequest {}
@@ -516,6 +564,72 @@ mod tests {
     }
 
     #[test]
+    fn get_request_uses_its_field_numbers() {
+        let req = GetRequest {
+            prefix: Some(Path {
+                origin: "o".into(),
+                elem: vec![],
+                target: String::new(),
+            }),
+            path: vec![
+                Path {
+                    origin: String::new(),
+                    elem: vec![path_elem("a", &[])],
+                    target: String::new(),
+                },
+                Path::default(),
+            ],
+            r#type: get_request::DataType::State as i32,
+            encoding: Encoding::JsonIetf as i32,
+        };
+        #[rustfmt::skip]
+        let expected = vec![
+            0x0a, 0x03,                      // prefix (1), len 3
+                0x12, 0x01, b'o',            //   origin (2)
+            0x12, 0x05,                      // path (2), len 5
+                0x1a, 0x03,                  //   elem (3), len 3
+                    0x0a, 0x01, b'a',        //     name (1)
+            0x12, 0x00,                      // path (2), empty
+            0x18, 0x02,                      // type (3) = STATE
+            0x28, 0x04,                      // encoding (5) = JSON_IETF
+        ];
+        assert_eq!(req.encode_to_vec(), expected);
+        assert_eq!(GetRequest::decode(expected.as_slice()).unwrap(), req);
+    }
+
+    #[test]
+    fn get_response_uses_field_1() {
+        let resp = GetResponse {
+            notification: vec![
+                Notification {
+                    timestamp: 3,
+                    prefix: None,
+                    update: vec![],
+                    delete: vec![],
+                    atomic: false,
+                },
+                Notification {
+                    timestamp: 0,
+                    prefix: None,
+                    update: vec![],
+                    delete: vec![],
+                    atomic: true,
+                },
+            ],
+        };
+        #[rustfmt::skip]
+        let expected = vec![
+            0x0a, 0x02,                      // notification (1), len 2
+                0x08, 0x03,                  //   timestamp (1)
+            0x0a, 0x02,                      // notification (1), len 2
+                0x30, 0x01,                  //   atomic (6)
+        ];
+        assert_eq!(resp.encode_to_vec(), expected);
+        assert_eq!(GetResponse::decode(expected.as_slice()).unwrap(), resp);
+        assert!(GetResponse::default().encode_to_vec().is_empty());
+    }
+
+    #[test]
     fn enum_values_match_gnmi_proto() {
         assert_eq!(Encoding::Json as i32, 0);
         assert_eq!(Encoding::Bytes as i32, 1);
@@ -528,6 +642,10 @@ mod tests {
         assert_eq!(subscription_list::Mode::Stream as i32, 0);
         assert_eq!(subscription_list::Mode::Once as i32, 1);
         assert_eq!(subscription_list::Mode::Poll as i32, 2);
+        assert_eq!(get_request::DataType::All as i32, 0);
+        assert_eq!(get_request::DataType::Config as i32, 1);
+        assert_eq!(get_request::DataType::State as i32, 2);
+        assert_eq!(get_request::DataType::Operational as i32, 3);
     }
 
     #[test]

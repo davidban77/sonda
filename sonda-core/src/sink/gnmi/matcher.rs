@@ -1,16 +1,16 @@
-//! Which series a gNMI `SubscriptionList` selects.
+//! Which series a gNMI `SubscriptionList` or `GetRequest` selects.
 
 use tonic::Status;
 
 use crate::encoder::gnmi::proto::{self, subscription_list, Encoding, SubscriptionMode};
 
-/// The subscribed paths of one `SubscriptionList`, each joined to the list's
-/// prefix.
+/// The requested paths of one `SubscriptionList` or `GetRequest`, each
+/// joined to the request's prefix.
 ///
-/// A subscription path is the prefix's elements followed by the
-/// subscription's own, with the subscription's origin (the prefix's when the
-/// subscription has none) and the prefix's target. An element named `*`
-/// stands for any one element and `...` for any run of zero or more.
+/// A requested path is the prefix's elements followed by the path's own,
+/// with the path's origin (the prefix's when the path has none) and the
+/// prefix's target. An element named `*` stands for any one element and
+/// `...` for any run of zero or more.
 #[derive(Debug, Clone)]
 pub struct SubscriptionMatcher {
     paths: Vec<proto::Path>,
@@ -21,47 +21,24 @@ impl SubscriptionMatcher {
     ///
     /// # Errors
     ///
-    /// - `INVALID_ARGUMENT` when the list has no subscriptions, a path has
-    ///   an element with an empty name or a `...` element with keys, or the
-    ///   list's encoding or mode, or in a `STREAM` list a subscription's mode,
-    ///   is a number gNMI does not define. A `ONCE` list's subscription modes
-    ///   are not read.
-    /// - `UNIMPLEMENTED`, naming what was asked for, for a `POLL` list or a
-    ///   `BYTES` or `ASCII` encoding.
-    ///
-    /// `PROTO`, `JSON_IETF` and `JSON` are accepted. `JSON` is served as
-    /// `PROTO`: it is encoding 0, which is also what a list that sets no
-    /// encoding carries.
+    /// - `INVALID_ARGUMENT` when the list has no subscriptions, a path is
+    ///   refused as [`SubscriptionMatcher::from_paths`] refuses it, or the
+    ///   list's encoding or mode, or in a `STREAM` list a subscription's
+    ///   mode, is a number gNMI does not define. The subscription modes of a
+    ///   `ONCE` or `POLL` list are not read.
+    /// - `UNIMPLEMENTED` as [`served_encoding`] refuses the encoding.
     pub fn new(list: &proto::SubscriptionList) -> Result<Self, Status> {
-        let encoding = Encoding::try_from(list.encoding).map_err(|_| {
-            Status::invalid_argument(format!("unknown gnmi encoding {}", list.encoding))
-        })?;
-        if !matches!(
-            encoding,
-            Encoding::Proto | Encoding::JsonIetf | Encoding::Json
-        ) {
-            return Err(Status::unimplemented(format!(
-                "encoding {} is not supported; this target encodes PROTO and JSON_IETF",
-                encoding_name(encoding)
-            )));
-        }
+        served_encoding(list.encoding)?;
         let mode = subscription_list::Mode::try_from(list.mode).map_err(|_| {
             Status::invalid_argument(format!("unknown subscription list mode {}", list.mode))
         })?;
-        if mode == subscription_list::Mode::Poll {
-            return Err(Status::unimplemented(
-                "subscription list mode POLL is not supported; use STREAM or ONCE",
-            ));
-        }
         if list.subscription.is_empty() {
             return Err(Status::invalid_argument(
                 "the subscription list has no subscriptions",
             ));
         }
-        let prefix = list.prefix.clone().unwrap_or_default();
-        let mut paths = Vec::with_capacity(list.subscription.len());
-        for subscription in &list.subscription {
-            if mode == subscription_list::Mode::Stream {
+        if mode == subscription_list::Mode::Stream {
+            for subscription in &list.subscription {
                 SubscriptionMode::try_from(subscription.mode).map_err(|_| {
                     Status::invalid_argument(format!(
                         "unknown subscription mode {}",
@@ -69,34 +46,73 @@ impl SubscriptionMatcher {
                     ))
                 })?;
             }
-            let own = subscription.path.clone().unwrap_or_default();
-            let mut elem = prefix.elem.clone();
-            elem.extend(own.elem);
+        }
+        let root = proto::Path::default();
+        Self::join(
+            list.prefix.as_ref(),
+            list.subscription
+                .iter()
+                .map(|subscription| subscription.path.as_ref().unwrap_or(&root)),
+        )
+    }
+
+    /// Join each of `paths` to `prefix`, as a `GetRequest` asks.
+    ///
+    /// # Errors
+    ///
+    /// `INVALID_ARGUMENT` when `paths` is empty, or a joined path has an
+    /// element with an empty name or a `...` element with keys.
+    pub fn from_paths(prefix: Option<&proto::Path>, paths: &[proto::Path]) -> Result<Self, Status> {
+        if paths.is_empty() {
+            return Err(Status::invalid_argument("the request has no paths"));
+        }
+        Self::join(prefix, paths.iter())
+    }
+
+    /// Join each of `paths` to `prefix`, refusing an element with an empty
+    /// name and a `...` element with keys: the one rule [`Self::new`] and
+    /// [`Self::from_paths`] apply.
+    fn join<'a>(
+        prefix: Option<&proto::Path>,
+        paths: impl Iterator<Item = &'a proto::Path>,
+    ) -> Result<Self, Status> {
+        let root = proto::Path::default();
+        let prefix = prefix.unwrap_or(&root);
+        let mut joined = Vec::new();
+        for own in paths {
+            let mut elem = Vec::with_capacity(prefix.elem.len() + own.elem.len());
+            elem.extend(prefix.elem.iter().cloned());
+            elem.extend(own.elem.iter().cloned());
             for element in &elem {
                 if element.name.is_empty() {
                     return Err(Status::invalid_argument(
-                        "a subscription path has an element with an empty name",
+                        "a requested path has an element with an empty name",
                     ));
                 }
                 if element.name == ANY_RUN && !element.key.is_empty() {
                     return Err(Status::invalid_argument(
-                        "a subscription path has a `...` element with keys; `...` stands \
+                        "a requested path has a `...` element with keys; `...` stands \
                          for any run of elements and takes no keys",
                     ));
                 }
             }
             let origin = if own.origin.is_empty() {
-                prefix.origin.clone()
+                &prefix.origin
             } else {
-                own.origin
+                &own.origin
             };
-            paths.push(proto::Path {
-                origin,
+            joined.push(proto::Path {
+                origin: origin.clone(),
                 elem,
                 target: prefix.target.clone(),
             });
         }
-        Ok(Self { paths })
+        Ok(Self { paths: joined })
+    }
+
+    /// The requested paths, each joined to the prefix, in request order.
+    pub fn paths(&self) -> &[proto::Path] {
+        &self.paths
     }
 
     /// True if `series_path` is any subscription path or below one.
@@ -110,6 +126,29 @@ impl SubscriptionMatcher {
     /// Allocates nothing.
     pub fn matches(&self, series_path: &proto::Path) -> bool {
         self.paths.iter().any(|path| is_under(series_path, path))
+    }
+}
+
+/// The encoding a request carrying `encoding` is served in: `PROTO` for
+/// `PROTO` and for `JSON`, which is encoding 0 and so also what a request
+/// that sets no encoding carries; `JSON_IETF` for `JSON_IETF`.
+///
+/// # Errors
+///
+/// - `INVALID_ARGUMENT` when `encoding` is a number gNMI does not define.
+/// - `UNIMPLEMENTED`, naming the encoding and the ones served, for `BYTES`
+///   and `ASCII`.
+pub(crate) fn served_encoding(encoding: i32) -> Result<Encoding, Status> {
+    match Encoding::try_from(encoding) {
+        Ok(Encoding::Proto | Encoding::Json) => Ok(Encoding::Proto),
+        Ok(Encoding::JsonIetf) => Ok(Encoding::JsonIetf),
+        Ok(other) => Err(Status::unimplemented(format!(
+            "encoding {} is not supported; this target encodes PROTO and JSON_IETF",
+            encoding_name(other)
+        ))),
+        Err(_) => Err(Status::invalid_argument(format!(
+            "unknown gnmi encoding {encoding}"
+        ))),
     }
 }
 
@@ -307,7 +346,6 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest::rstest]
-    #[case::poll_list(subscription_list::Mode::Poll as i32, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::Unimplemented, "POLL")]
     #[case::unknown_list_mode(9, SubscriptionMode::Sample as i32, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_mode(subscription_list::Mode::Stream as i32, 9, Encoding::Proto as i32, tonic::Code::InvalidArgument, "mode 9")]
     #[case::unknown_encoding(subscription_list::Mode::Stream as i32, SubscriptionMode::Sample as i32, 9, tonic::Code::InvalidArgument, "encoding 9")]
@@ -358,14 +396,15 @@ mod tests {
         assert!(SubscriptionMatcher::new(&list).is_ok());
     }
 
-    /// The modes this target serves are accepted, and in a ONCE list the
-    /// per-subscription mode does not apply.
+    /// The modes this target serves are accepted, and in a ONCE or POLL
+    /// list the per-subscription mode does not apply.
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::stream_sample(subscription_list::Mode::Stream, SubscriptionMode::Sample)]
     #[case::stream_on_change(subscription_list::Mode::Stream, SubscriptionMode::OnChange)]
     #[case::stream_target_defined(subscription_list::Mode::Stream, SubscriptionMode::TargetDefined)]
     #[case::once(subscription_list::Mode::Once, SubscriptionMode::OnChange)]
+    #[case::poll(subscription_list::Mode::Poll, SubscriptionMode::OnChange)]
     fn supported_modes_are_accepted(
         #[case] list_mode: subscription_list::Mode,
         #[case] mode: SubscriptionMode,
@@ -609,6 +648,102 @@ mod tests {
             status.message()
         );
         assert!(status.message().contains("`...`"), "{}", status.message());
+    }
+
+    /// `from_paths` joins each path to the prefix as `new` joins each
+    /// subscription: the prefix's elements first, the path's origin over the
+    /// prefix's, the prefix's target.
+    #[test]
+    fn from_paths_joins_each_path_to_the_prefix() {
+        let prefix = proto::Path {
+            target: "rtr-1".to_string(),
+            ..path("openconfig:/interfaces/interface[name=eth0]")
+        };
+        let m = SubscriptionMatcher::from_paths(
+            Some(&prefix),
+            &[path("/state/counters"), path("vendor:/state/oper-status")],
+        )
+        .expect("accepted");
+        let joined: Vec<String> = m.paths().iter().map(ToString::to_string).collect();
+        assert_eq!(
+            joined,
+            [
+                "openconfig:/interfaces/interface[name=eth0]/state/counters",
+                "vendor:/interfaces/interface[name=eth0]/state/oper-status",
+            ]
+        );
+        assert!(m.paths().iter().all(|p| p.target == "rtr-1"));
+
+        let mut list = list(&["/state/counters", "vendor:/state/oper-status"]);
+        list.prefix = Some(prefix);
+        let subscribed = SubscriptionMatcher::new(&list).expect("accepted");
+        let series = [
+            "openconfig:/interfaces/interface[name=eth0]/state/counters/in-octets",
+            "vendor:/interfaces/interface[name=eth0]/state/oper-status",
+            "openconfig:/interfaces/interface[name=eth0]/state/oper-status",
+            "openconfig:/interfaces/interface[name=eth1]/state/counters/in-octets",
+        ];
+        let mut matched = 0;
+        for s in series {
+            let s = proto::Path {
+                target: "rtr-1".to_string(),
+                ..path(s)
+            };
+            assert_eq!(m.matches(&s), subscribed.matches(&s), "{s}");
+            matched += usize::from(m.matches(&s));
+        }
+        assert_eq!(matched, 2, "the premise: both outcomes occur");
+    }
+
+    /// `from_paths` and `new` refuse the same paths with the same status,
+    /// and `from_paths` refuses a request with no paths.
+    #[test]
+    fn from_paths_refuses_what_new_refuses() {
+        let empty_name = proto::Path {
+            elem: vec![proto::PathElem::default()],
+            ..Default::default()
+        };
+        let run_with_keys = path("/interfaces/...[name=eth0]/state");
+        for bad in [empty_name, run_with_keys] {
+            let from_paths = SubscriptionMatcher::from_paths(None, std::slice::from_ref(&bad))
+                .expect_err("refused");
+            let mut list = list(&["/x"]);
+            list.subscription[0].path = Some(bad.clone());
+            let new = SubscriptionMatcher::new(&list).expect_err("refused");
+            assert_eq!(from_paths.code(), tonic::Code::InvalidArgument, "{bad:?}");
+            assert_eq!(from_paths.code(), new.code(), "{bad:?}");
+            assert_eq!(from_paths.message(), new.message(), "{bad:?}");
+        }
+
+        let status =
+            SubscriptionMatcher::from_paths(Some(&path("/interfaces")), &[]).expect_err("no paths");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("no paths"),
+            "{}",
+            status.message()
+        );
+    }
+
+    /// `JSON` is served as `PROTO`; `PROTO` and `JSON_IETF` as themselves.
+    #[test]
+    fn served_encoding_maps_json_to_proto() {
+        assert_eq!(
+            served_encoding(Encoding::Json as i32).unwrap(),
+            Encoding::Proto
+        );
+        assert_eq!(
+            served_encoding(Encoding::Proto as i32).unwrap(),
+            Encoding::Proto
+        );
+        assert_eq!(
+            served_encoding(Encoding::JsonIetf as i32).unwrap(),
+            Encoding::JsonIetf
+        );
+        assert_eq!(
+            served_encoding(9).expect_err("unknown").code(),
+            tonic::Code::InvalidArgument
+        );
     }
 
     #[test]
