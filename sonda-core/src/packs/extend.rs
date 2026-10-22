@@ -238,6 +238,7 @@ mod tests {
             id: id.map(str::to_string),
             labels: None,
             generator: Some(GeneratorConfig::Constant { value }),
+            gnmi: None,
         }
     }
 

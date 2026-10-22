@@ -34,7 +34,7 @@ pub struct BuiltinPack {
 /// Declared here beside the list so a half-finished edit — a new
 /// `include_str!` without its entry, or an entry deleted from the middle —
 /// fails the count gate instead of quietly shipping a shorter catalog.
-pub const PACK_COUNT: usize = 5;
+pub const PACK_COUNT: usize = 6;
 
 /// Every pack embedded in this binary, sorted by name.
 pub static PACKS: &[BuiltinPack] = &[
@@ -57,6 +57,11 @@ pub static PACKS: &[BuiltinPack] = &[
         name: "node_exporter_memory",
         file: "node-exporter-memory.yaml",
         yaml: include_str!("../../packs/node-exporter-memory.yaml"),
+    },
+    BuiltinPack {
+        name: "openconfig_interface",
+        file: "openconfig-interface.yaml",
+        yaml: include_str!("../../packs/openconfig-interface.yaml"),
     },
     BuiltinPack {
         name: "telegraf_snmp_interface",
@@ -245,5 +250,124 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// The OpenConfig leaf of every metric `openconfig_interface` declares.
+    const OPENCONFIG_LEAVES: [(&str, &str); 11] = [
+        ("in_octets", "state/counters/in-octets"),
+        ("out_octets", "state/counters/out-octets"),
+        ("in_pkts", "state/counters/in-pkts"),
+        ("out_pkts", "state/counters/out-pkts"),
+        ("in_errors", "state/counters/in-errors"),
+        ("out_errors", "state/counters/out-errors"),
+        ("in_discards", "state/counters/in-discards"),
+        ("out_discards", "state/counters/out-discards"),
+        ("carrier_transitions", "state/counters/carrier-transitions"),
+        ("oper_status", "state/oper-status"),
+        ("admin_status", "state/admin-status"),
+    ];
+
+    fn openconfig_pack() -> MetricPackDef {
+        let pack = find("openconfig_interface").expect("openconfig_interface is embedded");
+        parse_pack(pack).expect("openconfig_interface parses")
+    }
+
+    /// Runs with the `gnmi` feature off too: the hints parse and the pack
+    /// validates without it.
+    #[test]
+    fn the_openconfig_pack_loads_and_every_metric_carries_its_hint() {
+        use crate::encoder::gnmi::GnmiValueType;
+        let pack = openconfig_pack();
+        assert_eq!(crate::packs::validate_pack(&pack), Ok(()));
+        let hints: Vec<(&str, &str, &GnmiValueType)> = pack
+            .metrics
+            .iter()
+            .map(|spec| {
+                let hint = spec
+                    .gnmi
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{} carries no gnmi hint", spec.name));
+                (spec.name.as_str(), hint.path.as_str(), &hint.value)
+            })
+            .collect();
+        assert_eq!(hints.len(), OPENCONFIG_LEAVES.len());
+        let status = GnmiValueType::Enum(std::collections::BTreeMap::from([
+            (1, "UP".to_string()),
+            (2, "DOWN".to_string()),
+            (3, "TESTING".to_string()),
+        ]));
+        for ((name, path, value), (want_name, leaf)) in hints.into_iter().zip(OPENCONFIG_LEAVES) {
+            assert_eq!(name, want_name);
+            assert_eq!(
+                path,
+                format!("/interfaces/interface[name={{ifName}}]/{leaf}")
+            );
+            let want = if name.ends_with("_status") {
+                &status
+            } else {
+                &GnmiValueType::Uint
+            };
+            assert_eq!(value, want, "{name}");
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn every_openconfig_hint_path_parses_as_a_template() {
+        let pack = openconfig_pack();
+        assert_eq!(pack.metrics.len(), OPENCONFIG_LEAVES.len());
+        for spec in &pack.metrics {
+            let hint = spec.gnmi.as_ref().expect("a hint");
+            crate::encoder::gnmi::path::PathTemplate::parse(&hint.path)
+                .unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+        }
+    }
+
+    /// Two interfaces of the pack under a gnmi encoder that names no paths
+    /// or values pass the whole-file validation, leaf check included. The
+    /// entries share one address (not port 0, where each entry has a target
+    /// of its own and no leaf is shared); validation binds nothing.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn the_openconfig_pack_under_a_bare_gnmi_encoder_passes_validate_file() {
+        use crate::encoder::EncoderConfig;
+        use crate::ScenarioEntry;
+        let yaml = "version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder: { type: gnmi, origin: openconfig-interfaces, target_label: device }
+  sink: { type: gnmi_target, listen: 127.0.0.1:57400 }
+scenarios:
+  - signal_type: metrics
+    pack: openconfig_interface
+    labels: { device: rtr-1, ifName: Ethernet1 }
+  - signal_type: metrics
+    pack: openconfig_interface
+    labels: { device: rtr-1, ifName: Ethernet2 }
+";
+        let entries = crate::compile_scenario_file(yaml, &BuiltinPackResolver::new())
+            .expect("the scenario compiles");
+        assert_eq!(entries.len(), 2 * OPENCONFIG_LEAVES.len());
+        for entry in &entries {
+            let ScenarioEntry::Metrics(config) = entry else {
+                panic!("a metrics entry");
+            };
+            let EncoderConfig::Gnmi(cfg) = &config.encoder else {
+                panic!("a gnmi encoder");
+            };
+            assert_eq!(
+                cfg.paths.len(),
+                OPENCONFIG_LEAVES.len(),
+                "every hint folded"
+            );
+            assert_eq!(
+                cfg.values.len(),
+                OPENCONFIG_LEAVES.len(),
+                "every hint folded"
+            );
+        }
+        let indexed: Vec<(usize, &ScenarioEntry)> = entries.iter().enumerate().collect();
+        crate::schedule::launch::validate_file(&indexed).expect("the file validates");
     }
 }

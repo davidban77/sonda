@@ -114,7 +114,7 @@
 //! |-------|------------------|
 //! | `rate` | copied verbatim (inherited from defaults in Phase 2) |
 //! | `duration` | copied verbatim |
-//! | `encoder` | copied verbatim |
+//! | `encoder` | copied, with the pack's `gnmi:` hints folded in (see [`crate::packs::fold_gnmi_hints`]) |
 //! | `sink` | copied verbatim |
 //! | `jitter`, `jitter_seed` | copied verbatim |
 //! | `gaps` | cloned verbatim |
@@ -777,6 +777,8 @@ fn expand_pack_entry<R: PackResolver>(
     // shadow an auto-generated pack-entry id and vice versa.
     record_id(id_registry, &effective_entry_id, effective_id_source)?;
 
+    let encoder = crate::packs::fold_gnmi_hints(&pack, &entry.encoder);
+
     for (spec_index, metric) in pack.metrics.iter().enumerate() {
         let override_for_metric = override_indices
             .get(&spec_index)
@@ -832,7 +834,7 @@ fn expand_pack_entry<R: PackResolver>(
             log_generator: None,
             labels,
             dynamic_labels: entry.dynamic_labels.clone(),
-            encoder: entry.encoder.clone(),
+            encoder: encoder.clone(),
             sink: entry.sink.clone(),
             jitter: entry.jitter,
             jitter_seed: entry.jitter_seed,
@@ -1118,6 +1120,7 @@ mod tests {
                     id: None,
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+                    gnmi: None,
                 },
                 MetricSpec {
                     name: "ifHCInOctets".to_string(),
@@ -1128,6 +1131,7 @@ mod tests {
                         step_size: 125_000.0,
                         max: None,
                     }),
+                    gnmi: None,
                 },
             ],
         }
@@ -1160,6 +1164,7 @@ mod tests {
                         step_size: 0.25,
                         max: None,
                     }),
+                    gnmi: None,
                 },
                 MetricSpec {
                     name: "node_cpu_seconds_total".to_string(),
@@ -1170,6 +1175,7 @@ mod tests {
                         step_size: 0.10,
                         max: None,
                     }),
+                    gnmi: None,
                 },
             ],
         }
@@ -1359,6 +1365,7 @@ scenarios:
                 id: None,
                 labels: Some(metric_labels),
                 generator: Some(GeneratorConfig::Constant { value: 0.0 }),
+                gnmi: None,
             }],
         };
 
@@ -1435,6 +1442,7 @@ scenarios:
                 id: None,
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 0.0 }),
+                gnmi: None,
             }],
         };
         let mut resolver = InMemoryPackResolver::new();
@@ -1533,6 +1541,7 @@ scenarios:
                 id: None,
                 labels: None,
                 generator: None,
+                gnmi: None,
             }],
         };
         let mut resolver = InMemoryPackResolver::new();
@@ -1744,6 +1753,54 @@ scenarios:
             assert_eq!(e.jitter_seed, Some(42));
             assert!(e.gaps.is_some());
             assert!(e.bursts.is_some());
+        }
+    }
+
+    /// A pack entry under a gnmi encoder gives every expanded entry the
+    /// encoder with the pack's hints folded in; the entry's own `values:`
+    /// entry wins.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn gnmi_hints_fold_into_every_expanded_entry_encoder() {
+        use crate::encoder::gnmi::GnmiValueType;
+        use crate::packs::GnmiHint;
+        let mut pack = telegraf_pack();
+        for (spec, leaf) in pack.metrics.iter_mut().zip(["oper-status", "in-octets"]) {
+            spec.gnmi = Some(GnmiHint {
+                path: format!("/interfaces/interface[name={{ifName}}]/state/{leaf}"),
+                value: GnmiValueType::Uint,
+            });
+        }
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    encoder:
+      type: gnmi
+      values: { ifOperStatus: int }
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", pack);
+        let expanded = expand_yaml(yaml, &resolver);
+        assert_eq!(expanded.entries.len(), 2, "one entry per metric");
+        for e in &expanded.entries {
+            let EncoderConfig::Gnmi(cfg) = &e.encoder else {
+                panic!("a gnmi encoder, got {:?}", e.encoder);
+            };
+            assert_eq!(
+                cfg.paths["ifHCInOctets"],
+                "/interfaces/interface[name={ifName}]/state/in-octets"
+            );
+            assert_eq!(
+                cfg.paths["ifOperStatus"],
+                "/interfaces/interface[name={ifName}]/state/oper-status"
+            );
+            assert_eq!(cfg.values["ifHCInOctets"], GnmiValueType::Uint);
+            assert_eq!(cfg.values["ifOperStatus"], GnmiValueType::Int);
         }
     }
 
@@ -2268,6 +2325,7 @@ scenarios:
                 id: Some("up".to_string()),
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+                gnmi: None,
             }],
         };
         let mut resolver = InMemoryPackResolver::new();
@@ -2314,6 +2372,7 @@ scenarios:
                 id: None,
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+                gnmi: None,
             }],
             deviations: Vec::new(),
         }

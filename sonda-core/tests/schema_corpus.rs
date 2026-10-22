@@ -857,6 +857,48 @@ scenarios:
     sonda_core::compiler::parse::parse(YAML).expect("the parser accepts what the schema accepts");
 }
 
+/// A pack whose one metric carries the gnmi hint `hint`, one line per key.
+fn hinted_pack_document(hint: &str) -> String {
+    format!(
+        "version: 2
+kind: composable
+name: hinted
+description: one hinted metric
+category: network
+metrics:
+  - name: in_octets
+    gnmi:
+{hint}
+"
+    )
+}
+
+/// A pack's `gnmi:` hint denies unknown keys, in the schema and the parser.
+#[test]
+fn the_schema_rejects_a_misspelled_gnmi_hint_key() {
+    let yaml = hinted_pack_document("      path: /a\n      vaule: uint");
+    serde_yaml_ng::from_str::<sonda_core::packs::MetricPackDef>(&yaml)
+        .expect_err("the parser refuses `vaule`");
+    assert_rejected("`vaule` for `value` in a gnmi hint", &yaml);
+}
+
+/// The schema accepts any scalar for a hint's `path`, so the parser must
+/// too: a numeric path is a validation error, not a parse error the schema
+/// did not predict.
+#[test]
+fn the_parser_takes_every_scalar_the_schema_takes_for_a_gnmi_hint_path() {
+    let yaml = hinted_pack_document("      path: 200\n      value: uint");
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+    assert!(
+        validator().is_valid(&yaml_to_json(value)),
+        "the premise: the schema accepts a numeric hint path"
+    );
+    let pack = serde_yaml_ng::from_str::<sonda_core::packs::MetricPackDef>(&yaml)
+        .expect("the parser accepts what the schema accepts");
+    let hint = pack.metrics[0].gnmi.as_ref().expect("the hint");
+    assert_eq!(hint.path, "200");
+}
+
 /// A `gnmi_target` sink whose block carries `extra`, one line under `listen`.
 fn gnmi_target_document(extra: &str) -> String {
     format!(

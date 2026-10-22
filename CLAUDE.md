@@ -45,6 +45,14 @@ it declares a unique `id:` (`node_exporter_cpu` uses the CPU modes). Names may n
 which separates `name` from `id` in a selector. An unaddressable pack does not load — that is
 what lets `overrides:` and `after.ref` refuse a bare ambiguous name instead of guessing.
 
+A pack metric may carry a `gnmi: { path, value }` hint. `GnmiValueType` lives in
+`encoder/gnmi/value.rs`, compiled without the `gnmi` feature, so every build parses and
+validates the hints. `packs::fold_gnmi_hints` is the one fold, called by both expansion paths
+(`packs::expand_pack` and `compiler::expand`): under a `gnmi` encoder it fills `paths:` and
+`values:` per metric name where the scenario's block has no entry, and under any other encoder
+it does nothing. `validate_pack` refuses specs sharing a name with different hints and, with the
+feature, a hint path that is not a template.
+
 A pack may `extends:` another. Resolution is a pre-pass — `packs::extend::materialize` folds the
 chain into one `MetricPackDef` indistinguishable from a hand-written one — so expansion, label
 composition and sub-signal registration never learn that packs can extend. `metrics:` is purely

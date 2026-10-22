@@ -91,10 +91,12 @@ fn every_example_dry_runs_and_names_each_kind() {
     #[allow(unused_mut)]
     let mut examples: Vec<PathBuf> = scenarios.into_iter().map(|(path, _)| path).collect();
     assert!(!examples.is_empty(), "no v2 scenario files under examples/");
-    assert!(
-        examples.contains(&example("gnmi-telegraf.yaml")),
-        "gnmi-telegraf.yaml is not among the scenarios found: {examples:?}"
-    );
+    for name in ["gnmi-telegraf.yaml", "gnmi-pack.yaml"] {
+        assert!(
+            examples.contains(&example(name)),
+            "{name} is not among the scenarios found: {examples:?}"
+        );
+    }
     #[cfg(feature = "gnmi")]
     for (name, _) in GENERATED_TLS_FILES {
         let path = example(name);

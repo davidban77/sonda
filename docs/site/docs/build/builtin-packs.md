@@ -25,6 +25,7 @@ composable  node_exporter_memory           Memory gauge metrics (node_exporter-c
 composable  kube_state_metrics             Pod phase, deployment replicas and restarts (kube-state-metrics)
 
 [network]
+composable  openconfig_interface           OpenConfig interface counters and status, with gNMI paths
 composable  telegraf_snmp_interface        Standard SNMP interface metrics (Telegraf-normalized)
 ```
 
@@ -65,6 +66,7 @@ Every pack uses the real upstream metric names and label keys, so a dashboard qu
 | `kube_state_metrics` | kubernetes | Pod phase, the deployment replica gap, container restarts, node readiness |
 | `node_exporter_cpu` | infrastructure | `node_cpu_seconds_total` per CPU mode |
 | `node_exporter_memory` | infrastructure | node_exporter memory gauges |
+| `openconfig_interface` | network | OpenConfig interface counters, oper-status and admin-status, with the gNMI path and value type of each |
 | `telegraf_snmp_interface` | network | SNMP interface counters and status, Telegraf-normalized |
 
 ### `http_server_red`
@@ -78,6 +80,34 @@ Every pack uses the real upstream metric names and label keys, so a dashboard qu
 Enum metrics follow the upstream one-series-per-value convention: `kube_pod_status_phase` appears five times, one per phase, carrying 1 for the phase that holds and 0 for the rest. Those are five series of one metric, which is why each spec declares its phase as an `id:` — see [addressing a repeated metric name](catalogs-and-packs.md#addressing-a-repeated-metric-name).
 
 `kube_deployment_status_replicas_available` cycles 60s at 3 replicas then 20s at 2, so an "unavailable replicas" rule has something to fire on. A run shorter than 60s only ever sees the healthy state.
+
+### `openconfig_interface`
+
+The counters and status leaves of an OpenConfig interface (`/interfaces/interface/state` in the `openconfig-interfaces` model): `in_octets`, `out_octets`, `in_pkts`, `out_pkts`, `in_errors`, `out_errors`, `in_discards`, `out_discards`, `carrier_transitions`, `oper_status` and `admin_status`. The status metrics are enum codes, 1 UP, 2 DOWN, 3 TESTING, and default to UP.
+
+Every metric carries a `gnmi:` hint: its OpenConfig path and value type. Under the [`gnmi` encoder](encoders.md#paths-and-values-from-a-pack) the hints fill the encoder's `paths:` and `values:`, so the encoder block needs no template:
+
+```yaml
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+
+scenarios:
+  - signal_type: metrics
+    pack: openconfig_interface
+    labels: { device: rtr-edge-01, ifName: Ethernet1 }
+```
+
+`in_octets` on `Ethernet1` is served at `/interfaces/interface[name=Ethernet1]/state/counters/in-octets` as a `uint_val`, and `oper_status` at `/interfaces/interface[name=Ethernet1]/state/oper-status` as the string `UP`. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/gnmi-pack.yaml`](https://github.com/davidban77/sonda/blob/main/examples/gnmi-pack.yaml) runs it for two interfaces.
 
 ## Change one metric without editing the pack
 

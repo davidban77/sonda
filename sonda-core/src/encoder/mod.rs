@@ -5,6 +5,13 @@
 
 #[cfg(feature = "gnmi")]
 pub mod gnmi;
+/// The gNMI value type alone, without the `gnmi` feature.
+#[cfg(not(feature = "gnmi"))]
+pub mod gnmi {
+    pub mod value;
+
+    pub use value::GnmiValueType;
+}
 pub mod influx;
 pub mod json;
 #[cfg(feature = "otlp")]
