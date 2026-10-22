@@ -494,6 +494,7 @@ All pack fields are top-level keys in the file:
 | `metrics[].id` | string | no | Disambiguator, required on *every* spec sharing a name and unique among them. Addressing only — see [Addressing a repeated metric name](#addressing-a-repeated-metric-name). |
 | `metrics[].labels` | map | no | Per-metric labels (merged on top of `shared_labels`). |
 | `metrics[].generator` | object | no | Default generator. Falls back to `constant { value: 0.0 }` when absent. |
+| `metrics[].gnmi` | object | no | `path` and `value`: the metric's gNMI path template and value type. Under a `gnmi` encoder they fill the encoder's `paths:` and `values:` for this metric; entries the scenario writes win. Specs sharing a name carry the same hint or none. See [Encoders — paths and values from a pack](encoders.md#paths-and-values-from-a-pack). |
 
 ## Pattern: catalog and packs together
 

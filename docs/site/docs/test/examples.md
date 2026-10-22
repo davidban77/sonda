@@ -107,6 +107,7 @@ See [Generators](../build/generators.md) for distribution options.
 |------|------|---------|------|-------------|
 | `pack-scenario.yaml` | telegraf_snmp_interface | prometheus_text | stdout | Expand a pack into per-metric scenarios with user-supplied labels |
 | `pack-with-overrides.yaml` | telegraf_snmp_interface | prometheus_text | stdout | Override one metric's generator (`ifOperStatus` -> `flap`) without editing the pack |
+| `gnmi-pack.yaml` | openconfig_interface | gnmi | gnmi_target | Two interfaces served as a gNMI target, every metric at the path and value type the pack's hints give it |
 
 Packs are `kind: composable` YAML files in a catalog directory you control. Point `sonda run` at that directory with `--catalog <dir>` so `pack: <name>` references resolve. See [Metric Packs](../build/catalogs-and-packs.md) for the catalog layout.
 

@@ -1,0 +1,36 @@
+# The openconfig_interface pack served as a gNMI target: two interfaces of
+# one router, every metric at its OpenConfig path.
+#
+# The encoder block names only the origin and the target label. The pack's
+# metrics carry their own paths and value types, which fill the encoder's
+# `paths:` and `values:`; write either map here to replace a metric's entry.
+#
+# Usage (runs until stopped; release binaries include the gnmi feature):
+#   sonda run examples/gnmi-pack.yaml
+#
+# Inspect the target directly with gnmic:
+#   gnmic -a 127.0.0.1:57400 --insecure subscribe --path /interfaces --mode once
+#
+# sonda:static - a gnmi_target listens for a client, which the browser playground cannot provide
+
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: gnmi
+    origin: openconfig-interfaces
+    target_label: device
+  sink:
+    type: gnmi_target
+    listen: 0.0.0.0:57400
+
+scenarios:
+  - signal_type: metrics
+    pack: openconfig_interface
+    labels: { device: rtr-edge-01, ifName: Ethernet1 }
+
+  - signal_type: metrics
+    pack: openconfig_interface
+    labels: { device: rtr-edge-01, ifName: Ethernet2 }

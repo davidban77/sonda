@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::compiler::{AfterClause, DelayClause, WhileClause};
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
+use crate::encoder::gnmi::GnmiValueType;
 use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
 use crate::sink::SinkConfig;
@@ -62,6 +63,34 @@ pub struct MetricSpec {
     /// generator is used.
     #[cfg_attr(feature = "config", serde(default))]
     pub generator: Option<GeneratorConfig>,
+    /// gNMI path and value type for this metric. Under a `gnmi` encoder,
+    /// expansion writes them into the encoder's `paths:` and `values:` for
+    /// this metric's name where the scenario's encoder block has no entry
+    /// (see [`fold_gnmi_hints`]); under any other encoder they are unused.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub gnmi: Option<GnmiHint>,
+}
+
+/// A pack metric's gNMI path and value type.
+///
+/// # YAML Schema
+///
+/// ```yaml
+/// gnmi:
+///   path: "/interfaces/interface[name={ifName}]/state/oper-status"
+///   value: { enum: { 1: UP, 2: DOWN } }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GnmiHint {
+    /// Path template for the metric, as a `paths:` entry of the gnmi
+    /// encoder takes it: `{name}` and `{<label>}` placeholders.
+    pub path: String,
+    /// Value type for the metric, as a `values:` entry of the gnmi encoder
+    /// takes it.
+    pub value: GnmiValueType,
 }
 
 impl MetricSpec {
@@ -343,6 +372,23 @@ pub enum PackValidationError {
         name: String,
         id: String,
     },
+
+    /// Specs sharing a name carry different `gnmi:` hints. The encoder's
+    /// `paths:` and `values:` are keyed by name, so one name has one hint.
+    #[error(
+        "pack '{pack_name}': metric name '{name}' carries different `gnmi:` hints; \
+         specs sharing a name must carry the same hint or none"
+    )]
+    ConflictingGnmiHints { pack_name: String, name: String },
+
+    /// A `gnmi:` hint's path is not a valid path template.
+    #[error("pack '{pack_name}': metric '{selector}': gnmi.path {path:?}: {reason}")]
+    InvalidGnmiPath {
+        pack_name: String,
+        selector: String,
+        path: String,
+        reason: String,
+    },
 }
 
 /// Check that every spec in `pack` is addressable, and that no selector
@@ -359,6 +405,10 @@ pub enum PackValidationError {
 ///
 /// Pure, and deliberately the only definition of the rule — the selector
 /// resolver below relies on it having passed and does not re-derive it.
+///
+/// It also checks the `gnmi:` hints: specs sharing a name carry the same
+/// hint or none, and, with the `gnmi` feature, every hint's path parses as a
+/// path template.
 pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
     for spec in &pack.metrics {
         if spec.name.contains('.') {
@@ -398,9 +448,54 @@ pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
                 });
             }
         }
+        if specs.iter().any(|s| s.gnmi != specs[0].gnmi) {
+            return Err(PackValidationError::ConflictingGnmiHints {
+                pack_name: pack.name.clone(),
+                name: name.to_string(),
+            });
+        }
+    }
+
+    #[cfg(feature = "gnmi")]
+    for spec in &pack.metrics {
+        let Some(hint) = &spec.gnmi else { continue };
+        if let Err(e) = crate::encoder::gnmi::path::PathTemplate::parse(&hint.path) {
+            return Err(PackValidationError::InvalidGnmiPath {
+                pack_name: pack.name.clone(),
+                selector: spec.selector(),
+                path: hint.path.clone(),
+                reason: e.to_string(),
+            });
+        }
     }
 
     Ok(())
+}
+
+/// `encoder` with each metric's `gnmi:` hint written into its `paths:` and
+/// `values:`.
+///
+/// For every spec carrying a hint, `paths[name]` is set to the hint's path
+/// unless `paths` already has an entry for `name`, and `values[name]` to its
+/// value type unless `values` already has one: the scenario's entries win,
+/// each map on its own. An encoder other than `gnmi` is returned unchanged.
+pub fn fold_gnmi_hints(pack: &MetricPackDef, encoder: &EncoderConfig) -> EncoderConfig {
+    #[cfg(feature = "gnmi")]
+    if let EncoderConfig::Gnmi(cfg) = encoder {
+        let mut cfg = cfg.clone();
+        for spec in &pack.metrics {
+            let Some(hint) = &spec.gnmi else { continue };
+            cfg.paths
+                .entry(spec.name.clone())
+                .or_insert_with(|| hint.path.clone());
+            cfg.values
+                .entry(spec.name.clone())
+                .or_insert_with(|| hint.value.clone());
+        }
+        return EncoderConfig::Gnmi(cfg);
+    }
+    let _ = pack;
+    encoder.clone()
 }
 
 /// A reference to one metric spec: a bare `name`, or `name.id`.
@@ -596,6 +691,11 @@ pub fn resolve_override_keys<'a>(
 /// 2. `MetricSpec::generator`, if present in the pack definition.
 /// 3. `constant { value: 0.0 }` as a last-resort default.
 ///
+/// # gNMI hints
+///
+/// Every entry's encoder is [`fold_gnmi_hints`] of the pack and the user's
+/// encoder.
+///
 /// # Errors
 ///
 /// Returns [`SondaError::Config`] if:
@@ -621,6 +721,7 @@ pub fn expand_pack(
         None => BTreeMap::new(),
     };
 
+    let encoder = fold_gnmi_hints(pack, &config.encoder);
     let mut entries = Vec::with_capacity(pack.metrics.len());
 
     for (spec_index, spec) in pack.metrics.iter().enumerate() {
@@ -700,7 +801,7 @@ pub fn expand_pack(
                 on_sink_error: crate::OnSinkError::Warn,
             },
             generator,
-            encoder: config.encoder.clone(),
+            encoder: encoder.clone(),
             metric_type: None,
             help: None,
         };
@@ -736,12 +837,14 @@ mod tests {
                     id: None,
                     labels: None,
                     generator: None,
+                    gnmi: None,
                 },
                 MetricSpec {
                     name: "metric_b".to_string(),
                     id: None,
                     labels: None,
                     generator: None,
+                    gnmi: None,
                 },
             ],
         };
@@ -797,6 +900,7 @@ mod tests {
                 id: None,
                 labels: Some(metric_labels),
                 generator: None,
+                gnmi: None,
             }],
         };
 
@@ -847,6 +951,7 @@ mod tests {
                 id: None,
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+                gnmi: None,
             }],
         };
 
@@ -899,6 +1004,7 @@ mod tests {
                 id: None,
                 labels: None,
                 generator: None,
+                gnmi: None,
             }],
         };
 
@@ -939,6 +1045,7 @@ mod tests {
                 id: None,
                 labels: None,
                 generator: None,
+                gnmi: None,
             }],
         };
 
@@ -976,6 +1083,7 @@ mod tests {
                 id: None,
                 labels: None,
                 generator: None,
+                gnmi: None,
             }],
         };
 
@@ -1048,6 +1156,7 @@ mod tests {
                 id: None,
                 labels: None,
                 generator: None,
+                gnmi: None,
             }],
         };
 
@@ -1098,6 +1207,7 @@ mod tests {
                 id: None,
                 labels: None,
                 generator: None,
+                gnmi: None,
             }],
         };
 
@@ -1224,6 +1334,7 @@ sink:
             id: id.map(str::to_string),
             labels: None,
             generator: None,
+            gnmi: None,
         }
     }
 
@@ -1522,5 +1633,234 @@ sink:
                 "every spec must be addressable by its own selector"
             );
         }
+    }
+
+    // ---- gNMI hints -------------------------------------------------------------
+
+    fn hinted(name: &str, path: &str, value: GnmiValueType) -> MetricSpec {
+        MetricSpec {
+            gnmi: Some(GnmiHint {
+                path: path.to_string(),
+                value,
+            }),
+            ..spec(name, None)
+        }
+    }
+
+    /// Two hinted metrics and one without a hint.
+    fn hinted_pack() -> MetricPackDef {
+        pack_of(vec![
+            hinted(
+                "in_octets",
+                "/interfaces/interface[name={ifName}]/state/counters/in-octets",
+                GnmiValueType::Uint,
+            ),
+            hinted(
+                "oper_status",
+                "/interfaces/interface[name={ifName}]/state/oper-status",
+                GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())])),
+            ),
+            spec("plain", None),
+        ])
+    }
+
+    fn pack_config(encoder: EncoderConfig) -> PackScenarioConfig {
+        PackScenarioConfig {
+            pack: "p".to_string(),
+            rate: 1.0,
+            duration: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            encoder,
+            overrides: None,
+        }
+    }
+
+    /// Runs in every build, `--no-default-features` included: the hint is
+    /// data and needs neither `gnmi` nor `config`.
+    #[test]
+    fn a_pack_with_gnmi_hints_validates_without_the_gnmi_feature() {
+        let pack = hinted_pack();
+        assert_eq!(
+            pack.metrics.iter().filter(|s| s.gnmi.is_some()).count(),
+            2,
+            "the premise: hints present"
+        );
+        assert_eq!(validate_pack(&pack), Ok(()));
+    }
+
+    #[test]
+    fn specs_sharing_a_name_with_different_gnmi_hints_do_not_load() {
+        let with_id = |id: &str, value| MetricSpec {
+            id: Some(id.to_string()),
+            ..hinted("cpu", "/cpu", value)
+        };
+        let pack = pack_of(vec![
+            with_id("user", GnmiValueType::Uint),
+            with_id("idle", GnmiValueType::Double),
+        ]);
+        assert_eq!(
+            validate_pack(&pack),
+            Err(PackValidationError::ConflictingGnmiHints {
+                pack_name: "p".to_string(),
+                name: "cpu".to_string(),
+            })
+        );
+
+        let same = pack_of(vec![
+            with_id("user", GnmiValueType::Uint),
+            with_id("idle", GnmiValueType::Uint),
+        ]);
+        assert_eq!(validate_pack(&same), Ok(()), "one hint shared is fine");
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn a_hint_path_that_is_not_a_template_does_not_load() {
+        let pack = pack_of(vec![hinted(
+            "in_octets",
+            "no/leading/slash[",
+            GnmiValueType::Uint,
+        )]);
+        let err = validate_pack(&pack).expect_err("must refuse");
+        assert!(
+            matches!(&err, PackValidationError::InvalidGnmiPath { selector, .. } if selector == "in_octets"),
+            "got: {err:?}"
+        );
+        assert!(format!("{err}").contains("no/leading/slash["), "got: {err}");
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn a_gnmi_hint_parses_from_yaml() {
+        let spec: MetricSpec = serde_yaml_ng::from_str(
+            "name: oper_status\n\
+             gnmi:\n  path: /interfaces/interface[name={ifName}]/state/oper-status\n  \
+             value: { enum: { 1: UP, 2: DOWN } }\n",
+        )
+        .expect("a hint parses");
+        assert_eq!(
+            spec.gnmi,
+            Some(GnmiHint {
+                path: "/interfaces/interface[name={ifName}]/state/oper-status".to_string(),
+                value: GnmiValueType::Enum(BTreeMap::from([
+                    (1, "UP".to_string()),
+                    (2, "DOWN".to_string()),
+                ])),
+            })
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn a_gnmi_hint_with_a_misspelled_key_is_refused() {
+        let parsed: Result<MetricSpec, _> =
+            serde_yaml_ng::from_str("name: in_octets\ngnmi:\n  path: /a\n  vaule: uint\n");
+        let err = parsed.expect_err("an unknown hint key must be refused");
+        assert!(err.to_string().contains("vaule"), "got: {err}");
+    }
+
+    /// The encoder of every entry `expand_pack` makes from `pack` under
+    /// `encoder`; asserts there is one entry per metric.
+    fn expanded_encoders(pack: &MetricPackDef, encoder: EncoderConfig) -> Vec<EncoderConfig> {
+        let entries = expand_pack(pack, &pack_config(encoder)).expect("expands");
+        assert_eq!(entries.len(), pack.metrics.len(), "one entry per metric");
+        entries
+            .into_iter()
+            .map(|entry| match entry {
+                ScenarioEntry::Metrics(config) => config.encoder,
+                other => panic!("a metrics entry, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn under_a_bare_gnmi_encoder_every_hinted_metric_gets_its_hint() {
+        use crate::encoder::gnmi::GnmiEncoderConfig;
+        let pack = hinted_pack();
+        let encoders = expanded_encoders(&pack, EncoderConfig::Gnmi(GnmiEncoderConfig::default()));
+        for encoder in encoders {
+            let EncoderConfig::Gnmi(cfg) = encoder else {
+                panic!("still a gnmi encoder");
+            };
+            assert_eq!(
+                cfg.paths,
+                HashMap::from([
+                    (
+                        "in_octets".to_string(),
+                        "/interfaces/interface[name={ifName}]/state/counters/in-octets".to_string()
+                    ),
+                    (
+                        "oper_status".to_string(),
+                        "/interfaces/interface[name={ifName}]/state/oper-status".to_string()
+                    ),
+                ])
+            );
+            assert_eq!(
+                cfg.values,
+                HashMap::from([
+                    ("in_octets".to_string(), GnmiValueType::Uint),
+                    (
+                        "oper_status".to_string(),
+                        GnmiValueType::Enum(BTreeMap::from([(1, "UP".to_string())]))
+                    ),
+                ])
+            );
+        }
+    }
+
+    /// A `paths:` entry and a `values:` entry each win for their own map
+    /// and metric; everything else still folds.
+    #[cfg(feature = "gnmi")]
+    #[test]
+    fn a_user_paths_or_values_entry_wins_over_the_hint() {
+        use crate::encoder::gnmi::GnmiEncoderConfig;
+        let user = GnmiEncoderConfig {
+            paths: HashMap::from([("in_octets".to_string(), "/mine/in".to_string())]),
+            values: HashMap::from([("oper_status".to_string(), GnmiValueType::Int)]),
+            ..GnmiEncoderConfig::default()
+        };
+        let encoders = expanded_encoders(&hinted_pack(), EncoderConfig::Gnmi(user));
+        let EncoderConfig::Gnmi(cfg) = &encoders[0] else {
+            panic!("still a gnmi encoder");
+        };
+        assert_eq!(cfg.paths["in_octets"], "/mine/in", "the user's path");
+        assert_eq!(
+            cfg.paths["oper_status"], "/interfaces/interface[name={ifName}]/state/oper-status",
+            "the hint's path"
+        );
+        assert_eq!(
+            cfg.values["oper_status"],
+            GnmiValueType::Int,
+            "the user's value"
+        );
+        assert_eq!(
+            cfg.values["in_octets"],
+            GnmiValueType::Uint,
+            "the hint's value"
+        );
+        assert_eq!(cfg.paths.len() + cfg.values.len(), 4);
+    }
+
+    #[test]
+    fn under_a_non_gnmi_encoder_nothing_is_folded() {
+        let pack = hinted_pack();
+        let user = EncoderConfig::PrometheusText { precision: Some(2) };
+        let encoders = expanded_encoders(&pack, user.clone());
+        assert!(!encoders.is_empty());
+        for encoder in encoders {
+            assert!(
+                matches!(
+                    encoder,
+                    EncoderConfig::PrometheusText { precision: Some(2) }
+                ),
+                "unchanged, got {encoder:?}"
+            );
+        }
+        assert!(matches!(
+            fold_gnmi_hints(&pack, &user),
+            EncoderConfig::PrometheusText { precision: Some(2) }
+        ));
     }
 }

@@ -46,11 +46,13 @@ impl<'de> Deserialize<'de> for ScalarText {
 }
 
 /// `deserialize_with` for a required text field.
+#[cfg(feature = "gnmi")]
 pub(crate) fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     ScalarText::deserialize(deserializer).map(|text| text.0)
 }
 
 /// `deserialize_with` for an optional text field; `null` is `None`.
+#[cfg(feature = "gnmi")]
 pub(crate) fn optional<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
