@@ -602,6 +602,16 @@ enum Placement {
     Last,
 }
 
+/// One series value to queue: notification `latest` of series `id` at
+/// `path`, the series' `version` in it, and where it goes in the queue.
+struct Queued<'a> {
+    id: SeriesId,
+    version: u64,
+    path: &'a PathKey,
+    latest: Bytes,
+    placement: Placement,
+}
+
 /// The paths a subscription list has queued a value for and not yet queued
 /// a delete for, each with the series it was queued under: the list's
 /// delivery index. A value enters it when the list's ON_CHANGE set matches
@@ -662,23 +672,20 @@ impl Delivered {
         self.paths.get(path).is_some_and(|held| *held != id)
     }
 
-    /// Queue `latest`, one encoded notification, as the value of series `id`
-    /// at `path` at `version`, where `placement` says: for a JSON_IETF list,
+    /// Queue `value.latest` as the value of series `value.id` at
+    /// `value.path`, where `value.placement` says: for a JSON_IETF list,
     /// `latest` with its value as JSON_IETF, and nothing when the series has
     /// left the table, whose delete reaches the list as any delete does. When
-    /// `path` is indexed under another series, that series' delete is queued
-    /// first. With `index`, `path` is then indexed under `id`.
-    #[allow(clippy::too_many_arguments)]
-    fn queue_value(
-        &mut self,
-        id: SeriesId,
-        path: &PathKey,
-        latest: Bytes,
-        version: u64,
-        placement: Placement,
-        index: bool,
-        pending: &mut Pending,
-    ) {
+    /// the path is indexed under another series, that series' delete is
+    /// queued first. With `index`, the path is then indexed under the series.
+    fn queue_value(&mut self, value: Queued<'_>, index: bool, pending: &mut Pending) {
+        let Queued {
+            id,
+            version,
+            path,
+            latest,
+            placement,
+        } = value;
         let latest = match &self.json_ietf {
             None => latest,
             Some(target) => match target
@@ -794,7 +801,7 @@ async fn next_change(on_change: &mut Option<OnChangeSet>) -> Result<SeriesEvent,
 }
 
 /// One entry of a subscription's queue.
-enum Queued {
+enum QueueEntry {
     /// A response encoded when it was queued.
     Response(PreEncoded),
     /// A series whose latest value [`Pending::values`] holds.
@@ -805,9 +812,9 @@ enum Queued {
 /// most one value queued: queuing another replaces it in place.
 #[derive(Default)]
 struct Pending {
-    queue: VecDeque<Queued>,
+    queue: VecDeque<QueueEntry>,
     values: HashMap<SeriesId, Bytes>,
-    /// The [`Queued::Response`] entries in `queue`.
+    /// The [`QueueEntry::Response`] entries in `queue`.
     responses: usize,
 }
 
@@ -825,7 +832,7 @@ impl Pending {
     /// Queue `response` last.
     fn push_response(&mut self, response: PreEncoded) {
         self.responses += 1;
-        self.queue.push_back(Queued::Response(response));
+        self.queue.push_back(QueueEntry::Response(response));
     }
 
     /// Queue `latest`, one encoded notification, as series `id`'s value: in
@@ -837,7 +844,7 @@ impl Pending {
             }
             Entry::Vacant(slot) => {
                 slot.insert(latest);
-                self.queue.push_back(Queued::Value(id));
+                self.queue.push_back(QueueEntry::Value(id));
             }
         }
     }
@@ -853,11 +860,11 @@ impl Pending {
     fn pop(&mut self) -> Option<PreEncoded> {
         loop {
             match self.queue.pop_front()? {
-                Queued::Response(response) => {
+                QueueEntry::Response(response) => {
                     self.responses -= 1;
                     return Some(response);
                 }
-                Queued::Value(id) => {
+                QueueEntry::Value(id) => {
                     if let Some(latest) = self.values.remove(&id) {
                         return Some(update_response(&latest));
                     }
@@ -1189,11 +1196,13 @@ impl Producer {
                 if queue {
                     index |= record_sent(&mut self.samples, &series);
                     self.delivered.queue_value(
-                        series.series_id,
-                        &series.path,
-                        series.latest,
-                        series.version,
-                        Placement::InPlace,
+                        Queued {
+                            id: series.series_id,
+                            path: &series.path,
+                            latest: series.latest,
+                            version: series.version,
+                            placement: Placement::InPlace,
+                        },
                         index,
                         &mut pending,
                     );
@@ -1228,11 +1237,13 @@ impl Producer {
                         .is_some()
                 });
             self.delivered.queue_value(
-                series.series_id,
-                &series.path,
-                series.latest,
-                series.version,
-                Placement::Last,
+                Queued {
+                    id: series.series_id,
+                    path: &series.path,
+                    latest: series.latest,
+                    version: series.version,
+                    placement: Placement::Last,
+                },
                 index,
                 pending,
             );
@@ -1258,11 +1269,13 @@ impl Producer {
                     .queued = series.version;
             }
             self.delivered.queue_value(
-                series.series_id,
-                &series.path,
-                series.latest,
-                series.version,
-                Placement::InPlace,
+                Queued {
+                    id: series.series_id,
+                    path: &series.path,
+                    latest: series.latest,
+                    version: series.version,
+                    placement: Placement::InPlace,
+                },
                 true,
                 pending,
             );
@@ -1296,11 +1309,13 @@ impl Producer {
                     .filter(|path| !self.delivered.holds_another(path, series_id))
                 {
                     self.delivered.queue_value(
-                        series_id,
-                        path,
-                        bytes,
-                        version,
-                        Placement::InPlace,
+                        Queued {
+                            id: series_id,
+                            path,
+                            latest: bytes,
+                            version,
+                            placement: Placement::InPlace,
+                        },
                         true,
                         pending,
                     );
@@ -1365,11 +1380,13 @@ impl Producer {
             if seen.path.is_some() {
                 seen.queued = series.version;
                 self.delivered.queue_value(
-                    series.series_id,
-                    &series.path,
-                    series.latest,
-                    series.version,
-                    Placement::InPlace,
+                    Queued {
+                        id: series.series_id,
+                        path: &series.path,
+                        latest: series.latest,
+                        version: series.version,
+                        placement: Placement::InPlace,
+                    },
                     true,
                     pending,
                 );
@@ -1610,7 +1627,7 @@ mod tests {
         let (_, buf) = encoded("in_octets", &format!("eth{i}"), value);
         let key = PathKey::decode(&buf).expect("a notification");
         target
-            .publish(owner, id, &key, &buf)
+            .publish(owner, id, &key, Bytes::from(buf.clone()))
             .expect("the owner's path")
     }
 
@@ -1620,7 +1637,12 @@ mod tests {
         let (_, buf) = encoded(name, if_name, 1.0);
         let key = PathKey::decode(&buf).expect("a notification");
         let (_, published) = target
-            .publish(Owner::from(LaunchId::next()), None, &key, &buf)
+            .publish(
+                Owner::from(LaunchId::next()),
+                None,
+                &key,
+                Bytes::from(buf.clone()),
+            )
             .expect("a free path");
         published.receivers
     }
@@ -3377,7 +3399,7 @@ mod tests {
                     encoder.encode_metric(&event, &mut buf).expect("encodes");
                     let key = PathKey::decode(&buf).expect("a notification");
                     target
-                        .publish(owner, Some(id), &key, &buf)
+                        .publish(owner, Some(id), &key, Bytes::from(buf.clone()))
                         .expect("the owner's path");
                     let next = std::time::Instant::now() + Duration::from_micros(20);
                     while std::time::Instant::now() < next {
@@ -4605,11 +4627,13 @@ mod tests {
         let eth0 = key("eth0");
         for (id, value) in [(1, 1.0), (2, 2.0)] {
             delivered.queue_value(
-                id,
-                &eth0,
-                latest("eth0", value),
-                1,
-                Placement::InPlace,
+                Queued {
+                    id,
+                    path: &eth0,
+                    latest: latest("eth0", value),
+                    version: 1,
+                    placement: Placement::InPlace,
+                },
                 true,
                 &mut pending,
             );
@@ -4634,29 +4658,35 @@ mod tests {
         let mut pending = Pending::default();
         let eth0 = key("eth0");
         delivered.queue_value(
-            1,
-            &eth0,
-            latest("eth0", 1.0),
-            1,
-            Placement::Last,
+            Queued {
+                id: 1,
+                path: &eth0,
+                latest: latest("eth0", 1.0),
+                version: 1,
+                placement: Placement::Last,
+            },
             true,
             &mut pending,
         );
         delivered.queue_value(
-            2,
-            &eth0,
-            latest("eth0", 2.0),
-            1,
-            Placement::Last,
+            Queued {
+                id: 2,
+                path: &eth0,
+                latest: latest("eth0", 2.0),
+                version: 1,
+                placement: Placement::Last,
+            },
             false,
             &mut pending,
         );
         delivered.queue_value(
-            3,
-            &key("eth1"),
-            latest("eth1", 3.0),
-            1,
-            Placement::Last,
+            Queued {
+                id: 3,
+                path: &key("eth1"),
+                latest: latest("eth1", 3.0),
+                version: 1,
+                placement: Placement::Last,
+            },
             false,
             &mut pending,
         );
@@ -4694,11 +4724,13 @@ mod tests {
             let mut delivered = Delivered::new(remembers);
             let mut pending = Pending::default();
             delivered.queue_value(
-                1,
-                &key("eth0"),
-                latest("eth0", 1.0),
-                1,
-                Placement::InPlace,
+                Queued {
+                    id: 1,
+                    path: &key("eth0"),
+                    latest: latest("eth0", 1.0),
+                    version: 1,
+                    placement: Placement::InPlace,
+                },
                 true,
                 &mut pending,
             );
@@ -4725,11 +4757,13 @@ mod tests {
         let mut delivered = Delivered::new(true);
         let mut pending = Pending::default();
         delivered.queue_value(
-            1,
-            &key("eth0"),
-            latest("eth0", 1.0),
-            1,
-            Placement::InPlace,
+            Queued {
+                id: 1,
+                path: &key("eth0"),
+                latest: latest("eth0", 1.0),
+                version: 1,
+                placement: Placement::InPlace,
+            },
             true,
             &mut pending,
         );
@@ -4749,11 +4783,13 @@ mod tests {
         let mut pending = Pending::default();
         for (id, if_name) in [(3, "eth3"), (1, "eth1"), (2, "eth2")] {
             delivered.queue_value(
-                id,
-                &key(if_name),
-                latest(if_name, 1.0),
-                1,
-                Placement::InPlace,
+                Queued {
+                    id,
+                    path: &key(if_name),
+                    latest: latest(if_name, 1.0),
+                    version: 1,
+                    placement: Placement::InPlace,
+                },
                 true,
                 &mut pending,
             );
@@ -4786,11 +4822,13 @@ mod tests {
         let mut pending = Pending::default();
         for (id, if_name) in [(1, "eth1"), (2, "eth2"), (3, "eth3")] {
             delivered.queue_value(
-                id,
-                &key(if_name),
-                latest(if_name, 1.0),
-                1,
-                Placement::InPlace,
+                Queued {
+                    id,
+                    path: &key(if_name),
+                    latest: latest(if_name, 1.0),
+                    version: 1,
+                    placement: Placement::InPlace,
+                },
                 true,
                 &mut pending,
             );

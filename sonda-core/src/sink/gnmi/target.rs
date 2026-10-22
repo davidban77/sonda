@@ -477,8 +477,9 @@ impl GnmiTarget {
     /// [released](Self::release) once; the series leaves with the last.
     ///
     /// Synchronous; `broadcast::Sender::send` never blocks. Locates the value
-    /// in `encoded`, copies `encoded` once and compares the value with the
-    /// series' previous one; only a changed value is broadcast. The update is
+    /// in `encoded`, stores `encoded` as the series' latest notification
+    /// without copying it, and compares the value with the series' previous
+    /// one; only a changed value is broadcast. The update is
     /// broadcast while the series is still locked, so concurrent publishes of
     /// one path reach subscribers in the order the table stores them.
     ///
@@ -492,7 +493,7 @@ impl GnmiTarget {
         owner: Owner,
         id: Option<SeriesId>,
         path: &PathKey,
-        encoded: &[u8],
+        encoded: Bytes,
     ) -> Result<(SeriesId, Published), SondaError> {
         let (latest, kind) = latest(encoded)?;
         self.store(owner, id, path, latest, kind)
@@ -510,7 +511,7 @@ impl GnmiTarget {
     pub(crate) fn overwrite(
         &self,
         path: &PathKey,
-        encoded: &[u8],
+        encoded: Bytes,
     ) -> Result<Option<SeriesId>, SondaError> {
         let (latest, _) = latest(encoded)?;
         let table = self.read();
@@ -989,16 +990,17 @@ fn lock(latest: &Mutex<Latest>) -> std::sync::MutexGuard<'_, Latest> {
     latest.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A copy of `encoded` with its value located, and the value's kind.
+/// `encoded` with its value located, and the value's kind.
 ///
 /// # Errors
 ///
 /// [`SondaError::Sink`] when `encoded` is not a gnmi notification whose
 /// update has a value.
-fn latest(encoded: &[u8]) -> Result<(Latest, ValueKind), SondaError> {
-    let (value, kind) = value_span(encoded).ok_or_else(|| not_a_notification("no update value"))?;
+fn latest(encoded: Bytes) -> Result<(Latest, ValueKind), SondaError> {
+    let (value, kind) =
+        value_span(&encoded).ok_or_else(|| not_a_notification("no update value"))?;
     let latest = Latest {
-        bytes: Bytes::copy_from_slice(encoded),
+        bytes: encoded,
         value,
         // Set when the value is stored.
         version: 0,
@@ -1113,11 +1115,15 @@ mod tests {
         let b = path("Gi1", "in-octets");
 
         let (one, two, three) = (note(1.0), note(2.0), note(3.0));
-        let (first, _) = target.publish(OWNER, None, &a, &one).expect("one owner");
-        let (again, _) = target
-            .publish(OWNER, Some(first), &a, &two)
+        let (first, _) = target
+            .publish(OWNER, None, &a, one.clone())
             .expect("one owner");
-        let (other, _) = target.publish(OWNER, None, &b, &three).expect("one owner");
+        let (again, _) = target
+            .publish(OWNER, Some(first), &a, two.clone())
+            .expect("one owner");
+        let (other, _) = target
+            .publish(OWNER, None, &b, three.clone())
+            .expect("one owner");
 
         assert_eq!(first, again, "the same path keeps its id");
         assert_ne!(first, other, "a different path is a different series");
@@ -1136,13 +1142,13 @@ mod tests {
         let series = path("Gi0", "in-octets");
         let value = note(1.0);
         let (id, _) = target
-            .publish(OWNER, None, &series, &value)
+            .publish(OWNER, None, &series, value.clone())
             .expect("one owner");
         let started = Instant::now();
         let mut published = 0usize;
         for _ in 0..10_000 {
             let (_, done) = target
-                .publish(OWNER, Some(id), &series, &value)
+                .publish(OWNER, Some(id), &series, value.clone())
                 .expect("one owner");
             assert!(!done.receivers);
             published += 1;
@@ -1162,14 +1168,14 @@ mod tests {
         let mut receiver = target.subscribe();
         let series = path("Gi0", "in-octets");
         let (id, done) = target
-            .publish(OWNER, None, &series, &note(-1.0))
+            .publish(OWNER, None, &series, note(-1.0))
             .expect("one owner");
         assert!(done.receivers, "the receiver counts as subscribed");
         // Each value differs from the last, so each is broadcast.
         let values: Vec<Bytes> = (0..1_000).map(|i| note(f64::from(i))).collect();
         for value in &values {
             target
-                .publish(OWNER, Some(id), &series, value)
+                .publish(OWNER, Some(id), &series, value.clone())
                 .expect("one owner");
         }
         match receiver.recv().await {
@@ -1215,7 +1221,9 @@ mod tests {
         let key = PathKey::decode(&buf).expect("a notification with an update");
 
         let target = bind(16).await;
-        target.publish(OWNER, None, &key, &buf).expect("one owner");
+        target
+            .publish(OWNER, None, &key, Bytes::from(buf.clone()))
+            .expect("one owner");
         let snapshot = target.snapshot();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
@@ -1234,7 +1242,9 @@ mod tests {
         for (job, value) in [("a", 1.0), ("b", 2.0), ("c", 3.0)] {
             last = encoded(&[("ifName", "Gi0"), ("job", job)], value);
             let key = PathKey::decode(&last).expect("decodes");
-            target.publish(OWNER, None, &key, &last).expect("one owner");
+            target
+                .publish(OWNER, None, &key, Bytes::from(last.clone()))
+                .expect("one owner");
         }
         assert_eq!(target.series_count(), 1, "`job` is dropped from the path");
         let snapshot = target.snapshot();
@@ -1247,7 +1257,7 @@ mod tests {
                 OWNER,
                 None,
                 &PathKey::decode(&other).expect("decodes"),
-                &other,
+                Bytes::from(other.clone()),
             )
             .expect("one owner");
         assert_eq!(target.series_count(), 2);
@@ -1262,17 +1272,17 @@ mod tests {
         let (old_path, new_path) = (path("Gi0", "in-octets"), path("Gi1", "in-octets"));
         let (old, new, old_again) = (note(1.0), note(2.0), note(3.0));
         let (stale, _) = target
-            .publish(OWNER, None, &old_path, &old)
+            .publish(OWNER, None, &old_path, old.clone())
             .expect("one owner");
         target.release(OWNER, [stale]);
         target.write().next_id = stale;
         let (reused, _) = target
-            .publish(OWNER, None, &new_path, &new)
+            .publish(OWNER, None, &new_path, new.clone())
             .expect("one owner");
         assert_eq!(reused, stale, "the premise: the id was handed out again");
 
         let (resolved, _) = target
-            .publish(OWNER, Some(stale), &old_path, &old_again)
+            .publish(OWNER, Some(stale), &old_path, old_again.clone())
             .expect("one owner");
         assert_ne!(resolved, stale);
         assert_eq!(
@@ -1309,28 +1319,32 @@ mod tests {
         assert_ne!(owner, other, "each launch is its own owner");
         let shared = path("Gi0", "in-octets");
         let (a, b, c) = (note(1.0), note(2.0), note(3.0));
-        let (id, _) = target.publish(owner, None, &shared, &a).expect("new path");
-        let (same, _) = target.publish(owner, None, &shared, &b).expect("own path");
+        let (id, _) = target
+            .publish(owner, None, &shared, a.clone())
+            .expect("new path");
+        let (same, _) = target
+            .publish(owner, None, &shared, b.clone())
+            .expect("own path");
         assert_eq!(
             id, same,
             "the owner's second publish of a path is an upsert"
         );
 
         let err = target
-            .publish(other, None, &shared, &c)
+            .publish(other, None, &shared, c.clone())
             .expect_err("another owner's path is refused");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
         let msg = err.to_string();
         assert!(msg.contains("interface[name=Gi0]/in-octets"), "got {msg}");
         assert!(msg.contains(&target.local_addr().to_string()), "got {msg}");
         let err = target
-            .publish(other, Some(id), &shared, &c)
+            .publish(other, Some(id), &shared, c.clone())
             .expect_err("another owner's id is refused too");
         assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
         assert_eq!(target.snapshot()[0].latest, b);
 
         let (own, _) = target
-            .publish(other, None, &path("Gi1", "in-octets"), &note(4.0))
+            .publish(other, None, &path("Gi1", "in-octets"), note(4.0))
             .expect("a free path");
         assert_ne!(own, id);
         assert_eq!(target.series_count(), 2);
@@ -1348,7 +1362,7 @@ mod tests {
         target.release(owner, [id]);
         assert_eq!(target.series_count(), 1, "an unknown id is ignored");
         let (again, _) = target
-            .publish(other, None, &shared, &note(5.0))
+            .publish(other, None, &shared, note(5.0))
             .expect("the path is free once its publishers left");
         target.release(other, [own, again]);
         assert_eq!(target.series_count(), 0);
@@ -1373,7 +1387,7 @@ mod tests {
         let series = path("Gi0", "in-octets");
         let first = note_at(1.0, 1_000);
         let (id, done) = target
-            .publish(OWNER, None, &series, &first)
+            .publish(OWNER, None, &series, first.clone())
             .expect("one owner");
         assert_eq!(
             done,
@@ -1391,7 +1405,7 @@ mod tests {
         let same = note_at(1.0, 2_000);
         assert_ne!(same, first, "the premise: the timestamps differ");
         let (_, done) = target
-            .publish(OWNER, Some(id), &series, &same)
+            .publish(OWNER, Some(id), &series, same.clone())
             .expect("one owner");
         assert!(done.receivers);
         assert!(!done.changed, "only the timestamp differs");
@@ -1404,7 +1418,7 @@ mod tests {
 
         let changed = note_at(2.0, 3_000);
         let (_, done) = target
-            .publish(OWNER, Some(id), &series, &changed)
+            .publish(OWNER, Some(id), &series, changed.clone())
             .expect("one owner");
         assert!(done.changed);
         let update = as_change(receiver.try_recv().expect("broadcast"));
@@ -1417,7 +1431,7 @@ mod tests {
 
         drop(receiver);
         let (_, done) = target
-            .publish(OWNER, Some(id), &series, &note_at(3.0, 4_000))
+            .publish(OWNER, Some(id), &series, note_at(3.0, 4_000))
             .expect("one owner");
         assert_eq!(
             done,
@@ -1449,7 +1463,7 @@ mod tests {
         let target = bind(16).await;
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &note(1.0))
+            .publish(OWNER, None, &series, note(1.0))
             .expect("one owner");
         let mut receiver = target.subscribe();
         target.release(OWNER, [id]);
@@ -1475,10 +1489,10 @@ mod tests {
         let target = bind(16).await;
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &note(1.0))
+            .publish(OWNER, None, &series, note(1.0))
             .expect("one owner");
         target
-            .publish(OWNER, None, &series, &note(1.0))
+            .publish(OWNER, None, &series, note(1.0))
             .expect("one owner");
         assert_eq!(
             target.publishers(id),
@@ -1508,7 +1522,7 @@ mod tests {
         for round in 0..ROUNDS {
             let series = path(&format!("Gi{round}"), "in-octets");
             let (id, _) = target
-                .publish(OWNER, None, &series, &note(0.0))
+                .publish(OWNER, None, &series, note(0.0))
                 .expect("one owner");
             let published = AtomicUsize::new(0);
             let stop = AtomicBool::new(false);
@@ -1519,7 +1533,7 @@ mod tests {
                     while !stop.load(Ordering::Relaxed) {
                         value += 1.0;
                         current = target
-                            .publish(OWNER, Some(current), &series, &note(value))
+                            .publish(OWNER, Some(current), &series, note(value))
                             .expect("one owner")
                             .0;
                         published.fetch_add(1, Ordering::Relaxed);
@@ -1578,7 +1592,7 @@ mod tests {
         let version = || target.snapshot()[0].version;
 
         let (id, _) = target
-            .publish(OWNER, None, &series, &note_at(1.0, 1_000))
+            .publish(OWNER, None, &series, note_at(1.0, 1_000))
             .expect("one owner");
         assert_eq!(
             as_change(receiver.try_recv().expect("broadcast")).version,
@@ -1587,12 +1601,12 @@ mod tests {
         assert_eq!(version(), 1, "the first value");
 
         target
-            .publish(OWNER, Some(id), &series, &note_at(1.0, 2_000))
+            .publish(OWNER, Some(id), &series, note_at(1.0, 2_000))
             .expect("one owner");
         assert_eq!(version(), 1, "an unchanged value keeps the version");
 
         target
-            .publish(OWNER, Some(id), &series, &note_at(2.0, 3_000))
+            .publish(OWNER, Some(id), &series, note_at(2.0, 3_000))
             .expect("one owner");
         assert_eq!(
             as_change(receiver.try_recv().expect("broadcast")).version,
@@ -1601,7 +1615,7 @@ mod tests {
         assert_eq!(version(), 2, "a published change");
 
         target
-            .overwrite(&series, &note_at(3.0, 4_000))
+            .overwrite(&series, note_at(3.0, 4_000))
             .expect("a notification")
             .expect("a served path");
         assert_eq!(
@@ -1612,7 +1626,7 @@ mod tests {
 
         drop(receiver);
         target
-            .publish(OWNER, Some(id), &series, &note_at(4.0, 5_000))
+            .publish(OWNER, Some(id), &series, note_at(4.0, 5_000))
             .expect("one owner");
         assert_eq!(version(), 4, "a change with no receiver");
     }
@@ -1624,7 +1638,7 @@ mod tests {
         let target = bind(16).await;
         let buf = note(7.0);
         let (id, _) = target
-            .publish(OWNER, None, &path("Gi0", "in-octets"), &buf)
+            .publish(OWNER, None, &path("Gi0", "in-octets"), buf.clone())
             .expect("one owner");
         let table = target.read();
         let latest = lock(&table.slots[&id].latest);
@@ -1659,14 +1673,14 @@ mod tests {
         );
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &as_string)
+            .publish(OWNER, None, &series, Bytes::from(as_string.clone()))
             .expect("one owner");
         assert_eq!(
             as_change(receiver.try_recv().expect("broadcast")).kind,
             ValueKind::String
         );
         let (_, done) = target
-            .publish(OWNER, Some(id), &series, &as_uint)
+            .publish(OWNER, Some(id), &series, Bytes::from(as_uint.clone()))
             .expect("one owner");
         assert!(done.changed, "another kind of value is another value");
         assert_eq!(
@@ -1679,7 +1693,12 @@ mod tests {
         assert_eq!(snapshot[0].latest, as_uint.as_slice());
 
         let (_, _) = target
-            .publish(OWNER, None, &path("Gi1", "in-octets"), &as_uint)
+            .publish(
+                OWNER,
+                None,
+                &path("Gi1", "in-octets"),
+                Bytes::from(as_uint.clone()),
+            )
             .expect("one owner");
         let kinds: Vec<ValueKind> = {
             let mut snapshot = target.snapshot();
@@ -1714,24 +1733,24 @@ mod tests {
         };
         refused(
             target
-                .publish(OWNER, None, &series, &no_value)
+                .publish(OWNER, None, &series, Bytes::from(no_value.clone()))
                 .expect_err("a first publish without a value"),
         );
         assert_eq!(target.series_count(), 0, "nothing was stored");
 
         let value = note(1.0);
         let (id, _) = target
-            .publish(OWNER, None, &series, &value)
+            .publish(OWNER, None, &series, value.clone())
             .expect("one owner");
         for bytes in [no_value.as_slice(), b"bytes"] {
             refused(
                 target
-                    .publish(OWNER, Some(id), &series, bytes)
+                    .publish(OWNER, Some(id), &series, Bytes::copy_from_slice(bytes))
                     .expect_err("a later publish without a value"),
             );
             refused(
                 target
-                    .overwrite(&series, bytes)
+                    .overwrite(&series, Bytes::copy_from_slice(bytes))
                     .expect_err("an overwrite without a value"),
             );
         }
@@ -1798,16 +1817,16 @@ mod tests {
         let target = bind(16).await;
         let (a, b, c) = (note(1.0), note(2.0), note(3.0));
         let (first, _) = target
-            .publish(OWNER, None, &path("Gi0", "in-octets"), &a)
+            .publish(OWNER, None, &path("Gi0", "in-octets"), a.clone())
             .expect("one owner");
         assert_eq!(first, 0);
         target.write().next_id = SeriesId::MAX;
         let (last, _) = target
-            .publish(OWNER, None, &path("Gi1", "in-octets"), &b)
+            .publish(OWNER, None, &path("Gi1", "in-octets"), b.clone())
             .expect("one owner");
         assert_eq!(last, SeriesId::MAX);
         let (wrapped, _) = target
-            .publish(OWNER, None, &path("Gi2", "in-octets"), &c)
+            .publish(OWNER, None, &path("Gi2", "in-octets"), c.clone())
             .expect("one owner");
         assert_ne!(wrapped, first, "id 0 is still in use");
         assert_eq!(wrapped, 1);
@@ -1869,18 +1888,18 @@ mod tests {
         let target = bind(16).await;
         let served = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &served, &note(1.0))
+            .publish(OWNER, None, &served, note(1.0))
             .expect("one owner");
 
         let posted = note(2.0);
         assert_eq!(
-            target.overwrite(&served, &posted).expect("a value"),
+            target.overwrite(&served, posted.clone()).expect("a value"),
             Some(id)
         );
         assert_eq!(target.snapshot()[0].latest, posted);
         assert_eq!(
             target
-                .overwrite(&path("Gi9", "in-octets"), &posted)
+                .overwrite(&path("Gi9", "in-octets"), posted.clone())
                 .expect("a value"),
             None
         );
@@ -1907,7 +1926,7 @@ mod tests {
         let target = rt.block_on(bind(1 << 16));
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &note(-1.0))
+            .publish(OWNER, None, &series, note(-1.0))
             .expect("one owner");
         // Every value is distinct, so every publish is a change.
         let values: Vec<Bytes> = (0..ROUNDS * WRITERS).map(|i| note(i as f64)).collect();
@@ -1922,7 +1941,12 @@ mod tests {
                     for round in 0..ROUNDS {
                         barrier.wait();
                         target
-                            .publish(OWNER, Some(id), series, &values[round * WRITERS + writer])
+                            .publish(
+                                OWNER,
+                                Some(id),
+                                series,
+                                values[round * WRITERS + writer].clone(),
+                            )
                             .expect("one owner");
                         barrier.wait();
                         if let Some(receiver) = receiver.as_mut() {
@@ -1968,7 +1992,7 @@ mod tests {
         let target = rt.block_on(bind(16));
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &note(-1.0))
+            .publish(OWNER, None, &series, note(-1.0))
             .expect("one owner");
         // Every value is distinct, so every publish is a change.
         let values: Vec<Bytes> = (0..ROUNDS).map(|i| note(i as f64)).collect();
@@ -1980,7 +2004,7 @@ mod tests {
                 for value in values {
                     barrier.wait();
                     target
-                        .publish(OWNER, Some(id), series, value)
+                        .publish(OWNER, Some(id), series, value.clone())
                         .expect("one owner");
                     barrier.wait();
                     barrier.wait();
@@ -2230,7 +2254,7 @@ mod tests {
         let target = bind(16).await;
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &note_at(1.5, 1_000))
+            .publish(OWNER, None, &series, note_at(1.5, 1_000))
             .expect("one owner");
         let (_, version, latest) = only_series(&target);
 
@@ -2262,7 +2286,7 @@ mod tests {
         assert_eq!(json_ietf_text(&values[0]), "1.5");
 
         target
-            .publish(OWNER, Some(id), &series, &note_at(1.5, 2_000))
+            .publish(OWNER, Some(id), &series, note_at(1.5, 2_000))
             .expect("one owner");
         let (_, unchanged, republished) = only_series(&target);
         assert_eq!(unchanged, version, "the premise: the value did not change");
@@ -2278,7 +2302,7 @@ mod tests {
         assert_eq!(json_ietf_values(&target), 1);
 
         target
-            .publish(OWNER, Some(id), &series, &note_at(2.5, 3_000))
+            .publish(OWNER, Some(id), &series, note_at(2.5, 3_000))
             .expect("one owner");
         let (_, changed, newest) = only_series(&target);
         assert_eq!(changed, version + 1, "the premise: a change");
@@ -2290,6 +2314,41 @@ mod tests {
         assert_eq!(json_ietf_text(&remade), "2.5");
     }
 
+    /// Publishing never makes a series' JSON_IETF value: with a receiver
+    /// subscribed, through changed and unchanged values, the slot holds none
+    /// until [`GnmiTarget::json_ietf_value`] asks for it.
+    #[tokio::test]
+    async fn a_publish_leaves_the_json_ietf_value_unmade() {
+        let target = bind(16).await;
+        let mut rx = target.subscribe();
+        let series = path("Gi0", "in-octets");
+        let json = |id| {
+            let table = target.read();
+            let slot = table.slots.get(&id).expect("the series is served");
+            let made = lock(&slot.latest).json.is_some();
+            made
+        };
+        let (id, published) = target
+            .publish(OWNER, None, &series, note_at(1.5, 1_000))
+            .expect("one owner");
+        assert!(published.receivers, "the premise: a receiver is subscribed");
+        assert!(!json(id));
+        for (value, nanos) in [(1.5, 2_000), (2.5, 3_000), (2.5, 4_000)] {
+            target
+                .publish(OWNER, Some(id), &series, note_at(value, nanos))
+                .expect("one owner");
+            assert!(!json(id), "after publishing {value} at {nanos}");
+        }
+        assert_eq!(json_ietf_values(&target), 0);
+        assert!(rx.try_recv().is_ok(), "the premise: changes were broadcast");
+
+        let (_, version, latest) = only_series(&target);
+        target
+            .json_ietf_value(id, version, &latest)
+            .expect("a value");
+        assert!(json(id), "made when asked for");
+    }
+
     /// A caller holding a version the series has moved past gets that
     /// version's value, made from the notification it holds and not kept.
     /// An unknown id has none, and nothing is made for it.
@@ -2299,10 +2358,10 @@ mod tests {
         let series = path("Gi0", "in-octets");
         let first = note_at(1.5, 1_000);
         let (id, _) = target
-            .publish(OWNER, None, &series, &first)
+            .publish(OWNER, None, &series, first.clone())
             .expect("one owner");
         target
-            .publish(OWNER, Some(id), &series, &note_at(2.5, 2_000))
+            .publish(OWNER, Some(id), &series, note_at(2.5, 2_000))
             .expect("one owner");
         let (_, version, latest) = only_series(&target);
         assert_eq!(version, 2, "the premise: the series moved past version 1");
@@ -2336,14 +2395,14 @@ mod tests {
         let target = bind(16).await;
         let series = path("Gi0", "in-octets");
         let (id, _) = target
-            .publish(OWNER, None, &series, &note_at(1.5, 1_000))
+            .publish(OWNER, None, &series, note_at(1.5, 1_000))
             .expect("one owner");
         let (_, version, first) = only_series(&target);
         let at_first = target
             .json_ietf_of(id, version, &first)
             .expect("a notification");
         target
-            .publish(OWNER, Some(id), &series, &note_at(1.5, 2_000))
+            .publish(OWNER, Some(id), &series, note_at(1.5, 2_000))
             .expect("one owner");
         let (_, unchanged, second) = only_series(&target);
         assert_eq!(unchanged, version, "the premise: the value did not change");

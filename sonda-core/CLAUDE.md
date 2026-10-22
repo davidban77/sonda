@@ -144,7 +144,15 @@ src/
 │   │   ├── mod.rs      ←   GnmiEncoder, GnmiEncoderConfig (deny_unknown_fields; drop_labels),
 │   │   │                   GnmiValueType (hand-written Deserialize: enum codes as ints or
 │   │   │                   integer strings; enum labels as any scalar, stored as text).
-│   │   │                   Per-series path bytes cached on first sight;
+│   │   │                   Path bytes cached per series on first sight; a series is the
+│   │   │                   metric name and the labels its template sees (all but the
+│   │   │                   target_label and drop_labels, unless the template references
+│   │   │                   them), found by a DefaultHasher fingerprint of those, then
+│   │   │                   compared label by label: a hit allocates nothing. A path
+│   │   │                   rejection (uncovered label, missing placeholder label, invalid
+│   │   │                   element name) is cached as its text, and later events get it
+│   │   │                   back without a render (one allocation: the text). A value
+│   │   │                   rejection is per event and not cached.
 │   │   │                   uncovered_label + template_for are the ONE coverage and
 │   │   │                   template rules validation also calls. Output is one Notification
 │   │   │                   per call, NOT length-prefixed; validate_encoder_sink_pairing
@@ -211,15 +219,20 @@ src/
 │   │   │                   beside() names credentials by username only.
 │   │   │                   GnmiTargetSink: wants_metric_events() = true, publishes
 │   │   │                   synchronously from write_metric_event; write() is an error.
-│   │   │                   Keeps one (SeriesId, PathKey) entry per path it published
-│   │   │                   (`published`), each MetricKey pointing at its entry: the
+│   │   │                   Keeps one Publication { id, path, buffers } per path it
+│   │   │                   published (`published`), each MetricKey pointing at its entry: the
 │   │   │                   first event of a key decodes its path, a second key on a
 │   │   │                   known path shares the entry, so an id that changes changes
 │   │   │                   for all. A write is delivered once upserted. A sink's Owner
 │   │   │                   is its launch (LaunchId): sinks of one launch share a path,
 │   │   │                   another launch's path is a ConfigError at the first write.
 │   │   │                   Drop releases each entry's id once (joined sinks have none).
-│   │   │                   A joined sink (join()) owns nothing: overwrite() only.
+│   │   │                   A joined sink (join()) owns nothing: overwrite() only, of a copy.
+│   │   │                   PublishBuffers: two BytesMut per publication used in turn; each
+│   │   │                   notification is copied into the one used two notifications
+│   │   │                   earlier (try_reclaim, extend, split().freeze()), which reuses
+│   │   │                   its allocation unless a subscriber still holds the Bytes last
+│   │   │                   frozen from it, and allocates once then.
 │   │   ├── target.rs   ←   GnmiTarget: per-address latest-value table keyed by the
 │   │   │                   RENDERED PATH (PathKey: origin, target, elems; its hash is
 │   │   │                   computed once in new() and Hash writes that u64, Eq compares
@@ -235,7 +248,7 @@ src/
 │   │   │                   compare by pointer.
 │   │   │                   overwrite() takes nothing. publish()
 │   │   │                   locates the value (value_span), refusing bytes without one on
-│   │   │                   every event, copies the encoded bytes once, keeps the value's
+│   │   │                   every event, stores the Bytes it is given (no copy), keeps the value's
 │   │   │                   range in them, and compares it with the previous value:
 │   │   │                   Published { receivers, changed } (the timestamp is not part of
 │   │   │                   the value; a first publish is a change) is the one definition
@@ -374,8 +387,9 @@ src/
 │   │                       and set queued. Delivered is the list's delivery index: PathKey ->
 │   │                       SeriesId for every path queued a value and not yet a delete, and
 │   │                       SeriesId -> Option<PathKey> (None: deleted, its Removed unread).
-│   │                       Every value goes through Delivered::queue_value (Placement::InPlace
-│   │                       for sync, resync, heartbeat and change; Last for samples): a path
+│   │                       Every value goes through Delivered::queue_value, as one Queued { id,
+│   │                       version, path, latest, placement } (Placement::InPlace for sync,
+│   │                       resync, heartbeat and change; Last for samples): a path
 │   │                       indexed under another id gets that id's delete first. A JSON_IETF
 │   │                       list's Delivered holds the target (weakly) and queues each value as
 │   │                       target.json_ietf_of(id, version, latest) returns it, nothing when
