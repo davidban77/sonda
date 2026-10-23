@@ -221,6 +221,14 @@ impl GnmiTargetRegistry {
         self.len() == 0
     }
 
+    /// The live targets, sorted by the address each listens on.
+    pub fn targets(&self) -> Vec<Arc<GnmiTarget>> {
+        let mut targets: Vec<Arc<GnmiTarget>> =
+            self.map().values().filter_map(Entry::live).collect();
+        targets.sort_by_key(|target| target.local_addr());
+        targets
+    }
+
     fn live(&self, addr: SocketAddr) -> Option<Arc<GnmiTarget>> {
         self.map().get(&addr).and_then(Entry::live)
     }
@@ -307,6 +315,44 @@ mod tests {
             .expect("join the live target");
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(registry.len(), 1);
+    }
+
+    /// `targets()` lists the live targets in address order and leaves out
+    /// one whose listener stopped and one whose last handle dropped.
+    #[tokio::test]
+    async fn targets_are_sorted_by_address_and_only_live() {
+        let registry = GnmiTargetRegistry::new();
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(
+                registry
+                    .acquire(&GnmiTargetConfig::new("127.0.0.1:0"))
+                    .await
+                    .expect("bind an ephemeral port"),
+            );
+        }
+        let mut addrs: Vec<SocketAddr> = held.iter().map(|t| t.local_addr()).collect();
+        addrs.sort();
+        let listed: Vec<SocketAddr> = registry.targets().iter().map(|t| t.local_addr()).collect();
+        assert_eq!(listed, addrs, "all three, in address order");
+
+        let stopped = held.pop().expect("three held");
+        stopped.stop_serving();
+        let dropped = held.pop().expect("two held");
+        let dropped_addr = dropped.local_addr();
+        drop(dropped);
+        let live = held[0].local_addr();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while registry.targets().len() != 1 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let listed: Vec<SocketAddr> = registry.targets().iter().map(|t| t.local_addr()).collect();
+        assert_eq!(
+            listed,
+            [live],
+            "neither {} nor {dropped_addr}",
+            stopped.local_addr()
+        );
     }
 
     #[tokio::test]

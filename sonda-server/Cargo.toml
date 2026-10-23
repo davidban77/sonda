@@ -18,7 +18,7 @@ http = ["sonda-core/http"]
 remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 otlp = ["sonda-core/otlp"]
-gnmi = ["sonda-core/gnmi"]
+gnmi = ["sonda-core/gnmi", "dep:chrono"]
 
 [[bin]]
 name = "sonda-server"
@@ -40,6 +40,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 subtle = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 http-body-util = "0.1"
@@ -49,6 +50,10 @@ libc = "0.2"
 tempfile = "3"
 insta = { workspace = true, features = ["filters", "redactions"] }
 rstest = { workspace = true }
+tonic = { version = "0.14", default-features = false }
+prost = "0.14"
+tokio-stream = { version = "0.1", default-features = false }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 
 [lints]
 workspace = true

@@ -14,6 +14,9 @@ use crate::encoder::gnmi::proto::{self, subscription_list, Encoding, Subscriptio
 #[derive(Debug, Clone)]
 pub struct SubscriptionMatcher {
     paths: Vec<proto::Path>,
+    /// The encoding the request is served in, as [`served_encoding`]
+    /// gives it.
+    encoding: Encoding,
 }
 
 impl SubscriptionMatcher {
@@ -28,7 +31,7 @@ impl SubscriptionMatcher {
     ///   `ONCE` or `POLL` list are not read.
     /// - `UNIMPLEMENTED` as [`served_encoding`] refuses the encoding.
     pub fn new(list: &proto::SubscriptionList) -> Result<Self, Status> {
-        served_encoding(list.encoding)?;
+        let encoding = served_encoding(list.encoding)?;
         let mode = subscription_list::Mode::try_from(list.mode).map_err(|_| {
             Status::invalid_argument(format!("unknown subscription list mode {}", list.mode))
         })?;
@@ -53,20 +56,29 @@ impl SubscriptionMatcher {
             list.subscription
                 .iter()
                 .map(|subscription| subscription.path.as_ref().unwrap_or(&root)),
+            encoding,
         )
     }
 
-    /// Join each of `paths` to `prefix`, as a `GetRequest` asks.
+    /// Join each of `paths` to `prefix`, as a `GetRequest` asks, to be
+    /// served in `encoding`.
     ///
     /// # Errors
     ///
-    /// `INVALID_ARGUMENT` when `paths` is empty, or a joined path has an
-    /// element with an empty name or a `...` element with keys.
-    pub fn from_paths(prefix: Option<&proto::Path>, paths: &[proto::Path]) -> Result<Self, Status> {
+    /// - `INVALID_ARGUMENT` when `encoding` is a number gNMI does not
+    ///   define, `paths` is empty, or a joined path has an element with an
+    ///   empty name or a `...` element with keys.
+    /// - `UNIMPLEMENTED` as [`served_encoding`] refuses the encoding.
+    pub fn from_paths(
+        prefix: Option<&proto::Path>,
+        paths: &[proto::Path],
+        encoding: i32,
+    ) -> Result<Self, Status> {
+        let encoding = served_encoding(encoding)?;
         if paths.is_empty() {
             return Err(Status::invalid_argument("the request has no paths"));
         }
-        Self::join(prefix, paths.iter())
+        Self::join(prefix, paths.iter(), encoding)
     }
 
     /// Join each of `paths` to `prefix`, refusing an element with an empty
@@ -75,6 +87,7 @@ impl SubscriptionMatcher {
     fn join<'a>(
         prefix: Option<&proto::Path>,
         paths: impl Iterator<Item = &'a proto::Path>,
+        encoding: Encoding,
     ) -> Result<Self, Status> {
         let root = proto::Path::default();
         let prefix = prefix.unwrap_or(&root);
@@ -107,12 +120,20 @@ impl SubscriptionMatcher {
                 target: prefix.target.clone(),
             });
         }
-        Ok(Self { paths: joined })
+        Ok(Self {
+            paths: joined,
+            encoding,
+        })
     }
 
     /// The requested paths, each joined to the prefix, in request order.
     pub fn paths(&self) -> &[proto::Path] {
         &self.paths
+    }
+
+    /// The encoding the request is served in: `PROTO` or `JSON_IETF`.
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
     }
 
     /// True if `series_path` is any subscription path or below one.
@@ -153,7 +174,7 @@ pub(crate) fn served_encoding(encoding: i32) -> Result<Encoding, Status> {
 }
 
 /// The name `gnmi.proto` gives `encoding`.
-fn encoding_name(encoding: Encoding) -> &'static str {
+pub(crate) fn encoding_name(encoding: Encoding) -> &'static str {
     match encoding {
         Encoding::Json => "JSON",
         Encoding::Bytes => "BYTES",
@@ -662,6 +683,7 @@ mod tests {
         let m = SubscriptionMatcher::from_paths(
             Some(&prefix),
             &[path("/state/counters"), path("vendor:/state/oper-status")],
+            Encoding::Proto as i32,
         )
         .expect("accepted");
         let joined: Vec<String> = m.paths().iter().map(ToString::to_string).collect();
@@ -705,8 +727,12 @@ mod tests {
         };
         let run_with_keys = path("/interfaces/...[name=eth0]/state");
         for bad in [empty_name, run_with_keys] {
-            let from_paths = SubscriptionMatcher::from_paths(None, std::slice::from_ref(&bad))
-                .expect_err("refused");
+            let from_paths = SubscriptionMatcher::from_paths(
+                None,
+                std::slice::from_ref(&bad),
+                Encoding::Proto as i32,
+            )
+            .expect_err("refused");
             let mut list = list(&["/x"]);
             list.subscription[0].path = Some(bad.clone());
             let new = SubscriptionMatcher::new(&list).expect_err("refused");
@@ -715,8 +741,12 @@ mod tests {
             assert_eq!(from_paths.message(), new.message(), "{bad:?}");
         }
 
-        let status =
-            SubscriptionMatcher::from_paths(Some(&path("/interfaces")), &[]).expect_err("no paths");
+        let status = SubscriptionMatcher::from_paths(
+            Some(&path("/interfaces")),
+            &[],
+            Encoding::Proto as i32,
+        )
+        .expect_err("no paths");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert!(
             status.message().contains("no paths"),
