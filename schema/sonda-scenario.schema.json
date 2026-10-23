@@ -2326,6 +2326,29 @@
         "enum"
       ]
     },
+    "GnmiHint": {
+      "description": "A pack metric's gNMI path and value type.\n\n# YAML Schema\n\n```yaml\ngnmi:\n  path: \"/interfaces/interface[name={ifName}]/state/oper-status\"\n  value: { enum: { 1: UP, 2: DOWN } }\n```",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path template for the metric, as a `paths:` entry of the gnmi\nencoder takes it: `{name}` and `{<label>}` placeholders.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "value": {
+          "description": "Value type for the metric, as a `values:` entry of the gnmi encoder\ntakes it.",
+          "$ref": "#/$defs/GnmiValueType"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "value"
+      ]
+    },
     "GnmiScalarName": {
       "description": "The scalar value type names.",
       "type": "string",
@@ -2761,6 +2784,17 @@
             }
           ],
           "default": null
+        },
+        "gnmi": {
+          "description": "gNMI path and value type for this metric. Under a `gnmi` encoder,\nexpansion writes them into the encoder's `paths:` and `values:` for\nthis metric's name where the scenario's encoder block has no entry\n(see [`fold_gnmi_hints`]); under any other encoder they are unused.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GnmiHint"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "id": {
           "description": "Disambiguator among specs sharing a [`name`](Self::name), and the\nsecond half of this spec's selector.\n\nRequired — and unique — on every member of a repeated name; optional\nwhen the name occurs once. It stands for what the repetition is *by*:\nthe CPU mode, the memory field, the SNMP column.",

@@ -3543,8 +3543,16 @@
 <td>Answers gNMI version <code>0.10.0</code> and the encodings <code>PROTO</code> and <code>JSON_IETF</code>.</td>
 </tr>
 <tr>
+<td><code>Get</code></td>
+<td>Answers with the latest value of every series a requested path matches, one notification per series, each series once, in the request's encoding. <code>ALL</code>, <code>STATE</code> and <code>OPERATIONAL</code> data are served alike; <code>CONFIG</code> gets an empty response, since the target holds no configuration. A request some of whose paths match nothing gets what the others matched; one none of whose paths matches a series is refused with <code>NOT_FOUND</code>, naming the first path. A request with no paths, or with a data type gNMI does not define, is refused with <code>INVALID_ARGUMENT</code>.</td>
+</tr>
+<tr>
 <td><code>Subscribe</code>, ONCE</td>
 <td>Sends the latest value of every matching series and <code>sync_response</code>, then ends the <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr>.</td>
+</tr>
+<tr>
+<td><code>Subscribe</code>, POLL</td>
+<td>Sends the latest value of every matching series and <code>sync_response</code>, then the same again for each <code>poll</code> the client sends: every matching series, changed or not, then <code>sync_response</code>. Nothing is sent between polls, deletes included. A poll is answered once the previous answer has been sent. <code>updates_only</code> skips the initial values only. When the client closes its side of the <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr>, the target answers the polls already sent, then ends the <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr>.</td>
 </tr>
 <tr>
 <td><code>Subscribe</code>, STREAM</td>
@@ -3575,10 +3583,6 @@
 <td>Skips the initial values; the first message is <code>sync_response</code>.</td>
 </tr>
 <tr>
-<td>POLL</td>
-<td>Refused with <code>UNIMPLEMENTED</code>, naming the mode.</td>
-</tr>
-<tr>
 <td>Encoding <code>PROTO</code> or <code>JSON</code></td>
 <td>Served in <code>PROTO</code>. <code>JSON</code> is also what a request that sets no encoding carries.</td>
 </tr>
@@ -3592,13 +3596,13 @@
 </tr>
 </tbody>
 </table>
-<p>A series leaves the target when the last <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> publishing it stops (scenarios of one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose <code>delete</code> names the path, split into <code>prefix</code> and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with <code>suppress_redundant</code> matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE never receives one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.</p>
+<p>A series leaves the target when the last <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> publishing it stops (scenarios of one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file can publish the same path), and at no other time: a series that stops changing stays, with its latest value. A subscriber receives one delete for every path it was sent that is no longer served, whichever way it learns: a notification whose <code>delete</code> names the path, split into <code>prefix</code> and path as its updates are. This covers the series an ON_CHANGE subscription (or TARGET_DEFINED, for a string series) or a SAMPLE subscription with <code>suppress_redundant</code> matches; a request whose only such subscription is the latter learns at its next sample. A request with both sends the delete once. A plain SAMPLE subscription receives no delete: the series stops appearing. ONCE and POLL never receive one. A series published again on the same path later is a new series and is sent like any other, after the old series' delete.</p>
 <p>A change is a new value: the update's encoded <code>TypedValue</code> differs from the series' previous one, and the notification's timestamp does not count. A client that reads more slowly than its series change gets each series' latest value, not every change: a newer change replaces one still waiting to be sent. An ON_CHANGE subscription that falls more than <code>subscriber_buffer</code> changes behind is resynced with the latest value of every series it matches, without a second <code>sync_response</code>. A change the initial values, a resync or a heartbeat already sent is not sent again.</p>
 <p>A series matches when its path starts with a subscription's path, joined to the request's prefix. Within it, a key of <code>*</code>, or a key the subscription leaves out, matches any value: <code>/interfaces/interface/state/counters</code> matches every interface's counters. An empty origin or target in the subscription matches any. An element named <code>*</code> matches any one element, keeping its own keys: <code>/interfaces/*/state/counters</code> matches <code>/interfaces/interface[name=eth0]/state/counters/in-octets</code> but not a path with two elements in its place. An element named <code>...</code> matches any run of elements, none included: <code>/interfaces/.../in-octets</code> matches every interface's <code>in-octets</code> counter and nothing else, and <code>/interfaces/...</code> matches everything under <code>/interfaces</code>. A <code>...</code> element with keys is refused with <code>INVALID_ARGUMENT</code>.</p>
 <p>A subscription ends with <code>UNAVAILABLE</code> when:</p>
 <ul>
 <li><strong>The run stops.</strong> The status follows the updates already queued, and the listener closes.</li>
-<li><strong>The client stalls.</strong> The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions has the 10 seconds. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.</li>
+<li><strong>The client stalls.</strong> The client takes nothing for three times the longest interval its subscriptions are sampled at, and at least 10 seconds. Heartbeat intervals do not count, so a request with only ON_CHANGE subscriptions, and a ONCE or POLL request, has the 10 seconds. The time counts only while responses wait, so a POLL client that sends no poll does not stall. A client's HTTP/2 layer accepts data until its receive window is full, whether or not the application reads it, so that time counts from when the window is full.</li>
 </ul>
 <p>The server pings a connection that has been silent for 30 seconds and closes it when no answer arrives within 20 seconds.</p>
 <p>The example below is a router with four interfaces, served to <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>. Only the first interface is shown here; the complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <a href="https://github.com/davidban77/sonda/blob/main/examples/gnmi-telegraf.yaml"><code>examples/gnmi-telegraf.yaml</code></a>:</p>
@@ -3673,11 +3677,14 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>gnmi<span class="w"> </span>up<span class="w"> </span>-d
 </span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/gnmi-telegraf.yaml
 </span></code></pre></div>
-<p>Without <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>, gnmic reads the same target directly, once or as each oper-status changes:</p>
+<p>Without <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>, gnmic reads the same target directly: once, as each oper-status changes, with a <code>Get</code>, or each time you poll:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces<span class="w"> </span>--mode<span class="w"> </span>once
 </span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces/interface/state/oper-status<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="w">  </span>--stream-mode<span class="w"> </span>on-change
+</span><span id="__span-31-4"><a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>get<span class="w"> </span>--path<span class="w"> </span>/interfaces/interface/state/oper-status
+</span><span id="__span-31-5"><a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a>gnmic<span class="w"> </span>-a<span class="w"> </span><span class="m">127</span>.0.0.1:57400<span class="w"> </span>--insecure<span class="w"> </span>subscribe<span class="w"> </span>--path<span class="w"> </span>/interfaces<span class="w"> </span>--mode<span class="w"> </span>poll
 </span></code></pre></div>
+<p>In poll mode gnmic prints the initial values, then prompts for the target and subscription to poll; each choice sends one <code>poll</code>.</p>
 <h3 id="gnmi-encodings">Encodings<a class="headerlink" href="#gnmi-encodings" title="Permanent link">&para;</a></h3>
 <p>The request's <code>encoding</code> decides how the values of its subscriptions are sent. One target serves <code>PROTO</code> and <code>JSON_IETF</code> requests at once.</p>
 <ul>
@@ -3776,7 +3783,7 @@
 <ul>
 <li><strong>TLS.</strong> Every connection to the <code>listen</code> address is TLS, and a plaintext client is refused at the handshake. A connection that has not finished its handshake 10 seconds after it was accepted is closed. The files are read when the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is validated, so <code>--dry-run</code> reports a file that cannot be read, or holds no PEM certificate or private key, naming the field and the file. A key that is not <code>cert</code>'s is reported the same way. Relative paths resolve against the directory Sonda runs in.</li>
 <li><strong>Credentials need TLS.</strong> A <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> with <code>credentials</code> and no <code>tls</code> is refused, because the password would cross the wire in clear.</li>
-<li><strong>Every RPC is checked.</strong> <code>Capabilities</code> and <code>Subscribe</code> alike must carry the gRPC metadata <code>username</code> and <code>password</code>, equal to the configured pair. A request without them, or with another pair, is refused with <code>UNAUTHENTICATED</code> and the message <code>credentials required</code>. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.</li>
+<li><strong>Every RPC is checked.</strong> <code>Capabilities</code>, <code>Get</code> and <code>Subscribe</code> alike must carry the gRPC metadata <code>username</code> and <code>password</code>, equal to the configured pair. A request without them, or with another pair, is refused with <code>UNAUTHENTICATED</code> and the message <code>credentials required</code>. The target logs each refusal at warn with the client's address and the method, never with the values it was sent. The password appears in no log line, error message or stats field.</li>
 <li><strong>One address, one identity.</strong> Every entry on one address names the same <code>tls</code> files and the same <code>credentials</code>; a different set is refused, naming the files and usernames that differ but no password.</li>
 </ul>
 <p>gnmic trusts the target's CA with <code>--tls-ca</code> and sends the pair with <code>-u</code> and <code>-p</code>:</p>
@@ -3911,7 +3918,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 22, 2026 11:33:56 UTC">October 22, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 22, 2026 20:39:02 UTC">October 22, 2026</span>
   </span>
 
     
