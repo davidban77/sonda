@@ -335,7 +335,7 @@ src/
 │   │   │                   nothing. targets() lists the live targets sorted by
 │   │   │                   local_addr. listen_overlap assumes a dual-stack [::].
 │   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's (new()) or a
-│   │   │                   GetRequest's (from_paths(prefix, paths)) paths joined to the
+│   │   │                   GetRequest's (from_paths(prefix, paths, encoding)) paths joined to the
 │   │   │                   prefix by join(), the ONE path rule both use (INVALID_ARGUMENT
 │   │   │                   for an empty element name or a `...` with keys; from_paths
 │   │   │                   also for no paths); paths() returns them joined, in request
@@ -348,7 +348,10 @@ src/
 │   │   │                   Subscribe and Get apply: PROTO and JSON (encoding 0, also an
 │   │   │                   unset encoding) served as PROTO, JSON_IETF as JSON_IETF;
 │   │   │                   BYTES and ASCII UNIMPLEMENTED, named; an unknown number
-│   │   │                   INVALID_ARGUMENT. new() also refuses (INVALID_ARGUMENT) an
+│   │   │                   INVALID_ARGUMENT. Both constructors apply it first and keep
+│   │   │                   the result: encoding() is the served encoding, which Get,
+│   │   │                   the list's Delivered and the subscriber table read, and
+│   │   │                   encoding_name() its gnmi.proto name. new() also refuses (INVALID_ARGUMENT) an
 │   │   │                   empty list, an unknown list mode, or (STREAM lists only) an
 │   │   │                   unknown subscription mode; STREAM, ONCE and POLL are
 │   │   │                   accepted. pub(crate).
@@ -394,8 +397,9 @@ src/
 │   │                       Subscribe: first message must be a SubscriptionList; start()
 │   │                       plans it, takes a place with target.admit() (or the request
 │   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns),
-│   │                       registers it (target.register(peer, mode_name(list), PROTO or
-│   │                       JSON_IETF); mode_name: ONCE, POLL, STREAM/<mode>, STREAM/MIXED;
+│   │                       registers it (target.register(peer, mode_name(list),
+│   │                       encoding_name(matcher.encoding())); mode_name: ONCE, POLL,
+│   │                       STREAM/<mode>, STREAM/MIXED;
 │   │                       the producer holds the SubscriberRecord: Step::Sent calls
 │   │                       drained(), Step::Stalled calls stalled() then the
 │   │                       after_stall_marked probe hook before it returns), takes

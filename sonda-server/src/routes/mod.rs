@@ -396,6 +396,43 @@ mod tests {
         );
     }
 
+    /// When auth is enabled, GET /gnmi/targets needs the key: 401 without
+    /// it, 200 with it.
+    #[cfg(feature = "gnmi")]
+    #[tokio::test]
+    async fn gnmi_targets_requires_the_api_key() {
+        let request = |key: Option<&str>| {
+            let mut builder = Request::builder().uri("/gnmi/targets");
+            if let Some(key) = key {
+                builder = builder.header("authorization", format!("Bearer {key}"));
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        let without = test_router_with_key("gnmi-secret")
+            .oneshot(request(None))
+            .await
+            .unwrap();
+        assert_eq!(
+            without.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET /gnmi/targets without auth must return 401"
+        );
+        let body_bytes = without.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"], "unauthorized");
+
+        let with = test_router_with_key("gnmi-secret")
+            .oneshot(request(Some("gnmi-secret")))
+            .await
+            .unwrap();
+        assert_eq!(
+            with.status(),
+            StatusCode::OK,
+            "GET /gnmi/targets with the key must return 200"
+        );
+    }
+
     /// When auth is enabled, DELETE /scenarios/{id} without auth returns 401.
     #[tokio::test]
     async fn auth_enabled_delete_scenario_returns_401() {

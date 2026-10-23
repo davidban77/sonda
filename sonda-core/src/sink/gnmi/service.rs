@@ -29,7 +29,7 @@ use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::Status;
 use tower::Service;
 
-use super::matcher::{served_encoding, SubscriptionMatcher};
+use super::matcher::{encoding_name, SubscriptionMatcher};
 use super::notification::ValueKind;
 use super::target::{
     delete_notification, GnmiTarget, PathKey, SeriesEvent, SeriesId, SeriesSnapshot, SeriesUpdate,
@@ -245,17 +245,17 @@ impl Service<tonic::Request<proto::GetRequest>> for GetHandler {
 /// series in `target`'s table that a requested path, joined to the
 /// request's prefix, matches, as [`SubscriptionMatcher::matches`] matches;
 /// each series once, whichever paths match it. Each notification is in the
-/// request's encoding as [`served_encoding`] serves it: as stored for
-/// `PROTO`, with its value as `json_ietf_val` for `JSON_IETF`. Data types
-/// `ALL`, `STATE` and `OPERATIONAL` are served alike; `CONFIG` gets a
-/// response with no notification.
+/// encoding [`SubscriptionMatcher::encoding`] gives: as stored for `PROTO`,
+/// with its value as `json_ietf_val` for `JSON_IETF`. Data types `ALL`,
+/// `STATE` and `OPERATIONAL` are served alike; `CONFIG` gets a response
+/// with no notification.
 ///
 /// # Errors
 ///
 /// - `INVALID_ARGUMENT` when the data type is a number gNMI does not
-///   define, or as [`SubscriptionMatcher::from_paths`] and
-///   [`served_encoding`] refuse the request.
-/// - `UNIMPLEMENTED` as [`served_encoding`] refuses the encoding.
+///   define, or as [`SubscriptionMatcher::from_paths`] refuses the request.
+/// - `UNIMPLEMENTED` as [`SubscriptionMatcher::from_paths`] refuses the
+///   encoding.
 /// - `NOT_FOUND`, naming the first requested path joined to the prefix,
 ///   when no requested path matches a series.
 /// - `UNAVAILABLE` once the target is gone.
@@ -263,8 +263,9 @@ fn get(target: &Weak<GnmiTarget>, request: &proto::GetRequest) -> Result<PreEnco
     let data_type = get_request::DataType::try_from(request.r#type).map_err(|_| {
         Status::invalid_argument(format!("unknown get data type {}", request.r#type))
     })?;
-    let encoding = served_encoding(request.encoding)?;
-    let matcher = SubscriptionMatcher::from_paths(request.prefix.as_ref(), &request.path)?;
+    let matcher =
+        SubscriptionMatcher::from_paths(request.prefix.as_ref(), &request.path, request.encoding)?;
+    let encoding = matcher.encoding();
     if data_type == get_request::DataType::Config {
         return Ok(get_response(&[]));
     }
@@ -436,12 +437,7 @@ fn start(
             settings.max_subscribers
         ))
     })?;
-    let encoding = if list.encoding == proto::Encoding::JsonIetf as i32 {
-        "JSON_IETF"
-    } else {
-        "PROTO"
-    };
-    let record = held.register(peer, mode_name(list), encoding);
+    let record = held.register(peer, mode_name(list), encoding_name(matcher.encoding()));
     let stall_limit = stall_limit(plan.samples.iter().map(|g| g.period), settings.stall_floor);
     // Subscribed before the initial sync takes its snapshot, so every
     // change the snapshot does not hold arrives on the receiver.
@@ -457,7 +453,7 @@ fn start(
     drop(held);
 
     let delivered = Delivered::new(on_change.is_some());
-    let delivered = if list.encoding == proto::Encoding::JsonIetf as i32 {
+    let delivered = if matcher.encoding() == Encoding::JsonIetf {
         delivered.serving_json_ietf(target.clone())
     } else {
         delivered

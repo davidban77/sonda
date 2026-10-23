@@ -516,7 +516,9 @@ impl GnmiTarget {
     }
 
     /// Get requests the target's service has received: every one the
-    /// credential check let through, whether then served or refused.
+    /// credential check let through, whether then served or refused. A
+    /// request whose body does not decode is refused by the transport
+    /// before it is counted.
     pub fn get_requests(&self) -> u64 {
         self.get_requests.load(Ordering::Relaxed)
     }
@@ -2570,5 +2572,37 @@ mod tests {
             assert_eq!(notification.timestamp, timestamp);
             assert_eq!(notification.update[0].val, json);
         }
+    }
+
+    /// `subscribers()` orders its snapshot by `since`, not by insertion or
+    /// id: eight entries whose `since` values are shuffled against their ids
+    /// come back in `since` order. Without the sort the map's order would
+    /// match by chance once in 8! = 40 320 runs.
+    #[tokio::test]
+    async fn subscribers_are_ordered_by_since() {
+        const SHUFFLED: [u64; 8] = [5, 2, 7, 0, 3, 6, 1, 4];
+        let target = bind(16).await;
+        {
+            let mut table = target.subscriber_records.table();
+            for (id, secs) in SHUFFLED.iter().enumerate() {
+                table.insert(
+                    id as SubscriberId,
+                    SubscriberInfo {
+                        peer: None,
+                        mode: "STREAM/SAMPLE",
+                        encoding: "PROTO",
+                        since: UNIX_EPOCH + Duration::from_secs(*secs),
+                        last_drained: None,
+                        stalled: false,
+                    },
+                );
+            }
+        }
+        let since: Vec<SystemTime> = target.subscribers().iter().map(|s| s.since).collect();
+        assert_eq!(since.len(), SHUFFLED.len(), "every entry is listed");
+        let expected: Vec<SystemTime> = (0..8)
+            .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
+            .collect();
+        assert_eq!(since, expected);
     }
 }
