@@ -19,6 +19,7 @@ remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 otlp = ["sonda-core/otlp"]
 gnmi = ["sonda-core/gnmi"]
+snmp-spike = ["dep:thiserror"]
 
 [[bin]]
 name = "sonda"
@@ -41,6 +42,7 @@ tokio-util = { version = "0.7", default-features = false }
 # Only the `--from-prometheus` capture path parses RFC 3339 window bounds, and
 # that path is behind `http`.
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

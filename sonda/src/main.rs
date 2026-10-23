@@ -10,6 +10,9 @@ mod sink_format;
 mod status;
 // `sonda test` verifies against a Prometheus or Alertmanager, so it exists only
 // where the HTTP client does.
+#[cfg(feature = "snmp-spike")]
+#[path = "../../sonda-core/examples/snmp_spike.rs"]
+mod snmp_spike;
 #[cfg(feature = "http")]
 mod test_cmd;
 
@@ -26,6 +29,14 @@ use cli::{Cli, Commands, Verbosity};
 use sonda_core::PreparedEntry;
 
 fn main() {
+    #[cfg(feature = "snmp-spike")]
+    if std::env::var_os("SONDA_SNMP_SPIKE").is_some() {
+        if let Err(e) = snmp_spike::run(std::env::args().skip(1)) {
+            eprintln!("snmp_spike: {e}");
+            process::exit(1);
+        }
+        return;
+    }
     if let Err(err) = run() {
         let style = owo_colors::Style::new().bold().red();
         eprintln!(

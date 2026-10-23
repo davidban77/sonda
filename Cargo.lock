@@ -2664,6 +2664,7 @@ dependencies = [
  "serde_yaml_ng",
  "sonda-core",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing-subscriber",
