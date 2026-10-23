@@ -136,6 +136,14 @@ version bumps or changelog edits are needed.
 
 5. **Pipelines trigger on the tag.** See [Pipeline Chain](#pipeline-chain) below.
 
+The Release PR also updates `Cargo.lock`. Four `extra-files` entries in `release-please-config.json`
+select the `sonda`, `sonda-core`, `sonda-server` and `sonda-wasm` packages in the lock by name and
+set their `version`, so the lock records the version the manifests do. CI builds with
+`cargo build --workspace --locked`, so a Release PR whose `Cargo.lock` does not match the
+manifests fails that build instead of merging; a `cargo update -w` commit on the Release PR's
+branch brings the lock back in step. release-please rewrites that branch each time it updates the
+Release PR, which drops such a commit, so make it after the last update, just before merging.
+
 ---
 
 ## Pipeline Chain
