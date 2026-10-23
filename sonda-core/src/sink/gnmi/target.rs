@@ -26,6 +26,7 @@ use super::service::GnmiService;
 use super::{error_chain, TargetSettings};
 use crate::encoder::gnmi::{encode_delete, proto};
 use crate::schedule::LaunchId;
+use crate::sink::listener_registry::ListenerTarget;
 use crate::{ConfigError, SondaError};
 
 /// How long a connection still open when its target stops may stay open
@@ -911,6 +912,55 @@ impl GnmiTarget {
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, SeriesTable> {
         self.table.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl ListenerTarget for GnmiTarget {
+    type Config = TargetSettings;
+    type SocketState = watch::Receiver<TargetState>;
+    const SINK_TYPE: &'static str = "gnmi_target";
+
+    fn bind(cfg: TargetSettings) -> impl Future<Output = Result<Arc<Self>, SondaError>> + Send {
+        GnmiTarget::bind(cfg)
+    }
+
+    fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    fn is_live(&self) -> bool {
+        self.is_serving()
+    }
+
+    /// `Ok` when every setting but the listen address is equal; otherwise a
+    /// [`SondaError::Config`] naming both, the running target's first.
+    fn serves(&self, wanted: &TargetSettings) -> Result<(), SondaError> {
+        let running = self.settings();
+        if running.serves(wanted) {
+            return Ok(());
+        }
+        Err(SondaError::Config(ConfigError::invalid(format!(
+            "gnmi_target {} is already serving with different settings ({}, the running \
+             target's first); every sink on one address must use the same settings",
+            self.local_addr,
+            running.beside(wanted),
+        ))))
+    }
+
+    fn socket_state(&self) -> watch::Receiver<TargetState> {
+        self.state()
+    }
+
+    /// The listener is [`TargetState::Listening`].
+    fn socket_open(state: &watch::Receiver<TargetState>) -> bool {
+        *state.borrow() == TargetState::Listening
+    }
+
+    /// Resolves once the listener has left [`TargetState::Listening`].
+    fn closed(mut state: watch::Receiver<TargetState>) -> impl Future<Output = ()> + Send {
+        async move {
+            let _ = state.wait_for(|s| *s != TargetState::Listening).await;
+        }
     }
 }
 
