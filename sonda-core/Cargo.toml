@@ -41,6 +41,7 @@ kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]
 gnmi = ["dep:prost", "dep:tonic", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "dep:rustls", "dep:rustls-pki-types", "runtime"]
+snmp-spike = []
 # JSON Schema for the scenario config types. Implies `config`: schemars
 # reads the `#[serde(...)]` attributes to know the WIRE shape, and those
 # attributes are themselves behind the config feature.

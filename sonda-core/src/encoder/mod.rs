@@ -19,6 +19,8 @@ pub mod otlp;
 pub mod prometheus;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
+#[cfg(feature = "snmp-spike")]
+pub mod snmp;
 pub mod syslog;
 
 use crate::config::PromMetricType;
