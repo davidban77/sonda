@@ -32,6 +32,26 @@
           "jsonpath": "$.package.version"
         },
         {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='sonda')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='sonda-core')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='sonda-server')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='sonda-wasm')].version"
+        },
+        {
           "type": "yaml",
           "path": "helm/sonda/Chart.yaml",
           "jsonpath": "$.version"
