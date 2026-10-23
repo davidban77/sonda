@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.26.0](https://github.com/davidban77/sonda/compare/v1.25.0...v1.26.0) (2026-10-23)
+
+
+### Features
+
+* **gnmi:** list running gnmi targets and their subscribers from the server ([#685](https://github.com/davidban77/sonda/issues/685)) ([12c62e1](https://github.com/davidban77/sonda/commit/12c62e1a8ebe2766d1f8ff0f532d40f55723d210))
+* **gnmi:** openconfig-interface pack with per-metric gNMI paths and value types ([#683](https://github.com/davidban77/sonda/issues/683)) ([d6fe8cd](https://github.com/davidban77/sonda/commit/d6fe8cdcf3bd08ad51a114d69488738e8791af1f))
+* **gnmi:** serve Get and POLL subscriptions from the target ([#684](https://github.com/davidban77/sonda/issues/684)) ([cfd0d4f](https://github.com/davidban77/sonda/commit/cfd0d4fac2fa0665560cb58011fec18f9107248f))
+
+
+### Miscellaneous
+
+* **release:** keep Cargo.lock in step with the release version ([#686](https://github.com/davidban77/sonda/issues/686)) ([da94cde](https://github.com/davidban77/sonda/commit/da94cde2601d1fb025c4f03154cfe6fa922daedc))
+
 ## [1.25.0](https://github.com/davidban77/sonda/compare/v1.24.0...v1.25.0) (2026-10-22)
 
 
