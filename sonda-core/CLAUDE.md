@@ -203,6 +203,20 @@ src/
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
+│   ├── listener_registry.rs ← ListenerRegistry<T: ListenerTarget> (feature = "gnmi";
+│   │                      pub(crate)): address → Weak<T> + T::SocketState. acquire() binds
+│   │                      (T::bind) or joins; a target whose listener task exited is not
+│   │                      live (is_live); before binding it waits (≤ 2 s in all, never
+│   │                      under the bind lock) for a stopped target's socket on an
+│   │                      overlapping address to close (socket_open / closed). join()
+│   │                      never binds and finds a live wildcard target covering the
+│   │                      address. Differing settings (T::serves), or a second listener
+│   │                      contending for a port (listen_overlap: same address, or a
+│   │                      wildcard covering the other's family; IPv4-mapped addresses
+│   │                      compare as IPv4), are a ConfigError; port 0 always binds a new
+│   │                      target. check() answers as acquire() would, binding nothing.
+│   │                      targets() lists the live targets sorted by local_addr.
+│   │                      listen_overlap assumes a dual-stack [::].
 │   ├── grpc_codec.rs   ← ProstCodec<T, U>: tonic codec over prost messages (otlp_grpc,
 │   │                      gnmi Capabilities); compiled with "otlp" or "gnmi".
 │   │                      PreEncoded(Bytes) + PreEncodedCodec<U> ("gnmi" only): sends
@@ -319,21 +333,12 @@ src/
 │   │   │                   root token; the listening socket closes at once (Incoming
 │   │   │                   ends), connections still open after DRAIN_GRACE are closed
 │   │   │                   (Connection reads EOF), state Listening → Draining → Stopped.
-│   │   ├── registry.rs ←   registry(): process-wide address → Weak<GnmiTarget> + state.
-│   │   │                   acquire() binds or joins; a target whose listener task exited
-│   │   │                   is not live; before binding it waits (≤ 2 s in all, never
-│   │   │                   under the bind lock) for a stopped target's socket on an
-│   │   │                   overlapping address to close. join() never binds
-│   │   │                   (emit_metric) and compares only the settings it sets (tls and
-│   │   │                   credentials included); it finds
-│   │   │                   a live wildcard target covering the address. Differing
-│   │   │                   settings, or a second listener contending for a port
-│   │   │                   (listen_overlap: same address, or a wildcard covering the
-│   │   │                   other's family; IPv4-mapped addresses compare as IPv4),
-│   │   │                   are a ConfigError; port 0 always binds a
-│   │   │                   new target. check() answers as acquire() would, binding
-│   │   │                   nothing. targets() lists the live targets sorted by
-│   │   │                   local_addr. listen_overlap assumes a dual-stack [::].
+│   │   ├── registry.rs ←   registry(): the process-wide gnmi instance of
+│   │   │                   ListenerRegistry<GnmiTarget> (sink/listener_registry.rs), behind
+│   │   │                   GnmiTargetRegistry, whose pub surface (acquire, check, join, len,
+│   │   │                   is_empty, targets) parses the config with settings() and
+│   │   │                   delegates. join() never binds (emit_metric) and compares only
+│   │   │                   the settings it sets (tls and credentials included).
 │   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's (new()) or a
 │   │   │                   GetRequest's (from_paths(prefix, paths, encoding)) paths joined to the
 │   │   │                   prefix by join(), the ONE path rule both use (INVALID_ARGUMENT
