@@ -55,7 +55,7 @@ use crate::{ConfigError, SondaError};
 use crate::schedule::LaunchId;
 pub use notification::ValueKind;
 pub use registry::{registry, GnmiTargetRegistry};
-pub use target::{GnmiTarget, SeriesId, SeriesUpdate};
+pub use target::{GnmiTarget, SeriesId, SeriesUpdate, SubscriberInfo};
 use target::{Owner, PathKey};
 
 /// `max_subscribers` when it is not set.

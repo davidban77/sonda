@@ -291,7 +291,15 @@ src/
 │   │   │                   Only ON_CHANGE (and TARGET_DEFINED) lists hold a receiver
 │   │   │                   (subscribe()); every subscription holds a permit of the
 │   │   │                   target's max_subscribers Semaphore (admit());
-│   │   │                   subscriber_count() is permits taken. snapshot() shares each
+│   │   │                   subscriber_count() is permits taken. The subscriber table
+│   │   │                   (Arc<Subscribers>: Mutex<HashMap<id, SubscriberInfo>> and the
+│   │   │                   stalled count): register(peer, mode, encoding) enters a
+│   │   │                   subscription and returns a SubscriberRecord whose drained() sets
+│   │   │                   last_drained, stalled() sets stalled and counts it, and whose
+│   │   │                   Drop removes the entry. subscribers() is a snapshot sorted by
+│   │   │                   since. get_requests() (count_get_request, an atomic),
+│   │   │                   stalled_subscribers_total(), tls(), requires_credentials(),
+│   │   │                   max_subscribers() are public. snapshot() shares each
 │   │   │                   slot's PathKey and Bytes, copying no path. The server pings an HTTP/2
 │   │   │                   connection silent for KEEPALIVE_INTERVAL (30 s) and closes it
 │   │   │                   after KEEPALIVE_TIMEOUT (20 s) unanswered; TargetSettings
@@ -324,9 +332,10 @@ src/
 │   │   │                   other's family; IPv4-mapped addresses compare as IPv4),
 │   │   │                   are a ConfigError; port 0 always binds a
 │   │   │                   new target. check() answers as acquire() would, binding
-│   │   │                   nothing. listen_overlap assumes a dual-stack [::].
+│   │   │                   nothing. targets() lists the live targets sorted by
+│   │   │                   local_addr. listen_overlap assumes a dual-stack [::].
 │   │   ├── matcher.rs  ←   SubscriptionMatcher: a SubscriptionList's (new()) or a
-│   │   │                   GetRequest's (from_paths(prefix, paths)) paths joined to the
+│   │   │                   GetRequest's (from_paths(prefix, paths, encoding)) paths joined to the
 │   │   │                   prefix by join(), the ONE path rule both use (INVALID_ARGUMENT
 │   │   │                   for an empty element name or a `...` with keys; from_paths
 │   │   │                   also for no paths); paths() returns them joined, in request
@@ -339,7 +348,10 @@ src/
 │   │   │                   Subscribe and Get apply: PROTO and JSON (encoding 0, also an
 │   │   │                   unset encoding) served as PROTO, JSON_IETF as JSON_IETF;
 │   │   │                   BYTES and ASCII UNIMPLEMENTED, named; an unknown number
-│   │   │                   INVALID_ARGUMENT. new() also refuses (INVALID_ARGUMENT) an
+│   │   │                   INVALID_ARGUMENT. Both constructors apply it first and keep
+│   │   │                   the result: encoding() is the served encoding, which Get,
+│   │   │                   the list's Delivered and the subscriber table read, and
+│   │   │                   encoding_name() its gnmi.proto name. new() also refuses (INVALID_ARGUMENT) an
 │   │   │                   empty list, an unknown list mode, or (STREAM lists only) an
 │   │   │                   unknown subscription mode; STREAM, ONCE and POLL are
 │   │   │                   accepted. pub(crate).
@@ -371,7 +383,9 @@ src/
 │   │                       UNAUTHENTICATED "credentials required", logged once at warn with
 │   │                       the peer (TCP or TLS connect info) and the method, never a value.
 │   │                       Capabilities: 0.10.0, [PROTO, JSON_IETF], no models.
-│   │                       Get (Grpc::unary, PreEncodedCodec<GetRequest>): get() answers
+│   │                       Get (Grpc::unary, PreEncodedCodec<GetRequest>): every call
+│   │                       the router dispatches counts in target.get_requests(), served or
+│   │                       refused (the credential check runs first). get() answers
 │   │                       from one snapshot of the table, no subscriber place taken:
 │   │                       every series a from_paths matcher matches, once, as its stored
 │   │                       notification (PROTO) or json_ietf_of (JSON_IETF; a None is
@@ -382,8 +396,14 @@ src/
 │   │                       matched NOT_FOUND "no series matches <first joined path>".
 │   │                       Subscribe: first message must be a SubscriptionList; start()
 │   │                       plans it, takes a place with target.admit() (or the request
-│   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns)
-│   │                       and the broadcast receiver, and builds the producer, which
+│   │                       is RESOURCE_EXHAUSTED; the producer holds it until it returns),
+│   │                       registers it (target.register(peer, mode_name(list),
+│   │                       encoding_name(matcher.encoding())); mode_name: ONCE, POLL,
+│   │                       STREAM/<mode>, STREAM/MIXED;
+│   │                       the producer holds the SubscriberRecord: Step::Sent calls
+│   │                       drained(), Step::Stalled calls stalled() then the
+│   │                       after_stall_marked probe hook before it returns), takes
+│   │                       the broadcast receiver, and builds the producer, which
 │   │                       subscribe() then spawns. One task (read_requests) reads the
 │   │                       rest of the inbound stream (never polled in a select!): for a
 │   │                       POLL list it forwards each poll on an mpsc of 1 made by

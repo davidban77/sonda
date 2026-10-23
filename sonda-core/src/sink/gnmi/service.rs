@@ -29,11 +29,11 @@ use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::Status;
 use tower::Service;
 
-use super::matcher::{served_encoding, SubscriptionMatcher};
+use super::matcher::{encoding_name, SubscriptionMatcher};
 use super::notification::ValueKind;
 use super::target::{
     delete_notification, GnmiTarget, PathKey, SeriesEvent, SeriesId, SeriesSnapshot, SeriesUpdate,
-    TargetState,
+    SubscriberRecord, TargetState,
 };
 use super::GnmiCredentials;
 use crate::encoder::gnmi::proto::{
@@ -234,6 +234,9 @@ impl Service<tonic::Request<proto::GetRequest>> for GetHandler {
     }
 
     fn call(&mut self, req: tonic::Request<proto::GetRequest>) -> Self::Future {
+        if let Some(target) = self.target.upgrade() {
+            target.count_get_request();
+        }
         std::future::ready(get(&self.target, &req.into_inner()).map(tonic::Response::new))
     }
 }
@@ -242,17 +245,17 @@ impl Service<tonic::Request<proto::GetRequest>> for GetHandler {
 /// series in `target`'s table that a requested path, joined to the
 /// request's prefix, matches, as [`SubscriptionMatcher::matches`] matches;
 /// each series once, whichever paths match it. Each notification is in the
-/// request's encoding as [`served_encoding`] serves it: as stored for
-/// `PROTO`, with its value as `json_ietf_val` for `JSON_IETF`. Data types
-/// `ALL`, `STATE` and `OPERATIONAL` are served alike; `CONFIG` gets a
-/// response with no notification.
+/// encoding [`SubscriptionMatcher::encoding`] gives: as stored for `PROTO`,
+/// with its value as `json_ietf_val` for `JSON_IETF`. Data types `ALL`,
+/// `STATE` and `OPERATIONAL` are served alike; `CONFIG` gets a response
+/// with no notification.
 ///
 /// # Errors
 ///
 /// - `INVALID_ARGUMENT` when the data type is a number gNMI does not
-///   define, or as [`SubscriptionMatcher::from_paths`] and
-///   [`served_encoding`] refuse the request.
-/// - `UNIMPLEMENTED` as [`served_encoding`] refuses the encoding.
+///   define, or as [`SubscriptionMatcher::from_paths`] refuses the request.
+/// - `UNIMPLEMENTED` as [`SubscriptionMatcher::from_paths`] refuses the
+///   encoding.
 /// - `NOT_FOUND`, naming the first requested path joined to the prefix,
 ///   when no requested path matches a series.
 /// - `UNAVAILABLE` once the target is gone.
@@ -260,8 +263,9 @@ fn get(target: &Weak<GnmiTarget>, request: &proto::GetRequest) -> Result<PreEnco
     let data_type = get_request::DataType::try_from(request.r#type).map_err(|_| {
         Status::invalid_argument(format!("unknown get data type {}", request.r#type))
     })?;
-    let encoding = served_encoding(request.encoding)?;
-    let matcher = SubscriptionMatcher::from_paths(request.prefix.as_ref(), &request.path)?;
+    let matcher =
+        SubscriptionMatcher::from_paths(request.prefix.as_ref(), &request.path, request.encoding)?;
+    let encoding = matcher.encoding();
     if data_type == get_request::DataType::Config {
         return Ok(get_response(&[]));
     }
@@ -433,6 +437,7 @@ fn start(
             settings.max_subscribers
         ))
     })?;
+    let record = held.register(peer, mode_name(list), encoding_name(matcher.encoding()));
     let stall_limit = stall_limit(plan.samples.iter().map(|g| g.period), settings.stall_floor);
     // Subscribed before the initial sync takes its snapshot, so every
     // change the snapshot does not hold arrives on the receiver.
@@ -448,7 +453,7 @@ fn start(
     drop(held);
 
     let delivered = Delivered::new(on_change.is_some());
-    let delivered = if list.encoding == proto::Encoding::JsonIetf as i32 {
+    let delivered = if matcher.encoding() == Encoding::JsonIetf {
         delivered.serving_json_ietf(target.clone())
     } else {
         delivered
@@ -469,6 +474,7 @@ fn start(
         stall_limit,
         peer,
         _place: place,
+        record,
         state,
         tx,
         ending,
@@ -480,6 +486,28 @@ fn start(
         ended: Some(ended),
     };
     Ok((producer, responses))
+}
+
+/// The name [`SubscriberInfo::mode`](super::target::SubscriberInfo::mode)
+/// gives `list`: `ONCE`, `POLL`, or `STREAM/` and its subscriptions' mode,
+/// `STREAM/MIXED` when they differ.
+fn mode_name(list: &proto::SubscriptionList) -> &'static str {
+    if list.mode == subscription_list::Mode::Once as i32 {
+        return "ONCE";
+    }
+    if list.mode == subscription_list::Mode::Poll as i32 {
+        return "POLL";
+    }
+    let mut modes = list.subscription.iter().map(|s| s.mode);
+    let first = modes.next();
+    if modes.any(|mode| Some(mode) != first) {
+        return "STREAM/MIXED";
+    }
+    match first.map(SubscriptionMode::try_from) {
+        Some(Ok(SubscriptionMode::Sample)) => "STREAM/SAMPLE",
+        Some(Ok(SubscriptionMode::OnChange)) => "STREAM/ON_CHANGE",
+        _ => "STREAM/TARGET_DEFINED",
+    }
 }
 
 /// The kinds of value a group of subscriptions serves.
@@ -1078,6 +1106,9 @@ pub(crate) struct Probe {
     pub(crate) before_heartbeat: Hook,
     /// Run by every sample before it reads the snapshot.
     pub(crate) before_sample: Hook,
+    /// Run by a subscription ended as stalled, after it is marked stalled
+    /// and before its producer returns.
+    pub(crate) after_stall_marked: Hook,
 }
 
 /// A step a test sets for a subscription to run; nothing until it is set.
@@ -1161,6 +1192,9 @@ struct Producer {
     /// The subscriber place the subscription holds until the producer
     /// returns.
     _place: OwnedSemaphorePermit,
+    /// The subscription's entry in the target's subscriber table, removed
+    /// when the producer returns.
+    record: SubscriberRecord,
     /// The target's listener state.
     state: watch::Receiver<TargetState>,
     tx: mpsc::Sender<Result<PreEncoded, Status>>,
@@ -1239,8 +1273,11 @@ impl Producer {
     /// ended. A POLL list's queue is empty between polls, so a client that
     /// stops polling is not ended either. The client's request stream
     /// ending ends a POLL subscription, once its queue is empty, and no
-    /// other. Returning gives the subscriber place back, ends the response
-    /// stream and aborts `draining`.
+    /// other. Each response taken from the queue sets the subscription's
+    /// `last_drained` in the target's subscriber table, and a stalled
+    /// subscription is marked `stalled` there before it ends. Returning
+    /// gives the subscriber place back, removes the subscription's entry
+    /// from the table, ends the response stream and aborts `draining`.
     async fn run(mut self, draining: JoinHandle<()>) {
         let stopped = listener_stopped(self.state.clone());
         tokio::pin!(stopped);
@@ -1290,6 +1327,9 @@ impl Producer {
                         Step::ClientDone => break None,
                         Step::TargetStopped => break Some(target_stopped()),
                         Step::Stalled => {
+                            self.record.stalled();
+                            #[cfg(test)]
+                            self.probe.after_stall_marked.run();
                             tracing::warn!(
                                 peer = %self.peer_name(),
                                 limit = ?self.stall_limit,
@@ -1302,6 +1342,7 @@ impl Producer {
                         }
                         Step::Sent => {
                             waiting_since = Instant::now();
+                            self.record.drained();
                             true
                         }
                         Step::Sample => self.sample(&mut pending),
@@ -6251,5 +6292,235 @@ mod tests {
         publish(&mut sink, "in_octets", "eth0", 2.0).await;
         send_poll(&client).await;
         assert_eq!(batch(&mut client).await, [(eth0, json("2"))]);
+    }
+
+    // ---- Subscriber records and counters ------------------------------------
+
+    /// A STREAM SAMPLE subscription is listed with the client's address,
+    /// its mode and encoding; its `last_drained` is set once a response
+    /// leaves the queue and moves as more do; it is gone, and its place
+    /// given back, once the client leaves.
+    #[tokio::test]
+    async fn subscribers_lists_a_subscription_until_its_client_leaves() {
+        let mut sink = sink(None, Some("50ms")).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let target = Arc::clone(sink.target());
+        assert!(target.subscribers().is_empty(), "the premise: none yet");
+
+        let mut client = open(
+            target.local_addr(),
+            stream("/interfaces", Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribed");
+        let listed = target.subscribers();
+        assert_eq!(listed.len(), 1, "one subscription: {listed:?}");
+        let info = &listed[0];
+        let peer = info.peer.expect("the client's address");
+        assert_eq!(peer.ip(), target.local_addr().ip());
+        assert_ne!(peer.port(), target.local_addr().port());
+        assert_eq!(info.mode, "STREAM/SAMPLE");
+        assert_eq!(info.encoding, "PROTO");
+        assert!(!info.stalled);
+        assert!(info.since <= std::time::SystemTime::now());
+
+        assert_eq!(
+            next(&mut client).await,
+            Received::Update(counter("eth0", "in-octets"))
+        );
+        assert_eq!(next(&mut client).await, Received::Sync);
+        assert!(
+            eventually(|| target.subscribers()[0].last_drained.is_some()).await,
+            "a response left the queue"
+        );
+        let first = target.subscribers()[0].last_drained.expect("set");
+        assert!(first >= info.since);
+        let _ = next(&mut client).await;
+        let _ = next(&mut client).await;
+        assert!(
+            eventually(|| target.subscribers()[0].last_drained > Some(first)).await,
+            "last_drained moves as samples leave the queue"
+        );
+
+        drop(client);
+        assert!(
+            eventually(|| target.subscribers().is_empty() && target.subscriber_count() == 0).await,
+            "the record and the place go with the client"
+        );
+        assert_eq!(target.stalled_subscribers_total(), 0);
+    }
+
+    /// A JSON_IETF list is listed in `JSON_IETF`; a ONCE subscription's
+    /// entry is gone once its stream has ended after the sync marker.
+    #[tokio::test]
+    async fn a_json_ietf_list_is_listed_as_such_and_a_once_list_is_removed_after_its_sync() {
+        let mut sink = sink(None, None).await;
+        publish(&mut sink, "in_octets", "eth0", 1.0).await;
+        let target = Arc::clone(sink.target());
+        let _poll = open(target.local_addr(), in_json_ietf(poll_list("/interfaces")))
+            .await
+            .expect("subscribed");
+        let listed = target.subscribers();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!((listed[0].mode, listed[0].encoding), ("POLL", "JSON_IETF"));
+
+        let mut once = open(target.local_addr(), once("/interfaces"))
+            .await
+            .expect("subscribed");
+        assert_eq!(
+            next(&mut once).await,
+            Received::Update(counter("eth0", "in-octets"))
+        );
+        assert_eq!(next(&mut once).await, Received::Sync);
+        assert_eq!(next(&mut once).await, Received::End);
+        assert!(
+            eventually(|| target.subscribers().len() == 1 && target.subscriber_count() == 1).await,
+            "only the POLL list remains: {:?}",
+            target.subscribers()
+        );
+        assert_eq!(target.subscribers()[0].mode, "POLL");
+    }
+
+    /// Subscriptions are listed in the order they took their place.
+    #[tokio::test]
+    async fn subscribers_are_sorted_by_when_they_took_their_place() {
+        let target = target_with(4, |_| {}).await;
+        let _sample = open(target.local_addr(), stream("/a", Duration::ZERO))
+            .await
+            .expect("subscribed");
+        let _on_change = open(target.local_addr(), on_change("/b", Duration::ZERO))
+            .await
+            .expect("subscribed");
+        let _poll = open(target.local_addr(), poll_list("/c"))
+            .await
+            .expect("subscribed");
+        let listed = target.subscribers();
+        assert_eq!(listed.len(), 3, "{listed:?}");
+        let modes: Vec<&str> = listed.iter().map(|info| info.mode).collect();
+        assert_eq!(modes, ["STREAM/SAMPLE", "STREAM/ON_CHANGE", "POLL"]);
+        assert!(listed.windows(2).all(|w| w[0].since <= w[1].since));
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::once(            subscription_list::Mode::Once,   &[SubscriptionMode::Sample],                                "ONCE")]
+    #[case::poll(            subscription_list::Mode::Poll,   &[SubscriptionMode::OnChange],                              "POLL")]
+    #[case::sample(          subscription_list::Mode::Stream, &[SubscriptionMode::Sample, SubscriptionMode::Sample],      "STREAM/SAMPLE")]
+    #[case::on_change(       subscription_list::Mode::Stream, &[SubscriptionMode::OnChange],                              "STREAM/ON_CHANGE")]
+    #[case::target_defined(  subscription_list::Mode::Stream, &[SubscriptionMode::TargetDefined],                         "STREAM/TARGET_DEFINED")]
+    #[case::mixed(           subscription_list::Mode::Stream, &[SubscriptionMode::Sample, SubscriptionMode::OnChange],    "STREAM/MIXED")]
+    fn mode_name_names_the_list_mode_and_its_subscriptions_mode(
+        #[case] mode: subscription_list::Mode,
+        #[case] subscriptions: &[SubscriptionMode],
+        #[case] expected: &str,
+    ) {
+        let list = proto::SubscriptionList {
+            mode: mode as i32,
+            subscription: subscriptions
+                .iter()
+                .map(|m| proto::Subscription {
+                    mode: *m as i32,
+                    ..Default::default()
+                })
+                .collect(),
+            ..stream("/a", Duration::ZERO)
+        };
+        assert_eq!(mode_name(&list), expected);
+    }
+
+    /// A subscription ended as stalled is marked `stalled` in the table
+    /// before its producer returns, counted in
+    /// `stalled_subscribers_total`, and then removed.
+    #[tokio::test]
+    async fn a_stalled_subscription_is_marked_stalled_then_removed() {
+        let target = stall_target().await;
+        let seen: Arc<Mutex<Option<Vec<crate::sink::gnmi::SubscriberInfo>>>> = Arc::default();
+        let (weak, slot) = (Arc::downgrade(&target), Arc::clone(&seen));
+        target.settings().probe.after_stall_marked.set(move || {
+            if let Some(target) = weak.upgrade() {
+                *slot.lock().expect("unpoisoned") = Some(target.subscribers());
+            }
+        });
+        let _stalled = open_on(
+            connect_with_small_window(target.local_addr()).await,
+            stream("/interfaces", STALL_PERIOD),
+            true,
+        )
+        .await
+        .expect("subscribed");
+        assert_eq!(target.subscribers().len(), 1);
+        assert!(!target.subscribers()[0].stalled);
+        assert!(
+            within(2 * STALL_TEST_FLOOR, || target.subscriber_count() == 0).await,
+            "the stalled client is ended"
+        );
+
+        let at_stall = seen.lock().expect("unpoisoned").clone();
+        let at_stall = at_stall.expect("the hook ran");
+        assert_eq!(at_stall.len(), 1, "{at_stall:?}");
+        assert!(at_stall[0].stalled, "marked stalled before removal");
+        assert_eq!(target.stalled_subscribers_total(), 1);
+        assert!(
+            eventually(|| target.subscribers().is_empty()).await,
+            "removed after the producer returned"
+        );
+    }
+
+    /// Every Get call the router dispatches is counted, served or refused;
+    /// a Subscribe is not.
+    #[tokio::test]
+    async fn get_requests_counts_get_calls() {
+        let sink = three_series().await;
+        let target = Arc::clone(sink.target());
+        let addr = target.local_addr();
+        assert_eq!(target.get_requests(), 0);
+        get_on(addr, get_request(&["/interfaces"]))
+            .await
+            .expect("served");
+        get_on(addr, get_request(&["/system"]))
+            .await
+            .expect_err("NOT_FOUND");
+        let mut bad = get_request(&["/interfaces"]);
+        bad.r#type = 99;
+        get_on(addr, bad).await.expect_err("INVALID_ARGUMENT");
+        let mut client = open(addr, once("/interfaces")).await.expect("subscribed");
+        while next(&mut client).await != Received::End {}
+        assert_eq!(target.get_requests(), 3);
+    }
+
+    /// A Get the credential check refuses is not counted.
+    #[tokio::test]
+    async fn an_unauthenticated_get_is_not_counted() {
+        let target = credentialed_target().await;
+        let addr = target.local_addr();
+        assert_refused(get_with(addr, get_request(&["/"]), &[]).await);
+        assert_eq!(target.get_requests(), 0);
+        get_with(
+            addr,
+            get_request(&["/"]),
+            &[("username", "sonda"), ("password", PASSWORD)],
+        )
+        .await
+        .expect_err("no series: NOT_FOUND");
+        assert_eq!(target.get_requests(), 1);
+    }
+
+    /// `tls()` and `requires_credentials()` read the target's settings.
+    #[tokio::test]
+    async fn tls_and_credentials_are_read_from_the_settings() {
+        let plain = target_with(1, |_| {}).await;
+        assert!(!plain.tls() && !plain.requires_credentials());
+        assert_eq!(plain.max_subscribers(), 1);
+
+        let credentialed = credentialed_target().await;
+        assert!(!credentialed.tls() && credentialed.requires_credentials());
+
+        let files = super::super::test_tls::TlsFiles::new();
+        let mut cfg = GnmiTargetConfig::new("127.0.0.1:0");
+        cfg.tls = Some(files.tls());
+        let tls = GnmiTarget::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("bind an ephemeral port");
+        assert!(tls.tls() && !tls.requires_credentials());
     }
 }
