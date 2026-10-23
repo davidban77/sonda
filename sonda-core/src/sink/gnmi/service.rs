@@ -5111,6 +5111,7 @@ mod tests {
     /// renders outside the spike window and, for the spiking one, the path of
     /// each spike value: rendered through the example's own encoder, with the
     /// values the example's spike takes.
+    #[cfg(feature = "config")]
     fn spike_example() -> (Vec<ScenarioConfig>, Vec<String>, Vec<String>) {
         use crate::compiler::expand::InMemoryPackResolver;
         use crate::config::{LabelValueSet, ScenarioEntry};
@@ -5173,6 +5174,7 @@ mod tests {
     /// client subscribed to `/interfaces/.../in-octets` receives each spike
     /// path as a new series, then the base path, and nothing for the other
     /// metric.
+    #[cfg(feature = "config")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_spike_example_serves_each_spike_value_as_a_new_series() {
         const WINDOW: Duration = Duration::from_millis(1_500);
@@ -5280,6 +5282,7 @@ mod tests {
     /// 10 events per second: a ONCE subscription to `/interfaces` returns one
     /// series per pack metric per interface, at the pack's hinted paths and
     /// with its value types (`oper_status` a string, `in_octets` a uint).
+    #[cfg(feature = "config")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pack_example_serves_each_metric_of_each_interface_at_its_hinted_path() {
         use crate::catalog::builtin::BuiltinPackResolver;
