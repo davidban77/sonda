@@ -957,10 +957,8 @@ impl ListenerTarget for GnmiTarget {
     }
 
     /// Resolves once the listener has left [`TargetState::Listening`].
-    fn closed(mut state: watch::Receiver<TargetState>) -> impl Future<Output = ()> + Send {
-        async move {
-            let _ = state.wait_for(|s| *s != TargetState::Listening).await;
-        }
+    async fn closed(mut state: watch::Receiver<TargetState>) {
+        let _ = state.wait_for(|s| *s != TargetState::Listening).await;
     }
 }
 
