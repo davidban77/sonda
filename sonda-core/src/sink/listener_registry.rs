@@ -586,6 +586,7 @@ mod tests {
             .expect("binds after the wait runs out");
         assert_eq!(started.elapsed(), RELEASE_TIMEOUT);
     }
+
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::same_address("127.0.0.1:57400", "127.0.0.1:57400", true)]
