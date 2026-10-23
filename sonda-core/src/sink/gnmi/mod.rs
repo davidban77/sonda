@@ -53,6 +53,8 @@ use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
 use crate::schedule::LaunchId;
+use crate::sink::listener_registry::canonical;
+pub(crate) use crate::sink::listener_registry::listen_overlap;
 pub use notification::ValueKind;
 pub use registry::{registry, GnmiTargetRegistry};
 pub use target::{GnmiTarget, SeriesId, SeriesUpdate, SubscriberInfo};
@@ -525,40 +527,6 @@ fn describe_tls_paths(paths: &GnmiTlsConfig) -> String {
     }
 }
 
-/// Whether listeners on `a` and `b` would contend for one port: the same
-/// address, or the same port with one of them a wildcard that covers the
-/// other's family. An IPv4 wildcard covers IPv4 addresses; an IPv6 wildcard
-/// covers both families. Port 0 never contends.
-///
-/// Treating `[::]` as covering IPv4 assumes a dual-stack socket, the Linux
-/// default (`net.ipv6.bindv6only = 0`). Where it binds IPv6 only, an IPv4
-/// address on the same port is refused although it could bind, and a join
-/// of an IPv4 address finds the IPv6 target.
-pub(crate) fn listen_overlap(a: SocketAddr, b: SocketAddr) -> bool {
-    let (a, b) = (canonical(a), canonical(b));
-    if a.port() == 0 || a.port() != b.port() {
-        return false;
-    }
-    a == b || covers(a, b) || covers(b, a)
-}
-
-/// `addr` with an IPv4-mapped IPv6 address (`[::ffff:127.0.0.1]`) read as
-/// the IPv4 address it maps, which is the socket it binds.
-fn canonical(addr: SocketAddr) -> SocketAddr {
-    SocketAddr::new(addr.ip().to_canonical(), addr.port())
-}
-
-/// Whether `wild` is a wildcard listening on `other`'s port that accepts
-/// `other`'s family, one way: `0.0.0.0` covers IPv4 addresses, `[::]` covers
-/// both families (see [`listen_overlap`] for the dual-stack assumption).
-pub(crate) fn covers(wild: SocketAddr, other: SocketAddr) -> bool {
-    let (wild, other) = (canonical(wild), canonical(other));
-    wild.port() != 0
-        && wild.port() == other.port()
-        && wild.ip().is_unspecified()
-        && (wild.is_ipv6() || other.is_ipv4())
-}
-
 impl TargetSettings {
     /// Whether a target running with `self` can also serve `other`: every
     /// setting but the listen address is equal, the `tls` files by their
@@ -867,25 +835,6 @@ mod tests {
     use crate::sink::SinkConfig;
     use crate::OnSinkError;
 
-    #[rustfmt::skip]
-    #[rstest::rstest]
-    #[case::same_address("127.0.0.1:57400", "127.0.0.1:57400", true)]
-    #[case::v4_wildcard_and_v4("0.0.0.0:57400", "127.0.0.1:57400", true)]
-    #[case::v6_wildcard_and_v4("[::]:57400", "127.0.0.1:57400", true)]
-    #[case::v6_wildcard_and_v4_wildcard("[::]:57400", "0.0.0.0:57400", true)]
-    #[case::v6_wildcard_and_v6("[::]:57400", "[::1]:57400", true)]
-    #[case::v4_wildcard_and_v6("0.0.0.0:57400", "[::1]:57400", false)]
-    #[case::two_specific_addresses("127.0.0.1:57400", "127.0.0.2:57400", false)]
-    #[case::different_ports("0.0.0.0:57400", "127.0.0.1:57401", false)]
-    #[case::port_zero("0.0.0.0:0", "127.0.0.1:0", false)]
-    #[case::v4_mapped_and_v4("[::ffff:127.0.0.1]:57400", "127.0.0.1:57400", true)]
-    #[case::v4_mapped_and_v4_wildcard("[::ffff:127.0.0.1]:57400", "0.0.0.0:57400", true)]
-    fn listen_overlap_is_per_family(#[case] a: &str, #[case] b: &str, #[case] overlap: bool) {
-        let (a, b): (SocketAddr, SocketAddr) = (a.parse().unwrap(), b.parse().unwrap());
-        assert_eq!(listen_overlap(a, b), overlap, "{a} and {b}");
-        assert_eq!(listen_overlap(b, a), overlap, "{b} and {a}");
-    }
-
     /// `settings()` gives the address an IPv4-mapped listen binds: the IPv4
     /// address it maps.
     #[test]
@@ -993,23 +942,6 @@ mod tests {
         assert!(base
             .beside(&mutual)
             .contains(&format!("client_ca {:?}", files.path("ca.pem"))));
-    }
-
-    /// `covers` is one way: a wildcard covers the addresses of the families
-    /// it accepts, never the other way round.
-    #[rustfmt::skip]
-    #[rstest::rstest]
-    #[case::v4_wildcard_covers_v4("0.0.0.0:57400", "127.0.0.1:57400", true)]
-    #[case::v6_wildcard_covers_v4("[::]:57400", "127.0.0.1:57400", true)]
-    #[case::v6_wildcard_covers_v4_wildcard("[::]:57400", "0.0.0.0:57400", true)]
-    #[case::v4_wildcard_not_v6_wildcard("0.0.0.0:57400", "[::]:57400", false)]
-    #[case::v4_wildcard_not_v6("0.0.0.0:57400", "[::1]:57400", false)]
-    #[case::specific_covers_nothing("127.0.0.1:57400", "127.0.0.1:57400", false)]
-    #[case::other_port("0.0.0.0:57400", "127.0.0.1:57401", false)]
-    #[case::port_zero("0.0.0.0:0", "127.0.0.1:0", false)]
-    fn covers_is_one_way(#[case] wild: &str, #[case] other: &str, #[case] covered: bool) {
-        let (wild, other): (SocketAddr, SocketAddr) = (wild.parse().unwrap(), other.parse().unwrap());
-        assert_eq!(covers(wild, other), covered, "{wild} covers {other}");
     }
 
     async fn sink() -> GnmiTargetSink {

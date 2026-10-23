@@ -1,39 +1,13 @@
-//! The process-wide map from listen address to live [`GnmiTarget`].
+//! The process-wide map from listen address to live [`GnmiTarget`]: the
+//! gnmi instance of [`ListenerRegistry`].
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
 
-use tokio::sync::watch;
-
-use super::target::{GnmiTarget, TargetState};
-use super::{covers, listen_overlap, GnmiTargetConfig, TargetSettings};
-use crate::{ConfigError, SondaError};
-
-/// Longest an acquire waits for a stopped target's listener on the same port
-/// to close before binding anyway.
-const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// One registered target: a weak handle, and its listener state, which
-/// outlives the target until the listener has closed.
-struct Entry {
-    target: Weak<GnmiTarget>,
-    state: watch::Receiver<TargetState>,
-}
-
-impl Entry {
-    /// The target, while a handle to it exists and its listener task runs.
-    fn live(&self) -> Option<Arc<GnmiTarget>> {
-        self.target.upgrade().filter(|target| target.is_serving())
-    }
-
-    /// Whether the target is not live but its listening socket may still be
-    /// open.
-    fn releasing(&self) -> bool {
-        self.live().is_none() && *self.state.borrow() == TargetState::Listening
-    }
-}
+use super::target::GnmiTarget;
+use super::GnmiTargetConfig;
+use crate::sink::listener_registry::ListenerRegistry;
+use crate::SondaError;
 
 /// The registry every [`GnmiTargetSink`](super::GnmiTargetSink) acquires its
 /// target from. Created empty on first use; nothing binds until the first
@@ -49,12 +23,7 @@ pub fn registry() -> &'static GnmiTargetRegistry {
 /// sink holds it. Dropping the last handle cancels the target's token and its
 /// listening socket closes; an acquire of the same port waits for that
 /// before binding, and the stale entry is pruned once it has.
-pub struct GnmiTargetRegistry {
-    inner: Mutex<HashMap<SocketAddr, Entry>>,
-    /// Held across a bind so concurrent acquires of one address bind once.
-    /// The map lock above is never held across an `.await`.
-    binding: tokio::sync::Mutex<()>,
-}
+pub struct GnmiTargetRegistry(ListenerRegistry<GnmiTarget>);
 
 impl Default for GnmiTargetRegistry {
     fn default() -> Self {
@@ -65,10 +34,7 @@ impl Default for GnmiTargetRegistry {
 impl GnmiTargetRegistry {
     /// An empty registry.
     pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(HashMap::new()),
-            binding: tokio::sync::Mutex::new(()),
-        }
+        Self(ListenerRegistry::new())
     }
 
     /// The live target for `cfg.listen`, binding and starting one if there
@@ -87,40 +53,8 @@ impl GnmiTargetRegistry {
     /// be bound.
     pub async fn acquire(&self, cfg: &GnmiTargetConfig) -> Result<Arc<GnmiTarget>, SondaError> {
         let settings = cfg.settings()?;
-        let listen = settings.listen;
-        let deadline = tokio::time::Instant::now() + RELEASE_TIMEOUT;
-        let _binding = loop {
-            if listen.port() != 0 {
-                // Outside the bind lock, so other acquires do not queue
-                // behind this wait.
-                self.released(listen, deadline).await;
-            }
-            let binding = self.binding.lock().await;
-            if listen.port() == 0 {
-                break binding;
-            }
-            if let Some(target) = self.live(listen) {
-                return check_settings(target, &settings);
-            }
-            self.check_contending(listen)?;
-            // A target may have stopped while this acquire waited for the
-            // lock; wait for it again, after releasing the lock.
-            if self.releasing(listen) && tokio::time::Instant::now() < deadline {
-                continue;
-            }
-            break binding;
-        };
-        let target = GnmiTarget::bind(settings).await?;
-        let mut map = self.map();
-        map.retain(|_, entry| entry.live().is_some() || entry.releasing());
-        map.insert(
-            target.local_addr(),
-            Entry {
-                target: Arc::downgrade(&target),
-                state: target.state(),
-            },
-        );
-        Ok(target)
+        let listen: SocketAddr = settings.listen;
+        self.0.acquire(settings, listen).await
     }
 
     /// Whether [`acquire`](Self::acquire) of `cfg` would be refused by the
@@ -134,14 +68,7 @@ impl GnmiTargetRegistry {
     /// cases.
     pub fn check(&self, cfg: &GnmiTargetConfig) -> Result<(), SondaError> {
         let settings = cfg.settings()?;
-        let listen = settings.listen;
-        if listen.port() == 0 {
-            return Ok(());
-        }
-        if let Some(target) = self.live(listen) {
-            return check_settings(target, &settings).map(|_| ());
-        }
-        self.check_contending(listen)
+        self.0.check(&settings, settings.listen)
     }
 
     /// The live target that serves `cfg.listen`, without ever binding: the
@@ -156,138 +83,41 @@ impl GnmiTargetRegistry {
     /// target's.
     pub fn join(&self, cfg: &GnmiTargetConfig) -> Result<Arc<GnmiTarget>, SondaError> {
         let settings = cfg.settings()?;
-        let listen = settings.listen;
-        let target = (listen.port() != 0)
-            .then(|| self.serving(listen))
-            .flatten()
-            .ok_or_else(|| {
-                SondaError::Config(ConfigError::invalid(format!(
-                    "no running scenario listens on {listen}"
-                )))
-            })?;
-        let mut wanted = target.settings().clone();
-        if cfg.max_subscribers.is_some() {
-            wanted.max_subscribers = settings.max_subscribers;
-        }
-        if cfg.subscriber_buffer.is_some() {
-            wanted.subscriber_buffer = settings.subscriber_buffer;
-        }
-        if cfg.sample_floor.is_some() {
-            wanted.sample_floor = settings.sample_floor;
-        }
-        if cfg.tls.is_some() {
-            wanted.tls = settings.tls;
-        }
-        if cfg.credentials.is_some() {
-            wanted.credentials = settings.credentials;
-        }
-        check_settings(target, &wanted)
-    }
-
-    /// Wait, until `deadline` at the latest, for every target that is no
-    /// longer live but may still listen on an address overlapping `listen`
-    /// to close its socket.
-    async fn released(&self, listen: SocketAddr, deadline: tokio::time::Instant) {
-        let releasing: Vec<watch::Receiver<TargetState>> = self
-            .map()
-            .iter()
-            .filter(|(addr, entry)| listen_overlap(**addr, listen) && entry.releasing())
-            .map(|(_, entry)| entry.state.clone())
-            .collect();
-        for mut state in releasing {
-            let closed = state.wait_for(|s| *s != TargetState::Listening);
-            let _ = tokio::time::timeout_at(deadline, closed).await;
-        }
-    }
-
-    /// Whether a target that is no longer live may still listen on an
-    /// address overlapping `listen`.
-    fn releasing(&self, listen: SocketAddr) -> bool {
-        self.map()
-            .iter()
-            .any(|(addr, entry)| listen_overlap(*addr, listen) && entry.releasing())
+        self.0.join(settings.listen, |target| {
+            let mut wanted = target.settings().clone();
+            if cfg.max_subscribers.is_some() {
+                wanted.max_subscribers = settings.max_subscribers;
+            }
+            if cfg.subscriber_buffer.is_some() {
+                wanted.subscriber_buffer = settings.subscriber_buffer;
+            }
+            if cfg.sample_floor.is_some() {
+                wanted.sample_floor = settings.sample_floor;
+            }
+            if cfg.tls.is_some() {
+                wanted.tls = settings.tls;
+            }
+            if cfg.credentials.is_some() {
+                wanted.credentials = settings.credentials;
+            }
+            wanted
+        })
     }
 
     /// Live targets.
     pub fn len(&self) -> usize {
-        self.map()
-            .values()
-            .filter(|entry| entry.live().is_some())
-            .count()
+        self.0.len()
     }
 
     /// Whether no target is live.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.0.is_empty()
     }
 
     /// The live targets, sorted by the address each listens on.
     pub fn targets(&self) -> Vec<Arc<GnmiTarget>> {
-        let mut targets: Vec<Arc<GnmiTarget>> =
-            self.map().values().filter_map(Entry::live).collect();
-        targets.sort_by_key(|target| target.local_addr());
-        targets
+        self.0.targets()
     }
-
-    fn live(&self, addr: SocketAddr) -> Option<Arc<GnmiTarget>> {
-        self.map().get(&addr).and_then(Entry::live)
-    }
-
-    /// The live target on `addr`, or else a live wildcard target on the same
-    /// port that covers `addr`.
-    fn serving(&self, addr: SocketAddr) -> Option<Arc<GnmiTarget>> {
-        self.live(addr).or_else(|| {
-            self.map()
-                .iter()
-                .filter(|(wild, _)| covers(**wild, addr))
-                .find_map(|(_, entry)| entry.live())
-        })
-    }
-
-    /// [`SondaError::Config`] when a live target on another address contends
-    /// with `listen` for its port.
-    fn check_contending(&self, listen: SocketAddr) -> Result<(), SondaError> {
-        match self.contending(listen) {
-            Some(running) => Err(SondaError::Config(ConfigError::invalid(format!(
-                "gnmi_target {listen} cannot listen while the running target on {running} \
-                 serves port {}; use {running} for both",
-                listen.port()
-            )))),
-            None => Ok(()),
-        }
-    }
-
-    /// The address of a live target on another address that contends with
-    /// `addr` for its port.
-    fn contending(&self, addr: SocketAddr) -> Option<SocketAddr> {
-        self.map()
-            .iter()
-            .filter(|(other, entry)| {
-                **other != addr && listen_overlap(**other, addr) && entry.live().is_some()
-            })
-            .map(|(other, _)| *other)
-            .next()
-    }
-
-    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<SocketAddr, Entry>> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-fn check_settings(
-    target: Arc<GnmiTarget>,
-    wanted: &TargetSettings,
-) -> Result<Arc<GnmiTarget>, SondaError> {
-    let running = target.settings();
-    if running.serves(wanted) {
-        return Ok(target);
-    }
-    Err(SondaError::Config(ConfigError::invalid(format!(
-        "gnmi_target {} is already serving with different settings ({}, the running \
-         target's first); every sink on one address must use the same settings",
-        target.local_addr(),
-        running.beside(wanted),
-    ))))
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ pub(crate) mod grpc_codec;
 pub mod http;
 #[cfg(feature = "kafka")]
 pub mod kafka;
+#[cfg(feature = "gnmi")]
+pub(crate) mod listener_registry;
 #[cfg(feature = "http")]
 pub mod loki;
 pub mod memory;
