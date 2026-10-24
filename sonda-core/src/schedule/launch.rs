@@ -107,12 +107,13 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
 }
 
 /// Check entries against the sinks already running in this process,
-/// starting nothing: a `gnmi_target` address that a running target serves
-/// with other settings, or whose port a running target on another address
-/// holds, is refused, as it would be when the entry's sink starts.
+/// starting nothing: a `gnmi_target` or `snmp_agent` address that a running
+/// target or agent serves with other settings, or whose port a running one
+/// on another address holds, is refused, as it would be when the entry's
+/// sink starts.
 ///
-/// Only targets bound before the call are seen, so an entry that passes can
-/// still be refused when its sink starts, if another target binds first.
+/// Only targets and agents bound before the call are seen, so an entry that
+/// passes can still be refused when its sink starts, if another binds first.
 ///
 /// # Errors
 ///
@@ -120,13 +121,17 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
 pub fn check_running_sinks<'a>(
     entries: impl IntoIterator<Item = &'a ScenarioEntry>,
 ) -> Result<(), SondaError> {
-    #[cfg(feature = "gnmi")]
+    #[cfg(any(feature = "gnmi", feature = "snmp"))]
     for entry in entries {
-        if let crate::sink::SinkConfig::GnmiTarget(cfg) = &entry.base().sink {
-            crate::sink::gnmi::registry().check(cfg)?;
+        match &entry.base().sink {
+            #[cfg(feature = "gnmi")]
+            crate::sink::SinkConfig::GnmiTarget(cfg) => crate::sink::gnmi::registry().check(cfg)?,
+            #[cfg(feature = "snmp")]
+            crate::sink::SinkConfig::SnmpAgent(cfg) => crate::sink::snmp::registry().check(cfg)?,
+            _ => {}
         }
     }
-    #[cfg(not(feature = "gnmi"))]
+    #[cfg(not(any(feature = "gnmi", feature = "snmp")))]
     let _ = entries;
     Ok(())
 }
@@ -232,15 +237,71 @@ pub fn prepare_entries_grouped(
 /// errors name that index. [`prepare_entries`] and the gated launch path both
 /// call this before they validate the entries one by one, so a file is held to
 /// the same cross-entry rules on either path: entries sharing a `gnmi_target`
-/// address agree on its settings, and every `gnmi` encoder agrees with the
-/// entries that use it.
+/// or `snmp_agent` address agree on its settings, and every `gnmi` encoder
+/// agrees with the entries that use it.
 pub(crate) fn validate_file(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
     #[cfg(feature = "gnmi")]
     {
         validate_gnmi_target_addresses(entries)?;
         validate_gnmi_file(entries)?;
     }
+    #[cfg(feature = "snmp")]
+    validate_snmp_agent_addresses(entries)?;
     let _ = entries;
+    Ok(())
+}
+
+/// Check that the `snmp_agent` sinks of one file can share their listen
+/// addresses.
+///
+/// Entries on one address share one agent, so they must use the same
+/// `community`, `max_message_size` and `system`. A wildcard address such as
+/// `0.0.0.0:1161` and an address of a family it covers on the same port
+/// cannot both listen (an IPv6 wildcard covers both families). Port 0 always
+/// binds an agent of its own and is never compared, and a sink whose config
+/// does not resolve is left to per-entry validation. Every failure is a
+/// [`SondaError::Config`] naming both entries. O(entries²).
+#[cfg(feature = "snmp")]
+fn validate_snmp_agent_addresses(entries: &[(usize, &ScenarioEntry)]) -> Result<(), SondaError> {
+    use crate::sink::listener_registry::listen_overlap;
+    use crate::sink::snmp::AgentSettings;
+    use crate::sink::SinkConfig;
+
+    let mut seen: Vec<(usize, AgentSettings)> = Vec::new();
+    for (index, entry) in entries {
+        let SinkConfig::SnmpAgent(cfg) = &entry.base().sink else {
+            continue;
+        };
+        let Ok(settings) = cfg.settings() else {
+            continue;
+        };
+        if settings.listen.port() == 0 {
+            continue;
+        }
+        for (other, earlier) in &seen {
+            if earlier.listen == settings.listen {
+                if !earlier.serves(&settings) {
+                    return Err(SondaError::Config(ConfigError::invalid(format!(
+                        "scenario[{other}] and scenario[{index}] both use snmp_agent {} with \
+                         different settings ({}); every sink on one address must use the same \
+                         settings",
+                        settings.listen,
+                        earlier.beside(&settings),
+                    ))));
+                }
+            } else if listen_overlap(earlier.listen, settings.listen) {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "scenario[{other}] listens on snmp_agent {} and scenario[{index}] on {}; a \
+                     wildcard address and another address cannot share port {}, so use one \
+                     address for both",
+                    earlier.listen,
+                    settings.listen,
+                    settings.listen.port(),
+                ))));
+            }
+        }
+        seen.push((*index, settings));
+    }
     Ok(())
 }
 
@@ -3231,6 +3292,107 @@ scenarios:
             "got {msg}"
         );
         assert!(!msg.contains("wildcard"), "got {msg}");
+    }
+
+    /// A metrics entry named `name` on an `snmp_agent` sink listening on
+    /// `listen` with `community`, publishing one scalar of its own.
+    #[cfg(feature = "snmp")]
+    fn snmp_entry(name: &str, listen: &str, community: &str) -> ScenarioEntry {
+        let mut entry = metrics_entry(name);
+        if let ScenarioEntry::Metrics(ref mut config) = entry {
+            config.base.sink = SinkConfig::SnmpAgent(crate::sink::snmp::SnmpAgentConfig {
+                community: community.to_string(),
+                ..crate::sink::snmp::SnmpAgentConfig::new(listen)
+            });
+            let arc = name.bytes().map(u32::from).sum::<u32>();
+            config.encoder = EncoderConfig::Snmp(crate::encoder::snmp::SnmpEncoderConfig {
+                oids: std::collections::HashMap::from([(
+                    name.to_string(),
+                    format!("1.3.6.1.4.1.8072.9999.1.{arc}.0"),
+                )]),
+                ..Default::default()
+            });
+        }
+        entry
+    }
+
+    /// Entries on one `snmp_agent` address agree on its settings, and a
+    /// wildcard address shares its port with no other address of a family it
+    /// covers; port 0 and addresses that do not overlap are never compared.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn snmp_agents_sharing_an_address_must_agree() {
+        prepare_entries(vec![
+            snmp_entry("a", "127.0.0.1:1161", "lab-secret"),
+            snmp_entry("b", "127.0.0.1:1161", "lab-secret"),
+            snmp_entry("c", "127.0.0.2:1161", "ops-secret"),
+        ])
+        .expect("identical settings on one address, and another specific address");
+
+        let err = prepare_entries(vec![
+            snmp_entry("a", "127.0.0.1:1161", "lab-secret"),
+            snmp_entry("b", "127.0.0.1:1161", "ops-secret"),
+        ])
+        .expect_err("different settings on one address");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("scenario[0] and scenario[1] both use snmp_agent 127.0.0.1:1161"),
+            "{msg}"
+        );
+        assert!(msg.contains("community and another community"), "{msg}");
+        assert!(
+            !msg.contains("lab-secret") && !msg.contains("ops-secret"),
+            "{msg}"
+        );
+
+        let err = prepare_entries(vec![
+            snmp_entry("a", "0.0.0.0:1161", "lab-secret"),
+            snmp_entry("b", "127.0.0.1:1161", "lab-secret"),
+        ])
+        .expect_err("a wildcard and a specific address on one port");
+        assert!(err.to_string().contains("wildcard"), "{err}");
+
+        prepare_entries(vec![
+            snmp_entry("a", "127.0.0.1:0", "lab-secret"),
+            snmp_entry("b", "127.0.0.1:0", "ops-secret"),
+        ])
+        .expect("port 0 binds an agent per entry, so nothing is shared");
+        prepare_entries(vec![
+            snmp_entry("a", "0.0.0.0:1161", "lab-secret"),
+            snmp_entry("b", "[::1]:1161", "ops-secret"),
+        ])
+        .expect("an IPv4 wildcard and an IPv6 address bind side by side");
+        prepare_entries(vec![
+            snmp_entry("a", "[::ffff:127.0.0.1]:1161", "lab-secret"),
+            snmp_entry("b", "127.0.0.1:1161", "lab-secret"),
+        ])
+        .expect("an IPv4-mapped address and the IPv4 address it maps are one address");
+    }
+
+    /// `check_running_sinks` refuses an entry whose `snmp_agent` address a
+    /// running agent serves with other settings, and passes one that agrees.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn check_running_sinks_sees_a_running_snmp_agent() {
+        use crate::sink::snmp::{SnmpAgentConfig, SnmpAgentSink};
+
+        let held = SnmpAgentSink::new(&SnmpAgentConfig {
+            community: "lab".to_string(),
+            ..SnmpAgentConfig::new("127.0.0.1:0")
+        })
+        .await
+        .expect("bind an ephemeral port");
+        let addr = held.agent().local_addr().to_string();
+        check_running_sinks(&[snmp_entry("a", &addr, "lab")])
+            .expect("the running agent's settings");
+        let err = check_running_sinks(&[snmp_entry("a", &addr, "other")])
+            .expect_err("another community on a running agent's address");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("community and another community"),
+            "{err}"
+        );
     }
 
     /// A file whose entries share one gnmi encoder through `defaults:`.
