@@ -709,6 +709,69 @@ docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi-tls
 
 and, from the repository root, `sonda run examples/gnmi-telegraf-tls.yaml`. Without the certificates, that command and its `--dry-run` stop with `gnmi_target tls cert "examples/telegraf/certs/server.pem" cannot be read`.
 
+## snmp_agent
+
+Serves the scenario's metrics as an SNMP agent, the way a managed device does. Like `gnmi_target`, this sink listens: a poller such as Telegraf's `inputs.snmp`, `snmpwalk` or a network management system sends requests to the `listen` address over UDP and reads the latest value of each instance.
+
+Pair this sink with the [`snmp` encoder](encoders.md#snmp), which renders each series as an instance OID and a typed value. Each takes only the other, and it works for `metrics` entries. Histogram, summary and logs entries take neither.
+
+!!! note
+    This sink requires the `snmp` Cargo feature flag. To build from source: `cargo build --features snmp -p sonda`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `listen` | string | yes | -- | Address to listen on, for example `"0.0.0.0:1161"`. See [Ports](#snmp-ports). |
+| `community` | string | no | `public` | The SNMPv2c community a request must carry. |
+| `max_message_size` | integer | no | `1472` | The largest reply the agent sends, in bytes, 484 to 65507. 1472 is the UDP payload of an Ethernet frame. |
+| `system` | object | no | see below | The values of the system group, `1.3.6.1.2.1.1`. |
+
+| `system` field | MIB object | Default | Description |
+|----------------|------------|---------|-------------|
+| `descr` | `sysDescr` | `""` | A description of the device. |
+| `object_id` | `sysObjectID` | `1.3.6.1.4.1.8072.3.2.10` | The device's vendor OID, in dotted decimal. A string: an unquoted value YAML reads as a number, such as `1.30`, is refused with the field named. |
+| `contact` | `sysContact` | `""` | Who to contact about the device. |
+| `name` | `sysName` | `""` | The device's name. |
+| `location` | `sysLocation` | `""` | Where the device is. |
+| `services` | `sysServices` | `72` | The layers the device serves, 0 to 127. |
+
+```yaml title="An snmp_agent sink with its system group"
+sink:
+  type: snmp_agent
+  listen: 0.0.0.0:1161
+  community: public
+  system:
+    name: rtr-core-01
+    descr: Sonda synthetic router
+    contact: noc@example.com
+    location: lab-1
+```
+
+Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set `community`, `max_message_size` and `system` alike; a difference is refused, naming the fields that differ but never a community. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.
+
+The agent serves the system group and every instance its entries publish, in OID order, which is the order a walk visits them in. `sysUpTime` counts hundredths of a second from when the agent started listening. No entry may publish under `1.3.6.1.2.1.1`. A request reads:
+
+| Request for | Answer |
+|-------------|--------|
+| An instance the agent holds | Its latest value. |
+| An object an entry has published under, or an OID under one, that is not an instance: a column without an index, a scalar without its `.0`, an index nobody publishes, an instance that has left | `noSuchInstance` |
+| Any other OID | `noSuchObject` |
+| The next OID (`GETNEXT`, `GETBULK`) | The instances that follow it in OID order, the system group included. |
+
+An instance leaves the agent when the last scenario publishing it stops (scenarios of one scenario file can publish the same OID), and at no other time: a series that stops changing keeps its latest value, as a stalled counter does on a device. Once it has left, a walk skips it and a request for it answers `noSuchInstance`.
+
+### Ports { #snmp-ports }
+
+SNMP's standard port is 161. Binding a port below 1024 takes the `CAP_NET_BIND_SERVICE` capability (or root); without it the run stops with an error naming the port and the capability. Listen on a port above 1023, such as 1161, and point the poller at it, or grant the binary the capability with `setcap cap_net_bind_service=+ep`.
+
+A `gnmi_target` and an `snmp_agent` may use the same port number: one listens on TCP, the other on UDP.
+
+With the agent running, net-snmp's tools read it directly:
+
+```bash
+snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
+snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
+```
+
 ## Retry with backoff
 
 Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does **not** retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a `retry:` block to any network sink.

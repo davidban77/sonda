@@ -966,6 +966,128 @@ fn the_schema_bounds_gnmi_target_settings_like_validation(
     }
 }
 
+/// An `snmp_agent` sink whose block carries `extra`, one line under `listen`.
+#[cfg(feature = "snmp")]
+fn snmp_agent_document(extra: &str) -> String {
+    format!(
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    oids:
+      ifHCInOctets: "1.3.6.1.2.1.31.1.1.1.6.{{ifIndex}}"
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1161
+    {extra}
+scenarios:
+  - signal_type: metrics
+    name: ifHCInOctets
+    labels:
+      ifIndex: "1"
+    generator:
+      type: constant
+      value: 1.0
+"#
+    )
+}
+
+/// The `snmp_agent` block and its `system:` block deny unknown keys, in the
+/// schema and the parser.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::sink_key("comunity: public")]
+#[case::system_key("system: {nmae: rtr-1}")]
+fn the_schema_rejects_a_misspelled_snmp_agent_key(#[case] extra: &str) {
+    let yaml = snmp_agent_document(extra);
+    sonda_core::compiler::parse::parse(&yaml).expect_err("the parser refuses the key");
+    assert_rejected(extra, &yaml);
+}
+
+/// The schema accepts any scalar for the sink's text fields, so the parser
+/// must too: a numeric `community` or system name is read as its text.
+#[cfg(feature = "snmp")]
+#[test]
+fn the_parser_takes_every_scalar_the_schema_takes_for_snmp_agent_text_fields() {
+    let yaml = snmp_agent_document(
+        "community: 12345
+    system: {name: 42, location: 7}",
+    );
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+    assert!(
+        validator().is_valid(&yaml_to_json(value)),
+        "the premise: the schema accepts numeric text fields"
+    );
+    sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts what the schema accepts");
+}
+
+/// `system.object_id` is an OID and not widened: an unquoted number is
+/// refused by both, and a dotted OID string is accepted by both.
+#[cfg(feature = "snmp")]
+#[test]
+fn the_schema_and_the_parser_refuse_an_unquoted_numeric_object_id() {
+    let numeric = snmp_agent_document("system: {object_id: 1.30}");
+    sonda_core::compiler::parse::parse(&numeric).expect_err("the parser refuses a number");
+    assert_rejected("a numeric system.object_id", &numeric);
+
+    let dotted = snmp_agent_document("system: {object_id: 1.3.6.1.4.1.8072.3.2.10}");
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&dotted).expect("loads");
+    assert!(
+        validator().is_valid(&yaml_to_json(value)),
+        "the schema takes a dotted OID"
+    );
+    sonda_core::compiler::parse::parse(&dotted).expect("the parser takes a dotted OID");
+}
+
+/// The schema bounds the sink's numeric settings where validation does, so
+/// an editor flags the values `sonda` refuses, and accepts the bounds.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::message_size_below_the_minimum("max_message_size: 483", 483, 72, false)]
+#[case::message_size_at_the_minimum("max_message_size: 484", 484, 72, true)]
+#[case::message_size_at_the_maximum("max_message_size: 65507", 65_507, 72, true)]
+#[case::message_size_above_the_maximum("max_message_size: 65508", 65_508, 72, false)]
+#[case::services_at_the_maximum("system: {services: 127}", 1472, 127, true)]
+#[case::services_above_the_maximum("system: {services: 128}", 1472, 128, false)]
+fn the_schema_bounds_snmp_agent_settings_like_validation(
+    #[case] extra: &str,
+    #[case] max_message_size: usize,
+    #[case] services: u8,
+    #[case] valid: bool,
+) {
+    use sonda_core::sink::snmp::{SnmpAgentConfig, SystemGroup};
+    use sonda_core::sink::SinkConfig;
+
+    let cfg = SnmpAgentConfig {
+        max_message_size,
+        system: SystemGroup {
+            services,
+            ..SystemGroup::default()
+        },
+        ..SnmpAgentConfig::new("0.0.0.0:1161")
+    };
+    let validated = sonda_core::config::validate::validate_sink_config(&SinkConfig::SnmpAgent(cfg));
+    assert_eq!(
+        validated.is_ok(),
+        valid,
+        "validation of `{extra}`: {validated:?}"
+    );
+
+    let yaml = snmp_agent_document(extra);
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        assert!(
+            validator().is_valid(&yaml_to_json(value)),
+            "the schema refuses `{extra}`"
+        );
+    } else {
+        assert_rejected(extra, &yaml);
+    }
+}
+
 /// The committed schema is a build output. This is the same comparison
 /// `task schema:check` makes, run inside `cargo test` so a contributor who
 /// never runs the task still learns before CI does.

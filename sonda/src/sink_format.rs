@@ -59,7 +59,7 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         #[cfg(feature = "gnmi")]
         SinkConfig::GnmiTarget(cfg) => Some(cfg.listen.clone()),
         #[cfg(feature = "snmp")]
-        SinkConfig::SnmpAgent { listen } => Some(listen.clone()),
+        SinkConfig::SnmpAgent(cfg) => Some(cfg.listen.clone()),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled {} | SinkConfig::LokiDisabled {} => {
             Some("disabled".to_string())
@@ -189,9 +189,7 @@ mod tests {
     #[cfg(feature = "snmp")]
     #[test]
     fn snmp_agent_includes_listen_address_in_parens() {
-        let s = SinkConfig::SnmpAgent {
-            listen: "0.0.0.0:1161".to_string(),
-        };
+        let s = SinkConfig::SnmpAgent(sonda_core::sink::snmp::SnmpAgentConfig::new("0.0.0.0:1161"));
         let display = sink_display(&s);
         assert!(!display.contains("unknown ("), "got {display}");
         assert_eq!(display, "snmp_agent (0.0.0.0:1161)");

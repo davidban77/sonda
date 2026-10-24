@@ -17,7 +17,11 @@ src/
 │                          target on its address and never binds; no live target is a
 │                          ConfigError. A joined write only overwrites a path the target
 │                          already serves and owns nothing; an unserved path is a
-│                          ConfigError. Used by the sonda-server `POST /events` handler.
+│                          ConfigError. An snmp_agent sink joins the live agent the same
+│                          way and overwrites only an instance it serves; emit_log also
+│                          refuses the snmp encoder and snmp_agent sink (reject_snmp_for)
+│                          before building anything. Used by the sonda-server
+│                          `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash;
 │                          constant_time_eq under gnmi: length check, then an XOR-fold over
 │                          every byte pair; ensure_crypto_provider under kafka or gnmi:
@@ -128,14 +132,17 @@ src/
 │   │                      validate_file is the ONE home of cross-entry rules, run by
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
-│   │                      share a port, and every gnmi encoder agrees with its entries.
+│   │                      share a port, the same two rules for snmp_agent entries
+│   │                      (validate_snmp_agent_addresses, AgentSettings::serves/beside),
+│   │                      and every gnmi encoder agrees with its entries.
 │   │                      Its leaf check gives a series one leaf (keys of labels used only
 │   │                      as {x?} that no event carries left out) and the set of keys it may
 │   │                      leave out (a spike over nothing); two elements meet when each key
 │   │                      is on both with values that can be equal, or every side that has
 │   │                      it may leave it out. Per pair O(elements x keys), never 2^k shapes.
 │   │                      check_running_sinks() checks entries against sinks already
-│   │                      running in the process (gnmi_target via registry().check());
+│   │                      running in the process (gnmi_target and snmp_agent, each via
+│   │                      its registry().check());
 │   │                      both multi-launch paths call it (POST /scenarios through
 │   │                      launch_multi_compiled).
 │   ├── runner.rs           ← metric event loop: builds generator/encoder/labels, delegates to core_loop
@@ -238,9 +245,9 @@ src/
 │   │                       string writes the shortest round-trip text, NaN/inf/-inf too.
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
-│   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent { listen } (snmp
-│   │                      feature) / SnmpAgentDisabled {}: validation pairs it with the
-│   │                      snmp encoder; create_sink refuses it with a ConfigError.
+│   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent(SnmpAgentConfig)
+│   │                      (snmp feature) / SnmpAgentDisabled {}: validation pairs it with
+│   │                      the snmp encoder and runs its settings().
 │   ├── stdout.rs       ← BufWriter<Stdout>
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
@@ -251,8 +258,10 @@ src/
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
-│   ├── listener_registry.rs ← ListenerRegistry<T: ListenerTarget> (feature = "gnmi";
-│   │                      pub(crate)): address → Weak<T> + T::SocketState. acquire() binds
+│   ├── listener_registry.rs ← ListenerRegistry<T: ListenerTarget> (feature = "gnmi" or
+│   │                      "snmp"; pub(crate)): address → Weak<T> + T::SocketState. Two
+│   │                      instances: gnmi's (TCP) and snmp's (UDP), so a target and an
+│   │                      agent on one port number never contend. acquire() binds
 │   │                      (T::bind) or joins; a target whose listener task exited is not
 │   │                      live (is_live); before binding it waits (≤ 2 s in all, never
 │   │                      under the bind lock) for a stopped target's socket on an
@@ -549,6 +558,57 @@ src/
 │   │                       producer sends the status on a oneshot, and Responses yields it
 │   │                       after the queue drains. A publish wakes only ON_CHANGE
 │   │                       subscriber tasks, and only when the value changed.
+│   ├── snmp/           ← snmp_agent sink (feature = "snmp"):
+│   │   ├── mod.rs      ←   SnmpAgentConfig { listen, community "public", max_message_size
+│   │   │                   1472, system: SystemGroup } and SystemGroup { name, descr,
+│   │   │                   contact, location ("" each), object_id "1.3.6.1.4.1.8072.3.2.10"
+│   │   │                   (OidText: a string only; x-sonda-no-widening), services 72 },
+│   │   │                   both deny_unknown_fields; listen, community and the text fields
+│   │   │                   take any scalar (scalar_text). Debug prints "***" for the
+│   │   │                   community. settings() is the ONE field check validation and the
+│   │   │                   sink both call: listen a socket address (IPv4-mapped read as
+│   │   │                   IPv4), max_message_size 484..=65507, object_id an Oid, services
+│   │   │                   ≤ 127 -> AgentSettings. serves() compares every setting but the
+│   │   │                   listen address; beside() names the ones that differ and never a
+│   │   │                   community ("community and another community").
+│   │   │                   registry(): the snmp instance of ListenerRegistry<SnmpAgent>
+│   │   │                   behind SnmpAgentRegistry (acquire, check, join, len, is_empty,
+│   │   │                   targets, as gnmi's). join() never binds and compares no setting:
+│   │   │                   a joined sink only replaces values.
+│   │   │                   SnmpAgentSink: wants_metric_events() = true; write() is an error.
+│   │   │                   Each write is the snmp encoder's publish record: split_record
+│   │   │                   checks it is the header byte then exactly one SEQUENCE (every
+│   │   │                   event) and strips the byte. A key's first event decodes the
+│   │   │                   instance OID, registers its object (the OID minus the header's
+│   │   │                   index-arc count, ≥ 2 arcs left) and publishes with first = true;
+│   │   │                   later events reuse the decoded OID (keys rendering one OID share
+│   │   │                   an entry). Owner per launch as gnmi's; a joined sink owns nothing
+│   │   │                   and overwrite()s only a served instance. PublishBuffers as gnmi's
+│   │   │                   (two BytesMut in turn): a steady publish allocates nothing.
+│   │   │                   Drop releases each instance once.
+│   │   └── agent.rs    ←   SnmpAgent: RwLock<MibTable { slots: BTreeMap<Oid, Slot { varbind,
+│   │                       owner, publishers }>, objects: BTreeSet<Oid> }> (OID order = walk
+│   │                       order) and the system group: seven VarBinds 1.3.6.1.2.1.1.N.0
+│   │                       rendered at bind from AgentSettings, sysUpTime made on each read
+│   │                       (uptime_ticks: centiseconds since bind, wrapping). The objects set
+│   │                       starts with the system group's seven and is never pruned.
+│   │                       publish(owner, oid, varbind, first) under the write lock: a
+│   │                       foreign owner, or a new OID under 1.3.6.1.2.1.1, is a ConfigError;
+│   │                       first counts a publisher; release() is -1 and the slot leaves at
+│   │                       zero. get(): system instance or slot -> Lookup::Value(VarBind);
+│   │                       else a registered object equal to or a prefix of the OID ->
+│   │                       NoSuchInstance (prefixes probed through Borrow<[u32]>, no
+│   │                       allocation); else NoSuchObject. next_after(): the smallest OID
+│   │                       strictly greater across slots and the system group. The read side
+│   │                       has no caller outside tests. bind() binds a tokio UdpSocket (a
+│   │                       refused permission names the port and CAP_NET_BIND_SERVICE) and
+│   │                       spawns the responder, which holds the agent weakly, owns the
+│   │                       socket and a ClosedOnDrop guard (the socket drops first), decodes
+│   │                       each datagram with Message::decode, counts it under its PDU type
+│   │                       in RequestCounters (malformed otherwise) and answers none.
+│   │                       Dropping the last Arc cancels the token; wait() resolves once
+│   │                       the socket is closed. Its ListenerTarget SocketState is a
+│   │                       watch::Receiver<bool> (true while the socket is open).
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
@@ -681,7 +741,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes` and `runtime` for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes` and `runtime` for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent and its UDP socket. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

@@ -374,7 +374,7 @@ pub fn validate_encoder_sink_pairing(
     #[cfg(feature = "snmp")]
     {
         let snmp_encoder = matches!(encoder, crate::encoder::EncoderConfig::Snmp(_));
-        let snmp_sink = matches!(sink, SinkConfig::SnmpAgent { .. });
+        let snmp_sink = matches!(sink, SinkConfig::SnmpAgent(_));
         if snmp_encoder && !snmp_sink {
             return Err(SondaError::Config(ConfigError::invalid(
                 "the snmp encoder can only be used with the snmp_agent sink",
@@ -562,7 +562,7 @@ pub(crate) fn reject_snmp_for(
                  {kind} entry has no MIB shape"
             ))));
         }
-        if matches!(sink, SinkConfig::SnmpAgent { .. }) {
+        if matches!(sink, SinkConfig::SnmpAgent(_)) {
             return Err(SondaError::Config(ConfigError::invalid(format!(
                 "the snmp_agent sink carries metrics entries only, not {kind} entries: a \
                  {kind} entry has no MIB shape"
@@ -713,7 +713,7 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     use crate::encoder::snmp::{uncovered_label, SnmpEncoder};
     use crate::encoder::EncoderConfig;
 
-    let snmp_sink = matches!(config.base.sink, SinkConfig::SnmpAgent { .. });
+    let snmp_sink = matches!(config.base.sink, SinkConfig::SnmpAgent(_));
     if snmp_sink || matches!(config.encoder, EncoderConfig::Snmp(_)) {
         validate_encoder_sink_pairing(&config.encoder, &config.base.sink)?;
     }
@@ -1647,7 +1647,7 @@ pub fn validate_sink_config(sink: &SinkConfig) -> Result<(), SondaError> {
         #[cfg(not(feature = "gnmi"))]
         SinkConfig::GnmiTargetDisabled { .. } => Ok(()),
         #[cfg(feature = "snmp")]
-        SinkConfig::SnmpAgent { .. } => Ok(()),
+        SinkConfig::SnmpAgent(cfg) => cfg.settings().map(|_| ()),
         #[cfg(not(feature = "snmp"))]
         SinkConfig::SnmpAgentDisabled { .. } => Ok(()),
     }
@@ -4849,9 +4849,8 @@ generator:
             ("device".to_string(), "rtr-1".to_string()),
             ("ifIndex".to_string(), "1".to_string()),
         ]));
-        config.base.sink = SinkConfig::SnmpAgent {
-            listen: "127.0.0.1:1161".to_string(),
-        };
+        config.base.sink =
+            SinkConfig::SnmpAgent(crate::sink::snmp::SnmpAgentConfig::new("127.0.0.1:1161"));
         config.encoder = EncoderConfig::Snmp(crate::encoder::snmp::SnmpEncoderConfig {
             oids: std::collections::HashMap::from([
                 (
@@ -5238,6 +5237,21 @@ generator:
             initial_backoff: "100ms".to_string(),
             max_backoff: "5s".to_string(),
         }
+    }
+
+    /// Validation runs the `snmp_agent` sink's one field check, so a value
+    /// only `settings()` refuses fails the entry, naming the field.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn validate_config_runs_the_snmp_agent_settings_check() {
+        validate_config(&snmp_config()).expect("the baseline validates");
+        let mut config = snmp_config();
+        let SinkConfig::SnmpAgent(sink) = &mut config.base.sink else {
+            panic!("the baseline is on an snmp_agent sink");
+        };
+        sink.max_message_size = 483;
+        let msg = err_msg(validate_config(&config));
+        assert!(msg.contains("max_message_size"), "{msg}");
     }
 
     #[test]
