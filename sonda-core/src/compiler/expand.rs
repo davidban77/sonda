@@ -114,7 +114,7 @@
 //! |-------|------------------|
 //! | `rate` | copied verbatim (inherited from defaults in Phase 2) |
 //! | `duration` | copied verbatim |
-//! | `encoder` | copied, with the pack's `gnmi:` hints folded in (see [`crate::packs::fold_gnmi_hints`]) |
+//! | `encoder` | copied, with the pack's `gnmi:` and `snmp:` hints folded in (see [`crate::packs::fold_gnmi_hints`] and [`crate::packs::fold_snmp_hints`]) |
 //! | `sink` | copied verbatim |
 //! | `jitter`, `jitter_seed` | copied verbatim |
 //! | `gaps` | cloned verbatim |
@@ -777,7 +777,8 @@ fn expand_pack_entry<R: PackResolver>(
     // shadow an auto-generated pack-entry id and vice versa.
     record_id(id_registry, &effective_entry_id, effective_id_source)?;
 
-    let encoder = crate::packs::fold_gnmi_hints(&pack, &entry.encoder);
+    let mut encoder = crate::packs::fold_gnmi_hints(&pack, &entry.encoder);
+    crate::packs::fold_snmp_hints(&mut encoder, &pack.metrics);
 
     for (spec_index, metric) in pack.metrics.iter().enumerate() {
         let override_for_metric = override_indices
@@ -1121,6 +1122,7 @@ mod tests {
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                     gnmi: None,
+                    snmp: None,
                 },
                 MetricSpec {
                     name: "ifHCInOctets".to_string(),
@@ -1132,6 +1134,7 @@ mod tests {
                         max: None,
                     }),
                     gnmi: None,
+                    snmp: None,
                 },
             ],
         }
@@ -1165,6 +1168,7 @@ mod tests {
                         max: None,
                     }),
                     gnmi: None,
+                    snmp: None,
                 },
                 MetricSpec {
                     name: "node_cpu_seconds_total".to_string(),
@@ -1176,6 +1180,7 @@ mod tests {
                         max: None,
                     }),
                     gnmi: None,
+                    snmp: None,
                 },
             ],
         }
@@ -1366,6 +1371,7 @@ scenarios:
                 labels: Some(metric_labels),
                 generator: Some(GeneratorConfig::Constant { value: 0.0 }),
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1443,6 +1449,7 @@ scenarios:
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 0.0 }),
                 gnmi: None,
+                snmp: None,
             }],
         };
         let mut resolver = InMemoryPackResolver::new();
@@ -1542,6 +1549,7 @@ scenarios:
                 labels: None,
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
         let mut resolver = InMemoryPackResolver::new();
@@ -1801,6 +1809,48 @@ scenarios:
             );
             assert_eq!(cfg.values["ifHCInOctets"], GnmiValueType::Uint);
             assert_eq!(cfg.values["ifOperStatus"], GnmiValueType::Int);
+        }
+    }
+
+    /// A pack entry under an snmp encoder gives every expanded entry the
+    /// encoder with the pack's hints folded in; the entry's own `types:`
+    /// entry wins.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn snmp_hints_fold_into_every_expanded_entry_encoder() {
+        use crate::encoder::snmp::SnmpValueType;
+        use crate::packs::SnmpHint;
+        let mut pack = telegraf_pack();
+        for (spec, column) in pack.metrics.iter_mut().zip(["2.2.1.8", "31.1.1.1.6"]) {
+            spec.snmp = Some(SnmpHint {
+                oid: format!("1.3.6.1.2.1.{column}.{{ifIndex}}"),
+                r#type: SnmpValueType::Counter64,
+            });
+        }
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    encoder:
+      type: snmp
+      types: { ifOperStatus: integer }
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", pack);
+        let expanded = expand_yaml(yaml, &resolver);
+        assert_eq!(expanded.entries.len(), 2, "one entry per metric");
+        for e in &expanded.entries {
+            let EncoderConfig::Snmp(cfg) = &e.encoder else {
+                panic!("an snmp encoder, got {:?}", e.encoder);
+            };
+            assert_eq!(cfg.oids["ifOperStatus"], "1.3.6.1.2.1.2.2.1.8.{ifIndex}");
+            assert_eq!(cfg.oids["ifHCInOctets"], "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}");
+            assert_eq!(cfg.types["ifOperStatus"], SnmpValueType::Integer);
+            assert_eq!(cfg.types["ifHCInOctets"], SnmpValueType::Counter64);
         }
     }
 
@@ -2326,6 +2376,7 @@ scenarios:
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                 gnmi: None,
+                snmp: None,
             }],
         };
         let mut resolver = InMemoryPackResolver::new();
@@ -2373,6 +2424,7 @@ scenarios:
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                 gnmi: None,
+                snmp: None,
             }],
             deviations: Vec::new(),
         }

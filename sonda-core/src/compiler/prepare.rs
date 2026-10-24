@@ -989,6 +989,7 @@ scenarios:
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                     gnmi: None,
+                    snmp: None,
                 },
                 MetricSpec {
                     name: "m2".to_string(),
@@ -996,6 +997,7 @@ scenarios:
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 2.0 }),
                     gnmi: None,
+                    snmp: None,
                 },
                 MetricSpec {
                     name: "m3".to_string(),
@@ -1003,6 +1005,7 @@ scenarios:
                     labels: None,
                     generator: Some(GeneratorConfig::Constant { value: 3.0 }),
                     gnmi: None,
+                    snmp: None,
                 },
             ],
         };
