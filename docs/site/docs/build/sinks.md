@@ -759,6 +759,24 @@ The agent serves the system group and every instance its entries publish, in OID
 
 An instance leaves the agent when the last scenario publishing it stops (scenarios of one scenario file can publish the same OID), and at no other time: a series that stops changing keeps its latest value, as a stalled counter does on a device. Once it has left, a walk skips it and a request for it answers `noSuchInstance`.
 
+### Requests { #snmp-requests }
+
+The agent answers SNMPv2c. Each datagram is checked in turn: its version, then its community, then its operation.
+
+| Received | Answer |
+|----------|--------|
+| `GET` | Each OID on its own: its value, `noSuchInstance` or `noSuchObject`, as above. No error. |
+| `GETNEXT` | Each OID's next instance in OID order, or `endOfMibView` past the last. |
+| `GETBULK` | The first non-repeaters OIDs as `GETNEXT`; then, for the others, up to max-repetitions rounds of next instances, one per OID per round, ending after a round in which every one is `endOfMibView`. A negative non-repeaters or max-repetitions counts as 0. |
+| `SET` | `notWritable` at error index 1, the request's values echoed. Nothing changes. |
+| A request with no OIDs | An empty answer, no error. |
+| An `INFORM`, a trap, a `REPORT` or a response | Dropped. |
+| Another community | Dropped. Logged at warn at most once a minute per sender IP, with the community's length and never its value. |
+| SNMPv1 or SNMPv3 | Dropped, the community never compared. |
+| Anything that is not an SNMP message | Dropped. |
+
+Every answer fits in `max_message_size` bytes. A `GETBULK` answer ends before the first value that would not fit, and is sent with the values before it. A `GET`, `GETNEXT` or `SET` whose answer does not fit is answered `tooBig` with no values, and logged at warn at most once a minute, naming the request's first OID and the size. Answers go to the address and port the request came from.
+
 ### Ports { #snmp-ports }
 
 SNMP's standard port is 161. Binding a port below 1024 takes the `CAP_NET_BIND_SERVICE` capability (or root); without it the run stops with an error naming the port and the capability. Listen on a port above 1023, such as 1161, and point the poller at it, or grant the binary the capability with `setcap cap_net_bind_service=+ep`.
