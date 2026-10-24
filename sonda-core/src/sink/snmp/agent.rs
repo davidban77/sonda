@@ -6,16 +6,17 @@ use std::io;
 use std::net::SocketAddr;
 use std::ops::Bound;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock, Weak};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::AgentSettings;
-use crate::encoder::snmp::ber::{self, Message, Tag};
+use super::{responder, AgentSettings};
+use crate::encoder::snmp::ber::{self, Tag};
 use crate::encoder::snmp::oid::Oid;
 use crate::schedule::LaunchId;
 use crate::sink::listener_registry::ListenerTarget;
@@ -29,12 +30,17 @@ const SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
 /// The sub-identifier of `sysUpTime` under the system group.
 const SYS_UP_TIME: u32 = 3;
 
-/// The largest datagram the responder reads whole: the most a UDP datagram
-/// over IPv4 carries.
-const RECEIVE_BUFFER: usize = 65_507;
+/// The most octets `sysUpTime`'s `VarBind` takes: a two-octet SEQUENCE
+/// header, the ten-octet OID and a TimeTicks of five content octets.
+const UPTIME_VARBIND_MAX: usize = 19;
 
-/// How long the responder waits before reading again after a receive error.
-const RECEIVE_BACKOFF: Duration = Duration::from_millis(100);
+/// How long the agent waits before logging the same warning again.
+pub(crate) const WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether a warning last logged at `last` may be logged again at `now`.
+pub(crate) fn warn_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= WARN_INTERVAL)
+}
 
 /// The launch an instance belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,10 +52,19 @@ impl From<LaunchId> for Owner {
     }
 }
 
-/// What [`SnmpAgent::get`] finds for an OID.
-// The read side (`Lookup`, `get`, `next_after`, `uptime_ticks`) has no caller
-// in the crate outside tests.
-#[cfg_attr(not(test), allow(dead_code))]
+/// What [`SnmpAgent::lookup`] finds for an OID, borrowed from the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Found<'a> {
+    /// The instance's `VarBind`, as encoded.
+    Value(&'a [u8]),
+    /// No such instance, but the OID is a registered object or under one.
+    NoSuchInstance,
+    /// The OID is neither an instance nor under a registered object.
+    NoSuchObject,
+}
+
+/// What [`SnmpAgent::get`] finds for an OID: [`Found`], owned.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Lookup {
     /// The instance's `VarBind`, as encoded.
@@ -62,24 +77,52 @@ pub(crate) enum Lookup {
 
 /// The requests an agent has received, by kind, as [`SnmpAgent::requests`]
 /// reports them.
+///
+/// An SNMPv2c message is checked in this order: its version, its community,
+/// then its PDU. It is counted once, under the first check it fails or
+/// under its PDU type; a request answered `tooBig` is also counted under
+/// [`too_big`](Self::too_big).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RequestCounters {
-    /// `GetRequest` PDUs.
+    /// `GetRequest` PDUs answered.
     pub get: u64,
-    /// `GetNextRequest` PDUs.
+    /// `GetNextRequest` PDUs answered.
     pub get_next: u64,
-    /// `GetBulkRequest` PDUs.
+    /// `GetBulkRequest` PDUs answered.
     pub get_bulk: u64,
-    /// `SetRequest` PDUs, none of which is applied.
+    /// `SetRequest` PDUs, each answered `notWritable` and none applied.
     pub set_refused: u64,
-    /// Datagrams that are not an SNMPv1 or SNMPv2c message, or that carry
-    /// any other PDU.
+    /// Datagrams that are not an SNMP message of a version the agent knows,
+    /// and messages carrying a PDU it does not answer (`Response`,
+    /// `InformRequest`, `SNMPv2-Trap`, `Report`). Dropped unanswered.
     pub malformed: u64,
-    /// Messages whose community is not the agent's.
+    /// SNMPv2c messages whose community is not the agent's. Dropped
+    /// unanswered.
     pub wrong_community: u64,
-    /// Requests whose answer did not fit `max_message_size`.
+    /// `GetRequest`, `GetNextRequest` and `SetRequest` PDUs answered
+    /// `tooBig`, because their answer did not fit `max_message_size`. A
+    /// `GetBulkRequest` answer is trimmed to fit instead.
     pub too_big: u64,
+    /// SNMPv1 and SNMPv3 messages. Dropped unanswered, the community never
+    /// compared.
+    pub unsupported_version: u64,
+    /// Answers the socket failed to send.
+    pub send_errors: u64,
+}
+
+/// One of the counters [`RequestCounters`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Counter {
+    Get,
+    GetNext,
+    GetBulk,
+    SetRefused,
+    Malformed,
+    WrongCommunity,
+    TooBig,
+    UnsupportedVersion,
+    SendErrors,
 }
 
 /// The live counters behind [`RequestCounters`].
@@ -92,9 +135,25 @@ struct Counters {
     malformed: AtomicU64,
     wrong_community: AtomicU64,
     too_big: AtomicU64,
+    unsupported_version: AtomicU64,
+    send_errors: AtomicU64,
 }
 
 impl Counters {
+    fn counter(&self, counter: Counter) -> &AtomicU64 {
+        match counter {
+            Counter::Get => &self.get,
+            Counter::GetNext => &self.get_next,
+            Counter::GetBulk => &self.get_bulk,
+            Counter::SetRefused => &self.set_refused,
+            Counter::Malformed => &self.malformed,
+            Counter::WrongCommunity => &self.wrong_community,
+            Counter::TooBig => &self.too_big,
+            Counter::UnsupportedVersion => &self.unsupported_version,
+            Counter::SendErrors => &self.send_errors,
+        }
+    }
+
     fn snapshot(&self) -> RequestCounters {
         let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         RequestCounters {
@@ -105,6 +164,8 @@ impl Counters {
             malformed: read(&self.malformed),
             wrong_community: read(&self.wrong_community),
             too_big: read(&self.too_big),
+            unsupported_version: read(&self.unsupported_version),
+            send_errors: read(&self.send_errors),
         }
     }
 }
@@ -132,7 +193,6 @@ struct MibTable {
 struct SystemInstance {
     oid: Oid,
     /// The `VarBind`, or `None` for `sysUpTime`, which is made on each read.
-    #[cfg_attr(not(test), allow(dead_code))]
     varbind: Option<Bytes>,
 }
 
@@ -147,20 +207,24 @@ struct SystemInstance {
 /// leave, so a request for it answers "no such instance" rather than "no
 /// such object".
 ///
-/// The socket is read by one responder task, which decodes each datagram,
-/// counts it under its PDU type in [`requests`](Self::requests), and drops
-/// it. Dropping the last handle stops the task and closes the socket.
+/// The socket is read by one responder task, which answers SNMPv2c `Get`,
+/// `GetNext`, `GetBulk` and `Set` requests from the table under its read
+/// lock, drops everything else, and counts each datagram in
+/// [`requests`](Self::requests). Dropping the last handle stops the task
+/// and closes the socket.
 pub struct SnmpAgent {
     local_addr: SocketAddr,
     settings: AgentSettings,
     /// When the socket was bound; `sysUpTime` counts from here.
-    #[cfg_attr(not(test), allow(dead_code))]
-    started: tokio::time::Instant,
+    started: Instant,
     /// The system group's seven instances, in OID order.
-    #[cfg_attr(not(test), allow(dead_code))]
     system: Vec<SystemInstance>,
     table: RwLock<MibTable>,
+    /// Where `sysUpTime`'s `VarBind` is made on each read.
+    uptime: Mutex<Vec<u8>>,
     counters: Counters,
+    /// When the last `tooBig` warning was logged.
+    too_big_warned: Mutex<Option<Instant>>,
     token: CancellationToken,
     /// Whether the socket is open: `true` until the responder task ends.
     state: watch::Receiver<bool>,
@@ -195,20 +259,24 @@ impl SnmpAgent {
         };
         let token = CancellationToken::new();
         let (state_tx, state) = watch::channel(true);
-        let responder = Responder {
-            socket,
-            buffer: vec![0; RECEIVE_BUFFER],
-            _closed: ClosedOnDrop(state_tx),
-        };
         Ok(Arc::new_cyclic(|agent| {
-            tokio::spawn(respond(responder, agent.clone(), token.clone()));
+            let (agent, cancel) = (agent.clone(), token.clone());
+            tokio::spawn(async move {
+                // Declared before the socket moves into `serve`, so it drops
+                // after it however the task ends: the socket is closed
+                // before the agent reads as stopped.
+                let _closed = ClosedOnDrop(state_tx);
+                responder::serve(socket, agent, cancel).await;
+            });
             SnmpAgent {
                 local_addr,
                 settings,
-                started: tokio::time::Instant::now(),
+                started: Instant::now(),
                 system,
                 table: RwLock::new(table),
+                uptime: Mutex::new(Vec::with_capacity(UPTIME_VARBIND_MAX)),
                 counters: Counters::default(),
+                too_big_warned: Mutex::new(None),
                 token,
                 state,
             }
@@ -363,20 +431,35 @@ impl SnmpAgent {
         }
     }
 
-    /// Count `datagram` under its PDU type, or as malformed.
-    fn count_request(&self, datagram: &[u8]) {
-        let counters = &self.counters;
-        let counter = match Message::decode(datagram) {
-            Ok(message) => match message.pdu {
-                Tag::GetRequest => &counters.get,
-                Tag::GetNextRequest => &counters.get_next,
-                Tag::GetBulkRequest => &counters.get_bulk,
-                Tag::SetRequest => &counters.set_refused,
-                _ => &counters.malformed,
-            },
-            Err(_) => &counters.malformed,
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
+    /// Add one to `counter`.
+    pub(crate) fn count(&self, counter: Counter) {
+        self.counters
+            .counter(counter)
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Log at warn that a request whose first OID is `first` was answered
+    /// `tooBig` under `budget`, unless that was logged less than
+    /// [`WARN_INTERVAL`] ago.
+    pub(crate) fn warn_too_big(&self, first: &dyn std::fmt::Display, budget: usize) {
+        let now = Instant::now();
+        {
+            let mut warned = self
+                .too_big_warned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !warn_due(*warned, now) {
+                return;
+            }
+            *warned = Some(now);
+        }
+        tracing::warn!(
+            addr = %self.local_addr,
+            oid = %first,
+            max_message_size = budget,
+            "snmp_agent answered tooBig: the answer to a request for {first} does not fit \
+             max_message_size {budget}"
+        );
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, MibTable> {
@@ -388,45 +471,66 @@ impl SnmpAgent {
     }
 }
 
-/// The read side, which answers requests from the table.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The read side, which answers requests from the table under its read lock.
 impl SnmpAgent {
-    /// What the agent serves for `oid`: the instance's `VarBind`; else
-    /// [`Lookup::NoSuchInstance`] when a registered object equals `oid` or
-    /// is a prefix of it; else [`Lookup::NoSuchObject`].
-    pub(crate) fn get(&self, oid: &Oid) -> Lookup {
-        if let Some(instance) = self.system.iter().find(|instance| instance.oid == *oid) {
-            return Lookup::Value(self.system_varbind(instance));
+    /// Call `answer` with what the agent serves for `oid`: the instance's
+    /// `VarBind`; else [`Found::NoSuchInstance`] when a registered object
+    /// equals `oid` or is a prefix of it; else [`Found::NoSuchObject`].
+    ///
+    /// Takes the table's read lock, and holds it while `answer` runs.
+    pub(crate) fn lookup<R>(&self, oid: &[u32], answer: impl FnOnce(Found<'_>) -> R) -> R {
+        if let Some(instance) = self.system.iter().find(|i| i.oid.arcs() == oid) {
+            return self.with_system_varbind(instance, |varbind| answer(Found::Value(varbind)));
         }
         let table = self.read();
         if let Some(slot) = table.slots.get(oid) {
-            return Lookup::Value(slot.varbind.clone());
+            return answer(Found::Value(&slot.varbind));
         }
-        let arcs = oid.arcs();
-        if (2..=arcs.len()).any(|len| table.objects.contains(&arcs[..len])) {
-            Lookup::NoSuchInstance
+        if (2..=oid.len()).any(|len| table.objects.contains(&oid[..len])) {
+            answer(Found::NoSuchInstance)
         } else {
-            Lookup::NoSuchObject
+            answer(Found::NoSuchObject)
         }
     }
 
-    /// The instance with the smallest OID strictly greater than `oid`, and
-    /// its `VarBind`, among the published instances and the system group;
-    /// `None` past the last.
-    pub(crate) fn next_after(&self, oid: &Oid) -> Option<(Oid, Bytes)> {
-        let system = self.system.iter().find(|instance| instance.oid > *oid);
+    /// Call `emit` with each instance after `start`, and its `VarBind`, in
+    /// OID order, among the published instances and the system group: at
+    /// most `max` of them, and none after `emit` returns `false`.
+    ///
+    /// Takes the table's read lock once, and holds it until it returns.
+    pub(crate) fn bulk(&self, start: &[u32], max: u32, mut emit: impl FnMut(&Oid, &[u8]) -> bool) {
         let table = self.read();
-        let published = table
+        let mut published = table
             .slots
-            .range::<[u32], _>((Bound::Excluded(oid.arcs()), Bound::Unbounded))
-            .next();
-        match (published, system) {
-            (Some((next, slot)), Some(instance)) if *next < instance.oid => {
-                Some((next.clone(), slot.varbind.clone()))
+            .range::<[u32], _>((Bound::Excluded(start), Bound::Unbounded))
+            .peekable();
+        let mut system = self
+            .system
+            .iter()
+            .skip_while(|instance| instance.oid.arcs() <= start)
+            .peekable();
+        for _ in 0..max {
+            // No published instance shares an OID with the system group.
+            let from_system = match (published.peek(), system.peek()) {
+                (Some((next, _)), Some(instance)) => instance.oid < **next,
+                (None, Some(_)) => true,
+                (Some(_), None) => false,
+                (None, None) => return,
+            };
+            let more = if from_system {
+                let Some(instance) = system.next() else {
+                    return;
+                };
+                self.with_system_varbind(instance, |varbind| emit(&instance.oid, varbind))
+            } else {
+                let Some((oid, slot)) = published.next() else {
+                    return;
+                };
+                emit(oid, &slot.varbind)
+            };
+            if !more {
+                return;
             }
-            (_, Some(instance)) => Some((instance.oid.clone(), self.system_varbind(instance))),
-            (Some((next, slot)), None) => Some((next.clone(), slot.varbind.clone())),
-            (None, None) => None,
         }
     }
 
@@ -438,16 +542,44 @@ impl SnmpAgent {
         (centiseconds % (u128::from(u32::MAX) + 1)) as u32
     }
 
-    /// The `VarBind` of a system-group instance, with `sysUpTime` read now.
-    fn system_varbind(&self, instance: &SystemInstance) -> Bytes {
-        match &instance.varbind {
-            Some(varbind) => varbind.clone(),
-            None => {
-                let mut value = Vec::with_capacity(6);
-                ber::write_timeticks(&mut value, self.uptime_ticks());
-                varbind_of(&instance.oid, &value)
-            }
+    /// Call `f` with the `VarBind` of a system-group instance, `sysUpTime`
+    /// read now.
+    fn with_system_varbind<R>(&self, instance: &SystemInstance, f: impl FnOnce(&[u8]) -> R) -> R {
+        if let Some(varbind) = &instance.varbind {
+            return f(varbind);
         }
+        let mut varbind = self.uptime.lock().unwrap_or_else(PoisonError::into_inner);
+        varbind.clear();
+        ber::write_tlv(&mut varbind, Tag::Sequence, |out| {
+            ber::write_oid(out, &instance.oid);
+            ber::write_timeticks(out, self.uptime_ticks());
+        });
+        f(&varbind)
+    }
+}
+
+/// Owned forms of [`SnmpAgent::lookup`] and [`SnmpAgent::bulk`].
+#[cfg(test)]
+impl SnmpAgent {
+    /// What the agent serves for `oid`, as [`SnmpAgent::lookup`] finds it.
+    pub(crate) fn get(&self, oid: &Oid) -> Lookup {
+        self.lookup(oid.arcs(), |found| match found {
+            Found::Value(varbind) => Lookup::Value(Bytes::copy_from_slice(varbind)),
+            Found::NoSuchInstance => Lookup::NoSuchInstance,
+            Found::NoSuchObject => Lookup::NoSuchObject,
+        })
+    }
+
+    /// The instance with the smallest OID strictly greater than `oid`, and
+    /// its `VarBind`, among the published instances and the system group;
+    /// `None` past the last.
+    pub(crate) fn next_after(&self, oid: &Oid) -> Option<(Oid, Bytes)> {
+        let mut next = None;
+        self.bulk(oid.arcs(), 1, |oid, varbind| {
+            next = Some((oid.clone(), Bytes::copy_from_slice(varbind)));
+            true
+        });
+        next
     }
 }
 
@@ -574,15 +706,6 @@ fn system_instances(settings: &AgentSettings) -> Vec<SystemInstance> {
         .collect()
 }
 
-/// What the responder task owns. The socket is a field before `_closed`, so
-/// however the task ends the socket closes before the agent reads as
-/// stopped.
-struct Responder {
-    socket: UdpSocket,
-    buffer: Vec<u8>,
-    _closed: ClosedOnDrop,
-}
-
 /// Reports the socket closed when dropped, however the responder task ends:
 /// by returning, by panicking, or by being dropped with its runtime.
 struct ClosedOnDrop(watch::Sender<bool>);
@@ -590,31 +713,6 @@ struct ClosedOnDrop(watch::Sender<bool>);
 impl Drop for ClosedOnDrop {
     fn drop(&mut self) {
         self.0.send_replace(false);
-    }
-}
-
-/// Read datagrams until `token` is cancelled or the agent is gone, counting
-/// each and answering none.
-async fn respond(mut responder: Responder, agent: Weak<SnmpAgent>, token: CancellationToken) {
-    loop {
-        let received = tokio::select! {
-            () = token.cancelled() => break,
-            received = responder.socket.recv_from(&mut responder.buffer) => received,
-        };
-        let Some(agent) = agent.upgrade() else {
-            break;
-        };
-        match received {
-            Ok((len, _peer)) => agent.count_request(&responder.buffer[..len]),
-            Err(e) => {
-                tracing::debug!(error = %e, addr = %agent.local_addr, "snmp_agent receive failed");
-                drop(agent);
-                tokio::select! {
-                    () = token.cancelled() => break,
-                    () = tokio::time::sleep(RECEIVE_BACKOFF) => {}
-                }
-            }
-        }
     }
 }
 

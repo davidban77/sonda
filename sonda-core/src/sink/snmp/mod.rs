@@ -17,6 +17,7 @@
 //! Requires the `snmp` feature flag.
 
 pub mod agent;
+mod responder;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -741,7 +742,7 @@ mod tests {
     use crate::sink::SinkConfig;
     use crate::OnSinkError;
 
-    fn hex(text: &str) -> Vec<u8> {
+    pub(super) fn hex(text: &str) -> Vec<u8> {
         let digits: Vec<u8> = text.bytes().filter(u8::is_ascii_hexdigit).collect();
         digits
             .chunks(2)
@@ -994,28 +995,28 @@ mod tests {
     }
 
     /// `snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.3.0`, net-snmp 5.9.4.
-    const NET_SNMP_GET: &str =
+    pub(super) const NET_SNMP_GET: &str =
         "302902010104067075626c6963a01c02043ac25c77020100020100300e300c06082b060102010103\
         000500";
 
     /// `snmpgetnext -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.31.1.1.1.6`, net-snmp 5.9.4.
-    const NET_SNMP_GETNEXT: &str =
+    pub(super) const NET_SNMP_GETNEXT: &str =
         "302b02010104067075626c6963a11e02042db414d60201000201003010300e060a2b060102011f01\
         0101060500";
 
     /// `snmpbulkget -v2c -c public -Cr10 127.0.0.1:1161 1.3.6.1.2.1.31.1.1.1.6`, net-snmp 5.9.4.
-    const NET_SNMP_GETBULK: &str =
+    pub(super) const NET_SNMP_GETBULK: &str =
         "302b02010104067075626c6963a51e02041573e9b502010002010a3010300e060a2b060102011f01\
         0101060500";
 
     /// `snmpset -v2c -c public 127.0.0.1:<port> 1.3.6.1.2.1.1.5.0 s rtr-2`, net-snmp 5.9.4.
-    const NET_SNMP_SET: &str =
+    pub(super) const NET_SNMP_SET: &str =
         "302e02010104067075626c6963a32102047267bb3f0201000201003013301106082b060102010105\
         0004057274722d32";
 
     /// `snmpget -v3 -l noAuthNoPriv -u sonda 127.0.0.1:<port> 1.3.6.1.2.1.1.3.0`,
     /// net-snmp 5.9.4: its engine-discovery request.
-    const NET_SNMP_V3_DISCOVERY: &str =
+    pub(super) const NET_SNMP_V3_DISCOVERY: &str =
         "303e020103301102044caaa96e020300ffe30401040201030410300e0400020100020100040004000400\
         301404000400a00e02046a3d08eb0201000201003000";
 
@@ -1042,8 +1043,8 @@ mod tests {
         }
     }
 
-    /// The responder reads every datagram, counts it under its PDU type, or
-    /// as malformed when it is not a v1/v2c message, and answers none.
+    /// The responder counts every datagram once: under its PDU type, as an
+    /// unsupported version for SNMPv3, or as malformed.
     #[tokio::test]
     async fn the_responder_counts_each_datagram_under_its_pdu_type() {
         let sink = SnmpAgentSink::new(&SnmpAgentConfig::new("127.0.0.1:0"))
@@ -1065,8 +1066,9 @@ mod tests {
             assert!(!datagram.is_empty(), "fixture present");
             send(addr, &datagram).await;
         }
-        let total =
-            |r: &RequestCounters| r.get + r.get_next + r.get_bulk + r.set_refused + r.malformed;
+        let total = |r: &RequestCounters| {
+            r.get + r.get_next + r.get_bulk + r.set_refused + r.malformed + r.unsupported_version
+        };
         let requests = counted(agent, |r| total(r) == 6).await;
         assert_eq!(
             requests,
@@ -1075,7 +1077,8 @@ mod tests {
                 get_next: 1,
                 get_bulk: 1,
                 set_refused: 1,
-                malformed: 2,
+                malformed: 1,
+                unsupported_version: 1,
                 ..RequestCounters::default()
             }
         );
