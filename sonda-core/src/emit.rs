@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::config::validate::{reject_gnmi_for_logs, validate_encoder_sink_pairing};
+use crate::config::validate::{
+    reject_gnmi_for_logs, reject_snmp_for, validate_encoder_sink_pairing,
+};
 use crate::encoder::{create_encoder, EncoderConfig};
 use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
@@ -14,7 +16,8 @@ use crate::SondaError;
 /// Returns a [`SondaError::Config`] before building anything when the encoder
 /// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]), or
 /// when either is the `gnmi` encoder or the `gnmi_target` sink, which carry
-/// metric signals only.
+/// metric signals only, or the `snmp` encoder or the `snmp_agent` sink, which
+/// carry metrics only.
 pub async fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
@@ -22,6 +25,7 @@ pub async fn emit_log(
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
     reject_gnmi_for_logs(encoder, sink)?;
+    reject_snmp_for("logs", encoder, sink)?;
     validate_encoder_sink_pairing(encoder, sink)?;
     let encoder = create_encoder(encoder)?;
     let mut sink = create_sink(sink, labels).await?;
@@ -39,7 +43,9 @@ pub async fn emit_log(
 /// A `gnmi_target` sink joins the live target on its address and never
 /// binds one: with no running scenario listening there, this is a
 /// [`SondaError::Config`]. The event stays in the target's table after the
-/// call returns.
+/// call returns. An `snmp_agent` sink joins the live agent on its address in
+/// the same way, and replaces the value of an instance the agent already
+/// serves: an event for any other OID is a [`SondaError::Config`].
 pub async fn emit_metric(
     event: &MetricEvent,
     encoder: &EncoderConfig,
@@ -51,6 +57,8 @@ pub async fn emit_metric(
     let mut sink: Box<dyn crate::sink::Sink> = match sink {
         #[cfg(feature = "gnmi")]
         SinkConfig::GnmiTarget(cfg) => Box::new(crate::sink::gnmi::GnmiTargetSink::join(cfg)?),
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpAgent(cfg) => Box::new(crate::sink::snmp::SnmpAgentSink::join(cfg)?),
         _ => create_sink(sink, labels).await?,
     };
     let mut buf: Vec<u8> = Vec::new();
@@ -538,5 +546,224 @@ mod tests {
         tokio::net::TcpStream::connect(addr)
             .await
             .expect_err("emit_metric bound nothing on the address");
+    }
+
+    /// The snmp encoder writing `ifHCInOctets` as a Counter64 of the
+    /// interface table.
+    #[cfg(feature = "snmp")]
+    fn snmp_encoder() -> EncoderConfig {
+        use crate::encoder::snmp::{SnmpEncoderConfig, SnmpValueType};
+
+        EncoderConfig::Snmp(SnmpEncoderConfig {
+            oids: HashMap::from([(
+                "ifHCInOctets".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}".to_string(),
+            )]),
+            types: HashMap::from([("ifHCInOctets".to_string(), SnmpValueType::Counter64)]),
+            ..SnmpEncoderConfig::default()
+        })
+    }
+
+    #[cfg(feature = "snmp")]
+    fn octets(if_index: &str, value: f64) -> MetricEvent {
+        MetricEvent::new(
+            "ifHCInOctets".to_string(),
+            value,
+            Labels::from_pairs(&[("ifIndex", if_index)]).expect("labels"),
+        )
+        .expect("metric event")
+    }
+
+    /// A sink holding an agent and publishing interface 1 stands in for a
+    /// running scenario.
+    #[cfg(feature = "snmp")]
+    async fn running_agent() -> crate::sink::snmp::SnmpAgentSink {
+        use crate::sink::snmp::{SnmpAgentConfig, SnmpAgentSink};
+        use crate::sink::Sink;
+
+        let mut held = SnmpAgentSink::new(&SnmpAgentConfig::new("127.0.0.1:0"))
+            .await
+            .expect("bind an ephemeral port");
+        let event = octets("1", 1.0);
+        let mut buf = Vec::new();
+        create_encoder(&snmp_encoder())
+            .expect("valid encoder")
+            .encode_metric(&event, &mut buf)
+            .expect("encodes");
+        held.write_metric_event(&event, &buf)
+            .await
+            .expect("the scenario publishes its instance");
+        held
+    }
+
+    /// `emit_metric` joins the running agent and replaces the value of an
+    /// instance it serves, through the metric hook, without owning it.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_metric_replaces_an_instance_the_snmp_agent_serves() {
+        use crate::encoder::snmp::oid::Oid;
+        use crate::sink::snmp::SnmpAgentConfig;
+
+        let held = running_agent().await;
+        let agent = std::sync::Arc::clone(held.agent());
+        let instance = Oid::parse("1.3.6.1.2.1.31.1.1.1.6.1").expect("an OID");
+        let before = agent.get(&instance);
+        let sink = SinkConfig::SnmpAgent(SnmpAgentConfig::new(agent.local_addr().to_string()));
+        emit_metric(&octets("1", 42.0), &snmp_encoder(), &sink, None)
+            .await
+            .expect("emit_metric must deliver to the agent");
+
+        let mut expected = Vec::new();
+        create_encoder(&snmp_encoder())
+            .expect("valid encoder")
+            .encode_metric(&octets("1", 42.0), &mut expected)
+            .expect("encodes");
+        let after = agent.get(&instance);
+        assert_ne!(after, before, "the value changed");
+        assert_eq!(
+            after,
+            crate::sink::snmp::agent::Lookup::Value(bytes::Bytes::copy_from_slice(&expected[1..])),
+            "the latest value is the event's"
+        );
+        assert_eq!(agent.instance_count(), 1, "nothing was added");
+        drop(held);
+        assert_eq!(
+            agent.instance_count(),
+            0,
+            "the instance leaves with the scenario; emit_metric owned nothing"
+        );
+    }
+
+    /// An event for an instance the running agent does not serve is
+    /// refused, naming the OID and the address, and adds nothing.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_metric_refuses_an_oid_the_snmp_agent_does_not_serve() {
+        use crate::sink::snmp::SnmpAgentConfig;
+
+        let held = running_agent().await;
+        let addr = held.agent().local_addr();
+        let sink = SinkConfig::SnmpAgent(SnmpAgentConfig::new(addr.to_string()));
+        let err = emit_metric(&octets("2", 42.0), &snmp_encoder(), &sink, None)
+            .await
+            .expect_err("interface 2 is not served");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("1.3.6.1.2.1.31.1.1.1.6.2") && msg.contains(&addr.to_string()),
+            "{msg}"
+        );
+        assert_eq!(held.agent().instance_count(), 1, "nothing was added");
+    }
+
+    /// An `emit_metric` naming another community than the running agent's is
+    /// refused, naming the field and neither community, and the agent's
+    /// instance keeps its value.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_metric_with_another_community_is_refused() {
+        use crate::encoder::snmp::oid::Oid;
+        use crate::sink::snmp::SnmpAgentConfig;
+
+        let held = running_agent().await;
+        let agent = std::sync::Arc::clone(held.agent());
+        let instance = Oid::parse("1.3.6.1.2.1.31.1.1.1.6.1").expect("an OID");
+        let before = agent.get(&instance);
+        assert!(
+            matches!(before, crate::sink::snmp::agent::Lookup::Value(_)),
+            "the agent serves the instance"
+        );
+        let addr = agent.local_addr().to_string();
+        let same = SinkConfig::SnmpAgent(SnmpAgentConfig::new(addr.clone()));
+        emit_metric(&octets("1", 7.0), &snmp_encoder(), &same, None)
+            .await
+            .expect("the agent's own community joins");
+        let before = agent.get(&instance);
+
+        let other = SinkConfig::SnmpAgent(SnmpAgentConfig {
+            community: "other-community".to_string(),
+            ..SnmpAgentConfig::new(addr)
+        });
+        let err = emit_metric(&octets("1", 42.0), &snmp_encoder(), &other, None)
+            .await
+            .expect_err("another community is refused");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("community and another community"), "{msg}");
+        assert!(
+            !msg.contains("other-community") && !msg.contains("public"),
+            "{msg}"
+        );
+        assert_eq!(agent.get(&instance), before, "the value is untouched");
+        assert_eq!(agent.instance_count(), 1, "nothing was added");
+    }
+
+    /// With no running scenario on the address, `emit_metric` refuses the
+    /// event instead of binding an agent of its own.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_metric_without_a_live_snmp_agent_is_a_config_error() {
+        use crate::sink::snmp::{SnmpAgentConfig, SnmpAgentSink};
+
+        // A port an agent held and released, so nothing listens on it now.
+        let addr = {
+            let held = SnmpAgentSink::new(&SnmpAgentConfig::new("127.0.0.1:0"))
+                .await
+                .expect("bind an ephemeral port");
+            let addr = held.agent().local_addr();
+            let closed = held.agent().wait();
+            drop(held);
+            tokio::time::timeout(std::time::Duration::from_secs(1), closed)
+                .await
+                .expect("the socket closes within 1 s of the last drop");
+            addr
+        };
+        let sink = SinkConfig::SnmpAgent(SnmpAgentConfig::new(addr.to_string()));
+        let err = emit_metric(&octets("1", 1.0), &snmp_encoder(), &sink, None)
+            .await
+            .expect_err("nothing to join");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string()
+                .contains(&format!("no running scenario listens on {addr}")),
+            "{err}"
+        );
+        tokio::net::UdpSocket::bind(addr)
+            .await
+            .expect("emit_metric bound nothing on the address");
+    }
+
+    /// The snmp encoder and the snmp_agent sink carry metrics only; a log
+    /// sent to them is a config error before any sink is built.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_log_rejects_the_snmp_encoder_and_sink() {
+        use crate::sink::snmp::SnmpAgentConfig;
+
+        let log = LogEvent::new(
+            Severity::Info,
+            "probe".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        let sink = SinkConfig::SnmpAgent(SnmpAgentConfig::new("127.0.0.1:0"));
+        let err = emit_log(&log, &snmp_encoder(), &sink, None)
+            .await
+            .expect_err("a log on snmp_agent must be refused");
+        assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
+        assert!(err.to_string().contains("not logs entries"), "got: {err}");
+        let err = emit_log(
+            &log,
+            &EncoderConfig::JsonLines { precision: None },
+            &sink,
+            None,
+        )
+        .await
+        .expect_err("the sink alone is refused too");
+        assert!(
+            err.to_string()
+                .contains("snmp_agent sink carries metrics entries only"),
+            "{err}"
+        );
     }
 }

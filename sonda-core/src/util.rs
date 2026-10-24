@@ -111,7 +111,7 @@ pub(crate) fn ensure_crypto_provider() {
 /// are unequal at once; slices of one length are compared in full, every
 /// byte pair XORed into one accumulator, so the time taken does not depend
 /// on where they first differ.
-#[cfg(feature = "gnmi")]
+#[cfg(any(feature = "gnmi", feature = "snmp"))]
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -261,7 +261,7 @@ mod tests {
     /// `constant_time_eq` answers as `==` does on 1 000 pairs of random
     /// bytes, a third of them equal and a third differing in one byte, and
     /// on slices of different lengths.
-    #[cfg(feature = "gnmi")]
+    #[cfg(any(feature = "gnmi", feature = "snmp"))]
     #[test]
     fn constant_time_eq_agrees_with_eq() {
         let byte = |seed: u64, i: usize| splitmix64(seed ^ i as u64) as u8;

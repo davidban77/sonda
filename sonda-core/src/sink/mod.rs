@@ -16,7 +16,7 @@ pub(crate) mod grpc_codec;
 pub mod http;
 #[cfg(feature = "kafka")]
 pub mod kafka;
-#[cfg(feature = "gnmi")]
+#[cfg(any(feature = "gnmi", feature = "snmp"))]
 pub(crate) mod listener_registry;
 #[cfg(feature = "http")]
 pub mod loki;
@@ -26,6 +26,8 @@ pub mod otlp_grpc;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
 pub mod retry;
+#[cfg(feature = "snmp")]
+pub mod snmp;
 #[cfg(feature = "runtime")]
 pub mod stdout;
 #[cfg(feature = "runtime")]
@@ -459,21 +461,15 @@ pub enum SinkConfig {
     #[cfg_attr(feature = "config", serde(rename = "gnmi_target"))]
     GnmiTargetDisabled {},
 
-    /// An SNMP agent listening on `listen`.
+    /// Serve metric events to SNMP pollers from an agent listening on
+    /// `listen`.
     ///
-    /// Validation pairs it with the `snmp` encoder, in both directions.
-    /// [`create_sink`] refuses it with a [`SondaError::Config`]. Requires the
-    /// `snmp` feature flag.
+    /// Sinks naming the same address share one agent. Pairs only with the
+    /// `snmp` encoder, in both directions. See [`snmp::SnmpAgentConfig`] for
+    /// the fields. Requires the `snmp` feature flag.
     #[cfg(feature = "snmp")]
     #[cfg_attr(feature = "config", serde(rename = "snmp_agent"))]
-    SnmpAgent {
-        /// Address the agent listens on, such as `"0.0.0.0:1161"`.
-        #[cfg_attr(
-            feature = "config",
-            serde(deserialize_with = "crate::config::scalar_text::required")
-        )]
-        listen: String,
-    },
+    SnmpAgent(snmp::SnmpAgentConfig),
 
     /// Placeholder variant when the `snmp` feature is not compiled in.
     ///
@@ -541,7 +537,7 @@ impl SinkConfig {
             #[cfg(not(feature = "gnmi"))]
             SinkConfig::GnmiTargetDisabled {} => "gnmi_target",
             #[cfg(feature = "snmp")]
-            SinkConfig::SnmpAgent { .. } => "snmp_agent",
+            SinkConfig::SnmpAgent(_) => "snmp_agent",
             #[cfg(not(feature = "snmp"))]
             SinkConfig::SnmpAgentDisabled {} => "snmp_agent",
         }
@@ -561,7 +557,8 @@ pub async fn create_sink(
 }
 
 /// [`create_sink`] for a scenario of `launch`: a `gnmi_target` sink shares
-/// its gnmi paths with the other sinks of that launch only.
+/// its gnmi paths, and an `snmp_agent` sink its OIDs, with the other sinks of
+/// that launch only.
 #[cfg(feature = "runtime")]
 pub(crate) async fn create_sink_in(
     config: &SinkConfig,
@@ -569,7 +566,7 @@ pub(crate) async fn create_sink_in(
     launch: crate::schedule::LaunchId,
 ) -> Result<Box<dyn Sink>, SondaError> {
     // `labels` is only consumed by the Loki arm (feature = "http"), and
-    // `launch` by the gnmi arm. Suppress the unused-variable warnings when
+    // `launch` by the gnmi and snmp arms. Suppress the unused-variable warnings when
     // those features are disabled.
     let _ = (&labels, launch);
     match config {
@@ -752,9 +749,7 @@ pub(crate) async fn create_sink_in(
             Ok(Box::new(gnmi::GnmiTargetSink::new_in(cfg, launch).await?))
         }
         #[cfg(feature = "snmp")]
-        SinkConfig::SnmpAgent { .. } => Err(SondaError::Config(crate::ConfigError::invalid(
-            "sink type 'snmp_agent' cannot be created in this build",
-        ))),
+        SinkConfig::SnmpAgent(cfg) => Ok(Box::new(snmp::SnmpAgentSink::new_in(cfg, launch).await?)),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
@@ -1872,29 +1867,50 @@ retry:
             #[cfg(not(feature = "gnmi"))]
             SinkConfig::GnmiTargetDisabled {},
             #[cfg(feature = "snmp")]
-            SinkConfig::SnmpAgent {
-                listen: "127.0.0.1:0".to_string(),
-            },
+            SinkConfig::SnmpAgent(snmp::SnmpAgentConfig::new("127.0.0.1:0")),
             #[cfg(not(feature = "snmp"))]
             SinkConfig::SnmpAgentDisabled {},
         ]
     }
 
-    /// A bare number is read as its text: the schema accepts any scalar for
-    /// `listen`, so it parses, and binding reports what is wrong with it.
+    /// An `snmp_agent` block deserializes into its config, every field it
+    /// leaves out at its default; a bare number is read as its text, since the
+    /// schema accepts any scalar for `listen` and `community`.
     #[cfg(all(feature = "snmp", feature = "config"))]
     #[rstest::rstest]
     #[case::address("type: snmp_agent\nlisten: 0.0.0.0:1161", "0.0.0.0:1161")]
     #[case::bare_number("type: snmp_agent\nlisten: 1161", "1161")]
-    fn snmp_agent_yaml_deserializes_into_its_listen_address(
-        #[case] yaml: &str,
-        #[case] expected: &str,
-    ) {
+    fn snmp_agent_yaml_deserializes_into_its_config(#[case] yaml: &str, #[case] expected: &str) {
         let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("an snmp_agent sink parses");
-        let SinkConfig::SnmpAgent { listen } = config else {
+        let SinkConfig::SnmpAgent(cfg) = config else {
             panic!("should deserialize as SnmpAgent, got {config:?}");
         };
-        assert_eq!(listen, expected);
+        assert_eq!(cfg, snmp::SnmpAgentConfig::new(expected));
+    }
+
+    /// A misspelt key in the sink block, or in its `system:` block, is an
+    /// error naming it; the same block without it parses.
+    #[cfg(all(feature = "snmp", feature = "config"))]
+    #[rstest::rstest]
+    #[case::sink_key("comunity: private", "comunity")]
+    #[case::system_key("system: { nmae: rtr-1 }", "nmae")]
+    fn snmp_agent_yaml_rejects_unknown_keys(#[case] line: &str, #[case] key: &str) {
+        let good = line.replace(
+            key,
+            if key == "comunity" {
+                "community"
+            } else {
+                "name"
+            },
+        );
+        let parse = |line: &str| {
+            serde_yaml_ng::from_str::<SinkConfig>(&format!(
+                "type: snmp_agent\nlisten: 127.0.0.1:1161\n{line}"
+            ))
+        };
+        parse(&good).expect("the block parses with the key spelt right");
+        let err = parse(line).expect_err("a misspelt key is refused");
+        assert!(err.to_string().contains(key), "{err}");
     }
 
     #[cfg(all(not(feature = "snmp"), feature = "config"))]
@@ -1905,15 +1921,14 @@ retry:
         assert!(matches!(config, SinkConfig::SnmpAgentDisabled {}));
     }
 
+    /// `create_sink` builds an `snmp_agent` sink that takes metric events,
+    /// bound to an agent on the address.
     #[cfg(all(feature = "snmp", feature = "runtime"))]
     #[tokio::test]
-    async fn create_sink_refuses_the_snmp_agent() {
-        let config = SinkConfig::SnmpAgent {
-            listen: "127.0.0.1:0".to_string(),
-        };
-        let err = create_sink(&config, None).await.err().expect("not created");
-        assert!(matches!(err, SondaError::Config(_)), "{err}");
-        assert!(err.to_string().contains("snmp_agent"), "{err}");
+    async fn create_sink_builds_an_snmp_agent_sink() {
+        let config = SinkConfig::SnmpAgent(snmp::SnmpAgentConfig::new("127.0.0.1:0"));
+        let sink = create_sink(&config, None).await.expect("the agent binds");
+        assert!(sink.wants_metric_events());
     }
 
     #[cfg(all(not(feature = "snmp"), feature = "runtime"))]
