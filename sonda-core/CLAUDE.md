@@ -198,7 +198,7 @@ src/
 │   │   ├── mod.rs      ←   SnmpEncoder, SnmpEncoderConfig (deny_unknown_fields; oids:,
 │   │   │                   types:, agent_label "device", drop_labels). Output is a PUBLISH
 │   │   │                   RECORD, not a bare VarBind: one byte (the template's
-│   │   │                   index_arcs, 0 for a scalar; RECORD_HEADER = 1), then a BER
+│   │   │                   index_arcs, 1 for a scalar; RECORD_HEADER = 1), then a BER
 │   │   │                   VarBind SEQUENCE { OID, value }. The instance OID is rendered
 │   │   │                   once per series and cached as its encoded OBJECT IDENTIFIER
 │   │   │                   (fingerprint, then label-by-label compare, as gnmi's path
@@ -223,8 +223,11 @@ src/
 │   │   │                   index_arc() is the ONE label-value → arc rule (canonical
 │   │   │                   decimal u32: no sign, no leading zero), applied by render and
 │   │   │                   validation; OidTemplate (pub(crate)): object OID then whole
-│   │   │                   trailing {label} arcs, object()/index_arcs()/placeholders()/
-│   │   │                   render(); {x:str} is Unsupported; at most 128 arcs.
+│   │   │                   trailing {label} arcs, or a scalar's literal .0 (a template
+│   │   │                   with no placeholder must end in .0; its object() excludes it
+│   │   │                   and index_arcs() is 1), object()/index_arcs()/placeholders()/
+│   │   │                   render()/can_render_under() (the system-group rule);
+│   │   │                   {x:str} is Unsupported; at most 128 arcs.
 │   │   └── value.rs    ←   SnmpValueType (integer, counter32, counter64, gauge32 = default,
 │   │                       unsigned32, timeticks, string; non_exhaustive). Compiled WITHOUT
 │   │                       the snmp feature too, through an inline `snmp` module in

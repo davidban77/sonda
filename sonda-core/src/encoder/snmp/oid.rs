@@ -22,11 +22,12 @@
 //!
 //! # Templates
 //!
-//! An [`OidTemplate`] is an object's OID followed by zero or more index
-//! placeholders, each one whole trailing arc: `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}`
-//! renders the event's `ifIndex` label as the last arc. A scalar has no
-//! placeholder and ends in `.0`. A label value renders as an arc only in the
-//! form [`index_arc`] accepts.
+//! An [`OidTemplate`] is an object's OID followed by its index arcs: one or
+//! more placeholders, each one whole trailing arc, or the literal `.0` of a
+//! scalar. `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` renders the event's `ifIndex`
+//! label as the last arc; `1.3.6.1.4.1.8072.9999.1.1.0` is the one instance
+//! of the scalar `1.3.6.1.4.1.8072.9999.1.1`. A label value renders as an arc
+//! only in the form [`index_arc`] accepts.
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -182,22 +183,23 @@ pub(crate) fn index_arc(value: &str) -> Option<u32> {
     value.parse().ok()
 }
 
-/// An OID template: an object's OID, then zero or more index placeholders,
-/// each one whole trailing arc.
+/// An OID template: an object's OID, then its index arcs.
 ///
 /// `1.3.6.1.2.1.2.2.1.8.{ifIndex}` is the object `1.3.6.1.2.1.2.2.1.8` with
-/// one index arc; `1.3.6.1.2.1.31.1.1.1.6.{a}.{b}` has two;
-/// `1.3.6.1.4.1.8072.9999.1.1.0` is a scalar with none.
+/// one index arc; `1.3.6.1.2.1.31.1.1.1.6.{a}.{b}` has two. A template with
+/// no placeholder is a scalar and ends in a literal `.0`, its one index arc:
+/// `1.3.6.1.4.1.8072.9999.1.1.0` is the object `1.3.6.1.4.1.8072.9999.1.1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OidTemplate {
     object: Oid,
+    /// Empty for a scalar, whose index arc is the literal `0`.
     placeholders: Vec<String>,
 }
 
 /// Why an OID template did not parse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum OidTemplateError {
-    /// The arcs before the first placeholder are not an encodable OID.
+    /// The object's arcs are not an encodable OID.
     #[error("OID template {template:?}: {source}")]
     Object {
         /// The template as written.
@@ -249,6 +251,16 @@ pub(crate) enum OidTemplateError {
         /// The offending arc.
         arc: String,
     },
+    /// A template with no placeholder that does not end in `.0`.
+    #[error(
+        "OID template {template:?} has no placeholder, so it names a scalar, and a \
+         scalar's instance ends in .0, as in 1.3.6.1.4.1.8072.9999.1.1.0; a column \
+         ends in {{label}} placeholders, as in 1.3.6.1.2.1.2.2.1.8.{{ifIndex}}"
+    )]
+    ScalarWithoutZero {
+        /// The template as written.
+        template: String,
+    },
     /// More arcs than an OID may have.
     #[error("OID template {template:?} has {arcs} arcs; an OID has at most 128")]
     TooManyArcs {
@@ -279,14 +291,17 @@ pub(crate) enum RenderError {
 }
 
 impl OidTemplate {
-    /// Parse a template such as `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}`.
+    /// Parse a template such as `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` or
+    /// `1.3.6.1.4.1.8072.9999.1.1.0`.
     ///
-    /// The arcs before the first placeholder must parse as an [`Oid`] (at
-    /// least two arcs, an encodable first pair). Each placeholder is a whole
-    /// arc `{label}` naming a valid label key, and only placeholders follow
-    /// the first one. `{label:str}`, or any other `{label:...}` form, is
-    /// [`OidTemplateError::Unsupported`]. The template has at most
-    /// [`MAX_ARCS`] arcs.
+    /// Each placeholder is a whole arc `{label}` naming a valid label key,
+    /// and only placeholders follow the first one. `{label:str}`, or any
+    /// other `{label:...}` form, is [`OidTemplateError::Unsupported`]. A
+    /// template with no placeholder must end in a literal `.0`
+    /// ([`OidTemplateError::ScalarWithoutZero`]). The object, the arcs before
+    /// the first placeholder or before a scalar's `.0`, must parse as an
+    /// [`Oid`] (at least two arcs, an encodable first pair). The template
+    /// has at most [`MAX_ARCS`] arcs.
     pub(crate) fn parse(text: &str) -> Result<Self, OidTemplateError> {
         let mut literal: Vec<&str> = Vec::new();
         let mut placeholders: Vec<String> = Vec::new();
@@ -329,11 +344,16 @@ impl OidTemplate {
                 template: text.to_owned(),
             });
         }
+        if placeholders.is_empty() && literal.pop() != Some("0") {
+            return Err(OidTemplateError::ScalarWithoutZero {
+                template: text.to_owned(),
+            });
+        }
         let object = Oid::parse(&literal.join(".")).map_err(|source| OidTemplateError::Object {
             template: text.to_owned(),
             source,
         })?;
-        let arcs = object.arcs().len() + placeholders.len();
+        let arcs = object.arcs().len() + placeholders.len().max(1);
         if arcs > MAX_ARCS {
             return Err(OidTemplateError::TooManyArcs {
                 template: text.to_owned(),
@@ -352,20 +372,43 @@ impl OidTemplate {
     }
 
     /// The object the instances belong to: the arcs before the first
-    /// placeholder, or the whole OID for a template without one.
+    /// placeholder, or before a scalar's `.0`.
     pub(crate) fn object(&self) -> &Oid {
         &self.object
     }
 
     /// How many index arcs follow the object: the number of placeholders,
-    /// 0 for a scalar. At most [`MAX_ARCS`] minus two, so it fits a `u8`.
+    /// or 1 for a scalar (its `.0`). At most [`MAX_ARCS`] minus two, so it
+    /// fits a `u8`.
     pub(crate) fn index_arcs(&self) -> u8 {
         // parse() caps the arcs at MAX_ARCS (128) and the object has two.
-        self.placeholders.len() as u8
+        self.placeholders.len().max(1) as u8
+    }
+
+    /// Whether an instance OID this template can render lies under
+    /// `prefix`, that is, equals it or starts with it.
+    ///
+    /// A scalar renders exactly one instance, `object.0`. A column's object
+    /// lies under `prefix`, or is a prefix of it with at least as many
+    /// placeholders as the arcs it lacks, since a placeholder can render any
+    /// arc. O(arcs).
+    pub(crate) fn can_render_under(&self, prefix: &Oid) -> bool {
+        let object = self.object.arcs();
+        let wanted = prefix.arcs();
+        if self.placeholders.is_empty() {
+            let mut instance = object.iter().copied().chain(std::iter::once(0));
+            return object.len() + 1 >= wanted.len()
+                && wanted.iter().all(|arc| instance.next() == Some(*arc));
+        }
+        if object.len() >= wanted.len() {
+            return object.starts_with(wanted);
+        }
+        wanted.starts_with(object) && object.len() + self.placeholders.len() >= wanted.len()
     }
 
     /// Write the instance OID's arcs for `labels` into `out` (cleared first):
-    /// the object's arcs, then each placeholder's label value as an arc.
+    /// the object's arcs, then each placeholder's label value as an arc, or
+    /// a scalar's `0`.
     ///
     /// [`RenderError::MissingLabel`] when `labels` lacks a placeholder's
     /// label, [`RenderError::NotAnArc`] when its value is not an
@@ -373,6 +416,9 @@ impl OidTemplate {
     pub(crate) fn render(&self, labels: &Labels, out: &mut Vec<u32>) -> Result<(), RenderError> {
         out.clear();
         out.extend_from_slice(self.object.arcs());
+        if self.placeholders.is_empty() {
+            out.push(0);
+        }
         for name in &self.placeholders {
             let value = labels
                 .iter()
@@ -391,6 +437,9 @@ impl OidTemplate {
 impl fmt::Display for OidTemplate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.object)?;
+        if self.placeholders.is_empty() {
+            write!(f, ".0")?;
+        }
         for name in &self.placeholders {
             write!(f, ".{{{name}}}")?;
         }
@@ -606,7 +655,8 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case::scalar(           "1.3.6.1.4.1.8072.9999.1.1.0",        "1.3.6.1.4.1.8072.9999.1.1.0", &[],               0)]
+    #[case::scalar(           "1.3.6.1.4.1.8072.9999.1.1.0",        "1.3.6.1.4.1.8072.9999.1.1",   &[],               1)]
+    #[case::two_arc_scalar(   "1.3.0",                              "1.3",                         &[],               1)]
     #[case::one_index_column( "1.3.6.1.2.1.2.2.1.8.{ifIndex}",      "1.3.6.1.2.1.2.2.1.8",         &["ifIndex"],      1)]
     #[case::two_index_column( "1.3.6.1.4.1.8072.9999.2.1.7.{a}.{b}", "1.3.6.1.4.1.8072.9999.2.1.7", &["a", "b"],       2)]
     #[case::two_arc_object(   "1.3.{x}",                            "1.3",                         &["x"],            1)]
@@ -635,6 +685,9 @@ mod tests {
     #[case::brace_inside_arc(     "1.3.6.1{x}",                          "arc \"1{x}\" is neither")]
     #[case::unclosed(             "1.3.6.{x",                            "arc \"{x\" is neither")]
     #[case::object_one_arc(       "1.{x}",                               "has one arc")]
+    #[case::scalar_object_one_arc("1.0",                                 "has one arc")]
+    #[case::scalar_without_zero(  "1.3.6.1.4.1.8072.9999.1.1",           "has no placeholder, so it names a scalar, and a scalar's instance ends in .0")]
+    #[case::scalar_ends_in_one(   "1.3.6.1.2.1.1.3.1",                   "has no placeholder, so it names a scalar")]
     #[case::object_not_encodable( "3.40.{x}",                            "cannot be encoded")]
     #[case::object_second_arc_40( "1.40.{x}",                            "cannot be encoded")]
     #[case::object_leading_dot(   ".1.3.6.{x}",                          "starts with '.'")]
@@ -678,6 +731,31 @@ mod tests {
             )
             .expect("renders");
         assert_eq!(out, [1, 3, 6, 1, 4, 1, 8072, 9999, 2, 1, 7, 3, 4294967295]);
+    }
+
+    #[test]
+    fn a_scalar_renders_its_object_then_zero() {
+        let parsed = template("1.3.6.1.4.1.8072.9999.1.1.0");
+        let mut out = vec![99];
+        parsed
+            .render(&labels(&[("device", "rtr-1")]), &mut out)
+            .expect("a scalar needs no label");
+        assert_eq!(out, [1, 3, 6, 1, 4, 1, 8072, 9999, 1, 1, 0]);
+    }
+
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::scalar_under(             "1.3.6.1.2.1.1.5.0",           true)]
+    #[case::scalar_is_the_prefix_0(   "1.3.6.1.2.1.0",               false)]
+    #[case::scalar_elsewhere(         "1.3.6.1.4.1.8072.9999.1.1.0", false)]
+    #[case::column_under(             "1.3.6.1.2.1.1.9.1.2.{x}",     true)]
+    #[case::column_reaches_it(        "1.3.6.1.2.1.{x}",             true)]
+    #[case::column_two_short(         "1.3.6.1.2.{x}",               false)]
+    #[case::column_reaches_with_two(  "1.3.6.1.2.{x}.{y}",           true)]
+    #[case::column_beside(            "1.3.6.1.2.1.2.2.1.8.{ifIndex}", false)]
+    fn can_render_under_the_system_group(#[case] text: &str, #[case] expected: bool) {
+        let system = oid("1.3.6.1.2.1.1");
+        assert_eq!(template(text).can_render_under(&system), expected, "{text}");
     }
 
     #[rstest]

@@ -588,7 +588,8 @@ const SNMP_SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
 ///    `Ok(())`.
 /// 2. **Column present.** `oids:` has an entry for the entry's metric name.
 ///    Every `oids:` entry then parses as an
-///    [`OidTemplate`](crate::encoder::snmp::oid::OidTemplate) and every
+///    [`OidTemplate`](crate::encoder::snmp::oid::OidTemplate) (one with no
+///    placeholder is a scalar and ends in `.0`) and every
 ///    `oids:` and `types:` key is a metric name
 ///    ([`SnmpEncoder::new`](crate::encoder::snmp::SnmpEncoder::new)).
 /// 3. **Placeholders are labels.** Every placeholder of the metric's
@@ -613,8 +614,8 @@ const SNMP_SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
 ///    O(metrics).
 ///
 /// Last, the **system group**: no `oids:` template can render an OID under
-/// `1.3.6.1.2.1.1`, which the agent serves itself; that is, its object lies
-/// under it, or is a prefix of it with enough index arcs to reach it.
+/// `1.3.6.1.2.1.1`, which the agent serves itself
+/// ([`can_render_under`](crate::encoder::snmp::oid::OidTemplate::can_render_under)).
 ///
 /// Returns `Ok(())` for any other encoder.
 #[cfg(feature = "snmp")]
@@ -739,11 +740,10 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
 
     // 6. No collision within the entry.
     let substituted = |template: &OidTemplate| {
-        let mut text = template.object().to_string();
+        let mut text = template.to_string();
         for placeholder in template.placeholders() {
-            match config.base.label_value_set(placeholder) {
-                Some(LabelValueSet::Static(value)) => text.push_str(&format!(".{value}")),
-                _ => text.push_str(&format!(".{{{placeholder}}}")),
+            if let Some(LabelValueSet::Static(value)) = config.base.label_value_set(placeholder) {
+                text = text.replace(&format!("{{{placeholder}}}"), &value);
             }
         }
         text
@@ -766,11 +766,7 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         .ok_or_else(|| invalid("the system group OID is not encodable".to_string()))?;
     for metric in cfg.oids.keys().collect::<std::collections::BTreeSet<_>>() {
         let template = encoder.template_for(metric)?;
-        let object = template.object();
-        let reaches = system.is_prefix_of(object)
-            || (object.is_prefix_of(&system)
-                && object.arcs().len() + usize::from(template.index_arcs()) >= system.arcs().len());
-        if reaches {
+        if template.can_render_under(&system) {
             return Err(invalid(format!(
                 "snmp encoder oids.{metric}: {template} can render OIDs under \
                  1.3.6.1.2.1.1, the system group, which the snmp_agent sink serves itself"
@@ -4903,8 +4899,9 @@ generator:
             snmp_spike("slot", crate::config::SpikeStrategy::Counter, None)]),
         "does not reference label `slot`")]
     // 6. No collision: a forgotten placeholder, and a copied template.
-    #[case::r6_forgotten_placeholder(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.1"),
-        "metrics \"ifHCInOctets\" and \"ifHCOutOctets\" both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry")]
+    #[case::r6_forgotten_placeholder(|c: &mut ScenarioConfig| { set_label(c, "ifIndex", "0");
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.0"); },
+        "metrics \"ifHCInOctets\" and \"ifHCOutOctets\" both render 1.3.6.1.2.1.31.1.1.1.6.0 for this entry")]
     #[case::r6_copied_template(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"),
         "both render 1.3.6.1.2.1.31.1.1.1.6.1")]
     // The literal part parses as an OID, and nothing renders under the system group.
@@ -4912,6 +4909,8 @@ generator:
         "oids.ifHCOutOctets: OID template \"1.{ifIndex}\": OID \"1\" has one arc")]
     #[case::r2_oid_not_encodable(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "3.40.{ifIndex}"),
         "oids.ifHCOutOctets: OID template \"3.40.{ifIndex}\": OID \"3.40\" cannot be encoded")]
+    #[case::r2_scalar_without_zero(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.1.1"),
+        "oids.ifHCOutOctets: OID template \"1.3.6.1.4.1.8072.9999.1.1\" has no placeholder, so it names a scalar, and a scalar's instance ends in .0")]
     #[case::system_group_scalar(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.1.5.0"),
         "oids.ifHCOutOctets: 1.3.6.1.2.1.1.5.0 can render OIDs under 1.3.6.1.2.1.1, the system group")]
     #[case::system_group_reached_by_an_index(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.{ifIndex}"),
@@ -4945,6 +4944,7 @@ generator:
     #[case::two_index_arcs(|c: &mut ScenarioConfig| { set_label(c, "slot", "2");
             set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.{slot}.{ifIndex}"); })]
     #[case::above_system_group_short(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.{x}"))]
+    #[case::scalar_beside_system_group(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.0"))]
     fn snmp_validation_accepts(#[case] change: fn(&mut ScenarioConfig)) {
         let mut config = snmp_config();
         change(&mut config);

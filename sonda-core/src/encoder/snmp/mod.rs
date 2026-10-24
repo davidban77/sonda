@@ -478,10 +478,10 @@ mod tests {
     #[case::counter32_one_index(  "1.3.6.1.2.1.2.2.1.14.{ifIndex}",      &[("ifIndex", "2")],          SnmpValueType::Counter32,  7.0,              1, "300f060a2b060102010202010e02410107")]
     #[case::gauge32_one_index(    "1.3.6.1.2.1.31.1.1.1.15.{ifIndex}",   &[("ifIndex", "2")],          SnmpValueType::Gauge32,    10_000.0,         1, "3011060b2b060102011f0101010f0242022710")]
     #[case::unsigned32_one_index( "1.3.6.1.2.1.31.1.1.1.15.{ifIndex}",   &[("ifIndex", "2")],          SnmpValueType::Unsigned32, 10_000.0,         1, "3011060b2b060102011f0101010f0242022710")]
-    #[case::timeticks_scalar(     "1.3.6.1.4.1.8072.9999.1.10.0",        &[],                          SnmpValueType::TimeTicks,  4_294_967_295.0,  0, "3015060c2b06010401bf08ce0f010a00430500ffffffff")]
-    #[case::string_scalar(        "1.3.6.1.4.1.8072.9999.1.20.0",        &[],                          SnmpValueType::String,     12.5,             0, "3014060c2b06010401bf08ce0f011400040431322e35")]
+    #[case::timeticks_scalar(     "1.3.6.1.4.1.8072.9999.1.10.0",        &[],                          SnmpValueType::TimeTicks,  4_294_967_295.0,  1, "3015060c2b06010401bf08ce0f010a00430500ffffffff")]
+    #[case::string_scalar(        "1.3.6.1.4.1.8072.9999.1.20.0",        &[],                          SnmpValueType::String,     12.5,             1, "3014060c2b06010401bf08ce0f011400040431322e35")]
     #[case::integer_two_index(    "1.3.6.1.4.1.8072.9999.2.1.{a}.{b}",   &[("a", "7"), ("b", "3")],    SnmpValueType::Integer,    -129.0,           2, "3013060d2b06010401bf08ce0f020107030202ff7f")]
-    #[case::integer_i32_min(      "1.3.6.1.4.1.8072.9999.1.4.0",         &[],                          SnmpValueType::Integer,    -2_147_483_648.0, 0, "3014060c2b06010401bf08ce0f010400020480000000")]
+    #[case::integer_i32_min(      "1.3.6.1.4.1.8072.9999.1.4.0",         &[],                          SnmpValueType::Integer,    -2_147_483_648.0, 1, "3014060c2b06010401bf08ce0f010400020480000000")]
     fn record_is_index_arcs_then_the_varbind_net_snmp_encodes(
         #[case] template: &str,
         #[case] pairs: &[(&str, &str)],
@@ -537,7 +537,7 @@ mod tests {
             .encode_metric(&event("m", 1.0, &[]), &mut buf)
             .expect("encodes");
         assert_eq!(buf[0], 0xAA);
-        assert_eq!(buf[1], 0, "a scalar has no index arcs");
+        assert_eq!(buf[1], 1, "a scalar's one index arc, its .0");
         assert_eq!(buf[2], 0x30);
     }
 

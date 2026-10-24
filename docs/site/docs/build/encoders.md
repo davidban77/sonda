@@ -382,7 +382,7 @@ When a pack entry's encoder is `snmp`, each hint fills `oids:` and `types:` for 
 - A template is the object's OID in dotted decimal, without a leading dot, followed by one `{label}` placeholder per index arc: `1.3.6.1.2.1.2.2.1.8.{ifIndex}`.
 - Placeholders are the last arcs. A literal arc after a placeholder is an error.
 - The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs.
-- A scalar has no placeholder and ends in `.0`, as in `1.3.6.1.4.1.8072.9999.1.1.0`.
+- A template with no placeholder is a scalar and must end in `.0`, its one instance: `1.3.6.1.4.1.8072.9999.1.1.0` is the instance of the scalar `1.3.6.1.4.1.8072.9999.1.1`.
 - A placeholder renders its label's value as one arc. The value must be an unsigned 32-bit integer written in decimal, without a sign or leading zeros: `3`, not `03`. `{label:str}` and any other form are refused.
 - No template may render an OID under `1.3.6.1.2.1.1`, the system group, which the agent serves itself.
 
@@ -392,7 +392,7 @@ A scenario file is refused, with the metric and the label named, when any of the
 - Every placeholder names a key of the entry's `labels` or `dynamic_labels`. A `cardinality_spikes` label cannot be a placeholder: events carry it only while its window is open.
 - Every value a placeholder's label can take is an arc: its static value, every `values:` entry of a dynamic label, and every value of a `counter` dynamic label or `counter` cardinality spike on it. A counter's values are its prefix followed by a number, and the default prefix (`<label>_`) is not a number, so set `prefix: ""`. A `random` cardinality spike on a placeholder's label is refused.
 - Every label key of the entry, from `labels`, `dynamic_labels` and `cardinality_spikes`, is a placeholder, the `agent_label`, or listed in `drop_labels`. Otherwise series that differ only in that label would share one OID.
-- No two metrics render the same OID for the entry. A template that hard-codes an index the entry's label also gives, such as `1.3.6.1.2.1.31.1.1.1.6.1` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` with `ifIndex: 1`, is refused.
+- No two metrics render the same OID for the entry. A scalar whose instance a column also renders, such as `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` with `ifIndex: 0`, is refused.
 
 Histogram, summary and logs entries refuse both this encoder and the `snmp_agent` sink.
 
