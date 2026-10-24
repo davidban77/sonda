@@ -23,7 +23,7 @@ src/
 │                          before building anything. Used by the sonda-server
 │                          `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash;
-│                          constant_time_eq under gnmi: length check, then an XOR-fold over
+│                          constant_time_eq under gnmi or snmp: length check, then an XOR-fold over
 │                          every byte pair; ensure_crypto_provider under kafka or gnmi:
 │                          installs rustls's ring provider as the PROCESS-WIDE default when
 │                          none is, for every rustls config in the process, embedder's
@@ -573,18 +573,24 @@ src/
 │   │   │                   community ("community and another community").
 │   │   │                   registry(): the snmp instance of ListenerRegistry<SnmpAgent>
 │   │   │                   behind SnmpAgentRegistry (acquire, check, join, len, is_empty,
-│   │   │                   targets, as gnmi's). join() never binds and compares no setting:
-│   │   │                   a joined sink only replaces values.
+│   │   │                   targets, as gnmi's). join() never binds and compares the
+│   │   │                   community only (constant_time_eq; a mismatch is a ConfigError
+│   │   │                   naming the field): max_message_size and system are the agent's.
+│   │   │                   serves() compares the community with constant_time_eq too.
 │   │   │                   SnmpAgentSink: wants_metric_events() = true; write() is an error.
 │   │   │                   Each write is the snmp encoder's publish record: split_record
 │   │   │                   checks it is the header byte then exactly one SEQUENCE (every
 │   │   │                   event) and strips the byte. A key's first event decodes the
-│   │   │                   instance OID, registers its object (the OID minus the header's
-│   │   │                   index-arc count, ≥ 2 arcs left) and publishes with first = true;
+│   │   │                   instance OID, publishes with first = true and, once that
+│   │   │                   succeeded, registers its object (the OID minus the header's
+│   │   │                   index-arc count, ≥ 2 arcs left), so a refused publish registers
+│   │   │                   nothing;
 │   │   │                   later events reuse the decoded OID (keys rendering one OID share
 │   │   │                   an entry). Owner per launch as gnmi's; a joined sink owns nothing
-│   │   │                   and overwrite()s only a served instance. PublishBuffers as gnmi's
-│   │   │                   (two BytesMut in turn): a steady publish allocates nothing.
+│   │   │                   and overwrite()s only a served instance. PublishBuffers: two
+│   │   │                   BytesMut used in turn, so each copy goes into the buffer whose
+│   │   │                   Bytes the agent dropped a publish ago and reuses its allocation:
+│   │   │                   a steady publish allocates nothing.
 │   │   │                   Drop releases each instance once.
 │   │   └── agent.rs    ←   SnmpAgent: RwLock<MibTable { slots: BTreeMap<Oid, Slot { varbind,
 │   │                       owner, publishers }>, objects: BTreeSet<Oid> }> (OID order = walk

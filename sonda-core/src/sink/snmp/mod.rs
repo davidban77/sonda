@@ -7,9 +7,9 @@
 //!
 //! The sink takes the `snmp` encoder's publish records through
 //! [`Sink::write_metric_event`] and never awaits: publishing is an upsert
-//! into the agent's table under its write lock. The first record of a series
-//! also registers the object its instance belongs to, which the agent keeps
-//! after the instance leaves.
+//! into the agent's table under its write lock. Once the agent has taken a
+//! series' first record, the sink also registers the object its instance
+//! belongs to, which the agent keeps after the instance leaves.
 //!
 //! An instance leaves the agent when the last sink of its launch that
 //! published it drops, and at no other time.
@@ -311,9 +311,10 @@ impl fmt::Debug for AgentSettings {
 
 impl AgentSettings {
     /// Whether an agent running with `self` can also serve `other`: every
-    /// setting but the listen address is equal.
+    /// setting but the listen address is equal, the community compared in
+    /// constant time.
     pub(crate) fn serves(&self, other: &AgentSettings) -> bool {
-        self.community == other.community
+        crate::util::constant_time_eq(self.community.as_bytes(), other.community.as_bytes())
             && self.max_message_size == other.max_message_size
             && self.system == other.system
     }
@@ -326,7 +327,7 @@ impl AgentSettings {
     pub(crate) fn beside(&self, other: &AgentSettings) -> String {
         let (a, b) = (&self.system, &other.system);
         let mut differences = Vec::new();
-        if self.community != other.community {
+        if !crate::util::constant_time_eq(self.community.as_bytes(), other.community.as_bytes()) {
             differences.push("community and another community".to_string());
         }
         if self.max_message_size != other.max_message_size {
@@ -423,17 +424,21 @@ impl SnmpAgentRegistry {
 
     /// The live agent that serves `cfg.listen`, without ever binding: the
     /// agent on that address, or a wildcard agent on the same port that
-    /// covers it. A joined sink only replaces values, so no setting but the
-    /// address is compared with the agent's.
+    /// covers it. Of the settings, only the community is compared with the
+    /// agent's, in constant time; `max_message_size` and `system` are left
+    /// to the running agent.
     ///
     /// # Errors
     ///
-    /// [`SondaError::Config`] for an invalid config, or when no live agent
-    /// serves the address.
+    /// [`SondaError::Config`] for an invalid config, when no live agent
+    /// serves the address, or when the agent's community is another; the
+    /// error names the field and neither community.
     pub fn join(&self, cfg: &SnmpAgentConfig) -> Result<Arc<SnmpAgent>, SondaError> {
         let settings = cfg.settings()?;
-        self.0
-            .join(settings.listen, |agent| agent.settings().clone())
+        self.0.join(settings.listen, |agent| AgentSettings {
+            community: settings.community.clone(),
+            ..agent.settings().clone()
+        })
     }
 
     /// Live agents.
@@ -460,13 +465,14 @@ impl SnmpAgentRegistry {
 /// [`Sink::wants_metric_events`] and [`Sink::write`] is an error. Each write
 /// is one publish record: a byte holding the number of index arcs at the end
 /// of the instance OID, then the instance's `VarBind`. The first record of
-/// each series decodes the instance OID and registers the object it belongs
-/// to (the OID without its index arcs); later records of the series reuse
-/// the decoded OID. An instance is owned by the launch whose sink created it
-/// and held while any sink of that launch has published it: the sinks of
-/// that launch share it, a sink of another launch is refused it, and it
-/// leaves the agent when the last of its publishers drops. Dropping the last
-/// sink on an address stops its agent.
+/// each series decodes the instance OID, publishes it and, once the agent
+/// has taken it, registers the object it belongs to (the OID without its
+/// index arcs); later records of the series reuse the decoded OID. An
+/// instance is owned by the launch whose sink created it and held while any
+/// sink of that launch has published it: the sinks of that launch share it,
+/// a sink of another launch is refused it, and it leaves the agent when the
+/// last of its publishers drops. Dropping the last sink on an address stops
+/// its agent.
 ///
 /// A sink made by joining a running agent publishes no instance of its own:
 /// it replaces the latest value of an instance the agent already serves,
@@ -495,9 +501,9 @@ struct Publication {
 
 /// Two buffers used in turn: each `VarBind` of an instance is copied into the
 /// buffer used two publishes earlier and frozen into the `Bytes` the agent
-/// stores. The agent has dropped the `Bytes` it stored before the latest
-/// one, so the copy reuses that buffer's allocation unless a reader still
-/// holds it, and allocates once then.
+/// stores. By then the agent has replaced the `Bytes` frozen from that
+/// buffer, so the buffer holds its allocation alone and the copy reuses it.
+/// A reader still holding that `Bytes` makes the copy allocate once.
 #[derive(Default)]
 struct PublishBuffers {
     buffers: [BytesMut; 2],
@@ -507,11 +513,9 @@ struct PublishBuffers {
 impl PublishBuffers {
     /// `varbind`, copied into the next buffer and frozen.
     fn frozen(&mut self, varbind: &[u8]) -> Bytes {
+        // The other buffer's `Bytes` is the one the agent holds now.
         let buffer = &mut self.buffers[self.next];
         self.next ^= 1;
-        // Rewinds to the start of the allocation when nothing else holds it;
-        // otherwise the copy below allocates.
-        let _ = buffer.try_reclaim(varbind.len());
         buffer.extend_from_slice(varbind);
         buffer.split().freeze()
     }
@@ -685,8 +689,8 @@ impl Sink for SnmpAgentSink {
                         let object = object_of(&oid, index_arcs)?;
                         let mut buffers = PublishBuffers::default();
                         let stored = buffers.frozen(varbind);
-                        self.agent.register_object(&object);
                         self.agent.publish(self.owner, &oid, stored, true)?;
+                        self.agent.register_object(&object);
                         let entry = self.published.len();
                         self.published.push(Publication {
                             oid: oid.clone(),
@@ -913,7 +917,9 @@ mod tests {
 
     /// Sinks on one address that differ in `community` are refused by
     /// `acquire`, `check` and `join` alike, naming the field and neither
-    /// value; equal settings share the agent.
+    /// value; equal settings share the agent. A join compares nothing else:
+    /// one with the agent's community and another `max_message_size` and
+    /// `system` joins.
     #[tokio::test]
     async fn differing_community_on_one_address_is_a_config_error_naming_the_field() {
         let registry = SnmpAgentRegistry::new();
@@ -936,6 +942,7 @@ mod tests {
         let refused = [
             registry.acquire(&other).await.map(|_| ()),
             registry.check(&other),
+            registry.join(&other).map(|_| ()),
         ];
         for result in refused {
             let err = result.expect_err("another community on the address is refused");
@@ -947,7 +954,20 @@ mod tests {
                 "{msg}"
             );
         }
-        let joined = registry.join(&other).expect("a join compares no setting");
+        let elsewise = SnmpAgentConfig {
+            max_message_size: 484,
+            system: SystemGroup {
+                name: "another-name".to_string(),
+                ..SystemGroup::default()
+            },
+            ..with(&addr, "first-community")
+        };
+        registry
+            .check(&elsewise)
+            .expect_err("the premise: acquire would refuse these settings");
+        let joined = registry
+            .join(&elsewise)
+            .expect("a join compares the community only");
         assert!(Arc::ptr_eq(&first, &joined));
         assert_eq!(registry.len(), 1, "nothing else was bound");
     }
@@ -1410,10 +1430,29 @@ mod tests {
     #[case::node_above_the_objects(    "1.3.6.1.2.1.31",                  Lookup::NoSuchObject)]
     #[case::unknown_enterprise(        "1.3.6.1.4.1.99999.1.0",           Lookup::NoSuchObject)]
     #[case::unserved_system_object(    "1.3.6.1.2.1.1.8.0",               Lookup::NoSuchObject)]
+    #[case::under_a_refused_publish(   "1.3.6.1.2.1.1.9.1.2.5",           Lookup::NoSuchObject)]
     #[tokio::test]
     async fn get_answers_by_the_object_set(#[case] request: &str, #[case] expected: Lookup) {
         let mut sink = sink().await;
         let agent = Arc::clone(sink.agent());
+        // A column under the system group: the agent refuses its publish,
+        // so its object `1.3.6.1.2.1.1.9.1.2` is not registered.
+        let refused = event("sysORID", 1.0, &[("ifIndex", "1")]);
+        let encoder = SnmpEncoder::new(&SnmpEncoderConfig {
+            oids: HashMap::from([(
+                "sysORID".to_string(),
+                "1.3.6.1.2.1.1.9.1.2.{ifIndex}".to_string(),
+            )]),
+            ..SnmpEncoderConfig::default()
+        })
+        .expect("a valid encoder");
+        let mut encoded = Vec::new();
+        encoder.encode_metric(&refused, &mut encoded).expect("encodes");
+        let err = sink
+            .write_metric_event(&refused, &encoded)
+            .await
+            .expect_err("the system group is the agent's");
+        assert!(err.to_string().contains("system group"), "{err}");
         publish(&mut sink, &octets("1", 1.0)).await;
         publish(&mut sink, &octets("2", 1.0)).await;
         publish(&mut sink, &event("playpenScalar", 7.0, &[])).await;

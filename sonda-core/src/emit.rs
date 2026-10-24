@@ -656,6 +656,48 @@ mod tests {
         assert_eq!(held.agent().instance_count(), 1, "nothing was added");
     }
 
+    /// An `emit_metric` naming another community than the running agent's is
+    /// refused, naming the field and neither community, and the agent's
+    /// instance keeps its value.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_metric_with_another_community_is_refused() {
+        use crate::encoder::snmp::oid::Oid;
+        use crate::sink::snmp::SnmpAgentConfig;
+
+        let held = running_agent().await;
+        let agent = std::sync::Arc::clone(held.agent());
+        let instance = Oid::parse("1.3.6.1.2.1.31.1.1.1.6.1").expect("an OID");
+        let before = agent.get(&instance);
+        assert!(
+            matches!(before, crate::sink::snmp::agent::Lookup::Value(_)),
+            "the agent serves the instance"
+        );
+        let addr = agent.local_addr().to_string();
+        let same = SinkConfig::SnmpAgent(SnmpAgentConfig::new(addr.clone()));
+        emit_metric(&octets("1", 7.0), &snmp_encoder(), &same, None)
+            .await
+            .expect("the agent's own community joins");
+        let before = agent.get(&instance);
+
+        let other = SinkConfig::SnmpAgent(SnmpAgentConfig {
+            community: "other-community".to_string(),
+            ..SnmpAgentConfig::new(addr)
+        });
+        let err = emit_metric(&octets("1", 42.0), &snmp_encoder(), &other, None)
+            .await
+            .expect_err("another community is refused");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("community and another community"), "{msg}");
+        assert!(
+            !msg.contains("other-community") && !msg.contains("public"),
+            "{msg}"
+        );
+        assert_eq!(agent.get(&instance), before, "the value is untouched");
+        assert_eq!(agent.instance_count(), 1, "nothing was added");
+    }
+
     /// With no running scenario on the address, `emit_metric` refuses the
     /// event instead of binding an agent of its own.
     #[cfg(feature = "snmp")]
@@ -671,7 +713,9 @@ mod tests {
             let addr = held.agent().local_addr();
             let closed = held.agent().wait();
             drop(held);
-            closed.await;
+            tokio::time::timeout(std::time::Duration::from_secs(1), closed)
+                .await
+                .expect("the socket closes within 1 s of the last drop");
             addr
         };
         let sink = SinkConfig::SnmpAgent(SnmpAgentConfig::new(addr.to_string()));
