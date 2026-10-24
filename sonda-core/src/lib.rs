@@ -317,9 +317,32 @@ pub enum RuntimeError {
     },
 }
 
+/// The lib test binary's one allocator: the system allocator, counting a
+/// thread's allocations only inside a [`counting::count_allocations`]
+/// window. Integration test binaries install their own.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: counting::CountingAlloc = counting::CountingAlloc;
+
+#[cfg(test)]
+#[path = "../tests/common/alloc.rs"]
+pub mod counting;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- the counting allocator -----------------------------------------------
+
+    /// The allocator installed above counts: one known allocation reads as one.
+    #[test]
+    fn the_counting_allocator_counts() {
+        assert_eq!(
+            counting::count_allocations(|| std::hint::black_box(Box::new(1u8))).1,
+            1,
+            "the lib's counting allocator is installed"
+        );
+    }
 
     // ---- SondaError variant discrimination ------------------------------------
 
