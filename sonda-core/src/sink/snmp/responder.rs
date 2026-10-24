@@ -1823,6 +1823,7 @@ mod tests {
         let mut expected = Vec::new();
         let mut at = oid("0.0");
         while let Some((next, _)) = agent.next_after(&at) {
+            assert!(next > at, "{next} follows {at}");
             expected.push(next.clone());
             at = next;
         }
@@ -1844,6 +1845,7 @@ mod tests {
                 if ended {
                     break 'walk;
                 }
+                assert!(name > at, "{name} follows {at}");
                 walked.push(name.clone());
                 at = name;
             }
