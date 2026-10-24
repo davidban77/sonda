@@ -148,6 +148,7 @@ fn measure(
     });
 
     let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| {
         rt.block_on(async {
             sonda_core::schedule::runner::run_with_sink(
@@ -185,6 +186,13 @@ fn current_thread_runtime() -> tokio::runtime::Runtime {
         .expect("runtime must build")
 }
 
+/// One known allocation on this thread reads as one: this binary's counting
+/// allocator is installed.
+#[test]
+fn a_known_allocation_counts_as_one() {
+    counting::assert_count_allocations_counts();
+}
+
 /// Another thread allocating throughout a counted window adds nothing to it,
 /// so this binary's cases can run in parallel.
 #[test]
@@ -204,16 +212,21 @@ fn allocations_on_other_threads_are_not_counted() {
             }
         })
     };
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| {
         go.store(true, Ordering::SeqCst);
         while done.load(Ordering::SeqCst) < OTHER_ALLOCS {
             std::hint::spin_loop();
         }
+        std::hint::black_box(Box::new(1u8));
     });
     other.join().expect("allocating thread panicked");
     // Vacuity guard: the other thread did allocate, all of it inside the window.
     assert_eq!(done.load(Ordering::SeqCst), OTHER_ALLOCS);
-    assert_eq!(allocs, 0, "another thread's allocations were counted");
+    assert_eq!(
+        allocs, 1,
+        "only this thread's own allocation is counted, none of the other thread's"
+    );
 }
 
 /// Through the runner, the `gnmi_target` sink costs less than half an
@@ -232,6 +245,7 @@ fn gnmi_target_surcharge_over_a_plain_sink_is_under_one_half() {
         delivered.load(Ordering::Relaxed) as u64 >= plain_events,
         "the plain sink received every event through write"
     );
+    assert!(plain_cost > 0.0, "the plain sink's figure was counted");
 
     let target_sink = rt
         .block_on(GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0")))
@@ -295,6 +309,7 @@ fn publish_cost(
         write(sink, event);
     }
     let mut written = 0usize;
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| {
         for event in events.iter().cycle().take(PUBLISHES) {
             write(sink, event);
@@ -343,6 +358,7 @@ fn with_nobody_subscribed_the_gnmi_target_surcharge_is_zero(#[case] series: usiz
     });
     let plain_cost = publish_cost(&rt, &mut plain, &events);
     assert!(delivered.load(Ordering::Relaxed) >= PUBLISHES);
+    assert!(plain_cost > 0.0, "the plain sink's figure was counted");
 
     let target_sink = rt
         .block_on(GnmiTargetSink::new(&GnmiTargetConfig::new("127.0.0.1:0")))
@@ -392,6 +408,7 @@ fn a_draining_subscriber_costs_the_publisher_under_one_and_a_half(#[case] encodi
         delivered: Arc::clone(&delivered),
     });
     let (plain_cost, _) = allocations_per_event_of(&rt, &mut plain, &config);
+    assert!(plain_cost > 0.0, "the plain sink's figure was counted");
 
     let (mut sink, target) = sink_on(&other);
     let received = subscribe(&other, &target, encoding);
@@ -451,6 +468,7 @@ fn a_release_with_no_receiver_allocates_nothing() {
     assert_eq!(target.series_count(), 3);
     assert_eq!(target.subscriber_count(), 0);
 
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| drop(sink));
 
     assert_eq!(target.series_count(), 0, "the drop released every series");
@@ -637,6 +655,7 @@ fn a_json_ietf_subscriber_does_not_move_the_publish_figure() {
     let (mut sink, alone_target) = sink_on(&other);
     let (alone, _) = allocations_per_event_of(&rt, &mut sink, &config);
     assert_eq!(alone_target.subscriber_count(), 0);
+    assert!(alone > 0.0, "the figure with nobody subscribed was counted");
     drop(sink);
 
     let (mut sink, target) = sink_on(&other);
@@ -688,6 +707,7 @@ fn with_nobody_subscribed_a_change_costs_what_a_held_value_does() {
     assert_eq!(held_target.subscriber_count(), 0);
     assert_eq!(changing_target.subscriber_count(), 0);
     assert_eq!(held_last, 1.0, "the held value");
+    assert!(held > 0.0, "the held value's figure was counted");
     assert!(
         changing_last >= (events / 2) as f64,
         "the changing value reached {changing_last} in {events} events"
