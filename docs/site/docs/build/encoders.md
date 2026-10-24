@@ -380,6 +380,7 @@ When a pack entry's encoder is `snmp`, each hint fills `oids:` and `types:` for 
 ### OID templates
 
 - A template is the object's OID in dotted decimal, without a leading dot, followed by one `{label}` placeholder per index arc: `1.3.6.1.2.1.2.2.1.8.{ifIndex}`.
+- A template is a string. Quote it: an unquoted value such as `1.30` is a YAML number, which would read as `1.3`, and is refused with the field named.
 - Placeholders are the last arcs. A literal arc after a placeholder is an error.
 - The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs.
 - A template with no placeholder is a scalar and must end in `.0`, its one instance: `1.3.6.1.4.1.8072.9999.1.1.0` is the instance of the scalar `1.3.6.1.4.1.8072.9999.1.1`.

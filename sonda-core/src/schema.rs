@@ -189,11 +189,24 @@ fn require_metrics_or_extends(value: &mut serde_json::Value) {
 /// Positions constrained by `enum` or `const` are left alone: the value set
 /// is already closed, so widening the type buys nothing and would only make
 /// the failure message vaguer.
+///
+/// A position carrying [`NO_WIDENING`] is left alone too, with everything
+/// under it, and loses the marker. A field opts out with
+/// `#[schemars(extend("x-sonda-no-widening" = true))]` when its parser reads
+/// strings only, because a numeric reading would change the value: an OID
+/// such as `1.30` read as a number is `1.3`.
+/// The schema keyword a field sets to keep its position out of
+/// [`widen_scalar_strings`]; removed from the published schema.
+const NO_WIDENING: &str = "x-sonda-no-widening";
+
 fn widen_scalar_strings(value: &mut serde_json::Value) {
     use serde_json::Value as J;
 
     match value {
         J::Object(map) => {
+            if map.remove(NO_WIDENING).is_some() {
+                return;
+            }
             let closed = map.contains_key("enum") || map.contains_key("const");
             if !closed {
                 if let Some(ty) = map.get_mut("type") {
@@ -443,6 +456,41 @@ mod tests {
         assert_eq!(
             value["$defs"]["WhileOp"]["type"], "string",
             "an enum-constrained position is already closed; leave its type narrow"
+        );
+    }
+
+    /// The fields that opt out of widening keep a plain string type, the
+    /// fields beside them are still widened, and the marker never reaches
+    /// the published schema.
+    #[test]
+    fn opted_out_positions_stay_strings_and_lose_the_marker() {
+        let value = scenario_file_schema().to_value();
+        let hint = &value["$defs"]["SnmpHint"]["properties"];
+        assert!(hint.is_object(), "the SnmpHint definition exists");
+        assert_eq!(hint["oid"]["type"], "string", "{}", hint["oid"]);
+        #[cfg(feature = "snmp")]
+        {
+            let variants = value["$defs"]["EncoderConfig"]["oneOf"]
+                .as_array()
+                .expect("EncoderConfig is a oneOf");
+            let snmp = &variants
+                .iter()
+                .find(|v| v["properties"]["type"]["const"] == "snmp")
+                .expect("the snmp encoder variant exists")["properties"];
+            assert_eq!(
+                snmp["oids"]["additionalProperties"]["type"], "string",
+                "{}",
+                snmp["oids"]
+            );
+            assert!(
+                snmp["agent_label"]["type"].is_array(),
+                "a field beside it is still widened: {}",
+                snmp["agent_label"]
+            );
+        }
+        assert!(
+            !scenario_file_schema_json().contains(NO_WIDENING),
+            "the marker is removed"
         );
     }
 

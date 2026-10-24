@@ -62,12 +62,11 @@ pub struct SnmpEncoderConfig {
     pub agent_label: String,
     /// OID template per metric name, such as
     /// `"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"`: the object's OID, then one
-    /// `{label}` placeholder per index arc. Every metric the entry emits
-    /// needs one.
-    #[cfg_attr(
-        feature = "config",
-        serde(default, deserialize_with = "scalar_text_values")
-    )]
+    /// `{label}` placeholder per index arc, or `.0` for a scalar. Every
+    /// metric the entry emits needs one. Each is a string; a YAML number is
+    /// an error.
+    #[cfg_attr(feature = "config", serde(default, deserialize_with = "oid_templates"))]
+    #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
     pub oids: HashMap<String, String>,
     /// Value type per metric name; default `gauge32`.
     #[cfg_attr(feature = "config", serde(default))]
@@ -89,14 +88,34 @@ fn default_agent_label() -> String {
     DEFAULT_AGENT_LABEL.to_string()
 }
 
-/// `deserialize_with` for a map of text values: each value may be any scalar.
+/// `deserialize_with` for `oids:`: each template is a string
+/// ([`OidText`](crate::config::scalar_text::OidText)), and an error names
+/// its `oids.<metric>` field.
 #[cfg(feature = "config")]
-fn scalar_text_values<'de, D: serde::Deserializer<'de>>(
+fn oid_templates<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<HashMap<String, String>, D::Error> {
-    use crate::config::scalar_text::ScalarText;
-    let map: HashMap<String, ScalarText> = serde::Deserialize::deserialize(deserializer)?;
-    Ok(map.into_iter().map(|(key, text)| (key, text.0)).collect())
+    use crate::config::scalar_text::OidText;
+    struct Templates;
+    impl<'de> serde::de::Visitor<'de> for Templates {
+        type Value = HashMap<String, String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a map from metric names to OID templates")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut templates = HashMap::new();
+            while let Some(metric) = map.next_key::<String>()? {
+                let field = format!("oids.{metric}");
+                let template = map.next_value_seed(OidText { field: &field })?;
+                templates.insert(metric, template);
+            }
+            Ok(templates)
+        }
+    }
+    deserializer.deserialize_map(Templates)
 }
 
 /// `deserialize_with` for a list of text items: each item may be any scalar.
@@ -757,15 +776,45 @@ mod tests {
     #[test]
     fn numeric_scalars_parse_as_text_inside_the_encoder_block() {
         let parsed: crate::encoder::EncoderConfig = serde_yaml_ng::from_str(
-            "type: snmp\nagent_label: 5\noids:\n  m: 1.3\ndrop_labels: [7, true]\n",
+            "type: snmp\nagent_label: 5\noids:\n  m: 1.3.6.1.2.1.1.3.0\ndrop_labels: [7, true]\n",
         )
         .expect("every scalar the schema accepts parses");
         let crate::encoder::EncoderConfig::Snmp(cfg) = parsed else {
             panic!("not the snmp variant: {parsed:?}");
         };
         assert_eq!(cfg.agent_label, "5");
-        assert_eq!(cfg.oids["m"], "1.3");
+        assert_eq!(
+            cfg.oids["m"], "1.3.6.1.2.1.1.3.0",
+            "a dotted OID is a YAML string"
+        );
         assert_eq!(cfg.drop_labels, ["7", "true"]);
+    }
+
+    /// A plain `1.30` is a YAML number, which would read as `1.3`, so an
+    /// `oids:` value must be a string, inside the `type:`-tagged block and
+    /// outside it.
+    #[cfg(feature = "config")]
+    #[rstest]
+    #[case::encoder_block("type: snmp\noids:\n  ifHCInOctets: ")]
+    #[case::config_alone("oids:\n  ifHCInOctets: ")]
+    fn an_unquoted_oid_is_an_error_naming_the_field(#[case] prefix: &str) {
+        let parse = |value: &str| {
+            let yaml = format!("{prefix}{value}\n");
+            if prefix.starts_with("type:") {
+                serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(&yaml).map(|_| ())
+            } else {
+                serde_yaml_ng::from_str::<SnmpEncoderConfig>(&yaml).map(|_| ())
+            }
+        };
+        parse("\"1.30\"").expect("quoted parses");
+        for value in ["1.30", "7", "true"] {
+            let shown = parse(value).expect_err("not a string").to_string();
+            assert!(
+                shown.contains("oids.ifHCInOctets"),
+                "names the field: {shown}"
+            );
+            assert!(shown.contains("quote it"), "says to quote it: {shown}");
+        }
     }
 
     #[cfg(feature = "config")]

@@ -117,12 +117,24 @@ pub struct GnmiHint {
 pub struct SnmpHint {
     /// OID template for the metric, as an `oids:` entry of the snmp encoder
     /// takes it: the object's OID, then one `{label}` placeholder per index
-    /// arc.
+    /// arc, or `.0` for a scalar. A string; a YAML number is an error.
+    #[cfg_attr(feature = "config", serde(deserialize_with = "hint_oid"))]
+    #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
     pub oid: String,
     /// Value type for the metric, as a `types:` entry of the snmp encoder
     /// takes it.
     #[cfg_attr(feature = "config", serde(rename = "type"))]
     pub r#type: SnmpValueType,
+}
+
+/// `deserialize_with` for [`SnmpHint::oid`]: a string, as
+/// [`OidText`](crate::config::scalar_text::OidText) reads it.
+#[cfg(feature = "config")]
+fn hint_oid<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    serde::de::DeserializeSeed::deserialize(
+        crate::config::scalar_text::OidText { field: "snmp.oid" },
+        deserializer,
+    )
 }
 
 impl MetricSpec {
@@ -2084,6 +2096,19 @@ sink:
                 r#type: SnmpValueType::Counter64,
             })
         );
+    }
+
+    /// A plain `1.30` is a YAML number, which would read as `1.3`.
+    #[cfg(feature = "config")]
+    #[test]
+    fn an_unquoted_hint_oid_is_an_error_naming_the_field() {
+        let yaml = |oid: &str| format!("name: m\nsnmp:\n  oid: {oid}\n  type: gauge32\n");
+        let quoted: MetricSpec = serde_yaml_ng::from_str(&yaml("\"1.30\"")).expect("quoted parses");
+        assert_eq!(quoted.snmp.expect("hint").oid, "1.30");
+        let err = serde_yaml_ng::from_str::<MetricSpec>(&yaml("1.30")).expect_err("a number");
+        let shown = err.to_string();
+        assert!(shown.contains("snmp.oid"), "names the field: {shown}");
+        assert!(shown.contains("quote it"), "says to quote it: {shown}");
     }
 
     #[cfg(feature = "config")]

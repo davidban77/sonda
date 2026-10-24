@@ -858,14 +858,10 @@
               }
             },
             "oids": {
-              "description": "OID template per metric name, such as\n`\"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"`: the object's OID, then one\n`{label}` placeholder per index arc. Every metric the entry emits\nneeds one.",
+              "description": "OID template per metric name, such as\n`\"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"`: the object's OID, then one\n`{label}` placeholder per index arc, or `.0` for a scalar. Every\nmetric the entry emits needs one. Each is a string; a YAML number is\nan error.",
               "type": "object",
               "additionalProperties": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ]
+                "type": "string"
               },
               "default": {}
             },
@@ -3656,12 +3652,8 @@
       "type": "object",
       "properties": {
         "oid": {
-          "description": "OID template for the metric, as an `oids:` entry of the snmp encoder\ntakes it: the object's OID, then one `{label}` placeholder per index\narc.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "description": "OID template for the metric, as an `oids:` entry of the snmp encoder\ntakes it: the object's OID, then one `{label}` placeholder per index\narc, or `.0` for a scalar. A string; a YAML number is an error.",
+          "type": "string"
         },
         "type": {
           "description": "Value type for the metric, as a `types:` entry of the snmp encoder\ntakes it.",

@@ -642,8 +642,12 @@ src/
     │                      optional (gnmi feature) deserialize_with: a string, number or
     │                      boolean read as text. The ONE rule for text fields the schema
     │                      widens (gnmi enum labels, gnmi_target listen and sample_floor,
-    │                      snmp_agent listen, the snmp encoder's agent_label, oids: values
-    │                      and drop_labels items).
+    │                      snmp_agent listen, the snmp encoder's agent_label and
+    │                      drop_labels items). OidText is its exception, for OID fields
+    │                      (oids: values, the snmp.oid hint): a string only, read through
+    │                      deserialize_any so an unquoted 1.30 is an error naming the
+    │                      field rather than 1.3; their schema positions carry
+    │                      x-sonda-no-widening, which schema.rs honours and strips.
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
