@@ -901,6 +901,8 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 - Schedule logic: test gap window math, burst window transitions, rate calculation.
 - Use `#[cfg(test)] mod tests` at the bottom of each file.
 - Seed all RNG-based generators for deterministic tests.
+- The lib test binary has one counting allocator, installed in `lib.rs` (`crate::counting`,
+  `tests/common/alloc.rs`); integration binaries install their own.
 
 ### Parametrized tests — use `rstest`
 

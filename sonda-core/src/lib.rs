@@ -317,6 +317,17 @@ pub enum RuntimeError {
     },
 }
 
+/// The lib test binary's one allocator: the system allocator, counting a
+/// thread's allocations only inside a [`counting::count_allocations`]
+/// window. Integration test binaries install their own.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: counting::CountingAlloc = counting::CountingAlloc;
+
+#[cfg(test)]
+#[path = "../tests/common/alloc.rs"]
+pub mod counting;
+
 #[cfg(test)]
 mod tests {
     use super::*;

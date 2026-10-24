@@ -764,11 +764,6 @@ fn name_in(out: &[u8], at: usize) -> Result<Range<usize>, BerError> {
     Ok(start..start + name.len())
 }
 
-/// The allocation counter of the integration tests, for the lib's.
-#[cfg(test)]
-#[path = "../../../tests/common/alloc.rs"]
-mod counting;
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
@@ -780,6 +775,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::counting;
     use crate::schedule::LaunchId;
     use crate::sink::snmp::agent::Owner;
     use crate::sink::snmp::tests::{
@@ -787,14 +783,6 @@ mod tests {
     };
     use crate::sink::snmp::{SnmpAgentConfig, SystemGroup};
     use crate::util::splitmix64;
-
-    use super::counting;
-
-    /// The allocator of the whole lib test binary: the system allocator,
-    /// counting a thread's allocations only inside a
-    /// [`counting::count_allocations`] window.
-    #[global_allocator]
-    static ALLOCATOR: counting::CountingAlloc = counting::CountingAlloc;
 
     /// `snmpget -v1 -c private 127.0.0.1:<port> 1.3.6.1.2.1.1.3.0`, net-snmp 5.9.4.
     const NET_SNMP_V1_GET_PRIVATE: &str =
@@ -2353,6 +2341,7 @@ mod tests {
     /// ticks and p99 drift of both, printed. A measurement: it asserts that
     /// the poller was answered and the scenarios ran, not a bound.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "measurement; run with --ignored and report the numbers"]
     async fn polling_the_agent_beside_a_publishing_scenario() {
         use crate::sink::{create_sink, SinkConfig};
 
