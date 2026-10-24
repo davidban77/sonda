@@ -140,6 +140,10 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
                 bail!("--encoder gnmi requires the gnmi feature: cargo build -F gnmi")
             }
         }
+        "snmp" => bail!(
+            "--encoder snmp cannot be set from the command line: the snmp encoder needs an \
+             OID template per metric, so it is configured under encoder: in the scenario file"
+        ),
         other => bail!(
             "unknown encoder {:?}: expected one of {}",
             other,
@@ -264,6 +268,10 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 bail!("--sink gnmi_target requires the gnmi feature: cargo build -F gnmi")
             }
         }
+        "snmp_agent" => {
+            let _ = endpoint;
+            bail!("--sink snmp_agent cannot be created in this build")
+        }
         // Sinks with no flag form; a kind added to `SinkConfig` without an
         // arm above reaches "unknown sink" instead.
         kind @ ("memory" | "kafka") => bail!(
@@ -377,6 +385,25 @@ mod tests {
                 assert!(!msg.contains("unknown encoder"), "{kind}: {msg}");
             }
         }
+    }
+
+    #[test]
+    fn parse_encoder_snmp_points_at_the_scenario_file() {
+        let err = parse_encoder_config("snmp").expect_err("snmp needs OID templates");
+        let msg = format!("{err}");
+        assert!(msg.contains("--encoder snmp"), "got: {msg}");
+        assert!(msg.contains("scenario file"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_sink_snmp_agent_is_refused() {
+        let err = parse_sink_override("snmp_agent", Some("127.0.0.1:1161"))
+            .expect_err("snmp_agent cannot be created in this build");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--sink snmp_agent cannot be created"),
+            "got: {msg}"
+        );
     }
 
     #[test]
