@@ -114,8 +114,9 @@ impl SnmpValueType {
     /// [`ValueError::OutOfRange`] when the rounded value is outside the
     /// `i32` range (`integer`), the `u32` range (`counter32`, `gauge32`,
     /// `unsigned32`, `timeticks`) or the `u64` range (`counter64`). `string`
-    /// writes the shortest decimal text that round-trips the `f64`. On an
-    /// error nothing is written.
+    /// writes the shortest decimal text that round-trips the `f64`, and NaN
+    /// and the infinities as `NaN`, `inf` and `-inf`. On an error nothing is
+    /// written.
     pub(crate) fn write(self, value: f64, out: &mut Vec<u8>) -> Result<(), ValueError> {
         use super::ber;
 
@@ -161,6 +162,7 @@ fn format_f64(value: f64, text: &mut [u8; F64_TEXT_CAPACITY]) -> Result<&[u8], V
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "config", feature = "snmp"))]
     use rstest::rstest;
 
     #[test]
@@ -283,6 +285,17 @@ mod tests {
             written(ty, value),
             Err(ValueError::NonFinite { .. })
         ));
+    }
+
+    #[cfg(feature = "snmp")]
+    #[rstest]
+    #[case::nan(f64::NAN, "NaN")]
+    #[case::infinity(f64::INFINITY, "inf")]
+    #[case::negative_infinity(f64::NEG_INFINITY, "-inf")]
+    fn string_writes_non_finite_values_as_text(#[case] value: f64, #[case] text: &str) {
+        let mut expected = vec![0x04, text.len() as u8];
+        expected.extend_from_slice(text.as_bytes());
+        assert_eq!(written(SnmpValueType::String, value), Ok(expected));
     }
 
     #[cfg(feature = "snmp")]

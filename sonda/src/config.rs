@@ -268,10 +268,7 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 bail!("--sink gnmi_target requires the gnmi feature: cargo build -F gnmi")
             }
         }
-        "snmp_agent" => {
-            let _ = endpoint;
-            bail!("--sink snmp_agent cannot be created in this build")
-        }
+        "snmp_agent" => bail!("--sink snmp_agent cannot be created in this build"),
         // Sinks with no flag form; a kind added to `SinkConfig` without an
         // arm above reaches "unknown sink" instead.
         kind @ ("memory" | "kafka") => bail!(

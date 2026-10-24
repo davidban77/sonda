@@ -271,6 +271,16 @@ pub(crate) enum OidTemplateError {
     },
 }
 
+/// One arc of an [`OidTemplate`], in order: a literal number or a
+/// placeholder's label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TemplateArc<'a> {
+    /// A literal arc, such as each arc of the object or a scalar's `0`.
+    Literal(u32),
+    /// A placeholder, by the label it names.
+    Label(&'a str),
+}
+
 /// Why a template could not be rendered for an event.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum RenderError {
@@ -383,6 +393,25 @@ impl OidTemplate {
     pub(crate) fn index_arcs(&self) -> u8 {
         // parse() caps the arcs at MAX_ARCS (128) and the object has two.
         self.placeholders.len().max(1) as u8
+    }
+
+    /// Every arc of the instance OIDs this template renders, in order: the
+    /// object's arcs, then the placeholders, or a scalar's literal `0`.
+    pub(crate) fn arcs(&self) -> impl Iterator<Item = TemplateArc<'_>> {
+        let scalar_zero = self
+            .placeholders
+            .is_empty()
+            .then_some(TemplateArc::Literal(0));
+        self.object
+            .arcs()
+            .iter()
+            .map(|arc| TemplateArc::Literal(*arc))
+            .chain(scalar_zero)
+            .chain(
+                self.placeholders
+                    .iter()
+                    .map(|name| TemplateArc::Label(name)),
+            )
     }
 
     /// Whether an instance OID this template can render lies under
@@ -731,6 +760,21 @@ mod tests {
             )
             .expect("renders");
         assert_eq!(out, [1, 3, 6, 1, 4, 1, 8072, 9999, 2, 1, 7, 3, 4294967295]);
+    }
+
+    #[test]
+    fn arcs_list_the_object_then_the_index() {
+        use TemplateArc::{Label, Literal};
+        let column = template("1.3.6.{a}.{b}");
+        let scalar = template("1.3.6.0");
+        assert_eq!(
+            column.arcs().collect::<Vec<_>>(),
+            [Literal(1), Literal(3), Literal(6), Label("a"), Label("b")]
+        );
+        assert_eq!(
+            scalar.arcs().collect::<Vec<_>>(),
+            [Literal(1), Literal(3), Literal(6), Literal(0)]
+        );
     }
 
     #[test]

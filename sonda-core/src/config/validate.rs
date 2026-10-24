@@ -578,6 +578,94 @@ pub(crate) fn reject_snmp_for(
 #[cfg(feature = "snmp")]
 const SNMP_SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
 
+/// The arcs one position of an OID template can render for an entry.
+#[cfg(feature = "snmp")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ArcSet {
+    /// Every `u32`.
+    Any,
+    /// These arcs and no others.
+    Only(std::collections::BTreeSet<u32>),
+}
+
+#[cfg(feature = "snmp")]
+impl ArcSet {
+    /// The arcs a label renders as, from the values the entry gives it: its
+    /// static value or each `values:` entry that is an
+    /// [`index_arc`](crate::encoder::snmp::oid::index_arc); every `u32` for
+    /// a `counter` dynamic label or `counter` spike; for a `random` spike,
+    /// the values outside its window; none for a label the entry does not
+    /// carry.
+    fn of_label(set: Option<super::LabelValueSet>) -> Self {
+        use super::LabelValueSet;
+        use crate::encoder::snmp::oid::index_arc;
+        match set {
+            None => Self::Only(Default::default()),
+            Some(LabelValueSet::Static(value)) => {
+                Self::Only(index_arc(&value).into_iter().collect())
+            }
+            Some(LabelValueSet::Values(values)) => {
+                Self::Only(values.iter().filter_map(|v| index_arc(v)).collect())
+            }
+            Some(LabelValueSet::Counter { .. } | LabelValueSet::SpikeCounter { .. }) => Self::Any,
+            Some(LabelValueSet::RandomShape { outside, .. }) => {
+                Self::of_label(outside.map(|set| *set))
+            }
+        }
+    }
+
+    /// The smallest arc in both sets, if they share one.
+    fn common(&self, other: &Self) -> Option<u32> {
+        match (self, other) {
+            (Self::Any, Self::Any) => Some(0),
+            (Self::Any, Self::Only(arcs)) | (Self::Only(arcs), Self::Any) => arcs.first().copied(),
+            (Self::Only(a), Self::Only(b)) => a.intersection(b).next().copied(),
+        }
+    }
+}
+
+/// Rule 6 of [`validate_snmp_encoder`] for one pair of templates: an OID
+/// both can render for the entry `base`, with the label values that render
+/// it, or `None`.
+///
+/// The two collide when they have the same number of arcs and the arcs at
+/// every position can be equal: two literals when they are the same number,
+/// a placeholder and a literal when the literal is among the arcs the
+/// placeholder's label renders as for this entry ([`ArcSet::of_label`]),
+/// two placeholders when their labels share an arc. Templates of different
+/// lengths never collide. The OID returned takes the smallest shared arc at
+/// each position. O(arcs × values).
+#[cfg(feature = "snmp")]
+fn snmp_collision(
+    own: &crate::encoder::snmp::oid::OidTemplate,
+    other: &crate::encoder::snmp::oid::OidTemplate,
+    base: &super::BaseScheduleConfig,
+) -> Option<(String, Vec<String>)> {
+    use crate::encoder::snmp::oid::TemplateArc;
+    let set = |arc: TemplateArc<'_>| match arc {
+        TemplateArc::Literal(arc) => ArcSet::Only([arc].into()),
+        TemplateArc::Label(label) => ArcSet::of_label(base.label_value_set(label)),
+    };
+    if own.arcs().count() != other.arcs().count() {
+        return None;
+    }
+    let mut oid: Vec<String> = Vec::new();
+    let mut values: Vec<String> = Vec::new();
+    for (a, b) in own.arcs().zip(other.arcs()) {
+        let arc = set(a).common(&set(b))?;
+        oid.push(arc.to_string());
+        for side in [a, b] {
+            if let TemplateArc::Label(label) = side {
+                let value = format!("{label} is {arc}");
+                if !values.contains(&value) {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    Some((oid.join("."), values))
+}
+
 /// Validate a metrics entry's `snmp` encoder against the entry.
 ///
 /// The rules, in this order, each failure a [`SondaError::Config`] with its
@@ -608,10 +696,10 @@ const SNMP_SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
 ///    template, the `agent_label`, or in `drop_labels`
 ///    ([`uncovered_label`](crate::encoder::snmp::uncovered_label)), so no
 ///    two series differing only in a label share one OID. O(keys).
-/// 6. **No collision.** No other `oids:` metric's template has the same
-///    text as this metric's once each placeholder whose label has a static
-///    value (and no dynamic or spike value) is replaced by that value.
-///    O(metrics).
+/// 6. **No collision.** No other `oids:` metric's template can render an
+///    OID this metric's template can render for this entry
+///    ([`snmp_collision`]): the two have the same number of arcs, and at
+///    every position their arcs can be equal. O(metrics × arcs × values).
 ///
 /// Last, the **system group**: no `oids:` template can render an OID under
 /// `1.3.6.1.2.1.1`, which the agent serves itself
@@ -621,7 +709,7 @@ const SNMP_SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
 #[cfg(feature = "snmp")]
 pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> {
     use super::{LabelSource, LabelValueSet};
-    use crate::encoder::snmp::oid::{index_arc, Oid, OidTemplate};
+    use crate::encoder::snmp::oid::{index_arc, Oid};
     use crate::encoder::snmp::{uncovered_label, SnmpEncoder};
     use crate::encoder::EncoderConfig;
 
@@ -739,24 +827,21 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     }
 
     // 6. No collision within the entry.
-    let substituted = |template: &OidTemplate| {
-        let mut text = template.to_string();
-        for placeholder in template.placeholders() {
-            if let Some(LabelValueSet::Static(value)) = config.base.label_value_set(placeholder) {
-                text = text.replace(&format!("{{{placeholder}}}"), &value);
-            }
-        }
-        text
-    };
-    let own = substituted(template);
     for other in cfg.oids.keys().collect::<std::collections::BTreeSet<_>>() {
         if other == name {
             continue;
         }
-        if substituted(encoder.template_for(other)?) == own {
+        if let Some((oid, values)) =
+            snmp_collision(template, encoder.template_for(other)?, &config.base)
+        {
+            let when = if values.is_empty() {
+                String::new()
+            } else {
+                format!(" when {}", values.join(" and "))
+            };
             return Err(invalid(format!(
-                "snmp OID templates of metrics {name:?} and {other:?} both render {own} for \
-                 this entry; give each metric its own column"
+                "snmp OID templates of metrics {name:?} and {other:?} both render {oid} for \
+                 this entry{when}; give each metric its own column"
             )));
         }
     }
@@ -4903,7 +4988,21 @@ generator:
             set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.0"); },
         "metrics \"ifHCInOctets\" and \"ifHCOutOctets\" both render 1.3.6.1.2.1.31.1.1.1.6.0 for this entry")]
     #[case::r6_copied_template(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"),
-        "both render 1.3.6.1.2.1.31.1.1.1.6.1")]
+        "both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry when ifIndex is 1")]
+    // 6, arc-wise: a dynamic value, a counter and a shared static value each meet the other arc.
+    #[case::r6_dynamic_value_meets_a_literal(|c: &mut ScenarioConfig| { c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex",
+            DynamicLabelStrategy::ValuesList { values: vec!["0".to_string(), "1".to_string()] })]);
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.0"); },
+        "both render 1.3.6.1.2.1.31.1.1.1.6.0 for this entry when ifIndex is 0")]
+    #[case::r6_counter_meets_any_literal(|c: &mut ScenarioConfig| { set_label(c, "slot", "0");
+            c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some(""), 48))]);
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{slot}");
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.2.1.7.0"); },
+        "both render 1.3.6.1.4.1.8072.9999.2.1.7.0 for this entry when ifIndex is 7 and slot is 0")]
+    #[case::r6_placeholders_share_a_value(|c: &mut ScenarioConfig| { set_label(c, "slot", "1");
+            snmp_cfg(c).drop_labels.push("slot".to_string());
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{slot}"); },
+        "both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry when ifIndex is 1 and slot is 1")]
     // The literal part parses as an OID, and nothing renders under the system group.
     #[case::r2_oid_of_one_arc(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.{ifIndex}"),
         "oids.ifHCOutOctets: OID template \"1.{ifIndex}\": OID \"1\" has one arc")]
@@ -4945,6 +5044,13 @@ generator:
             set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.{slot}.{ifIndex}"); })]
     #[case::above_system_group_short(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.{x}"))]
     #[case::scalar_beside_system_group(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.0"))]
+    #[case::r6_dynamic_values_miss_the_literal(|c: &mut ScenarioConfig| { c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex",
+            DynamicLabelStrategy::ValuesList { values: vec!["1".to_string(), "2".to_string()] })]);
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.0"); })]
+    #[case::r6_placeholders_with_disjoint_values(|c: &mut ScenarioConfig| { set_label(c, "slot", "2");
+            snmp_cfg(c).drop_labels.push("slot".to_string());
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{slot}"); })]
+    #[case::r6_templates_of_different_lengths(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.1.0"))]
     fn snmp_validation_accepts(#[case] change: fn(&mut ScenarioConfig)) {
         let mut config = snmp_config();
         change(&mut config);

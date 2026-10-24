@@ -226,14 +226,16 @@ src/
 │   │   │                   trailing {label} arcs, or a scalar's literal .0 (a template
 │   │   │                   with no placeholder must end in .0; its object() excludes it
 │   │   │                   and index_arcs() is 1), object()/index_arcs()/placeholders()/
-│   │   │                   render()/can_render_under() (the system-group rule);
+│   │   │                   render()/arcs() (TemplateArc: Literal or Label, in order)/
+│   │   │                   can_render_under() (the system-group rule);
 │   │   │                   {x:str} is Unsupported; at most 128 arcs.
 │   │   └── value.rs    ←   SnmpValueType (integer, counter32, counter64, gauge32 = default,
 │   │                       unsigned32, timeticks, string; non_exhaustive). Compiled WITHOUT
 │   │                       the snmp feature too, through an inline `snmp` module in
 │   │                       encoder/mod.rs, as gnmi's value.rs is. write() (snmp only)
 │   │                       rounds halves away from zero and refuses non-finite or
-│   │                       out-of-range values (i32 / u32 / u64) before writing anything.
+│   │                       out-of-range values (i32 / u32 / u64) before writing anything;
+│   │                       string writes the shortest round-trip text, NaN/inf/-inf too.
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent { listen } (snmp
@@ -658,8 +660,10 @@ src/
                            an oids: entry for the metric, placeholders are static or dynamic
                            labels, every value they take is an index_arc (counters checked at
                            the first and last value, random spikes refused), coverage, no two
-                           metrics rendering one OID after static substitution, nothing under
-                           the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
+                           metrics able to render one OID (snmp_collision: same arc count and
+                           every position can match; a label's values are its static value or
+                           values list, every u32 for a counter; O(arcs x values) per pair),
+                           nothing under the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
                            and the snmp_agent sink on histogram, summary and logs entries,
                            validate_cardinality_spike_config, validate_dynamic_label_config,
                            validate_histogram_config, validate_summary_config,

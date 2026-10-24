@@ -393,7 +393,12 @@ A scenario file is refused, with the metric and the label named, when any of the
 - Every placeholder names a key of the entry's `labels` or `dynamic_labels`. A `cardinality_spikes` label cannot be a placeholder: events carry it only while its window is open.
 - Every value a placeholder's label can take is an arc: its static value, every `values:` entry of a dynamic label, and every value of a `counter` dynamic label or `counter` cardinality spike on it. A counter's values are its prefix followed by a number, and the default prefix (`<label>_`) is not a number, so set `prefix: ""`. A `random` cardinality spike on a placeholder's label is refused.
 - Every label key of the entry, from `labels`, `dynamic_labels` and `cardinality_spikes`, is a placeholder, the `agent_label`, or listed in `drop_labels`. Otherwise series that differ only in that label would share one OID.
-- No two metrics render the same OID for the entry. A scalar whose instance a column also renders, such as `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` with `ifIndex: 0`, is refused.
+- No two metrics can render the same OID for the entry. Two templates can when they have the same number of arcs and the arcs at every position can be equal:
+    - two numbers when they are the same number;
+    - a number and a placeholder when the number is one of the values the placeholder's label takes;
+    - two placeholders when their labels share a value.
+
+    A label's values are its static value, or every entry of a `values` dynamic label. A `counter` dynamic label or `counter` cardinality spike counts as every number, a `random` cardinality spike as only the values outside its window, and a label the entry does not have as none. `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` is refused when `ifIndex` is `0` or takes `0` among its `values`; the refusal names both metrics, the OID and the label values that render it.
 
 Histogram, summary and logs entries refuse both this encoder and the `snmp_agent` sink.
 
@@ -409,7 +414,7 @@ Histogram, summary and logs entries refuse both this encoder and the `snmp_agent
 | `timeticks` | TimeTicks, in hundredths of a second | 0 to 4294967295 |
 | `string` | OCTET STRING | The shortest decimal text that reads back as the same value. |
 
-Every type but `string` rounds the value to the nearest integer, halves away from zero. A value that is not finite, or that rounds outside the type's range, is rejected. The encoder does not wrap a counter: give the generator a `max`, as the `step` generator takes, for a counter that wraps.
+Every type but `string` rounds the value to the nearest integer, halves away from zero. A value that is not finite, or that rounds outside the type's range, is rejected. `string` writes a value that is not finite as its text: `NaN`, `inf` or `-inf`. The encoder does not wrap a counter: give the generator a `max`, as the `step` generator takes, for a counter that wraps.
 
 A rejected event is skipped and counted in the scenario's errors, and the scenario keeps running.
 

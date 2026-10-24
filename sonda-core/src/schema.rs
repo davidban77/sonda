@@ -168,6 +168,10 @@ fn require_metrics_or_extends(value: &mut serde_json::Value) {
     );
 }
 
+/// The schema keyword a field sets to keep its position out of
+/// [`widen_scalar_strings`]; removed from the published schema.
+const NO_WIDENING: &str = "x-sonda-no-widening";
+
 /// Let every string-typed position also accept a YAML number or boolean.
 ///
 /// This is not a convenience. `serde_yaml_ng` coerces any plain scalar into a
@@ -195,10 +199,6 @@ fn require_metrics_or_extends(value: &mut serde_json::Value) {
 /// `#[schemars(extend("x-sonda-no-widening" = true))]` when its parser reads
 /// strings only, because a numeric reading would change the value: an OID
 /// such as `1.30` read as a number is `1.3`.
-/// The schema keyword a field sets to keep its position out of
-/// [`widen_scalar_strings`]; removed from the published schema.
-const NO_WIDENING: &str = "x-sonda-no-widening";
-
 fn widen_scalar_strings(value: &mut serde_json::Value) {
     use serde_json::Value as J;
 

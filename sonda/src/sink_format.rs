@@ -58,6 +58,8 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::OtlpGrpc { endpoint, .. } => Some(endpoint.clone()),
         #[cfg(feature = "gnmi")]
         SinkConfig::GnmiTarget(cfg) => Some(cfg.listen.clone()),
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpAgent { listen } => Some(listen.clone()),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled {} | SinkConfig::LokiDisabled {} => {
             Some("disabled".to_string())
@@ -70,6 +72,8 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::OtlpGrpcDisabled {} => Some("disabled".to_string()),
         #[cfg(not(feature = "gnmi"))]
         SinkConfig::GnmiTargetDisabled {} => Some("disabled".to_string()),
+        #[cfg(not(feature = "snmp"))]
+        SinkConfig::SnmpAgentDisabled {} => Some("disabled".to_string()),
         // `stdout`, `memory` without capture, and any variant with no arm.
         _ => None,
     };
@@ -182,13 +186,22 @@ mod tests {
         assert_eq!(display, "gnmi_target (disabled)");
     }
 
-    /// `snmp_agent` has no arm here, so with or without sonda-core's `snmp`
-    /// feature it renders as its name.
-    #[cfg(feature = "config")]
+    #[cfg(feature = "snmp")]
     #[test]
-    fn snmp_agent_renders_as_its_name() {
-        let s: SinkConfig = serde_yaml_ng::from_str("type: snmp_agent\nlisten: 0.0.0.0:1161")
-            .expect("an snmp_agent sink parses in every build");
-        assert_eq!(sink_display(&s), "snmp_agent");
+    fn snmp_agent_includes_listen_address_in_parens() {
+        let s = SinkConfig::SnmpAgent {
+            listen: "0.0.0.0:1161".to_string(),
+        };
+        let display = sink_display(&s);
+        assert!(!display.contains("unknown ("), "got {display}");
+        assert_eq!(display, "snmp_agent (0.0.0.0:1161)");
+    }
+
+    #[cfg(not(feature = "snmp"))]
+    #[test]
+    fn snmp_agent_disabled_renders_disabled_marker() {
+        let display = sink_display(&SinkConfig::SnmpAgentDisabled {});
+        assert!(!display.contains("unknown ("), "got {display}");
+        assert_eq!(display, "snmp_agent (disabled)");
     }
 }
