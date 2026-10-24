@@ -592,29 +592,58 @@ src/
 │   │   │                   Bytes the agent dropped a publish ago and reuses its allocation:
 │   │   │                   a steady publish allocates nothing.
 │   │   │                   Drop releases each instance once.
-│   │   └── agent.rs    ←   SnmpAgent: RwLock<MibTable { slots: BTreeMap<Oid, Slot { varbind,
-│   │                       owner, publishers }>, objects: BTreeSet<Oid> }> (OID order = walk
-│   │                       order) and the system group: seven VarBinds 1.3.6.1.2.1.1.N.0
-│   │                       rendered at bind from AgentSettings, sysUpTime made on each read
-│   │                       (uptime_ticks: centiseconds since bind, wrapping). The objects set
-│   │                       starts with the system group's seven and is never pruned.
-│   │                       publish(owner, oid, varbind, first) under the write lock: a
-│   │                       foreign owner, or a new OID under 1.3.6.1.2.1.1, is a ConfigError;
-│   │                       first counts a publisher; release() is -1 and the slot leaves at
-│   │                       zero. get(): system instance or slot -> Lookup::Value(VarBind);
-│   │                       else a registered object equal to or a prefix of the OID ->
-│   │                       NoSuchInstance (prefixes probed through Borrow<[u32]>, no
-│   │                       allocation); else NoSuchObject. next_after(): the smallest OID
-│   │                       strictly greater across slots and the system group. The read side
-│   │                       has no caller outside tests. bind() binds a tokio UdpSocket (a
-│   │                       refused permission names the port and CAP_NET_BIND_SERVICE) and
-│   │                       spawns the responder, which holds the agent weakly, owns the
-│   │                       socket and a ClosedOnDrop guard (the socket drops first), decodes
-│   │                       each datagram with Message::decode, counts it under its PDU type
-│   │                       in RequestCounters (malformed otherwise) and answers none.
-│   │                       Dropping the last Arc cancels the token; wait() resolves once
-│   │                       the socket is closed. Its ListenerTarget SocketState is a
-│   │                       watch::Receiver<bool> (true while the socket is open).
+│   │   ├── agent.rs    ←   SnmpAgent: RwLock<MibTable { slots: BTreeMap<Oid, Slot { varbind,
+│   │   │                   owner, publishers }>, objects: BTreeSet<Oid> }> (OID order = walk
+│   │   │                   order) and the system group: seven VarBinds 1.3.6.1.2.1.1.N.0
+│   │   │                   rendered at bind from AgentSettings, sysUpTime made on each read
+│   │   │                   (uptime_ticks: centiseconds since bind, wrapping) into a reused
+│   │   │                   Mutex<Vec<u8>>. The objects set starts with the system group's
+│   │   │                   seven and is never pruned.
+│   │   │                   publish(owner, oid, varbind, first) under the write lock: a
+│   │   │                   foreign owner, or a new OID under 1.3.6.1.2.1.1, is a ConfigError;
+│   │   │                   first counts a publisher; release() is -1 and the slot leaves at
+│   │   │                   zero. The read side borrows under the READ lock and allocates
+│   │   │                   nothing: lookup(&[u32], f) calls f with Found::Value(&VarBind) for
+│   │   │                   a system instance or slot; else NoSuchInstance when a registered
+│   │   │                   object equals or prefixes the OID (probed through Borrow<[u32]>);
+│   │   │                   else NoSuchObject. bulk(start: &[u32], max, emit) calls emit with
+│   │   │                   each instance after start in OID order, slots and system group
+│   │   │                   merged, at most max, until emit returns false, under one read
+│   │   │                   lock. get()/next_after() are their owned forms, cfg(test) only.
+│   │   │                   RequestCounters (#[non_exhaustive]): get, get_next, get_bulk,
+│   │   │                   set_refused, malformed, wrong_community, too_big,
+│   │   │                   unsupported_version, send_errors; count(Counter) adds one.
+│   │   │                   warn_too_big() logs at most once per WARN_INTERVAL (60 s, tokio
+│   │   │                   clock) per agent. bind() binds a tokio UdpSocket (a refused
+│   │   │                   permission names the port and CAP_NET_BIND_SERVICE) and spawns
+│   │   │                   responder::serve with the agent held weakly, beside a
+│   │   │                   ClosedOnDrop guard declared first so the socket drops before the
+│   │   │                   agent reads as stopped. Dropping the last Arc cancels the token;
+│   │   │                   wait() resolves once the socket is closed. Its ListenerTarget
+│   │   │                   SocketState is a watch::Receiver<bool> (true while it is open).
+│   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
+│   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
+│   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every
+│   │                       VarBind checked; negative bulk counts read as 0). answer(req,
+│   │                       agent, budget, scratch, out) is pure but for the agent's counters
+│   │                       and warn: version (V1 dropped, unsupported_version), then the
+│   │                       community (constant_time_eq; wrong_community), then the PDU.
+│   │                       Responses are written into out with write_message, each varbind
+│   │                       checked against message_len before it is appended: GET/GETNEXT/
+│   │                       SET that do not fit become tooBig with an empty list (too_big +
+│   │                       warn); GETBULK is trimmed. GETBULK: non-repeaters as GETNEXT,
+│   │                       then rounds; a lone repeater's rounds are one bulk() call, several
+│   │                       repeaters go round-robin with cursors that are ranges of out;
+│   │                       stops after a round that is all endOfMibView. SET echoes its
+│   │                       varbinds with notWritable (17) at index 1; Other(_) is malformed.
+│   │                       Scratch (name arcs, cursors) and out are reused, so a steady
+│   │                       request allocates nothing (asserted on a 10-varbind GETBULK).
+│   │                       respond() = decode + answer, a v3 decode error counted as
+│   │                       unsupported_version, any other as malformed. serve(socket,
+│   │                       Weak<SnmpAgent>, cancel): recv buffer 65 535, one out buffer
+│   │                       reserved to max_message_size, sends to the datagram's source,
+│   │                       counts send errors; a wrong community warns once per peer IP
+│   │                       per minute (PeerWarnings, ≤ 1024 IPs), with its length only.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
@@ -747,7 +776,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes` and `runtime` for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent and its UDP socket. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes` and `runtime` for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv2c responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:
