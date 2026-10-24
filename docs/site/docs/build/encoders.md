@@ -11,7 +11,7 @@ Switch the encoder below to see the same scenario — one sine metric with two l
 
 <div class="sonda-livegen" data-gen="encoders" markdown="0"></div>
 
-The three formats offered here are the ones compiled into the browser build. `remote_write`, `otlp` and `gnmi` are feature-gated and are documented below with static examples for that reason; the sections that follow cover every encoder, including those.
+The three formats offered here are the ones compiled into the browser build. `remote_write`, `otlp`, `gnmi` and `snmp` are feature-gated and are documented below with static examples for that reason; the sections that follow cover every encoder, including those.
 
 ## prometheus_text
 
@@ -319,6 +319,101 @@ A rejected event is skipped and counted in the scenario's errors, and the scenar
 
 This encoder accepts metrics only. Log events are not supported.
 
+## snmp
+
+SNMP publish records. Each metric event becomes one BER-encoded `VarBind`:
+
+- **OID:** the instance OID, rendered from the metric's template.
+- **Value:** the metric's value as its SNMP type.
+
+A record carries no timestamp: an SNMP agent answers each poll with the latest value it holds.
+
+Pair this encoder with the `snmp_agent` sink. Each takes only the other.
+
+!!! note
+    This encoder requires the `snmp` Cargo feature flag.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `oids` | map | yes, an entry for every metric | -- | OID template per metric, keyed by exact metric name. See [OID templates](#oid-templates). |
+| `types` | map | no | `{}` | Per-metric value type keyed by exact metric name. Unlisted metrics are `gauge32`. See [SNMP value types](#snmp-value-types). |
+| `agent_label` | string | no | `"device"` | Label that names the device. It needs no placeholder and is never part of an OID. |
+| `drop_labels` | list of strings | no | `[]` | Labels deliberately left out of the OID. |
+
+```yaml title="SNMP encoder"
+encoder:
+  type: snmp
+  agent_label: device
+  oids:
+    ifHCInOctets: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"
+    ifHCOutOctets: "1.3.6.1.2.1.31.1.1.1.10.{ifIndex}"
+    ifOperStatus: "1.3.6.1.2.1.2.2.1.8.{ifIndex}"
+    ifInErrors: "1.3.6.1.2.1.2.2.1.14.{ifIndex}"
+    ifOutErrors: "1.3.6.1.2.1.2.2.1.20.{ifIndex}"
+  types:
+    ifHCInOctets: counter64
+    ifHCOutOctets: counter64
+    ifOperStatus: integer
+    ifInErrors: counter32
+    ifOutErrors: counter32
+  drop_labels: [job]
+```
+
+With that block, `ifHCInOctets{device="rtr-core-01", ifIndex="3", job="snmp"}` is the instance `1.3.6.1.2.1.31.1.1.1.6.3` with a Counter64 value. `device` is the agent label and `job` is dropped, so neither changes the OID.
+
+### OIDs and types from a pack
+
+A pack's metrics can carry an `snmp:` hint, an OID template and a value type:
+
+```yaml title="A pack metric with an SNMP hint"
+# sonda:static - a pack fragment, not a scenario
+metrics:
+  - name: ifHCInOctets
+    generator: { type: step, start: 0.0, step_size: 125000.0 }
+    snmp:
+      oid: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"
+      type: counter64
+```
+
+When a pack entry's encoder is `snmp`, each hint fills `oids:` and `types:` for its metric. Your entries win: an `oids:` entry for a metric replaces its hint's OID, a `types:` entry its hint's type, each on its own. Under any other encoder the hints are not used.
+
+### OID templates
+
+- A template is the object's OID in dotted decimal, without a leading dot, followed by one `{label}` placeholder per index arc: `1.3.6.1.2.1.2.2.1.8.{ifIndex}`.
+- Placeholders are the last arcs. A literal arc after a placeholder is an error.
+- The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs.
+- A scalar has no placeholder and ends in `.0`, as in `1.3.6.1.4.1.8072.9999.1.1.0`.
+- A placeholder renders its label's value as one arc. The value must be an unsigned 32-bit integer written in decimal, without a sign or leading zeros: `3`, not `03`. `{label:str}` and any other form are refused.
+- No template may render an OID under `1.3.6.1.2.1.1`, the system group, which the agent serves itself.
+
+A scenario file is refused, with the metric and the label named, when any of these do not hold for an entry:
+
+- Every metric the entry emits has an `oids:` entry, from the encoder block or a pack hint.
+- Every placeholder names a key of the entry's `labels` or `dynamic_labels`. A `cardinality_spikes` label cannot be a placeholder: events carry it only while its window is open.
+- Every value a placeholder's label can take is an arc: its static value, every `values:` entry of a dynamic label, and every value of a `counter` dynamic label or `counter` cardinality spike on it. A counter's values are its prefix followed by a number, and the default prefix (`<label>_`) is not a number, so set `prefix: ""`. A `random` cardinality spike on a placeholder's label is refused.
+- Every label key of the entry, from `labels`, `dynamic_labels` and `cardinality_spikes`, is a placeholder, the `agent_label`, or listed in `drop_labels`. Otherwise series that differ only in that label would share one OID.
+- No two metrics render the same OID for the entry. A template that hard-codes an index the entry's label also gives, such as `1.3.6.1.2.1.31.1.1.1.6.1` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` with `ifIndex: 1`, is refused.
+
+Histogram, summary and logs entries refuse both this encoder and the `snmp_agent` sink.
+
+### SNMP value types
+
+| `types:` entry | BER type | Range |
+|----------------|----------|-------|
+| `gauge32` (default) | Gauge32 | 0 to 4294967295 |
+| `integer` | INTEGER | -2147483648 to 2147483647 |
+| `counter32` | Counter32 | 0 to 4294967295 |
+| `counter64` | Counter64 | 0 to 18446744073709551615 |
+| `unsigned32` | Unsigned32, encoded as Gauge32 | 0 to 4294967295 |
+| `timeticks` | TimeTicks, in hundredths of a second | 0 to 4294967295 |
+| `string` | OCTET STRING | The shortest decimal text that reads back as the same value. |
+
+Every type but `string` rounds the value to the nearest integer, halves away from zero. A value that is not finite, or that rounds outside the type's range, is rejected. The encoder does not wrap a counter: give the generator a `max`, as the `step` generator takes, for a counter that wraps.
+
+A rejected event is skipped and counted in the scenario's errors, and the scenario keeps running.
+
+This encoder accepts metrics entries only.
+
 ## Value precision
 
 The `prometheus_text`, `influx_lp`, and `json_lines` encoders accept an optional `precision` field that controls how many decimal places appear in metric values.
@@ -335,7 +430,7 @@ encoder:
   precision: 2    # 99.60573 becomes 99.61
 ```
 
-The `syslog`, `remote_write`, `otlp`, and `gnmi` encoders do not support `precision`. Syslog encodes log events only, with no numeric values; remote write, OTLP and gNMI use binary protobuf encoding.
+The `syslog`, `remote_write`, `otlp`, `gnmi`, and `snmp` encoders do not support `precision`. Syslog encodes log events only, with no numeric values; remote write, OTLP and gNMI use binary protobuf encoding, and SNMP binary BER.
 
 See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml) for a complete scenario that uses precision with several encoders.
 
@@ -350,3 +445,4 @@ See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/b
 | `remote_write` | yes | no | -- | `remote-write` |
 | `otlp` | yes | yes | -- | `otlp` |
 | `gnmi` | yes | no | -- | `gnmi` |
+| `snmp` | yes | no | -- | `snmp` |

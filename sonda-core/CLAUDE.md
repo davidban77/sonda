@@ -39,15 +39,19 @@ src/
 │                          validate_pack() is the ONE definition of addressability: a metric
 │                          name is unique within a pack, or every spec sharing it declares a
 │                          unique `id:`; names may not contain `.`. It also refuses specs
-│                          sharing a name with different `gnmi:` hints and (gnmi feature) a
-│                          hint path that is not a PathTemplate. An invalid pack does not
+│                          sharing a name with different `gnmi:` or `snmp:` hints, and a
+│                          hint path that is not a PathTemplate (gnmi feature) or a hint
+│                          OID that is not an OidTemplate (snmp feature). An invalid pack does not
 │                          load, so MetricSelector/resolve_selector never meet an ambiguous
 │                          one and do not re-derive the rule.
 │                          MetricSpec.gnmi: Option<GnmiHint { path, value }> (deny_unknown_fields;
 │                          ungated). fold_gnmi_hints() is the ONE fold of hints into a gnmi
 │                          encoder's paths:/values: (an existing entry wins, each map on its
 │                          own; any other encoder unchanged), called by expand_pack and by
-│                          compiler/expand.rs once per pack entry. resolve_override_keys() is the
+│                          compiler/expand.rs once per pack entry. MetricSpec.snmp:
+│                          Option<SnmpHint { oid, type }> and fold_snmp_hints(&mut encoder,
+│                          specs), the same rules for an snmp encoder's oids:/types:, applied
+│                          right after the gnmi fold at both call sites. resolve_override_keys() is the
 │                          ONE definition of override keying — v1 expand_pack and the v2
 │                          compiler both call it, so they cannot drift; it also refuses two
 │                          keys reaching one spec, which addressability alone permits (a
@@ -190,9 +194,48 @@ src/
 │   │   │                   value an element-name placeholder can render to) both apply
 │   │   └── proto.rs    ←   hand-written prost subset of gnmi.proto: Path, Notification,
 │   │                       the Capability, Get and Subscribe request/response messages
+│   ├── snmp/           ← SNMP encoder (feature = "snmp"):
+│   │   ├── mod.rs      ←   SnmpEncoder, SnmpEncoderConfig (deny_unknown_fields; oids:,
+│   │   │                   types:, agent_label "device", drop_labels). Output is a PUBLISH
+│   │   │                   RECORD, not a bare VarBind: one byte (the template's
+│   │   │                   index_arcs, 0 for a scalar; RECORD_HEADER = 1), then a BER
+│   │   │                   VarBind SEQUENCE { OID, value }. The instance OID is rendered
+│   │   │                   once per series and cached as its encoded OBJECT IDENTIFIER
+│   │   │                   (fingerprint, then label-by-label compare, as gnmi's path
+│   │   │                   cache: agent_label and drop_labels are unseen unless
+│   │   │                   referenced); a rejection is cached as its text (one
+│   │   │                   allocation per later event). A value rejection is per event,
+│   │   │                   not cached, and truncates what the record wrote. uncovered_label
+│   │   │                   (free fn over the config) is the ONE coverage rule validation
+│   │   │                   also calls. Metrics only; validation pairs it with the
+│   │   │                   snmp_agent sink both ways.
+│   │   ├── ber.rs      ←   pub(crate) BER subset: Tag, BerError (incl. UnsupportedVersion),
+│   │   │                   definite lengths (write_tlv back-patches, long form above 127),
+│   │   │                   write_i64/write_u64 and the typed writers the value layer uses
+│   │   │                   (write_integer(i32), write_counter32/gauge32/timeticks(u32),
+│   │   │                   write_counter64(u64), write_string), write_oid, write_varbind;
+│   │   │                   Reader, Message::decode (version read first: anything but 0/1
+│   │   │                   is UnsupportedVersion before the community is parsed),
+│   │   │                   VarBinds/VarBind, message_len/write_message. Fixtures are
+│   │   │                   inline constants in its tests, named by tool, flags and version.
+│   │   ├── oid.rs      ←   Oid (Vec<u32>, lexicographic Ord = walk order, ≥ 2 arcs and an
+│   │   │                   encodable first pair, Borrow<[u32]>, BER body helpers);
+│   │   │                   index_arc() is the ONE label-value → arc rule (canonical
+│   │   │                   decimal u32: no sign, no leading zero), applied by render and
+│   │   │                   validation; OidTemplate (pub(crate)): object OID then whole
+│   │   │                   trailing {label} arcs, object()/index_arcs()/placeholders()/
+│   │   │                   render(); {x:str} is Unsupported; at most 128 arcs.
+│   │   └── value.rs    ←   SnmpValueType (integer, counter32, counter64, gauge32 = default,
+│   │                       unsigned32, timeticks, string; non_exhaustive). Compiled WITHOUT
+│   │                       the snmp feature too, through an inline `snmp` module in
+│   │                       encoder/mod.rs, as gnmi's value.rs is. write() (snmp only)
+│   │                       rounds halves away from zero and refuses non-finite or
+│   │                       out-of-range values (i32 / u32 / u64) before writing anything.
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
-│   ├── mod.rs          ← Sink trait + factory
+│   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent { listen } (snmp
+│   │                      feature) / SnmpAgentDisabled {}: validation pairs it with the
+│   │                      snmp encoder; create_sink refuses it with a ConfigError.
 │   ├── stdout.rs       ← BufWriter<Stdout>
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
@@ -592,16 +635,25 @@ src/
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_log_scenario (log_csv_replay rate derivation),
     │                      expand_entry (entry-level wrapper covering both)
-    ├── scalar_text.rs  ← ScalarText (config feature) + required/optional deserialize_with
-    │                      (gnmi feature): a string, number or boolean read as text. The ONE
-    │                      rule for text fields the schema widens (gnmi enum labels,
-    │                      gnmi_target listen and sample_floor).
+    ├── scalar_text.rs  ← ScalarText (config feature) + required (gnmi or snmp feature) and
+    │                      optional (gnmi feature) deserialize_with: a string, number or
+    │                      boolean read as text. The ONE rule for text fields the schema
+    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor,
+    │                      snmp_agent listen, the snmp encoder's agent_label, oids: values
+    │                      and drop_labels items).
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
     │                      Jitter-implying aliases (steady, degradation) set jitter on
     │                      BaseScheduleConfig. Integrated into prepare_entries pipeline.
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
+                           validate_snmp_encoder (snmp feature; from validate_config): pairing,
+                           an oids: entry for the metric, placeholders are static or dynamic
+                           labels, every value they take is an index_arc (counters checked at
+                           the first and last value, random spikes refused), coverage, no two
+                           metrics rendering one OID after static substitution, nothing under
+                           the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
+                           and the snmp_agent sink on histogram, summary and logs entries,
                            validate_cardinality_spike_config, validate_dynamic_label_config,
                            validate_histogram_config, validate_summary_config,
                            validate_distribution_config (min < max for Uniform)
@@ -613,11 +665,12 @@ src/
 |---------|---------|-------------|
 | `config` | yes | Enables `serde::Deserialize` impls on all config types and pulls in `serde_yaml_ng` for YAML parsing. Disable for library consumers who construct configs in code and do not need YAML/JSON deserialization. |
 | `strict-config` | yes | Rejects unknown YAML keys at parse time (`serde_ignored` at the deserialization choke point in `compiler/parse.rs`). Split from `config` because it compiles a second copy of the whole `ScenarioFile` deserializer: +170 KB on the optimized wasm bundle. The binaries enable it via their own `config` feature; `sonda-wasm` deliberately does not, so the playground parses as it did before. |
-| `runtime` | yes | The async scheduling and delivery layer: `tokio`, `tokio-util`, the `schedule/` module, `emit.rs`, the tokio-backed sinks (`stdout`, `file`, `tcp`, `udp`, `channel`), and `create_sink()`. Disable for pure-engine consumers — generators, encoders, the compiler, and config types all work without it, which is how `sonda-wasm` compiles the engine to `wasm32-unknown-unknown`. The `http`/`kafka`/`remote-write`/`otlp`/`gnmi` features all imply `runtime`. |
+| `runtime` | yes | The async scheduling and delivery layer: `tokio`, `tokio-util`, the `schedule/` module, `emit.rs`, the tokio-backed sinks (`stdout`, `file`, `tcp`, `udp`, `channel`), and `create_sink()`. Disable for pure-engine consumers — generators, encoders, the compiler, and config types all work without it, which is how `sonda-wasm` compiles the engine to `wasm32-unknown-unknown`. The `http`/`kafka`/`remote-write`/`otlp`/`gnmi`/`snmp` features all imply `runtime`. |
 | `http` | no | Enables `ureq` and HTTP-based sinks (`HttpPush`, `Loki`). |
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
+| `snmp` | no | Enables `bytes` and `runtime` for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

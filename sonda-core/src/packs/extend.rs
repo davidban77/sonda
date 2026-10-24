@@ -239,6 +239,7 @@ mod tests {
             labels: None,
             generator: Some(GeneratorConfig::Constant { value }),
             gnmi: None,
+            snmp: None,
         }
     }
 

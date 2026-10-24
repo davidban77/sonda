@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::compiler::{AfterClause, DelayClause, WhileClause};
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::encoder::gnmi::GnmiValueType;
+use crate::encoder::snmp::SnmpValueType;
 use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
 use crate::sink::SinkConfig;
@@ -69,6 +70,13 @@ pub struct MetricSpec {
     /// (see [`fold_gnmi_hints`]); under any other encoder they are unused.
     #[cfg_attr(feature = "config", serde(default))]
     pub gnmi: Option<GnmiHint>,
+    /// SNMP OID template and value type for this metric. Under an `snmp`
+    /// encoder, expansion writes them into the encoder's `oids:` and
+    /// `types:` for this metric's name where the scenario's encoder block
+    /// has no entry (see [`fold_snmp_hints`]); under any other encoder they
+    /// are unused.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub snmp: Option<SnmpHint>,
 }
 
 /// A pack metric's gNMI path and value type.
@@ -91,6 +99,30 @@ pub struct GnmiHint {
     /// Value type for the metric, as a `values:` entry of the gnmi encoder
     /// takes it.
     pub value: GnmiValueType,
+}
+
+/// A pack metric's SNMP OID template and value type.
+///
+/// # YAML Schema
+///
+/// ```yaml
+/// snmp:
+///   oid: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"
+///   type: counter64
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SnmpHint {
+    /// OID template for the metric, as an `oids:` entry of the snmp encoder
+    /// takes it: the object's OID, then one `{label}` placeholder per index
+    /// arc.
+    pub oid: String,
+    /// Value type for the metric, as a `types:` entry of the snmp encoder
+    /// takes it.
+    #[cfg_attr(feature = "config", serde(rename = "type"))]
+    pub r#type: SnmpValueType,
 }
 
 impl MetricSpec {
@@ -389,6 +421,23 @@ pub enum PackValidationError {
         path: String,
         reason: String,
     },
+
+    /// Specs sharing a name carry different `snmp:` hints. The encoder's
+    /// `oids:` and `types:` are keyed by name, so one name has one hint.
+    #[error(
+        "pack '{pack_name}': metric name '{name}' carries different `snmp:` hints; \
+         specs sharing a name must carry the same hint or none"
+    )]
+    ConflictingSnmpHints { pack_name: String, name: String },
+
+    /// An `snmp:` hint's OID is not a valid OID template.
+    #[error("pack '{pack_name}': metric '{selector}': snmp.oid {oid:?}: {reason}")]
+    InvalidSnmpOid {
+        pack_name: String,
+        selector: String,
+        oid: String,
+        reason: String,
+    },
 }
 
 /// Check that every spec in `pack` is addressable, and that no selector
@@ -406,9 +455,10 @@ pub enum PackValidationError {
 /// Pure, and deliberately the only definition of the rule — the selector
 /// resolver below relies on it having passed and does not re-derive it.
 ///
-/// It also checks the `gnmi:` hints: specs sharing a name carry the same
-/// hint or none, and, with the `gnmi` feature, every hint's path parses as a
-/// path template.
+/// It also checks the `gnmi:` and `snmp:` hints: specs sharing a name carry
+/// the same hint or none, and, with the `gnmi` feature, every `gnmi:` hint's
+/// path parses as a path template, and with the `snmp` feature, every
+/// `snmp:` hint's OID parses as an OID template.
 pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
     for spec in &pack.metrics {
         if spec.name.contains('.') {
@@ -454,6 +504,12 @@ pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
                 name: name.to_string(),
             });
         }
+        if specs.iter().any(|s| s.snmp != specs[0].snmp) {
+            return Err(PackValidationError::ConflictingSnmpHints {
+                pack_name: pack.name.clone(),
+                name: name.to_string(),
+            });
+        }
     }
 
     #[cfg(feature = "gnmi")]
@@ -464,6 +520,19 @@ pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
                 pack_name: pack.name.clone(),
                 selector: spec.selector(),
                 path: hint.path.clone(),
+                reason: e.to_string(),
+            });
+        }
+    }
+
+    #[cfg(feature = "snmp")]
+    for spec in &pack.metrics {
+        let Some(hint) = &spec.snmp else { continue };
+        if let Err(e) = crate::encoder::snmp::oid::OidTemplate::parse(&hint.oid) {
+            return Err(PackValidationError::InvalidSnmpOid {
+                pack_name: pack.name.clone(),
+                selector: spec.selector(),
+                oid: hint.oid.clone(),
                 reason: e.to_string(),
             });
         }
@@ -496,6 +565,28 @@ pub fn fold_gnmi_hints(pack: &MetricPackDef, encoder: &EncoderConfig) -> Encoder
     }
     let _ = pack;
     encoder.clone()
+}
+
+/// Write each spec's `snmp:` hint into an `snmp` encoder's `oids:` and
+/// `types:`.
+///
+/// For every spec carrying a hint, `oids[name]` is set to the hint's OID
+/// unless `oids` already has an entry for `name`, and `types[name]` to its
+/// type unless `types` already has one: the scenario's entries win, each
+/// map on its own. An encoder other than `snmp` is left unchanged.
+pub fn fold_snmp_hints(encoder: &mut EncoderConfig, specs: &[MetricSpec]) {
+    #[cfg(feature = "snmp")]
+    if let EncoderConfig::Snmp(cfg) = encoder {
+        for spec in specs {
+            let Some(hint) = &spec.snmp else { continue };
+            cfg.oids
+                .entry(spec.name.clone())
+                .or_insert_with(|| hint.oid.clone());
+            cfg.types.entry(spec.name.clone()).or_insert(hint.r#type);
+        }
+    }
+    #[cfg(not(feature = "snmp"))]
+    let _ = (encoder, specs);
 }
 
 /// A reference to one metric spec: a bare `name`, or `name.id`.
@@ -691,10 +782,10 @@ pub fn resolve_override_keys<'a>(
 /// 2. `MetricSpec::generator`, if present in the pack definition.
 /// 3. `constant { value: 0.0 }` as a last-resort default.
 ///
-/// # gNMI hints
+/// # gNMI and SNMP hints
 ///
 /// Every entry's encoder is [`fold_gnmi_hints`] of the pack and the user's
-/// encoder.
+/// encoder, with [`fold_snmp_hints`] applied.
 ///
 /// # Errors
 ///
@@ -721,7 +812,8 @@ pub fn expand_pack(
         None => BTreeMap::new(),
     };
 
-    let encoder = fold_gnmi_hints(pack, &config.encoder);
+    let mut encoder = fold_gnmi_hints(pack, &config.encoder);
+    fold_snmp_hints(&mut encoder, &pack.metrics);
     let mut entries = Vec::with_capacity(pack.metrics.len());
 
     for (spec_index, spec) in pack.metrics.iter().enumerate() {
@@ -838,6 +930,7 @@ mod tests {
                     labels: None,
                     generator: None,
                     gnmi: None,
+                    snmp: None,
                 },
                 MetricSpec {
                     name: "metric_b".to_string(),
@@ -845,6 +938,7 @@ mod tests {
                     labels: None,
                     generator: None,
                     gnmi: None,
+                    snmp: None,
                 },
             ],
         };
@@ -901,6 +995,7 @@ mod tests {
                 labels: Some(metric_labels),
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -952,6 +1047,7 @@ mod tests {
                 labels: None,
                 generator: Some(GeneratorConfig::Constant { value: 1.0 }),
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1005,6 +1101,7 @@ mod tests {
                 labels: None,
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1046,6 +1143,7 @@ mod tests {
                 labels: None,
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1084,6 +1182,7 @@ mod tests {
                 labels: None,
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1157,6 +1256,7 @@ mod tests {
                 labels: None,
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1208,6 +1308,7 @@ mod tests {
                 labels: None,
                 generator: None,
                 gnmi: None,
+                snmp: None,
             }],
         };
 
@@ -1335,6 +1436,7 @@ sink:
             labels: None,
             generator: None,
             gnmi: None,
+            snmp: None,
         }
     }
 
@@ -1862,5 +1964,227 @@ sink:
             fold_gnmi_hints(&pack, &user),
             EncoderConfig::PrometheusText { precision: Some(2) }
         ));
+    }
+
+    // ---- SNMP hints -------------------------------------------------------------
+
+    fn snmp_hinted(name: &str, oid: &str, r#type: SnmpValueType) -> MetricSpec {
+        MetricSpec {
+            snmp: Some(SnmpHint {
+                oid: oid.to_string(),
+                r#type,
+            }),
+            ..spec(name, None)
+        }
+    }
+
+    /// Two hinted metrics and one without a hint.
+    fn snmp_hinted_pack() -> MetricPackDef {
+        pack_of(vec![
+            snmp_hinted(
+                "ifHCInOctets",
+                "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}",
+                SnmpValueType::Counter64,
+            ),
+            snmp_hinted(
+                "ifOperStatus",
+                "1.3.6.1.2.1.2.2.1.8.{ifIndex}",
+                SnmpValueType::Integer,
+            ),
+            spec("plain", None),
+        ])
+    }
+
+    /// Runs in every build, `--no-default-features` included: the hint is
+    /// data and needs neither `snmp` nor `config`.
+    #[test]
+    fn a_pack_with_snmp_hints_validates_without_the_snmp_feature() {
+        let pack = snmp_hinted_pack();
+        assert_eq!(
+            pack.metrics.iter().filter(|s| s.snmp.is_some()).count(),
+            2,
+            "the premise: hints present"
+        );
+        assert_eq!(validate_pack(&pack), Ok(()));
+    }
+
+    #[test]
+    fn specs_sharing_a_name_with_different_snmp_hints_do_not_load() {
+        let with_id = |id: &str, r#type| MetricSpec {
+            id: Some(id.to_string()),
+            ..snmp_hinted("ifStat", "1.3.6.1.4.1.8072.9999.1.{ifIndex}", r#type)
+        };
+        let pack = pack_of(vec![
+            with_id("in", SnmpValueType::Counter64),
+            with_id("out", SnmpValueType::Counter32),
+        ]);
+        assert_eq!(
+            validate_pack(&pack),
+            Err(PackValidationError::ConflictingSnmpHints {
+                pack_name: "p".to_string(),
+                name: "ifStat".to_string(),
+            })
+        );
+
+        let same = pack_of(vec![
+            with_id("in", SnmpValueType::Counter64),
+            with_id("out", SnmpValueType::Counter64),
+        ]);
+        assert_eq!(validate_pack(&same), Ok(()), "one hint shared is fine");
+    }
+
+    fn invalid_snmp_hint_pack() -> MetricPackDef {
+        pack_of(vec![snmp_hinted(
+            "ifHCInOctets",
+            "1.3.6.1.2.1.31.1.1.1.6.{ifName:str}",
+            SnmpValueType::Counter64,
+        )])
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn a_hint_oid_that_is_not_a_template_does_not_load() {
+        let err = validate_pack(&invalid_snmp_hint_pack()).expect_err("must refuse");
+        assert!(
+            matches!(&err, PackValidationError::InvalidSnmpOid { selector, .. } if selector == "ifHCInOctets"),
+            "got: {err:?}"
+        );
+        let shown = err.to_string();
+        assert!(
+            shown.contains("snmp.oid") && shown.contains("{ifName:str}"),
+            "got: {shown}"
+        );
+    }
+
+    /// Without the feature there is no template parser, so the hint is data
+    /// the pack carries unchecked.
+    #[cfg(not(feature = "snmp"))]
+    #[test]
+    fn a_hint_oid_that_is_not_a_template_is_ignored_without_the_snmp_feature() {
+        let pack = invalid_snmp_hint_pack();
+        assert!(
+            pack.metrics[0].snmp.is_some(),
+            "the premise: a hint present"
+        );
+        assert_eq!(validate_pack(&pack), Ok(()));
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn an_snmp_hint_parses_from_yaml() {
+        let spec: MetricSpec = serde_yaml_ng::from_str(
+            "name: ifHCInOctets\n\
+             snmp:\n  oid: \"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"\n  type: counter64\n",
+        )
+        .expect("a hint parses");
+        assert_eq!(
+            spec.snmp,
+            Some(SnmpHint {
+                oid: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}".to_string(),
+                r#type: SnmpValueType::Counter64,
+            })
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn an_snmp_hint_with_a_misspelled_key_is_refused() {
+        let parsed: Result<MetricSpec, _> =
+            serde_yaml_ng::from_str("name: m\nsnmp:\n  oid: \"1.3.6.1\"\n  typ: integer\n");
+        let err = parsed.expect_err("an unknown hint key must be refused");
+        assert!(err.to_string().contains("typ"), "got: {err}");
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn under_a_bare_snmp_encoder_every_hinted_metric_gets_its_hint() {
+        use crate::encoder::snmp::SnmpEncoderConfig;
+        let pack = snmp_hinted_pack();
+        let encoders = expanded_encoders(&pack, EncoderConfig::Snmp(SnmpEncoderConfig::default()));
+        for encoder in encoders {
+            let EncoderConfig::Snmp(cfg) = encoder else {
+                panic!("still an snmp encoder");
+            };
+            assert_eq!(
+                cfg.oids,
+                HashMap::from([
+                    (
+                        "ifHCInOctets".to_string(),
+                        "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}".to_string()
+                    ),
+                    (
+                        "ifOperStatus".to_string(),
+                        "1.3.6.1.2.1.2.2.1.8.{ifIndex}".to_string()
+                    ),
+                ])
+            );
+            assert_eq!(
+                cfg.types,
+                HashMap::from([
+                    ("ifHCInOctets".to_string(), SnmpValueType::Counter64),
+                    ("ifOperStatus".to_string(), SnmpValueType::Integer),
+                ])
+            );
+        }
+    }
+
+    /// An `oids:` entry and a `types:` entry each win for their own map and
+    /// metric; everything else still folds.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn a_user_oids_or_types_entry_wins_over_the_hint() {
+        use crate::encoder::snmp::SnmpEncoderConfig;
+        let user = SnmpEncoderConfig {
+            oids: HashMap::from([(
+                "ifHCInOctets".to_string(),
+                "1.3.6.1.4.1.8072.9999.1.{ifIndex}".to_string(),
+            )]),
+            types: HashMap::from([("ifOperStatus".to_string(), SnmpValueType::Gauge32)]),
+            ..SnmpEncoderConfig::default()
+        };
+        let mut encoder = EncoderConfig::Snmp(user);
+        fold_snmp_hints(&mut encoder, &snmp_hinted_pack().metrics);
+        let EncoderConfig::Snmp(cfg) = &encoder else {
+            panic!("still an snmp encoder");
+        };
+        assert_eq!(
+            cfg.oids["ifHCInOctets"], "1.3.6.1.4.1.8072.9999.1.{ifIndex}",
+            "the user's OID"
+        );
+        assert_eq!(
+            cfg.oids["ifOperStatus"], "1.3.6.1.2.1.2.2.1.8.{ifIndex}",
+            "the hint's OID"
+        );
+        assert_eq!(
+            cfg.types["ifOperStatus"],
+            SnmpValueType::Gauge32,
+            "the user's type"
+        );
+        assert_eq!(
+            cfg.types["ifHCInOctets"],
+            SnmpValueType::Counter64,
+            "the hint's type"
+        );
+        assert_eq!(cfg.oids.len() + cfg.types.len(), 4);
+    }
+
+    #[test]
+    fn under_a_non_snmp_encoder_no_snmp_hint_is_folded() {
+        let pack = snmp_hinted_pack();
+        let mut encoder = EncoderConfig::PrometheusText { precision: Some(2) };
+        fold_snmp_hints(&mut encoder, &pack.metrics);
+        assert!(matches!(
+            encoder,
+            EncoderConfig::PrometheusText { precision: Some(2) }
+        ));
+        for encoder in expanded_encoders(&pack, encoder) {
+            assert!(
+                matches!(
+                    encoder,
+                    EncoderConfig::PrometheusText { precision: Some(2) }
+                ),
+                "unchanged, got {encoder:?}"
+            );
+        }
     }
 }

@@ -181,4 +181,14 @@ mod tests {
         assert!(!display.contains("unknown ("), "got {display}");
         assert_eq!(display, "gnmi_target (disabled)");
     }
+
+    /// `snmp_agent` has no arm here, so with or without sonda-core's `snmp`
+    /// feature it renders as its name.
+    #[cfg(feature = "config")]
+    #[test]
+    fn snmp_agent_renders_as_its_name() {
+        let s: SinkConfig = serde_yaml_ng::from_str("type: snmp_agent\nlisten: 0.0.0.0:1161")
+            .expect("an snmp_agent sink parses in every build");
+        assert_eq!(sink_display(&s), "snmp_agent");
+    }
 }

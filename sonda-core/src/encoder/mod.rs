@@ -19,6 +19,15 @@ pub mod otlp;
 pub mod prometheus;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
+#[cfg(feature = "snmp")]
+pub mod snmp;
+/// The SNMP value type alone, without the `snmp` feature.
+#[cfg(not(feature = "snmp"))]
+pub mod snmp {
+    pub mod value;
+
+    pub use value::SnmpValueType;
+}
 pub mod syslog;
 
 use crate::config::PromMetricType;
@@ -63,9 +72,9 @@ pub trait Encoder: Send + Sync {
 ///
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `prometheus_text`, `influx_lp`,
-/// `json_lines`, `syslog`, `remote_write`, `otlp`, or `gnmi`.
+/// `json_lines`, `syslog`, `remote_write`, `otlp`, `gnmi`, or `snmp`.
 ///
-/// Feature-gated encoders (`remote_write`, `otlp`, `gnmi`) have companion
+/// Feature-gated encoders (`remote_write`, `otlp`, `gnmi`, `snmp`) have companion
 /// `*Disabled` variants that are compiled in when their feature is absent.
 /// These accept the YAML tag so that deserialization succeeds with a
 /// descriptive error from [`create_encoder`] instead of a generic
@@ -173,6 +182,24 @@ pub enum EncoderConfig {
     #[cfg(not(feature = "gnmi"))]
     #[cfg_attr(feature = "config", serde(rename = "gnmi"))]
     GnmiDisabled {},
+    /// SNMP publish records: one BER `VarBind` per event, behind a byte that
+    /// counts its index arcs.
+    ///
+    /// Each metric's OID is rendered from its `oids:` template. See
+    /// [`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the
+    /// `snmp_agent` sink. Requires the `snmp` feature flag.
+    #[cfg(feature = "snmp")]
+    #[cfg_attr(feature = "config", serde(rename = "snmp"))]
+    Snmp(snmp::SnmpEncoderConfig),
+
+    /// Placeholder variant when the `snmp` feature is not compiled in.
+    ///
+    /// Deserializes the `snmp` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "snmp"))]
+    #[cfg_attr(feature = "config", serde(rename = "snmp"))]
+    SnmpDisabled {},
 }
 
 impl EncoderConfig {
@@ -188,6 +215,7 @@ impl EncoderConfig {
         "remote_write",
         "otlp",
         "gnmi",
+        "snmp",
     ];
 
     /// The `type:` name this encoder has in a scenario file, such as
@@ -212,6 +240,10 @@ impl EncoderConfig {
             EncoderConfig::Gnmi(_) => "gnmi",
             #[cfg(not(feature = "gnmi"))]
             EncoderConfig::GnmiDisabled {} => "gnmi",
+            #[cfg(feature = "snmp")]
+            EncoderConfig::Snmp(_) => "snmp",
+            #[cfg(not(feature = "snmp"))]
+            EncoderConfig::SnmpDisabled {} => "snmp",
         }
     }
 }
@@ -243,6 +275,8 @@ pub fn create_encoder(config: &EncoderConfig) -> Result<Box<dyn Encoder>, crate:
         EncoderConfig::Otlp => Ok(Box::new(otlp::OtlpEncoder::new())),
         #[cfg(feature = "gnmi")]
         EncoderConfig::Gnmi(cfg) => Ok(Box::new(gnmi::GnmiEncoder::new(cfg)?)),
+        #[cfg(feature = "snmp")]
+        EncoderConfig::Snmp(cfg) => Ok(Box::new(snmp::SnmpEncoder::new(cfg)?)),
         #[cfg(not(feature = "remote-write"))]
         EncoderConfig::RemoteWriteDisabled { .. } => {
             Err(crate::SondaError::Config(crate::ConfigError::invalid(
@@ -260,6 +294,12 @@ pub fn create_encoder(config: &EncoderConfig) -> Result<Box<dyn Encoder>, crate:
         EncoderConfig::GnmiDisabled { .. } => {
             Err(crate::SondaError::Config(crate::ConfigError::invalid(
                 "encoder type 'gnmi' requires the 'gnmi' feature: cargo build -F gnmi",
+            )))
+        }
+        #[cfg(not(feature = "snmp"))]
+        EncoderConfig::SnmpDisabled { .. } => {
+            Err(crate::SondaError::Config(crate::ConfigError::invalid(
+                "encoder type 'snmp' requires the 'snmp' feature: cargo build -F snmp",
             )))
         }
     }
@@ -1238,6 +1278,79 @@ sink:
         );
     }
 
+    #[cfg(all(feature = "snmp", feature = "config"))]
+    #[test]
+    fn encoder_config_snmp_deserializes_from_yaml() {
+        let yaml =
+            "type: snmp\noids:\n  m: \"1.3.6.1.2.1.2.2.1.8.{ifIndex}\"\ntypes:\n  m: integer\n";
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).expect("an snmp encoder parses");
+        let EncoderConfig::Snmp(cfg) = config else {
+            panic!("should deserialize as Snmp variant, got {config:?}");
+        };
+        assert_eq!(cfg.oids["m"], "1.3.6.1.2.1.2.2.1.8.{ifIndex}");
+        assert_eq!(cfg.types["m"], snmp::SnmpValueType::Integer);
+        assert_eq!(cfg.agent_label, "device");
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn create_encoder_snmp_produces_a_publish_record_through_factory() {
+        let config = EncoderConfig::Snmp(snmp::SnmpEncoderConfig {
+            oids: std::collections::HashMap::from([(
+                "m".to_string(),
+                "1.3.6.1.2.1.2.2.1.8.{ifIndex}".to_string(),
+            )]),
+            types: std::collections::HashMap::from([(
+                "m".to_string(),
+                snmp::SnmpValueType::Integer,
+            )]),
+            ..snmp::SnmpEncoderConfig::default()
+        });
+        let encoder = create_encoder(&config).expect("the factory builds it");
+        let labels = crate::model::metric::Labels::from_pairs(&[("ifIndex", "4")]).expect("valid");
+        let event = MetricEvent::new("m".to_string(), 2.0, labels).expect("valid");
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).expect("encodes");
+        // One index arc, then net-snmp 5.9.4's encoding of
+        // `1.3.6.1.2.1.2.2.1.8.4 i 2` (snmptrap -v2c).
+        let varbind = [
+            0x30, 0x0f, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x02, 0x01, 0x02, 0x02, 0x01, 0x08, 0x04,
+            0x02, 0x01, 0x02,
+        ];
+        assert_eq!(buf[0], 1);
+        assert_eq!(&buf[1..], &varbind);
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn create_encoder_snmp_rejects_an_invalid_template() {
+        let config = EncoderConfig::Snmp(snmp::SnmpEncoderConfig {
+            oids: std::collections::HashMap::from([("m".to_string(), "1.{x}".to_string())]),
+            ..snmp::SnmpEncoderConfig::default()
+        });
+        let err = create_encoder(&config).err().expect("must not build");
+        assert!(err.to_string().contains("oids.m"), "got: {err}");
+    }
+
+    #[cfg(all(not(feature = "snmp"), feature = "config"))]
+    #[test]
+    fn snmp_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let config: EncoderConfig = serde_yaml_ng::from_str("type: snmp")
+            .expect("type: snmp must deserialize even without the snmp feature");
+        assert!(matches!(config, EncoderConfig::SnmpDisabled {}));
+    }
+
+    #[cfg(not(feature = "snmp"))]
+    #[test]
+    fn create_encoder_snmp_disabled_returns_feature_hint_error() {
+        let err = create_encoder(&EncoderConfig::SnmpDisabled {})
+            .err()
+            .expect("disabled snmp encoder must not be created");
+        let msg = err.to_string();
+        assert!(msg.contains("snmp"), "got: {msg}");
+        assert!(msg.contains("cargo build -F snmp"), "got: {msg}");
+    }
+
     #[cfg(all(not(feature = "otlp"), feature = "config"))]
     #[test]
     fn otlp_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
@@ -1291,6 +1404,10 @@ sink:
             EncoderConfig::Gnmi(gnmi::GnmiEncoderConfig::default()),
             #[cfg(not(feature = "gnmi"))]
             EncoderConfig::GnmiDisabled {},
+            #[cfg(feature = "snmp")]
+            EncoderConfig::Snmp(snmp::SnmpEncoderConfig::default()),
+            #[cfg(not(feature = "snmp"))]
+            EncoderConfig::SnmpDisabled {},
         ]
     }
 

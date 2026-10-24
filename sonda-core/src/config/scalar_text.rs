@@ -46,7 +46,7 @@ impl<'de> Deserialize<'de> for ScalarText {
 }
 
 /// `deserialize_with` for a required text field.
-#[cfg(feature = "gnmi")]
+#[cfg(any(feature = "gnmi", feature = "snmp"))]
 pub(crate) fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     ScalarText::deserialize(deserializer).map(|text| text.0)
 }

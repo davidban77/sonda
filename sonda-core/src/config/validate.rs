@@ -331,6 +331,9 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     #[cfg(feature = "gnmi")]
     validate_gnmi_encoder(config)?;
 
+    #[cfg(feature = "snmp")]
+    validate_snmp_encoder(config)?;
+
     validate_sink_config(&config.base.sink)?;
 
     validate_encoder_sink_pairing(&config.encoder, &config.base.sink)?;
@@ -338,13 +341,15 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     Ok(())
 }
 
-/// Require the `gnmi` encoder and the `gnmi_target` sink to be used together.
+/// Require the `gnmi` encoder and the `gnmi_target` sink to be used together,
+/// and the `snmp` encoder and the `snmp_agent` sink.
 ///
-/// The encoder's output is one unframed notification per event, which only
-/// the `gnmi_target` sink can carry: written back to back on a byte-stream
-/// sink, two notifications decode as one. The sink, in turn, publishes gNMI
-/// notifications and needs the encoder that produces them. Either one without
-/// the other is a [`SondaError::Config`] naming both.
+/// The gnmi encoder's output is one unframed notification per event, which
+/// only the `gnmi_target` sink can carry: written back to back on a
+/// byte-stream sink, two notifications decode as one. The snmp encoder's
+/// output is a publish record only the `snmp_agent` sink reads. Each sink,
+/// in turn, needs the encoder that produces its input. Either one of a pair
+/// without the other is a [`SondaError::Config`] naming both.
 ///
 /// Returns `Ok(())` for any other pairing.
 pub fn validate_encoder_sink_pairing(
@@ -363,6 +368,21 @@ pub fn validate_encoder_sink_pairing(
         if gnmi_sink && !gnmi_encoder {
             return Err(SondaError::Config(ConfigError::invalid(
                 "the gnmi_target sink can only be used with the gnmi encoder",
+            )));
+        }
+    }
+    #[cfg(feature = "snmp")]
+    {
+        let snmp_encoder = matches!(encoder, crate::encoder::EncoderConfig::Snmp(_));
+        let snmp_sink = matches!(sink, SinkConfig::SnmpAgent { .. });
+        if snmp_encoder && !snmp_sink {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "the snmp encoder can only be used with the snmp_agent sink",
+            )));
+        }
+        if snmp_sink && !snmp_encoder {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "the snmp_agent sink can only be used with the snmp encoder",
             )));
         }
     }
@@ -416,6 +436,7 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 /// and the invalid value.
 pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError> {
     reject_gnmi_for_logs(&config.encoder, &config.base.sink)?;
+    reject_snmp_for("logs", &config.encoder, &config.base.sink)?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -488,6 +509,10 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
         crate::encoder::EncoderConfig::Gnmi(_) => None,
         #[cfg(not(feature = "gnmi"))]
         crate::encoder::EncoderConfig::GnmiDisabled { .. } => None,
+        #[cfg(feature = "snmp")]
+        crate::encoder::EncoderConfig::Snmp(_) => None,
+        #[cfg(not(feature = "snmp"))]
+        crate::encoder::EncoderConfig::SnmpDisabled { .. } => None,
     }
 }
 
@@ -516,6 +541,242 @@ pub(crate) fn reject_gnmi_for_logs(
     }
     #[cfg(not(feature = "gnmi"))]
     let _ = (encoder, sink);
+    Ok(())
+}
+
+/// Reject the `snmp` encoder and the `snmp_agent` sink on an entry of
+/// `kind` (`"logs"`, `"histogram"` or `"summary"`).
+///
+/// Both carry metrics entries only: a log, a histogram's buckets and a
+/// summary's quantiles have no MIB shape.
+pub(crate) fn reject_snmp_for(
+    kind: &str,
+    encoder: &crate::encoder::EncoderConfig,
+    sink: &SinkConfig,
+) -> Result<(), SondaError> {
+    #[cfg(feature = "snmp")]
+    {
+        if matches!(encoder, crate::encoder::EncoderConfig::Snmp(_)) {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "the snmp encoder carries metrics entries only, not {kind} entries: a \
+                 {kind} entry has no MIB shape"
+            ))));
+        }
+        if matches!(sink, SinkConfig::SnmpAgent { .. }) {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "the snmp_agent sink carries metrics entries only, not {kind} entries: a \
+                 {kind} entry has no MIB shape"
+            ))));
+        }
+    }
+    #[cfg(not(feature = "snmp"))]
+    let _ = (kind, encoder, sink);
+    Ok(())
+}
+
+/// The system group's OID, which the `snmp_agent` sink serves itself.
+#[cfg(feature = "snmp")]
+const SNMP_SYSTEM_GROUP: [u32; 7] = [1, 3, 6, 1, 2, 1, 1];
+
+/// Validate a metrics entry's `snmp` encoder against the entry.
+///
+/// The rules, in this order, each failure a [`SondaError::Config`] with its
+/// own message:
+///
+/// 1. **Pairing.** When the encoder is `snmp` or the sink is `snmp_agent`,
+///    both are ([`validate_encoder_sink_pairing`]). Any other encoder is then
+///    `Ok(())`.
+/// 2. **Column present.** `oids:` has an entry for the entry's metric name.
+///    Every `oids:` entry then parses as an
+///    [`OidTemplate`](crate::encoder::snmp::oid::OidTemplate) and every
+///    `oids:` and `types:` key is a metric name
+///    ([`SnmpEncoder::new`](crate::encoder::snmp::SnmpEncoder::new)).
+/// 3. **Placeholders are labels.** Every placeholder of the metric's
+///    template names a key of the entry's `labels` or `dynamic_labels`. A
+///    key only `cardinality_spikes` sets is refused: events carry it only
+///    while the spike window is open.
+/// 4. **Index values are arcs.** Every value each placeholder's label can
+///    take is an [`index_arc`](crate::encoder::snmp::oid::index_arc): the
+///    static value, unless a dynamic label of the same key replaces it;
+///    every `values:` entry of a dynamic label; and the prefix followed by
+///    `0` to `cardinality - 1` of a `counter` dynamic label or `counter`
+///    spike, which are all arcs exactly when the first and the last are. A
+///    `random` spike on the label is refused. O(values).
+/// 5. **Coverage.** Every label key of the entry (`labels`,
+///    `dynamic_labels`, `cardinality_spikes`) is a placeholder of the
+///    template, the `agent_label`, or in `drop_labels`
+///    ([`uncovered_label`](crate::encoder::snmp::uncovered_label)), so no
+///    two series differing only in a label share one OID. O(keys).
+/// 6. **No collision.** No other `oids:` metric's template has the same
+///    text as this metric's once each placeholder whose label has a static
+///    value (and no dynamic or spike value) is replaced by that value.
+///    O(metrics).
+///
+/// Last, the **system group**: no `oids:` template can render an OID under
+/// `1.3.6.1.2.1.1`, which the agent serves itself; that is, its object lies
+/// under it, or is a prefix of it with enough index arcs to reach it.
+///
+/// Returns `Ok(())` for any other encoder.
+#[cfg(feature = "snmp")]
+pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> {
+    use super::{LabelSource, LabelValueSet};
+    use crate::encoder::snmp::oid::{index_arc, Oid, OidTemplate};
+    use crate::encoder::snmp::{uncovered_label, SnmpEncoder};
+    use crate::encoder::EncoderConfig;
+
+    let snmp_sink = matches!(config.base.sink, SinkConfig::SnmpAgent { .. });
+    if snmp_sink || matches!(config.encoder, EncoderConfig::Snmp(_)) {
+        validate_encoder_sink_pairing(&config.encoder, &config.base.sink)?;
+    }
+    let EncoderConfig::Snmp(cfg) = &config.encoder else {
+        return Ok(());
+    };
+    let name = config.name.as_str();
+    let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
+
+    // 2. Column present, then every template parses.
+    if !cfg.oids.contains_key(name) {
+        return Err(invalid(format!(
+            "snmp encoder has no oids: entry for metric {name:?}; set encoder.oids.{name}"
+        )));
+    }
+    let encoder = SnmpEncoder::new(cfg)?;
+    let template = encoder.template_for(name)?;
+
+    let mut entry_labels: Vec<&str> = Vec::new();
+    let mut spike_labels: Vec<&str> = Vec::new();
+    for (key, source) in config.base.emitted_label_keys() {
+        match source {
+            LabelSource::Static | LabelSource::Dynamic => entry_labels.push(key),
+            LabelSource::Spike => spike_labels.push(key),
+        }
+    }
+
+    // 3. Placeholders are labels.
+    for placeholder in template.placeholders() {
+        if entry_labels.contains(&placeholder) {
+            continue;
+        }
+        let why = if spike_labels.contains(&placeholder) {
+            "a cardinality_spikes label; events carry it only while the spike window is \
+             open, so the OID could not be rendered outside it"
+        } else {
+            "which is not a label of this entry"
+        };
+        return Err(invalid(format!(
+            "snmp OID template for metric {name:?} uses placeholder {{{placeholder}}}, {why}"
+        )));
+    }
+
+    // 4. Index values are arcs.
+    let counter_values = |prefix: &str, cardinality: u64| {
+        let first = format!("{prefix}0");
+        let last = format!("{prefix}{}", cardinality.saturating_sub(1));
+        let arcs = cardinality == 0 || (index_arc(&first).is_some() && index_arc(&last).is_some());
+        (!arcs).then(|| {
+            format!(
+                "its counter values run from {first:?} to {last:?}; a counter renders as \
+                 arcs with an empty or digit-only prefix (prefix: \"\")"
+            )
+        })
+    };
+    for placeholder in template.placeholders() {
+        let mut next = config.base.label_value_set(placeholder);
+        while let Some(set) = next {
+            let (problem, outside) = match set {
+                LabelValueSet::Static(value) => (
+                    index_arc(&value)
+                        .is_none()
+                        .then(|| format!("its value {value:?} is not an unsigned 32-bit integer")),
+                    None,
+                ),
+                LabelValueSet::Values(values) => (
+                    values.iter().find(|v| index_arc(v).is_none()).map(|v| {
+                        format!("its dynamic value {v:?} is not an unsigned 32-bit integer")
+                    }),
+                    None,
+                ),
+                LabelValueSet::Counter {
+                    prefix,
+                    cardinality,
+                } => (counter_values(&prefix, cardinality), None),
+                LabelValueSet::SpikeCounter {
+                    prefix,
+                    cardinality,
+                    outside,
+                } => (
+                    counter_values(&prefix, cardinality),
+                    outside.map(|set| *set),
+                ),
+                LabelValueSet::RandomShape { .. } => (
+                    Some(
+                        "a random cardinality spike sets it to values that are not integers"
+                            .to_string(),
+                    ),
+                    None,
+                ),
+            };
+            if let Some(problem) = problem {
+                return Err(invalid(format!(
+                    "snmp OID template for metric {name:?} renders label `{placeholder}` as \
+                     an OID arc (an unsigned 32-bit integer in decimal, without leading \
+                     zeros), but {problem}"
+                )));
+            }
+            next = outside;
+        }
+    }
+
+    // 5. Coverage.
+    let all_labels = config.base.emitted_label_keys().map(|(key, _)| key);
+    if let Some(label) = uncovered_label(cfg, template, all_labels) {
+        return Err(invalid(format!(
+            "snmp OID template for metric {name:?} does not reference label `{label}`, so \
+             series that differ only in it would share one OID; reference it as a \
+             placeholder, make it the encoder's agent_label, or list it in its drop_labels"
+        )));
+    }
+
+    // 6. No collision within the entry.
+    let substituted = |template: &OidTemplate| {
+        let mut text = template.object().to_string();
+        for placeholder in template.placeholders() {
+            match config.base.label_value_set(placeholder) {
+                Some(LabelValueSet::Static(value)) => text.push_str(&format!(".{value}")),
+                _ => text.push_str(&format!(".{{{placeholder}}}")),
+            }
+        }
+        text
+    };
+    let own = substituted(template);
+    for other in cfg.oids.keys().collect::<std::collections::BTreeSet<_>>() {
+        if other == name {
+            continue;
+        }
+        if substituted(encoder.template_for(other)?) == own {
+            return Err(invalid(format!(
+                "snmp OID templates of metrics {name:?} and {other:?} both render {own} for \
+                 this entry; give each metric its own column"
+            )));
+        }
+    }
+
+    // Not under the system group.
+    let system = Oid::from_arcs(SNMP_SYSTEM_GROUP.to_vec())
+        .ok_or_else(|| invalid("the system group OID is not encodable".to_string()))?;
+    for metric in cfg.oids.keys().collect::<std::collections::BTreeSet<_>>() {
+        let template = encoder.template_for(metric)?;
+        let object = template.object();
+        let reaches = system.is_prefix_of(object)
+            || (object.is_prefix_of(&system)
+                && object.arcs().len() + usize::from(template.index_arcs()) >= system.arcs().len());
+        if reaches {
+            return Err(invalid(format!(
+                "snmp encoder oids.{metric}: {template} can render OIDs under \
+                 1.3.6.1.2.1.1, the system group, which the snmp_agent sink serves itself"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1073,6 +1334,7 @@ pub fn validate_quantiles(quantiles: &[f64]) -> Result<(), SondaError> {
 ///
 /// Returns [`SondaError::Config`] with a descriptive message if validation fails.
 pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
+    reject_snmp_for("histogram", &config.encoder, &config.base.sink)?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -1160,6 +1422,7 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
 ///
 /// Returns [`SondaError::Config`] with a descriptive message if validation fails.
 pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
+    reject_snmp_for("summary", &config.encoder, &config.base.sink)?;
     if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
@@ -1302,6 +1565,10 @@ pub fn validate_sink_config(sink: &SinkConfig) -> Result<(), SondaError> {
         SinkConfig::GnmiTarget(cfg) => cfg.settings().map(|_| ()),
         #[cfg(not(feature = "gnmi"))]
         SinkConfig::GnmiTargetDisabled { .. } => Ok(()),
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpAgent { .. } => Ok(()),
+        #[cfg(not(feature = "snmp"))]
+        SinkConfig::SnmpAgentDisabled { .. } => Ok(()),
     }
 }
 
@@ -4485,6 +4752,301 @@ generator:
         let msg = err_msg(validate_summary_config(&summary));
         assert!(
             msg.contains("can only be used with the gnmi encoder"),
+            "got: {msg}"
+        );
+    }
+
+    // ---- validate_snmp_encoder -----------------------------------------------
+
+    /// A metrics entry the snmp encoder accepts: two Counter64 columns of
+    /// ifXTable, interface 1, on an snmp_agent sink.
+    #[cfg(feature = "snmp")]
+    fn snmp_config() -> ScenarioConfig {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.name = "ifHCInOctets".to_string();
+        config.base.labels = Some(std::collections::HashMap::from([
+            ("device".to_string(), "rtr-1".to_string()),
+            ("ifIndex".to_string(), "1".to_string()),
+        ]));
+        config.base.sink = SinkConfig::SnmpAgent {
+            listen: "127.0.0.1:1161".to_string(),
+        };
+        config.encoder = EncoderConfig::Snmp(crate::encoder::snmp::SnmpEncoderConfig {
+            oids: std::collections::HashMap::from([
+                (
+                    "ifHCInOctets".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}".to_string(),
+                ),
+                (
+                    "ifHCOutOctets".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.10.{ifIndex}".to_string(),
+                ),
+            ]),
+            ..Default::default()
+        });
+        config
+    }
+
+    #[cfg(feature = "snmp")]
+    fn snmp_cfg(config: &mut ScenarioConfig) -> &mut crate::encoder::snmp::SnmpEncoderConfig {
+        match &mut config.encoder {
+            EncoderConfig::Snmp(cfg) => cfg,
+            _ => panic!("test config must use the snmp encoder"),
+        }
+    }
+
+    #[cfg(feature = "snmp")]
+    fn set_oid(config: &mut ScenarioConfig, metric: &str, template: &str) {
+        snmp_cfg(config)
+            .oids
+            .insert(metric.to_string(), template.to_string());
+    }
+
+    #[cfg(feature = "snmp")]
+    fn set_label(config: &mut ScenarioConfig, key: &str, value: &str) {
+        config
+            .base
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert(key.to_string(), value.to_string());
+    }
+
+    #[cfg(feature = "snmp")]
+    fn snmp_spike(
+        label: &str,
+        strategy: crate::config::SpikeStrategy,
+        prefix: Option<&str>,
+    ) -> CardinalitySpikeConfig {
+        CardinalitySpikeConfig {
+            label: label.to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 4,
+            strategy,
+            prefix: prefix.map(str::to_string),
+            seed: None,
+        }
+    }
+
+    #[cfg(feature = "snmp")]
+    fn snmp_dynamic(key: &str, strategy: DynamicLabelStrategy) -> DynamicLabelConfig {
+        DynamicLabelConfig {
+            key: key.to_string(),
+            strategy,
+        }
+    }
+
+    #[cfg(feature = "snmp")]
+    fn snmp_counter(prefix: Option<&str>, cardinality: u64) -> DynamicLabelStrategy {
+        DynamicLabelStrategy::Counter {
+            prefix: prefix.map(str::to_string),
+            cardinality,
+        }
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn snmp_baseline_is_accepted() {
+        validate_snmp_encoder(&snmp_config()).expect("the baseline validates");
+        validate_config(&snmp_config()).expect("and passes the whole metrics validation");
+    }
+
+    /// Each case adds exactly one defect to [`snmp_config`], which validates.
+    #[cfg(feature = "snmp")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // 1. Pairing, both directions.
+    #[case::r1_encoder_without_agent_sink(|c: &mut ScenarioConfig| c.base.sink = SinkConfig::Stdout,
+        "the snmp encoder can only be used with the snmp_agent sink")]
+    #[case::r1_agent_sink_without_encoder(|c: &mut ScenarioConfig| c.encoder = EncoderConfig::PrometheusText { precision: None },
+        "the snmp_agent sink can only be used with the snmp encoder")]
+    // 2. Column present.
+    #[case::r2_no_oids_entry(|c: &mut ScenarioConfig| { snmp_cfg(c).oids.remove("ifHCInOctets"); },
+        "no oids: entry for metric \"ifHCInOctets\"")]
+    // 3. Placeholders are labels.
+    #[case::r3_unknown_placeholder(|c: &mut ScenarioConfig| set_oid(c, "ifHCInOctets", "1.3.6.1.2.1.31.1.1.1.6.{ifindex}"),
+        "uses placeholder {ifindex}, which is not a label of this entry")]
+    #[case::r3_spike_only_placeholder(|c: &mut ScenarioConfig| {
+            set_oid(c, "ifHCInOctets", "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}.{slot}");
+            c.base.cardinality_spikes = Some(vec![snmp_spike("slot", crate::config::SpikeStrategy::Counter, Some(""))]);
+        },
+        "uses placeholder {slot}, a cardinality_spikes label")]
+    // 4. Index values are arcs: static, dynamic values, dynamic counter, spike counter, random spike.
+    #[case::r4_static_value(|c: &mut ScenarioConfig| set_label(c, "ifIndex", "Gi0/0/0"),
+        "renders label `ifIndex` as an OID arc (an unsigned 32-bit integer in decimal, without leading zeros), but its value \"Gi0/0/0\"")]
+    #[case::r4_static_leading_zero(|c: &mut ScenarioConfig| set_label(c, "ifIndex", "01"),
+        "but its value \"01\"")]
+    #[case::r4_dynamic_values(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex",
+            DynamicLabelStrategy::ValuesList { values: vec!["1".to_string(), "eth2".to_string()] })]),
+        "but its dynamic value \"eth2\"")]
+    #[case::r4_dynamic_counter_default_prefix(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(None, 4))]),
+        "but its counter values run from \"ifIndex_0\" to \"ifIndex_3\"")]
+    #[case::r4_dynamic_counter_past_u32(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some(""), 4_294_967_297))]),
+        "run from \"0\" to \"4294967296\"")]
+    #[case::r4_spike_counter_default_prefix(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![
+            snmp_spike("ifIndex", crate::config::SpikeStrategy::Counter, None)]),
+        "but its counter values run from \"ifIndex_0\" to \"ifIndex_3\"")]
+    #[case::r4_spike_random(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![
+            snmp_spike("ifIndex", crate::config::SpikeStrategy::Random, Some(""))]),
+        "a random cardinality spike sets it to values that are not integers")]
+    #[case::r4_spike_outside_value(|c: &mut ScenarioConfig| {
+            set_label(c, "ifIndex", "x");
+            c.base.cardinality_spikes = Some(vec![snmp_spike("ifIndex", crate::config::SpikeStrategy::Counter, Some(""))]);
+        },
+        "but its value \"x\"")]
+    // 5. Coverage: a static, a dynamic and a spike label.
+    #[case::r5_static_label(|c: &mut ScenarioConfig| set_label(c, "job", "snmp"),
+        "does not reference label `job`, so series that differ only in it would share one OID")]
+    #[case::r5_dynamic_label(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("pod", snmp_counter(None, 2))]),
+        "does not reference label `pod`")]
+    #[case::r5_spike_label(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![
+            snmp_spike("slot", crate::config::SpikeStrategy::Counter, None)]),
+        "does not reference label `slot`")]
+    // 6. No collision: a forgotten placeholder, and a copied template.
+    #[case::r6_forgotten_placeholder(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.1"),
+        "metrics \"ifHCInOctets\" and \"ifHCOutOctets\" both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry")]
+    #[case::r6_copied_template(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"),
+        "both render 1.3.6.1.2.1.31.1.1.1.6.1")]
+    // The literal part parses as an OID, and nothing renders under the system group.
+    #[case::r2_oid_of_one_arc(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.{ifIndex}"),
+        "oids.ifHCOutOctets: OID template \"1.{ifIndex}\": OID \"1\" has one arc")]
+    #[case::r2_oid_not_encodable(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "3.40.{ifIndex}"),
+        "oids.ifHCOutOctets: OID template \"3.40.{ifIndex}\": OID \"3.40\" cannot be encoded")]
+    #[case::system_group_scalar(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.1.5.0"),
+        "oids.ifHCOutOctets: 1.3.6.1.2.1.1.5.0 can render OIDs under 1.3.6.1.2.1.1, the system group")]
+    #[case::system_group_reached_by_an_index(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.{ifIndex}"),
+        "oids.ifHCOutOctets: 1.3.6.1.2.1.{ifIndex} can render OIDs under 1.3.6.1.2.1.1")]
+    fn snmp_validation_refuses(#[case] defect: fn(&mut ScenarioConfig), #[case] fragment: &str) {
+        // Guard: without the one defect the config is accepted.
+        validate_snmp_encoder(&snmp_config()).expect("the baseline validates");
+        let mut config = snmp_config();
+        defect(&mut config);
+        let msg = err_msg(validate_snmp_encoder(&config));
+        assert!(msg.contains(fragment), "expected {fragment:?} in: {msg}");
+    }
+
+    #[cfg(feature = "snmp")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::counter_with_empty_prefix(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some(""), 48))]))]
+    #[case::counter_with_digit_prefix(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some("1"), 10))]))]
+    #[case::counter_to_u32_max(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some(""), 4_294_967_296))]))]
+    #[case::values_all_integers(|c: &mut ScenarioConfig| c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex",
+            DynamicLabelStrategy::ValuesList { values: vec!["1".to_string(), "4294967295".to_string()] })]))]
+    #[case::spike_counter_with_empty_prefix(|c: &mut ScenarioConfig| c.base.cardinality_spikes = Some(vec![
+            snmp_spike("ifIndex", crate::config::SpikeStrategy::Counter, Some(""))]))]
+    #[case::dropped_label(|c: &mut ScenarioConfig| { set_label(c, "job", "snmp"); snmp_cfg(c).drop_labels.push("job".to_string()); })]
+    #[case::dropped_spike_label(|c: &mut ScenarioConfig| { c.base.cardinality_spikes = Some(vec![
+            snmp_spike("slot", crate::config::SpikeStrategy::Random, None)]); snmp_cfg(c).drop_labels.push("slot".to_string()); })]
+    #[case::other_agent_label(|c: &mut ScenarioConfig| { set_label(c, "host", "rtr-1"); snmp_cfg(c).agent_label = "host".to_string();
+            snmp_cfg(c).drop_labels.push("device".to_string()); })]
+    #[case::scalar_template(|c: &mut ScenarioConfig| { set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.1.1.0");
+            snmp_cfg(c).drop_labels.push("ifIndex".to_string()); })]
+    #[case::two_index_arcs(|c: &mut ScenarioConfig| { set_label(c, "slot", "2");
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.{slot}.{ifIndex}"); })]
+    #[case::above_system_group_short(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.3.6.1.{x}"))]
+    fn snmp_validation_accepts(#[case] change: fn(&mut ScenarioConfig)) {
+        let mut config = snmp_config();
+        change(&mut config);
+        validate_snmp_encoder(&config).expect("this variant validates");
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn validate_config_runs_the_snmp_rules() {
+        let mut config = snmp_config();
+        set_label(&mut config, "ifIndex", "eth0");
+        let msg = err_msg(validate_config(&config));
+        assert!(
+            msg.contains("renders label `ifIndex` as an OID arc"),
+            "got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn other_encoders_are_not_snmp_validated() {
+        let config = minimal_config_with_rate(10.0);
+        assert!(matches!(
+            config.encoder,
+            EncoderConfig::PrometheusText { .. }
+        ));
+        validate_snmp_encoder(&config).expect("not an snmp entry");
+    }
+
+    #[cfg(feature = "snmp")]
+    fn snmp_log_config(
+        encoder: EncoderConfig,
+        sink: SinkConfig,
+    ) -> crate::config::LogScenarioConfig {
+        let mut base = minimal_config_with_rate(10.0).base;
+        base.sink = sink;
+        crate::config::LogScenarioConfig {
+            base,
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: None,
+            },
+            encoder,
+        }
+    }
+
+    /// Histogram, summary and logs entries refuse the encoder and the sink,
+    /// each named; the same entries validate without them.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn histogram_summary_and_logs_refuse_snmp() {
+        let snmp_encoder = || snmp_config().encoder;
+        let agent = || snmp_config().base.sink;
+
+        validate_histogram_config(&make_histogram_config())
+            .expect("guard: the histogram validates");
+        let mut histogram = make_histogram_config();
+        histogram.encoder = snmp_encoder();
+        let msg = err_msg(validate_histogram_config(&histogram));
+        assert!(
+            msg.contains("snmp encoder carries metrics entries only, not histogram entries"),
+            "got: {msg}"
+        );
+        let mut histogram = make_histogram_config();
+        histogram.base.sink = agent();
+        let msg = err_msg(validate_histogram_config(&histogram));
+        assert!(
+            msg.contains("snmp_agent sink carries metrics entries only, not histogram entries"),
+            "got: {msg}"
+        );
+
+        validate_summary_config(&make_summary_config()).expect("guard: the summary validates");
+        let mut summary = make_summary_config();
+        summary.encoder = snmp_encoder();
+        let msg = err_msg(validate_summary_config(&summary));
+        assert!(msg.contains("not summary entries"), "got: {msg}");
+        let mut summary = make_summary_config();
+        summary.base.sink = agent();
+        let msg = err_msg(validate_summary_config(&summary));
+        assert!(
+            msg.contains("snmp_agent sink carries metrics entries only, not summary entries"),
+            "got: {msg}"
+        );
+
+        let json = EncoderConfig::JsonLines { precision: None };
+        validate_log_config(&snmp_log_config(json.clone(), SinkConfig::Stdout))
+            .expect("guard: the log entry validates");
+        let msg = err_msg(validate_log_config(&snmp_log_config(
+            snmp_encoder(),
+            SinkConfig::Stdout,
+        )));
+        assert!(
+            msg.contains("snmp encoder carries metrics entries only, not logs entries"),
+            "got: {msg}"
+        );
+        let msg = err_msg(validate_log_config(&snmp_log_config(json, agent())));
+        assert!(
+            msg.contains("snmp_agent sink carries metrics entries only, not logs entries"),
             "got: {msg}"
         );
     }
