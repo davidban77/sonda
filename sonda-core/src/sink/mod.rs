@@ -151,10 +151,11 @@ impl std::fmt::Debug for KafkaSaslConfig {
 ///
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,
-/// `http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, or `gnmi_target`.
+/// `http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,
+/// or `snmp_agent`.
 ///
 /// Feature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,
-/// `otlp_grpc`, `gnmi_target`) have companion `*Disabled` variants that are compiled in
+/// `otlp_grpc`, `gnmi_target`, `snmp_agent`) have companion `*Disabled` variants that are compiled in
 /// when their feature is absent. These accept the YAML tag so that
 /// deserialization succeeds with a descriptive error from [`create_sink`]
 /// instead of a generic "unknown variant" error from serde.
@@ -457,6 +458,31 @@ pub enum SinkConfig {
     #[cfg(not(feature = "gnmi"))]
     #[cfg_attr(feature = "config", serde(rename = "gnmi_target"))]
     GnmiTargetDisabled {},
+
+    /// An SNMP agent listening on `listen`.
+    ///
+    /// Validation pairs it with the `snmp` encoder, in both directions.
+    /// [`create_sink`] refuses it with a [`SondaError::Config`]. Requires the
+    /// `snmp` feature flag.
+    #[cfg(feature = "snmp")]
+    #[cfg_attr(feature = "config", serde(rename = "snmp_agent"))]
+    SnmpAgent {
+        /// Address the agent listens on, such as `"0.0.0.0:1161"`.
+        #[cfg_attr(
+            feature = "config",
+            serde(deserialize_with = "crate::config::scalar_text::required")
+        )]
+        listen: String,
+    },
+
+    /// Placeholder variant when the `snmp` feature is not compiled in.
+    ///
+    /// Deserializes the `snmp_agent` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "snmp"))]
+    #[cfg_attr(feature = "config", serde(rename = "snmp_agent"))]
+    SnmpAgentDisabled {},
 }
 
 impl SinkConfig {
@@ -476,6 +502,7 @@ impl SinkConfig {
         "loki",
         "otlp_grpc",
         "gnmi_target",
+        "snmp_agent",
     ];
 
     /// The `type:` name this sink has in a scenario file, such as `"stdout"` or
@@ -513,6 +540,10 @@ impl SinkConfig {
             SinkConfig::GnmiTarget(_) => "gnmi_target",
             #[cfg(not(feature = "gnmi"))]
             SinkConfig::GnmiTargetDisabled {} => "gnmi_target",
+            #[cfg(feature = "snmp")]
+            SinkConfig::SnmpAgent { .. } => "snmp_agent",
+            #[cfg(not(feature = "snmp"))]
+            SinkConfig::SnmpAgentDisabled {} => "snmp_agent",
         }
     }
 }
@@ -720,6 +751,10 @@ pub(crate) async fn create_sink_in(
         SinkConfig::GnmiTarget(cfg) => {
             Ok(Box::new(gnmi::GnmiTargetSink::new_in(cfg, launch).await?))
         }
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpAgent { .. } => Err(SondaError::Config(crate::ConfigError::invalid(
+            "sink type 'snmp_agent' cannot be created in this build",
+        ))),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
@@ -751,6 +786,12 @@ pub(crate) async fn create_sink_in(
         SinkConfig::GnmiTargetDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
                 "sink type 'gnmi_target' requires the 'gnmi' feature: cargo build -F gnmi",
+            )))
+        }
+        #[cfg(not(feature = "snmp"))]
+        SinkConfig::SnmpAgentDisabled { .. } => {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "sink type 'snmp_agent' requires the 'snmp' feature: cargo build -F snmp",
             )))
         }
     }
@@ -1830,7 +1871,61 @@ retry:
             SinkConfig::GnmiTarget(gnmi::GnmiTargetConfig::new("127.0.0.1:0")),
             #[cfg(not(feature = "gnmi"))]
             SinkConfig::GnmiTargetDisabled {},
+            #[cfg(feature = "snmp")]
+            SinkConfig::SnmpAgent {
+                listen: "127.0.0.1:0".to_string(),
+            },
+            #[cfg(not(feature = "snmp"))]
+            SinkConfig::SnmpAgentDisabled {},
         ]
+    }
+
+    /// A bare number is read as its text: the schema accepts any scalar for
+    /// `listen`, so it parses, and binding reports what is wrong with it.
+    #[cfg(all(feature = "snmp", feature = "config"))]
+    #[rstest::rstest]
+    #[case::address("type: snmp_agent\nlisten: 0.0.0.0:1161", "0.0.0.0:1161")]
+    #[case::bare_number("type: snmp_agent\nlisten: 1161", "1161")]
+    fn snmp_agent_yaml_deserializes_into_its_listen_address(
+        #[case] yaml: &str,
+        #[case] expected: &str,
+    ) {
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("an snmp_agent sink parses");
+        let SinkConfig::SnmpAgent { listen } = config else {
+            panic!("should deserialize as SnmpAgent, got {config:?}");
+        };
+        assert_eq!(listen, expected);
+    }
+
+    #[cfg(all(not(feature = "snmp"), feature = "config"))]
+    #[test]
+    fn snmp_agent_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let config: SinkConfig = serde_yaml_ng::from_str("type: snmp_agent\nlisten: 0.0.0.0:1161")
+            .expect("type: snmp_agent must deserialize even without the snmp feature");
+        assert!(matches!(config, SinkConfig::SnmpAgentDisabled {}));
+    }
+
+    #[cfg(all(feature = "snmp", feature = "runtime"))]
+    #[tokio::test]
+    async fn create_sink_refuses_the_snmp_agent() {
+        let config = SinkConfig::SnmpAgent {
+            listen: "127.0.0.1:0".to_string(),
+        };
+        let err = create_sink(&config, None).await.err().expect("not created");
+        assert!(matches!(err, SondaError::Config(_)), "{err}");
+        assert!(err.to_string().contains("snmp_agent"), "{err}");
+    }
+
+    #[cfg(all(not(feature = "snmp"), feature = "runtime"))]
+    #[tokio::test]
+    async fn create_sink_snmp_agent_disabled_returns_feature_hint_error() {
+        let err = create_sink(&SinkConfig::SnmpAgentDisabled {}, None)
+            .await
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(msg.contains("snmp_agent"), "got: {msg}");
+        assert!(msg.contains("cargo build -F snmp"), "got: {msg}");
     }
 
     /// `kind()` is the `type:` tag serde writes for every variant, and the tag

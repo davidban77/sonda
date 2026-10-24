@@ -19,6 +19,7 @@ remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 otlp = ["sonda-core/otlp"]
 gnmi = ["sonda-core/gnmi", "dep:chrono"]
+snmp = ["sonda-core/snmp"]
 
 [[bin]]
 name = "sonda-server"

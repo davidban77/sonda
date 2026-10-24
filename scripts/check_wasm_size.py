@@ -27,16 +27,17 @@ from pathlib import Path
 
 BUNDLE = Path("docs/site/docs/javascripts/sonda_wasm_bg.wasm")
 
-# Measured size of the committed bundle plus ~10% headroom, so ordinary code
+# Measured size of the committed bundle plus headroom, so ordinary code
 # growth is not a merge-blocker but a step change is.
 #
 #   1,240,112  before WP5 (release profile, no wasm-opt)
-#     771,488  now (wasm-release profile + wasm-opt -Oz)  -> 37.8% smaller
+#     771,488  after WP5 (wasm-release profile + wasm-opt -Oz)  -> 37.8% smaller
+#     856,589  with the snmp config types (budget 850,000 -> 883,000)
 #
 # Almost all of that came from wasm-opt, not from the cargo profile: the
 # profile alone is worth ~3% after wasm-bindgen. If a rebuild lands near the
 # old figure, the wasm-opt step was skipped — see `task site:wasm`.
-BUDGET_BYTES = 850_000
+BUDGET_BYTES = 883_000
 
 # When the bundle is this far under budget, the ratchet has gone slack and is
 # no longer measuring anything. Reported, not failed: tightening it is a
