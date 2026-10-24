@@ -745,17 +745,18 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case::scalar_under(             "1.3.6.1.2.1.1.5.0",           true)]
-    #[case::scalar_is_the_prefix_0(   "1.3.6.1.2.1.0",               false)]
-    #[case::scalar_elsewhere(         "1.3.6.1.4.1.8072.9999.1.1.0", false)]
-    #[case::column_under(             "1.3.6.1.2.1.1.9.1.2.{x}",     true)]
-    #[case::column_reaches_it(        "1.3.6.1.2.1.{x}",             true)]
-    #[case::column_two_short(         "1.3.6.1.2.{x}",               false)]
-    #[case::column_reaches_with_two(  "1.3.6.1.2.{x}.{y}",           true)]
-    #[case::column_beside(            "1.3.6.1.2.1.2.2.1.8.{ifIndex}", false)]
-    fn can_render_under_the_system_group(#[case] text: &str, #[case] expected: bool) {
-        let system = oid("1.3.6.1.2.1.1");
-        assert_eq!(template(text).can_render_under(&system), expected, "{text}");
+    #[case::scalar_under(             "1.3.6.1.2.1.1.5.0",             "1.3.6.1.2.1.1",     true)]
+    #[case::scalar_beside_it(         "1.3.6.1.2.1.0",                 "1.3.6.1.2.1.1",     false)]
+    #[case::scalar_elsewhere(         "1.3.6.1.4.1.8072.9999.1.1.0",   "1.3.6.1.2.1.1",     false)]
+    #[case::scalar_is_the_prefix(     "1.3.6.1.2.1.1.3.0",             "1.3.6.1.2.1.1.3.0", true)]
+    #[case::scalar_object_is_not(     "1.3.6.1.2.1.1.3.0",             "1.3.6.1.2.1.1.3.1", false)]
+    #[case::column_under(             "1.3.6.1.2.1.1.9.1.2.{x}",       "1.3.6.1.2.1.1",     true)]
+    #[case::column_reaches_it(        "1.3.6.1.2.1.{x}",               "1.3.6.1.2.1.1",     true)]
+    #[case::column_two_short(         "1.3.6.1.2.{x}",                 "1.3.6.1.2.1.1",     false)]
+    #[case::column_reaches_with_two(  "1.3.6.1.2.{x}.{y}",             "1.3.6.1.2.1.1",     true)]
+    #[case::column_beside(            "1.3.6.1.2.1.2.2.1.8.{ifIndex}", "1.3.6.1.2.1.1",     false)]
+    fn can_render_under_a_prefix(#[case] text: &str, #[case] prefix: &str, #[case] expected: bool) {
+        assert_eq!(template(text).can_render_under(&oid(prefix)), expected, "{text} under {prefix}");
     }
 
     #[rstest]
