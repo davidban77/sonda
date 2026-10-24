@@ -1544,6 +1544,11 @@ mod tests {
             answer(&request, &agent, 1472, &mut scratch, &mut out),
             Outcome::Sent
         );
+        assert_eq!(
+            counting::count_allocations(|| std::hint::black_box(Box::new(1u8))).1,
+            1,
+            "the lib's counting allocator is installed"
+        );
         let ((outcome, len), allocations) = counting::count_allocations(|| {
             let outcome = answer(&request, &agent, 1472, &mut scratch, &mut out);
             (outcome, out.len())
