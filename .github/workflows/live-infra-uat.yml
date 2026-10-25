@@ -18,9 +18,10 @@ name: Live Infra UAT
 #
 # The list is the harness's real inputs, derived from the script rather than
 # guessed: it builds `-p sonda` (so all of sonda-core and sonda, plus the
-# workspace manifests and toolchain pin), boots the compose stack from
-# examples/ (which mounts ../docker/ for Grafana provisioning), and runs
-# scenarios from examples/ and tests/e2e/.
+# workspace manifests and toolchain pin, and packs/, which sonda-core embeds
+# through its packs symlink), boots the compose stack from examples/ (which
+# mounts ../docker/ for Grafana provisioning), and runs scenarios from
+# examples/ and tests/e2e/ (where the snmp row's golden walk is).
 #
 # Dockerfile and .dockerignore are in the list because the compose stack's
 # `sonda-server` service builds from them (`context: ..`, no `profiles:` key,
@@ -47,6 +48,7 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - 'examples/**'
+      - 'packs/**'
       - 'docker/**'
       - 'tests/e2e/**'
       - 'scripts/live_infra_uat.py'
@@ -88,7 +90,7 @@ jobs:
       # Union of features required across every matrix row. Mirrors the
       # docs-commands job's pattern so feature drift between gates is loud.
       - name: Build sonda release
-        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi
+        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi,snmp
 
       # Stdlib-only Python harness — no requirements.txt, no pip install.
       - name: Run live-infra UAT harness

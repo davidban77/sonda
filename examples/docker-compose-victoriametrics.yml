@@ -31,6 +31,7 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile otel-collector up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile otel-collector --profile loki up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile gnmi up -d
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile snmp up -d
 #
 # Tear down:
 #
@@ -50,7 +51,7 @@ services:
       dockerfile: Dockerfile
       args:
         # Named, not inherited: this stack's own profiles need the otlp sink, which the image default does not carry.
-        FEATURES: remote-write,kafka,otlp,gnmi
+        FEATURES: remote-write,kafka,otlp,gnmi,snmp
     # Rebuilt on every `up`: an image cached from before those args changed keeps the feature set it was built with.
     pull_policy: build
     ports:
@@ -472,6 +473,38 @@ services:
     volumes:
       - ./telegraf/telegraf-tls.conf:/etc/telegraf/telegraf.conf:ro
       - ./telegraf/certs:/etc/telegraf/certs:ro
+    extra_hosts:
+      - "sonda:host-gateway"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Telegraf as an SNMP poller of Sonda's snmp_agent sink.
+  #
+  # Polls sonda:1161 over SNMPv2c, which examples/snmp-telegraf.yaml serves,
+  # every 2s, and writes what it reads to VictoriaMetrics. Sonda runs on the
+  # host:
+  #
+  #   sonda run examples/snmp-telegraf.yaml
+  #
+  # extra_hosts maps the name `sonda` to the host. The image carries net-snmp,
+  # so the agent can also be walked from inside the container:
+  #
+  #   docker compose -f examples/docker-compose-victoriametrics.yml exec \
+  #     telegraf-snmp snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
+  #
+  # Its health endpoint is on port 8097.
+  #
+  # This service is only started with --profile snmp.
+  # ---------------------------------------------------------------------------
+  telegraf-snmp:
+    image: telegraf:1.40.2
+    profiles: [snmp]
+    ports:
+      - "8097:8097"
+    volumes:
+      - ./telegraf/telegraf-snmp.conf:/etc/telegraf/telegraf.conf:ro
     extra_hosts:
       - "sonda:host-gateway"
     depends_on:
