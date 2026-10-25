@@ -271,7 +271,7 @@ jobs:
       # script's --dry-run invocations parse every example. Mirrors the feature
       # set on the all-features job but scoped to the sonda binary only.
       - name: Build sonda release
-        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi
+        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi,snmp
 
       # Stdlib-only Python script — no requirements.txt, no pip install, no uv.
       # Uses the actions runner's default Python 3.

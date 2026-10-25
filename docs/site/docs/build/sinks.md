@@ -716,7 +716,7 @@ Serves the scenario's metrics as an SNMP agent, the way a managed device does. L
 Pair this sink with the [`snmp` encoder](encoders.md#snmp), which renders each series as an instance OID and a typed value. Each takes only the other, and it works for `metrics` entries. Histogram, summary and logs entries take neither.
 
 !!! note
-    This sink requires the `snmp` Cargo feature flag. To build from source: `cargo build --features snmp -p sonda`.
+    This sink requires the `snmp` Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: `cargo build --features snmp -p sonda`.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -788,6 +788,98 @@ With the agent running, net-snmp's tools read it directly:
 ```bash
 snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
 snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
+```
+
+### Telegraf { #snmp-telegraf }
+
+The example below is a router with four interfaces, polled by Telegraf's `inputs.snmp`. The [`telegraf_snmp_interface`](builtin-packs.md#snmp-hints) pack carries each metric's IF-MIB column and SNMP type, so the encoder block names no OIDs. Only the first interface is shown here; the complete scenario is [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml):
+
+```yaml title="examples/snmp-telegraf.yaml (excerpt)"
+# sonda:static - excerpt only; an snmp_agent listens for a poller, which the browser playground cannot provide
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    drop_labels: [ifName, ifAlias, job]
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1161
+    community: public
+    system:
+      name: rtr-core-01
+      descr: Sonda synthetic router
+      contact: noc@example.com
+      location: lab-1
+
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels: { device: rtr-core-01, ifIndex: 1, ifName: GigabitEthernet0/0/0 }
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 5s
+          enum: oper_state
+```
+
+Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc, `device` is the agent label, and the agent serves no OID for `ifName`, `ifAlias` or `job`, so the encoder drops them. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5.
+
+Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK`. Every OID is numeric, so Telegraf loads no MIB:
+
+```toml title="examples/telegraf/telegraf-snmp.conf (excerpt)"
+[[inputs.snmp]]
+  agents = ["udp://sonda:1161"]
+  version = 2
+  community = "public"
+  agent_host_tag = "source"
+
+  [[inputs.snmp.field]]
+    name = "uptime"
+    oid = ".1.3.6.1.2.1.1.3.0"
+
+  [[inputs.snmp.field]]
+    name = "hostname"
+    oid = ".1.3.6.1.2.1.1.5.0"
+    is_tag = true
+
+  [[inputs.snmp.table]]
+    name = "interface"
+    index_as_tag = true
+
+    [[inputs.snmp.table.field]]
+      name = "ifOperStatus"
+      oid = ".1.3.6.1.2.1.2.2.1.8"
+
+    [[inputs.snmp.table.field]]
+      name = "ifHCInOctets"
+      oid = ".1.3.6.1.2.1.31.1.1.1.6"
+```
+
+The table's `name` becomes the measurement and each row's index the `index` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets` and writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface:
+
+```text title="What VictoriaMetrics stores (excerpt)"
+interface_ifOperStatus{db="telegraf",index="1",source="sonda"}
+interface_ifHCInOctets{db="telegraf",index="1",source="sonda"}
+snmp_uptime{db="telegraf",hostname="rtr-core-01",source="sonda"}
+```
+
+To run the pair, start the compose stack's `snmp` profile. It runs Telegraf with that config. Then start the scenario on the host:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile snmp up -d
+sonda run examples/snmp-telegraf.yaml
+```
+
+The Telegraf image ships net-snmp, so the agent can be walked from inside the container too, at the address Telegraf polls:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
+  snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
 ```
 
 ## Retry with backoff

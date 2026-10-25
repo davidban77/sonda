@@ -91,7 +91,7 @@ fn every_example_dry_runs_and_names_each_kind() {
     #[allow(unused_mut)]
     let mut examples: Vec<PathBuf> = scenarios.into_iter().map(|(path, _)| path).collect();
     assert!(!examples.is_empty(), "no v2 scenario files under examples/");
-    for name in ["gnmi-telegraf.yaml", "gnmi-pack.yaml"] {
+    for name in ["gnmi-telegraf.yaml", "gnmi-pack.yaml", "snmp-telegraf.yaml"] {
         assert!(
             examples.contains(&example(name)),
             "{name} is not among the scenarios found: {examples:?}"

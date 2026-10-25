@@ -67,7 +67,7 @@ Every pack uses the real upstream metric names and label keys, so a dashboard qu
 | `node_exporter_cpu` | infrastructure | `node_cpu_seconds_total` per CPU mode |
 | `node_exporter_memory` | infrastructure | node_exporter memory gauges |
 | `openconfig_interface` | network | OpenConfig interface counters, oper-status and admin-status, with the gNMI path and value type of each |
-| `telegraf_snmp_interface` | network | SNMP interface counters and status, Telegraf-normalized |
+| `telegraf_snmp_interface` | network | SNMP interface counters and status, Telegraf-normalized, with the IF-MIB OID and SNMP type of each |
 
 ### `http_server_red`
 
@@ -108,6 +108,41 @@ scenarios:
 ```
 
 `in_octets` on `Ethernet1` is served at `/interfaces/interface[name=Ethernet1]/state/counters/in-octets` as a `uint_val`, and `oper_status` at `/interfaces/interface[name=Ethernet1]/state/oper-status` as the string `UP`. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/gnmi-pack.yaml`](https://github.com/davidban77/sonda/blob/main/examples/gnmi-pack.yaml) runs it for two interfaces.
+
+### `telegraf_snmp_interface` { #snmp-hints }
+
+The IF-MIB interface metrics Telegraf's `inputs.snmp` collects, under the names Telegraf gives them: `ifOperStatus`, `ifHCInOctets`, `ifHCOutOctets`, `ifInErrors` and `ifOutErrors`, labelled `device`, `ifName`, `ifAlias`, `ifIndex` and `job`. `ifOperStatus` is an enum code, 1 up, 2 down, and defaults to up.
+
+Every metric carries an `snmp:` hint: its IF-MIB column, indexed by the `ifIndex` label, and its SNMP type. Under the [`snmp` encoder](encoders.md#snmp) the hints fill the encoder's `oids:` and `types:`, so the encoder block names no OIDs:
+
+| Metric | OID | Type |
+|--------|-----|------|
+| `ifOperStatus` | `1.3.6.1.2.1.2.2.1.8.{ifIndex}` | `integer` |
+| `ifHCInOctets` | `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` | `counter64` |
+| `ifHCOutOctets` | `1.3.6.1.2.1.31.1.1.1.10.{ifIndex}` | `counter64` |
+| `ifInErrors` | `1.3.6.1.2.1.2.2.1.14.{ifIndex}` | `counter32` |
+| `ifOutErrors` | `1.3.6.1.2.1.2.2.1.20.{ifIndex}` | `counter32` |
+
+```yaml
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    drop_labels: [ifName, ifAlias, job]
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1161
+
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels: { device: rtr-edge-01, ifIndex: 1, ifName: Ethernet1 }
+```
+
+`ifHCInOctets` on interface 1 is served at `1.3.6.1.2.1.31.1.1.1.6.1` as a `Counter64`. Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc and `device` the agent label, so `ifName`, `ifAlias` and `job` are dropped. An `oids:` or `types:` entry in the encoder block wins over the hint. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) runs it for four interfaces, polled by [Telegraf](sinks.md#snmp-telegraf).
 
 ## Change one metric without editing the pack
 

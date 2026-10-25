@@ -57,6 +57,16 @@ docker run --rm \
   run /work/cpu-spike.yaml
 ```
 
+A scenario with an [`snmp_agent`](../build/sinks.md#snmp_agent) sink listens for pollers over UDP. Publish its port with `/udp`. To answer on SNMP's standard port, map the host's 161 to an unprivileged port in the container, so the container needs no extra capability. Inside the container the agent must listen on `0.0.0.0:1161`, not `127.0.0.1`, for the mapping to reach it:
+
+```bash
+# A poller reaches the agent at <host>:161
+docker run --rm -p 161:1161/udp \
+  -v "$PWD/scenarios":/work \
+  ghcr.io/davidban77/sonda:latest \
+  run /work/router.yaml
+```
+
 !!! info "`argv[1]` must be the subcommand"
     The default entrypoint is `sonda-server`. It inspects `argv[1]` and runs the sibling `sonda` CLI when it matches one of the four subcommands (`run`, `list`, `show`, `new`). That means **global flags like `--catalog` belong after the subcommand** when using the default entrypoint. Use `sonda run @x --catalog /catalog`, not `sonda --catalog /catalog run @x`. The host CLI accepts both orderings. The Docker constraint comes from the shim that runs the sibling binary, not clap.
 
@@ -393,12 +403,12 @@ For multi-arch builds (linux/amd64 and linux/arm64) using Docker Buildx:
 docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
 ```
 
-By default the build compiles three optional features: Prometheus remote write, Kafka and gNMI. That is the same set as the published image and the release archives. You need no extra flags to match it.
+By default the build compiles four optional features: Prometheus remote write, Kafka, gNMI and SNMP. That is the same set as the published image and the release archives. You need no extra flags to match it.
 
 OTLP is not in that set. To add it, use the `FEATURES` build argument. It lists the optional features to compile:
 
 ```bash
-docker build --build-arg FEATURES=remote-write,kafka,gnmi,otlp -t sonda .
+docker build --build-arg FEATURES=remote-write,kafka,gnmi,snmp,otlp -t sonda .
 ```
 
 The argument works the same way with `docker buildx build`. See [Encoders — otlp](../build/encoders.md#otlp) and [Sinks — otlp_grpc](../build/sinks.md#otlp_grpc) for the encoder and sink that feature enables.
