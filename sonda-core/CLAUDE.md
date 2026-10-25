@@ -615,7 +615,11 @@ src/
 │   │   │                   unsupported_version, send_errors; count(Counter) adds one.
 │   │   │                   warn_too_big() logs at most once per WARN_INTERVAL (60 s, tokio
 │   │   │                   clock) per agent. bind() binds a tokio UdpSocket (a refused
-│   │   │                   permission names the port and CAP_NET_BIND_SERVICE) and spawns
+│   │   │                   permission names the port and CAP_NET_BIND_SERVICE), on a
+│   │   │                   wildcard address (responder::wants_pktinfo) turns on packet info
+│   │   │                   (responder::enable_pktinfo; a failure, or a platform other than
+│   │   │                   Linux and macOS, warns once and the agent answers as before),
+│   │   │                   and spawns
 │   │   │                   responder::serve with the agent held weakly, beside a
 │   │   │                   ClosedOnDrop guard declared first so the socket drops before the
 │   │   │                   agent reads as stopped. Dropping the last Arc cancels the token;
@@ -642,7 +646,17 @@ src/
 │   │                       unsupported_version, any other as malformed. serve(socket,
 │   │                       Weak<SnmpAgent>, cancel): recv buffer 65 535, one out buffer
 │   │                       reserved to max_message_size, sends to the datagram's source,
-│   │                       counts send errors; a wrong community warns once per peer IP
+│   │                       counts send errors. When the socket reports packet info
+│   │                       (pktinfo::enabled reads the option back) it reads with recvmsg
+│   │                       and sends with sendmsg carrying reply_source(info) as the
+│   │                       packet-info source (nix, no unsafe; tokio readable()/writable()
+│   │                       + try_io), otherwise recv_from/send_to. reply_source is the ONE
+│   │                       rule: IPv4 ipi_spec_dst (the local address, the interface's for
+│   │                       broadcast/multicast; unspecified -> the destination if unicast,
+│   │                       else none); IPv6 the destination if unicast, else the receiving
+│   │                       ifindex with the address unspecified (IPv4-mapped kept mapped).
+│   │                       sendmsg allocates its control buffer (nix), once per reply.
+│   │                       A wrong community warns once per peer IP
 │   │                       per minute (PeerWarnings, ≤ 1024 IPs), with its length only.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
@@ -776,7 +790,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes` and `runtime` for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv2c responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes`, `runtime` and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv2c responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

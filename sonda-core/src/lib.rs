@@ -337,11 +337,7 @@ mod tests {
     /// The allocator installed above counts: one known allocation reads as one.
     #[test]
     fn the_counting_allocator_counts() {
-        assert_eq!(
-            counting::count_allocations(|| std::hint::black_box(Box::new(1u8))).1,
-            1,
-            "the lib's counting allocator is installed"
-        );
+        counting::assert_count_allocations_counts();
     }
 
     // ---- SondaError variant discrimination ------------------------------------
