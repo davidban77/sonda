@@ -858,7 +858,7 @@
               }
             },
             "label_columns": {
-              "description": "OID template per label whose value the agent serves as an OCTET\nSTRING, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`: a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry; a series\nwithout the label serves no instance of its column. Each is a string;\na YAML number is an error.",
+              "description": "OID template per label whose value the agent serves as an OCTET\nSTRING, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`: a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry, and\nvalidation requires it to be a static label of the entry; a series\nwithout the label serves no instance of its column. Each is a string;\na YAML number is an error.",
               "type": "object",
               "additionalProperties": {
                 "type": "string"

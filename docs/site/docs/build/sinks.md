@@ -760,7 +760,7 @@ The agent serves the system group and every instance its entries publish, in OID
 
 An instance leaves the agent when the last scenario publishing it stops (scenarios of one scenario file can publish the same OID), and at no other time: a series that stops changing keeps its latest value, as a stalled counter does on a device. Once it has left, a walk skips it and a request for it answers `noSuchInstance`.
 
-A [label column](encoders.md#label-columns) is served the same way. Its instance, such as `ifName.1`, arrives with the first value of the first series that carries it and stays while any series carrying it is live: `ifName.1` stays while any metric of interface 1 is published and leaves with the last. Series of one scenario file that carry one label column agree on its value by construction, and the last one written is served. Another run's label column is owned like any other instance.
+A [label column](encoders.md#label-columns) is served the same way. Its instance, such as `ifName.1`, arrives with the first value of the first series that carries it and stays while any series carrying it is live: `ifName.1` stays while any metric of interface 1 is published and leaves with the last. A label column's label is a static label of each entry, so the series of one entry agree on its value; entries that give one index different values share the instance, and the last one written is served. Another run's label column is owned like any other instance.
 
 ### Requests { #snmp-requests }
 

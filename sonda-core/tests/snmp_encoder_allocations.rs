@@ -430,7 +430,8 @@ fn label_columns_leave_steady_state_encode_at_zero() {
     );
     assert_eq!(
         allocs, 0,
-        "steady-state encode with label columns must not allocate: {allocs} allocations          over {calls} calls"
+        "steady-state encode with label columns must not allocate: {allocs} allocations \
+         over {calls} calls"
     );
 }
 

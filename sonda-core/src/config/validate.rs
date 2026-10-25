@@ -715,6 +715,21 @@ fn counters_meet(a: (&String, u64), b: (&String, u64)) -> Option<u32> {
     index_arc(&format!("{long}0"))
 }
 
+/// `label`'s placeholder as `template` writes it: `{label:str}` for a string
+/// index, else `{label}`.
+#[cfg(feature = "snmp")]
+fn placeholder_text(template: &crate::encoder::snmp::oid::OidTemplate, label: &str) -> String {
+    use crate::encoder::snmp::oid::TemplateArc;
+    let string = template
+        .arcs()
+        .any(|arc| arc == TemplateArc::StringLabel(label));
+    if string {
+        format!("{{{label}:str}}")
+    } else {
+        format!("{{{label}}}")
+    }
+}
+
 /// A collision of two templates under rule 6 of [`validate_snmp_encoder`].
 #[cfg(feature = "snmp")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -803,7 +818,10 @@ fn snmp_collision(
 ///    key only `cardinality_spikes` sets is refused: events carry it only
 ///    while the spike window is open. Every placeholder of a
 ///    `label_columns:` template is a placeholder of every `oids:` template.
-///    O(placeholders × templates).
+///    Every `label_columns:` label is a static label of the entry, not a
+///    `dynamic_labels` or `cardinality_spikes` label and not absent: series
+///    that differ only in a label-column label share the metric's OID.
+///    O(placeholders × templates + columns).
 /// 4. **Index values are arcs.** Every value the label of each `{label}`
 ///    placeholder of the metric's template or a `label_columns:` template
 ///    can take is an [`index_arc`](crate::encoder::snmp::oid::index_arc):
@@ -816,14 +834,18 @@ fn snmp_collision(
 /// 5. **Coverage.** Every label key of the entry (`labels`,
 ///    `dynamic_labels`, `cardinality_spikes`) is a placeholder of the
 ///    template, a `label_columns:` label, the `agent_label`, or in
-///    `drop_labels` ([`uncovered_label`](crate::encoder::snmp::uncovered_label)),
-///    so no two series differing only in a label share one OID. O(keys).
-/// 6. **No collision.** No other `oids:` metric's template can render an
-///    OID this metric's template can render for this entry
-///    ([`snmp_collision`]): with a string index in either, one object is
-///    equal to or a prefix of the other; otherwise the two have the same
+///    `drop_labels` ([`uncovered_label`](crate::encoder::snmp::uncovered_label)).
+///    Series that differ only in an unreferenced label would share one OID;
+///    series that differ only in a `label_columns:` label do share the
+///    metric's, which is why rule 3 requires that label to be static.
+///    O(keys).
+/// 6. **No collision.** The templates the entry renders, its metric's and
+///    each `label_columns:` one, can render no OID for this entry that
+///    another template of the encoder, in `oids:` or `label_columns:`, can
+///    render ([`snmp_collision`]): with a string index in either, one object
+///    is equal to or a prefix of the other; otherwise the two have the same
 ///    number of arcs, and at every position their arcs can be equal.
-///    O(metrics × arcs × values).
+///    O((metrics + columns)² × arcs × values).
 ///
 /// Last, the **system group**: no `oids:` or `label_columns:` template can
 /// render an OID under `1.3.6.1.2.1.1`, which the agent serves itself
@@ -889,8 +911,9 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         } else {
             "which is not a label of this entry"
         };
+        let written = placeholder_text(template, placeholder);
         return Err(invalid(format!(
-            "snmp OID template for metric {name:?} uses placeholder {{{placeholder}}}, {why}"
+            "snmp OID template for metric {name:?} uses placeholder {written}, {why}"
         )));
     }
     for (label, column) in &columns {
@@ -901,15 +924,32 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
                     .placeholders()
                     .any(|p| p == placeholder)
                 {
+                    let written = placeholder_text(column, placeholder);
                     return Err(invalid(format!(
                         "snmp encoder label_columns.{label}: {column} uses placeholder \
-                         {{{placeholder}}}, which the oids: template of metric {metric:?} does \
-                         not use; a label column uses only placeholders every oids: template \
-                         uses"
+                         {written}, which the oids: template of metric {metric:?} does not \
+                         use; a label column uses only placeholders every oids: template uses"
                     )));
                 }
             }
         }
+    }
+    for (label, _) in &columns {
+        let source = match config.base.label_value_set(label) {
+            Some(LabelValueSet::Static(_)) => continue,
+            Some(LabelValueSet::Values(_) | LabelValueSet::Counter { .. }) => {
+                "a dynamic_labels label"
+            }
+            Some(LabelValueSet::SpikeCounter { .. } | LabelValueSet::RandomShape { .. }) => {
+                "a cardinality_spikes label"
+            }
+            None => "not a label of this entry",
+        };
+        return Err(invalid(format!(
+            "snmp encoder label_columns.{label}: label `{label}` is {source}; series that \
+             differ only in a label-column label share the metric's OID, so its label must be \
+             a static label of the entry"
+        )));
     }
 
     // 4. Index values are arcs.
@@ -998,13 +1038,34 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         )));
     }
 
-    // 6. No collision within the entry.
-    for other in &metrics {
-        if *other == name {
-            continue;
-        }
-        let other_template = encoder.template_for(other)?;
-        match snmp_collision(template, other_template, &config.base) {
+    // 6. No collision within the entry: this metric's template, then each
+    // label column's, against every other template of the encoder.
+    // A template the refusal names, by what it is in the encoder block.
+    type Named<'t> = (String, &'t OidTemplate);
+    let others: Vec<Named<'_>> = metrics
+        .iter()
+        .filter(|metric| **metric != name)
+        .map(|metric| Ok((format!("metric {metric:?}"), encoder.template_for(metric)?)))
+        .collect::<Result<_, SondaError>>()?;
+    let column_names: Vec<Named<'_>> = columns
+        .iter()
+        .map(|(label, column)| (format!("label_columns.{label}"), column))
+        .collect();
+    let own = (format!("metric {name:?}"), template);
+    let mut pairs: Vec<(&Named<'_>, &Named<'_>)> = Vec::new();
+    pairs.extend(others.iter().map(|other| (&own, other)));
+    pairs.extend(column_names.iter().map(|column| (&own, column)));
+    for (i, column) in column_names.iter().enumerate() {
+        pairs.extend(others.iter().map(|other| (column, other)));
+        pairs.extend(column_names[i + 1..].iter().map(|later| (column, later)));
+    }
+    for ((a, a_template), (b, b_template)) in pairs {
+        // Two metrics keep the form `metrics "a" and "b"`.
+        let both = match (a.strip_prefix("metric "), b.strip_prefix("metric ")) {
+            (Some(a), Some(b)) => format!("metrics {a} and {b}"),
+            _ => format!("{a} and {b}"),
+        };
+        match snmp_collision(a_template, b_template, &config.base) {
             None => {}
             Some(SnmpCollision::Oid { oid, values }) => {
                 let when = if values.is_empty() {
@@ -1017,16 +1078,15 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
                     format!(" when {}", values.join(" and "))
                 };
                 return Err(invalid(format!(
-                    "snmp OID templates of metrics {name:?} and {other:?} both render {oid} for \
-                     this entry{when}; give each metric its own column"
+                    "snmp OID templates of {both} both render {oid} for this entry{when}; give \
+                     each its own column"
                 )));
             }
             Some(SnmpCollision::Nested) => {
                 return Err(invalid(format!(
-                    "snmp OID templates of metrics {name:?} and {other:?} can render the same \
-                     OID: {template} and {other_template} have a string index and objects \
-                     that are equal or one a prefix of the other; give each metric its own \
-                     column"
+                    "snmp OID templates of {both} can render the same OID: {a_template} and \
+                     {b_template} have a string index and objects that are equal or one a \
+                     prefix of the other; give each its own column"
                 )));
             }
         }
@@ -5269,14 +5329,61 @@ generator:
         "which the oids: template of metric \"ifHCOutOctets\" does not use")]
     #[case::r2_label_column_not_a_template(|c: &mut ScenarioConfig| set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1"),
         "label_columns.ifName: OID template \"1.3.6.1.2.1.31.1.1.1.1\" has no placeholder")]
-    #[case::r4_label_column_integer_index(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0/0/0");
+    #[case::r4_label_column_integer_index(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0/0/0"); set_label(c, "ifAlias", "uplink");
             set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.3.1.{ifName:str}");
             set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.3.2.{ifName:str}");
             snmp_cfg(c).drop_labels.push("ifIndex".to_string());
             set_column(c, "ifAlias", "1.3.6.1.4.1.8072.9999.3.3.{ifName}"); },
         "snmp encoder label_columns.ifAlias renders label `ifName` as an OID arc (an unsigned 32-bit integer in decimal, without leading zeros), but its value \"Gi0/0/0\"")]
-    #[case::system_group_label_column(|c: &mut ScenarioConfig| set_column(c, "ifName", "1.3.6.1.2.1.1.9.1.3.{ifIndex}"),
+    #[case::system_group_label_column(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            set_column(c, "ifName", "1.3.6.1.2.1.1.9.1.3.{ifIndex}"); },
         "label_columns.ifName: 1.3.6.1.2.1.1.9.1.3.{ifIndex} can render OIDs under 1.3.6.1.2.1.1")]
+    // 3, a label column's label is a static label of the entry.
+    #[case::r3_label_column_of_a_dynamic_label(|c: &mut ScenarioConfig| {
+            c.base.dynamic_labels = Some(vec![snmp_dynamic("ifName",
+                DynamicLabelStrategy::ValuesList { values: vec!["Gi0".to_string(), "Gi9".to_string()] })]);
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"); },
+        "snmp encoder label_columns.ifName: label `ifName` is a dynamic_labels label; series that differ only in a label-column label share the metric's OID, so its label must be a static label of the entry")]
+    #[case::r3_label_column_of_a_dynamic_label_over_a_static_one(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            c.base.dynamic_labels = Some(vec![snmp_dynamic("ifName", snmp_counter(None, 2))]);
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"); },
+        "label `ifName` is a dynamic_labels label")]
+    #[case::r3_label_column_of_a_spike_label(|c: &mut ScenarioConfig| {
+            c.base.cardinality_spikes = Some(vec![snmp_spike("ifName", crate::config::SpikeStrategy::Random, None)]);
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"); },
+        "snmp encoder label_columns.ifName: label `ifName` is a cardinality_spikes label")]
+    #[case::r3_label_column_of_a_static_label_under_a_spike(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            c.base.cardinality_spikes = Some(vec![snmp_spike("ifName", crate::config::SpikeStrategy::Counter, None)]);
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"); },
+        "label `ifName` is a cardinality_spikes label")]
+    #[case::r3_label_column_of_a_label_the_entry_lacks(|c: &mut ScenarioConfig| set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"),
+        "snmp encoder label_columns.ifName: label `ifName` is not a label of this entry")]
+    // 3, a string placeholder is named as written.
+    #[case::r3_spike_only_string_placeholder(|c: &mut ScenarioConfig| {
+            c.base.cardinality_spikes = Some(vec![snmp_spike("ifName", crate::config::SpikeStrategy::Counter, None)]);
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.3.1.{ifIndex}.{ifName:str}"); },
+        "uses placeholder {ifName:str}, a cardinality_spikes label")]
+    #[case::r3_label_column_string_placeholder_no_oids_template_uses(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            snmp_cfg(c).drop_labels.push("ifName".to_string());
+            set_column(c, "ifAlias", "1.3.6.1.4.1.8072.9999.3.4.{ifName:str}"); },
+        "label_columns.ifAlias: 1.3.6.1.4.1.8072.9999.3.4.{ifName:str} uses placeholder {ifName:str}, which the oids: template")]
+    // 6, label columns: against the metric, each other and another metric.
+    #[case::r6_label_column_on_the_metrics_column(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"); },
+        "snmp OID templates of metric \"ifHCInOctets\" and label_columns.ifName both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry when ifIndex is 1")]
+    #[case::r6_two_label_columns_on_one_column(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0"); set_label(c, "ifAlias", "uplink");
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}");
+            set_column(c, "ifAlias", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"); },
+        "snmp OID templates of label_columns.ifAlias and label_columns.ifName both render 1.3.6.1.2.1.31.1.1.1.1.1 for this entry when ifIndex is 1")]
+    #[case::r6_label_column_on_another_metrics_column(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.10.{ifIndex}"); },
+        "snmp OID templates of label_columns.ifName and metric \"ifHCOutOctets\" both render 1.3.6.1.2.1.31.1.1.1.10.1 for this entry when ifIndex is 1")]
+    #[case::r6_label_column_nested_with_a_string_index(|c: &mut ScenarioConfig| { set_label(c, "ifName", "Gi0");
+            snmp_cfg(c).drop_labels.push("ifIndex".to_string());
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.3.1.{ifName:str}");
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.3.2.{ifName:str}");
+            set_column(c, "ifAlias", "1.3.6.1.4.1.8072.9999.3.{ifName:str}"); set_label(c, "ifAlias", "uplink"); },
+        "snmp OID templates of metric \"ifHCInOctets\" and label_columns.ifAlias can render the same OID: 1.3.6.1.4.1.8072.9999.3.1.{ifName:str} and 1.3.6.1.4.1.8072.9999.3.{ifName:str}")]
     // 6, the counter arm: prefix followed by 0 to cardinality - 1.
     #[case::r6_counter_reaches_a_literal_below_its_cardinality(|c: &mut ScenarioConfig| { counter_beside(c, "", 4, "3"); },
         "both render 1.3.6.1.4.1.8072.9999.2.1.3.0 for this entry when ifIndex is 3 and slot is 0")]
@@ -5344,7 +5451,6 @@ generator:
             set_label(c, "ifAlias", "uplink");
             set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}");
             set_column(c, "ifAlias", "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"); })]
-    #[case::label_column_of_a_label_the_entry_lacks(|c: &mut ScenarioConfig| set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"))]
     #[case::scalar_label_column_beside_scalars(|c: &mut ScenarioConfig| { set_label(c, "site", "lab-1");
             set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.1.1.0");
             set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.1.2.0");

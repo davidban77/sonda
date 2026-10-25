@@ -823,11 +823,15 @@ src/
                            validate_snmp_encoder (snmp feature; from validate_config): pairing,
                            an oids: entry for the metric, placeholders are static or dynamic
                            labels and every label_columns placeholder is one of every oids:
-                           template, every value a {label} placeholder of the metric's or a
+                           template, every label_columns label a STATIC label of the entry
+                           (label_value_set is Static; dynamic, spike or absent refused: series
+                           differing only in it share the metric's OID), every value a {label} placeholder of the metric's or a
                            label column's template takes is an index_arc (counters checked
                            at the first and last value, random spikes refused; {label:str}
                            not checked), coverage (label_columns labels covered), no two
-                           metrics able to render one OID (snmp_collision: with a string
+                           templates able to render one OID, the metric's and each label
+                           column's against each other and every other oids: template
+                           (snmp_collision: with a string
                            index in either, one object equal to or a prefix of the other;
                            else same arc count and every position can match, ArcSet = listed
                            arcs plus counters prefix ++ 0..cardinality, exact, a spike's

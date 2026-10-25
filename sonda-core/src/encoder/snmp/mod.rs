@@ -85,7 +85,8 @@ pub struct SnmpEncoderConfig {
     /// STRING, such as `ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"`: a
     /// column beside the metrics' columns, one instance per index. A
     /// template uses only placeholders every `oids:` template uses. A label
-    /// named here needs no placeholder and no `drop_labels` entry; a series
+    /// named here needs no placeholder and no `drop_labels` entry, and
+    /// validation requires it to be a static label of the entry; a series
     /// without the label serves no instance of its column. Each is a string;
     /// a YAML number is an error.
     #[cfg_attr(
