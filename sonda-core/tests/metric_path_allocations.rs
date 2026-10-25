@@ -50,6 +50,13 @@ fn count_allocations(body: impl FnOnce()) -> usize {
     counting::count_allocations(body).1
 }
 
+/// One known allocation on this thread reads as one: this binary's counting
+/// allocator is installed.
+#[test]
+fn a_known_allocation_counts_as_one() {
+    counting::assert_count_allocations_counts();
+}
+
 /// Another thread allocating throughout a counted window adds nothing to it.
 /// This is what lets the cases here run in parallel with each other.
 #[test]
@@ -73,19 +80,21 @@ fn allocations_on_other_threads_are_not_counted() {
         })
     };
 
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         go.store(true, Ordering::SeqCst);
         while done.load(Ordering::SeqCst) < OTHER_ALLOCS {
             std::hint::spin_loop();
         }
+        std::hint::black_box(Box::new(1u8));
     });
     other.join().expect("allocating thread panicked");
 
     // Vacuity guard: the other thread did allocate, all of it inside the window.
     assert_eq!(done.load(Ordering::SeqCst), OTHER_ALLOCS);
     assert_eq!(
-        allocs, 0,
-        "allocations on another thread leaked into this thread's count"
+        allocs, 1,
+        "only this thread's own allocation is counted, none of the other thread's"
     );
 }
 
@@ -194,6 +203,7 @@ fn allocations_per_event(sink: &mut Box<dyn Sink>, delivered: &AtomicUsize) -> f
     });
 
     delivered.store(0, Ordering::Relaxed);
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         rt.block_on(async {
             sonda_core::schedule::runner::run_with_sink(&config, sink, &cancel, None)
@@ -232,6 +242,7 @@ fn plain_cost() -> f64 {
 #[test]
 fn plain_sink_pays_no_extra_allocation_per_event() {
     let per_event = plain_cost();
+    assert!(per_event > 0.0, "the plain path's figure was counted");
     assert!(
         per_event < 1.6,
         "the plain metric write path is over budget: {per_event:.3} allocations \
@@ -251,6 +262,7 @@ fn plain_sink_pays_no_extra_allocation_per_event() {
 #[test]
 fn opt_in_sink_receives_events_at_the_plain_cost() {
     let plain = plain_cost();
+    assert!(plain > 0.0, "the plain path's figure was counted");
 
     let delivered = Arc::new(AtomicUsize::new(0));
     let wrong_name = Arc::new(AtomicUsize::new(0));

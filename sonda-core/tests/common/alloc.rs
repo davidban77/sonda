@@ -45,3 +45,15 @@ pub fn count_allocations<T>(body: impl FnOnce() -> T) -> (T, usize) {
     COUNTING.with(|c| c.set(false));
     (out, ALLOCS.with(Cell::get))
 }
+
+/// Panic unless this thread's allocations are counted: one known allocation
+/// must read as one. An uninstalled counter reads 0 for anything, so a test
+/// asserting a zero calls this first.
+#[track_caller]
+pub fn assert_count_allocations_counts() {
+    assert_eq!(
+        count_allocations(|| std::hint::black_box(Box::new(1u8))).1,
+        1,
+        "the counting allocator is not installed: a known allocation was not counted"
+    );
+}

@@ -63,6 +63,13 @@ fn count_allocations(body: impl FnOnce()) -> usize {
     counting::count_allocations(body).1
 }
 
+/// One known allocation on this thread reads as one: this binary's counting
+/// allocator is installed.
+#[test]
+fn a_known_allocation_counts_as_one() {
+    counting::assert_count_allocations_counts();
+}
+
 /// Another thread allocating throughout a counted window adds nothing to it.
 /// This is what lets the cases here run in parallel with each other and with
 /// `common`'s tests.
@@ -87,19 +94,21 @@ fn allocations_on_other_threads_are_not_counted() {
         })
     };
 
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         go.store(true, Ordering::SeqCst);
         while done.load(Ordering::SeqCst) < OTHER_ALLOCS {
             std::hint::spin_loop();
         }
+        std::hint::black_box(Box::new(1u8));
     });
     other.join().expect("allocating thread panicked");
 
     // Vacuity guard: the other thread did allocate, all of it inside the window.
     assert_eq!(done.load(Ordering::SeqCst), OTHER_ALLOCS);
     assert_eq!(
-        allocs, 0,
-        "allocations on another thread leaked into this thread's count"
+        allocs, 1,
+        "only this thread's own allocation is counted, none of the other thread's"
     );
 }
 
@@ -118,6 +127,7 @@ fn steady_state_encode_allocates_nothing() {
     let one_notification = buf.len();
 
     let mut calls = 0usize;
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         for _ in 0..CALLS {
             buf.clear();
@@ -159,6 +169,7 @@ fn steady_state_encode_allocates_nothing() {
         })
         .collect();
     let mut spike_calls = 0usize;
+    counting::assert_count_allocations_counts();
     let spike_allocs = count_allocations(|| {
         for event in &spiked {
             buf.clear();
@@ -197,6 +208,7 @@ fn a_rejected_series_allocates_only_its_rejection_text() {
     let first = rejection(&encoder, &mut buf);
 
     let mut reasons = Vec::with_capacity(CALLS);
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         for _ in 0..CALLS {
             reasons.push(rejection(&encoder, &mut buf));
@@ -244,6 +256,7 @@ fn sixteen_series_allocate_only_on_first_sight() {
     );
 
     let mut calls = 0usize;
+    counting::assert_count_allocations_counts();
     let steady = count_allocations(|| {
         for i in 0..CALLS {
             buf.clear();
