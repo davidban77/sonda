@@ -307,8 +307,8 @@ tasks:
   site:scenario-check:
     desc: Compile every runnable scenario fence in the docs through the real engine
     cmds:
-      # With snmp, so the snmp encoder's and snmp_agent sink's validation runs on their fences.
-      - cargo build --release -p sonda --features snmp
+      # The docs job's feature list in ci.yml, so this validates every fence that job does.
+      - cargo build --release -p sonda --features http,kafka,remote-write,otlp,gnmi,snmp
       - python3 scripts/validate_docs_scenarios.py
 
   site:gallery-check:
