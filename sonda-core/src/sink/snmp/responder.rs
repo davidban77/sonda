@@ -2143,6 +2143,43 @@ mod tests {
         assert_eq!(allocations, 0);
     }
 
+    /// An SNMPv1 GET and an SNMPv1 GETNEXT of ten varbinds each allocate
+    /// nothing once their buffers have answered one like it; the GETNEXT's
+    /// last name has to pass over the Counter64 column.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::get(Tag::GetRequest, COLUMNS[0], "1.3.6.1.2.1.2.2.1.8.10 = INTEGER 1")]
+    #[case::getnext(Tag::GetNextRequest, COLUMNS[1], "1.3.6.1.2.1.31.1.1.1.15.1 = Gauge32 10000")]
+    #[tokio::test]
+    async fn a_v1_request_allocates_nothing(
+        #[case] pdu: Tag,
+        #[case] column: &str,
+        #[case] last: &str,
+    ) {
+        let agent = agent_serving(&[SnmpVersion::V1]).await;
+        interface_table(&agent);
+        let names: Vec<String> = (1..=10).map(|index| format!("{column}.{index}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let datagram = message_as(V1, "public", pdu, 0x1234, (0, 0), &names);
+        let mut scratch = Scratch::default();
+        let mut out = Vec::with_capacity(1472);
+        let request = decode(&datagram).expect("decodes");
+        assert_eq!(request.version, Version::V1);
+        assert_eq!(
+            answer(&request, &agent, 1472, &mut scratch, &mut out),
+            Outcome::Sent
+        );
+        counting::assert_count_allocations_counts();
+        let (outcome, allocations) = counting::count_allocations(|| {
+            answer(&request, &agent, 1472, &mut scratch, &mut out)
+        });
+        assert_eq!(outcome, Outcome::Sent);
+        let reply = response_in(&out, V1);
+        assert_eq!((reply.status, reply.varbinds.len()), (0, 10));
+        assert_eq!(reply.varbinds.last().map(String::as_str), Some(last));
+        assert_eq!(allocations, 0);
+    }
+
     // ---- the walk -----------------------------------------------------------
 
     /// A seeded draw of numbers.

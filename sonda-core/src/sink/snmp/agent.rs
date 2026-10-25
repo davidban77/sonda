@@ -78,11 +78,13 @@ pub(crate) enum Lookup {
 /// The requests an agent has received, by kind, as [`SnmpAgent::requests`]
 /// reports them.
 ///
-/// A message is checked in this order: its version, its community, then its
-/// PDU. It is counted once, under the first check it fails or under its PDU
-/// type; a request answered `tooBig` is also counted under
-/// [`too_big`](Self::too_big), and one answered as SNMPv1 under
-/// [`v1`](Self::v1).
+/// A datagram is checked in this order: its shape, its version, its
+/// community, then its PDU. It is counted once, under the first check it
+/// fails or under its PDU type; a request answered `tooBig` is also counted
+/// under [`too_big`](Self::too_big), and one answered as SNMPv1 under
+/// [`v1`](Self::v1). The shape comes first: an SNMPv1 message carrying a
+/// `GetBulkRequest` or a `Trap` is [`malformed`](Self::malformed) whatever
+/// versions the agent serves and whatever its community.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RequestCounters {
