@@ -246,6 +246,28 @@ src/
 │   │   │                   is UnsupportedVersion before the community is parsed),
 │   │   │                   VarBinds/VarBind, message_len/write_message. Fixtures are
 │   │   │                   inline constants in its tests, named by tool, flags and version.
+│   │   ├── v3.rs       ←   pub(crate) SNMPv3 message (RFC 3412) with USM parameters:
+│   │   │                   decode(datagram) -> V3Message { msg_id, msg_max_size (≥ 484),
+│   │   │                   flags: Flags { auth, privacy, reportable }, security_model,
+│   │   │                   usm: UsmParams { engine_id, boots, time, user, auth_params,
+│   │   │                   priv_params }, auth_range (where auth_params is in the
+│   │   │                   datagram), scoped: Option<ScopedPdu> (None with the privacy
+│   │   │                   flag: the data is an OCTET STRING, not decrypted) }; version
+│   │   │                   read first (anything but 3 is UnsupportedVersion), integers
+│   │   │                   0..2³¹−1 else Overflow, msgFlags one octet. ScopedPdu.pdu is a
+│   │   │                   ber::Message of version 3 with an empty community, so the
+│   │   │                   responder's PDU handling reads it unchanged. write_response(out,
+│   │   │                   req, &Snapshot, user, scoped_pdu) writes the USM header at exact
+│   │   │                   lengths with auth_params zeroed, then splices the HMAC of the
+│   │   │                   whole message (its position is kept relative to the outer
+│   │   │                   SEQUENCE's body, the only thing that moves); msgID and user
+│   │   │                   echoed, reportable clear, context engine ID ours, context name
+│   │   │                   empty, msgMaxSize 65507. response_len is the ONE size of what
+│   │   │                   write_response writes (the budget). write_report: one varbind,
+│   │   │                   the usmStats instance as a Counter32, the request's request-id
+│   │   │                   or 0. Its tests hold the captured net-snmp 5.9.4.pre2 v3
+│   │   │                   exchanges (every protocol, noAuthNoPriv, a wrong password) and
+│   │   │                   Client, the test-only manager that builds and signs requests.
 │   │   ├── oid.rs      ←   Oid (Vec<u32>, lexicographic Ord = walk order, ≥ 2 arcs and an
 │   │   │                   encodable first pair, Borrow<[u32]>, BER body helpers);
 │   │   │                   index_arc() is the ONE label-value → arc rule (canonical
@@ -588,10 +610,23 @@ src/
 │   │                       subscriber tasks, and only when the value changed.
 │   ├── snmp/           ← snmp_agent sink (feature = "snmp"):
 │   │   ├── mod.rs      ←   SnmpAgentConfig { listen, community "public", max_message_size
-│   │   │                   1472, system: SystemGroup, versions: Vec<SnmpVersion> [v2c] }
-│   │   │                   (SnmpVersion: V1 "v1" | V2c "v2c", non_exhaustive; versions
-│   │   │                   deserialize_with names the field for an unknown name or a
-│   │   │                   non-list) and SystemGroup { name, descr,
+│   │   │                   1472, system: SystemGroup, versions: Vec<SnmpVersion> [v2c],
+│   │   │                   users: Vec<UsmUser> [], engine_id: Option<String> }
+│   │   │                   (SnmpVersion: V1 "v1" | V2c "v2c" | V3 "v3", non_exhaustive;
+│   │   │                   versions deserialize_with names the field for an unknown name
+│   │   │                   or a non-list). UsmUser { name (scalar_text), auth:
+│   │   │                   Option<UsmAuth> } and UsmAuth { protocol: AuthProtocol,
+│   │   │                   password } have hand-written Deserialize over private derives
+│   │   │                   (user_fields), deny_unknown_fields: a `priv` key is refused
+│   │   │                   (PRIV_REFUSED); an auth that is not a map, and a password that
+│   │   │                   is not a string, are refused with fixed messages that never
+│   │   │                   repeat the value. The password is writeOnly and
+│   │   │                   x-sonda-no-widening in the schema; UsmAuth's Debug prints "***".
+│   │   │                   AuthProtocol (md5, sha1, sha224, sha256, sha384, sha512; "sha"
+│   │   │                   read as sha1; non_exhaustive) deserializes by name, naming the
+│   │   │                   field, and has a hand-written JsonSchema whose enum lists "sha".
+│   │   │                   engine_id is hex, a string only (a YAML number names the
+│   │   │                   field), "0x" allowed. SystemGroup { name, descr,
 │   │   │                   contact, location ("" each), object_id "1.3.6.1.4.1.8072.3.2.10"
 │   │   │                   (OidText: a string only; x-sonda-no-widening), services 72 },
 │   │   │                   both deny_unknown_fields; listen, community and the text fields
@@ -600,10 +635,19 @@ src/
 │   │   │                   sink both call: listen a socket address (IPv4-mapped read as
 │   │   │                   IPv4), max_message_size 484..=65507, object_id an Oid, services
 │   │   │                   ≤ 127, versions non-empty with no repeat (resolved ascending,
-│   │   │                   so equality is set equality) -> AgentSettings. serves()
-│   │   │                   compares every setting but the listen address; beside() names
-│   │   │                   the ones that differ and never a community ("community and
-│   │   │                   another community", "versions [v1, v2c] and [v2c]").
+│   │   │                   so equality is set equality), v3 in versions needs ≥ 1 user,
+│   │   │                   user names 1–32 bytes and unique, passwords ≥ 8 bytes (users
+│   │   │                   resolved ordered by name), engine_id 5–32 bytes of hex, kept as
+│   │   │                   an Option: without one the AGENT derives its ID at bind from the
+│   │   │                   address it bound (derived_engine_id: 80 00 1f 88 04, then
+│   │   │                   "sonda:<addr>" cut to 27 bytes, so port 0 gets the real port)
+│   │   │                   -> AgentSettings. serves() compares every setting but the listen
+│   │   │                   address, the community and the passwords in constant time
+│   │   │                   (same_users); beside() names the ones that differ and never a
+│   │   │                   community or a password ("community and another community",
+│   │   │                   "versions [v1, v2c] and [v2c]", "users [telegraf sha256] and
+│   │   │                   [telegraf sha512]", "users with another password", "engine_id …
+│   │   │                   and derived").
 │   │   │                   registry(): the snmp instance of ListenerRegistry<SnmpAgent>
 │   │   │                   behind SnmpAgentRegistry (acquire, check, join, len, is_empty,
 │   │   │                   targets, as gnmi's). join() never binds and compares the
@@ -651,11 +695,17 @@ src/
 │   │   │                   is a Counter64 (is_counter64: the value's tag octet 0x46, read
 │   │   │                   without decoding) and they do not count towards max.
 │   │   │                   get()/next_after() are their owned forms, cfg(test) only.
-│   │   │                   versions() is the settings' versions, ascending.
+│   │   │                   versions() is the settings' versions, ascending. engine_id() is
+│   │   │                   the USM engine's; usm() the Usm built at bind (each user's key
+│   │   │                   localized there, once; the engine's clock is `started`).
 │   │   │                   RequestCounters (#[non_exhaustive]): get, get_next, get_bulk,
 │   │   │                   set_refused, malformed, wrong_community, too_big,
 │   │   │                   unsupported_version, send_errors, v1 (answered as SNMPv1, also
-│   │   │                   counted under the PDU); count(Counter) adds one.
+│   │   │                   counted under the PDU), v3 (likewise), usm_unknown_engine_ids,
+│   │   │                   usm_unknown_user_names, usm_unsupported_sec_levels,
+│   │   │                   usm_wrong_digests, usm_not_in_time_windows (one per report);
+│   │   │                   count(Counter) adds one, count_and_read returns the new value
+│   │   │                   (a report carries it as a Counter32).
 │   │   │                   warn_too_big() logs at most once per WARN_INTERVAL (60 s, tokio
 │   │   │                   clock) per agent. bind() binds a tokio UdpSocket (a refused
 │   │   │                   permission names the port and CAP_NET_BIND_SERVICE), on a
@@ -668,6 +718,26 @@ src/
 │   │   │                   agent reads as stopped. Dropping the last Arc cancels the token;
 │   │   │                   wait() resolves once the socket is closed. Its ListenerTarget
 │   │   │                   SocketState is a watch::Receiver<bool> (true while it is open).
+│   │   ├── usm.rs      ←   pub(crate) User-based Security Model (RFC 3414). Engine { id,
+│   │   │                   boots = 1, bound_at }: time() whole seconds since bind (≤ 2³¹−1),
+│   │   │                   in_window(boots, time) (boots below 2³¹−1, equal, |Δt| ≤ 150),
+│   │   │                   snapshot() -> Snapshot { id, boots, time }, read once per answer
+│   │   │                   so the size computed is the size written. LocalizedUser { name,
+│   │   │                   auth: Option<(AuthProtocol, Kul)> } (Debug hides the key); Usm {
+│   │   │                   engine, users } built at bind. localize() is the ONE RFC 3414
+│   │   │                   A.2 localization (the password stretched to 1 MiB and hashed,
+│   │   │                   then H(Ku ‖ engineID ‖ Ku)), tested against A.3.1/A.3.2; hmac()
+│   │   │                   truncated per RFC 7860 to auth_params_len (12/12/16/24/32/48),
+│   │   │                   on the stack (no allocation). verify(msg, raw, engine, users) ->
+│   │   │                   UsmVerdict::{Answer { user, authenticated }, Report { stat,
+│   │   │                   authenticated }} is pure and decides in this order: empty or
+│   │   │                   foreign engine ID (UnknownEngineIds), privacy flag
+│   │   │                   (UnsupportedSecLevels), unknown user (UnknownUserNames), auth
+│   │   │                   flag not the user's level (UnsupportedSecLevels), HMAC over the
+│   │   │                   datagram with auth_params zeroed, constant_time_eq, a wrong
+│   │   │                   length included (WrongDigests), time window (NotInTimeWindows,
+│   │   │                   the one authenticated report). UsmStat knows its OID body and
+│   │   │                   its Counter.
 │   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
 │   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
 │   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every
@@ -697,8 +767,20 @@ src/
 │   │                       Scratch (name arcs, cursors) and out are reused, so a steady
 │   │                       request allocates nothing (asserted on a 10-varbind GETBULK and on
 │   │                       10-varbind v1 GET and GETNEXT).
-│   │                       respond() = decode + answer, a v3 decode error counted as
-│   │                       unsupported_version, any other as malformed. serve(socket,
+│   │                       respond_noting(…, refused) = decode + answer; a v3 message
+│   │                       (Message::decode's UnsupportedVersion(3)) goes to answer_v3 when
+│   │                       versions has v3, else counts as unsupported_version, unparsed;
+│   │                       any other decode error is malformed. answer_v3: v3::decode (an
+│   │                       error, or a security model ≠ 3: malformed), usm::verify, then a
+│   │                       report (counted; sent only when reportable) or the scoped PDU
+│   │                       through the same answer_pdu as v1/v2c in an Envelope::V3 (the
+│   │                       v1/v2c one is Envelope::Community; Envelope::len/write is the ONE
+│   │                       size and writer every arm and error response uses), the budget
+│   │                       min(max_message_size, msg_max_size). Refusal::{WrongCommunity,
+│   │                       UnknownUser, WrongDigest} feeds three PeerWarnings in serve (each
+│   │                       once per peer IP per minute, never a key). respond() (test-only)
+│   │                       is respond_noting with a wrong-community callback. A v3
+│   │                       authenticated GET allocates nothing (asserted). serve(socket,
 │   │                       Weak<SnmpAgent>, cancel): recv buffer 65 535, one out buffer
 │   │                       reserved to max_message_size, sends to the datagram's source,
 │   │                       counts send errors. When the socket reports packet info
@@ -855,7 +937,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes`, `runtime` and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv and authNoPriv) responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

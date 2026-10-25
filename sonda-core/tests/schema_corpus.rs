@@ -1088,6 +1088,54 @@ fn the_schema_bounds_snmp_agent_settings_like_validation(
     }
 }
 
+/// The schema and the parser agree on the SNMPv3 settings: both take every
+/// protocol name, `sha` included, a user without auth and a hex engine ID;
+/// both refuse a `priv` block, a misspelt user key, a numeric password and a
+/// numeric engine ID.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::sha(
+    "versions: [v3]\n    users: [{name: t, auth: {protocol: sha, password: lab-password}}]",
+    true
+)]
+#[case::sha512(
+    "versions: [v3]\n    users: [{name: t, auth: {protocol: sha512, password: lab-password}}]",
+    true
+)]
+#[case::no_auth("versions: [v3]\n    users: [{name: watcher}]", true)]
+#[case::engine_id(
+    "versions: [v3]\n    users: [{name: t}]\n    engine_id: \"80001f8804616161\"",
+    true
+)]
+#[case::priv_block("versions: [v3]\n    users: [{name: t, auth: {protocol: md5, password: lab-password}, priv: {protocol: aes, password: lab-password}}]", false)]
+#[case::misspelt_user_key("versions: [v3]\n    users: [{nmae: t}]", false)]
+#[case::numeric_password(
+    "versions: [v3]\n    users: [{name: t, auth: {protocol: md5, password: 123456789}}]",
+    false
+)]
+#[case::numeric_engine_id(
+    "versions: [v3]\n    users: [{name: t}]\n    engine_id: 8000000002",
+    false
+)]
+#[case::unknown_protocol(
+    "versions: [v3]\n    users: [{name: t, auth: {protocol: sha999, password: lab-password}}]",
+    false
+)]
+fn the_schema_and_the_parser_agree_on_snmp_v3_settings(#[case] extra: &str, #[case] valid: bool) {
+    let yaml = snmp_agent_document(extra);
+    let parsed = sonda_core::compiler::parse::parse(&yaml);
+    assert_eq!(parsed.is_ok(), valid, "the parser on `{extra}`: {parsed:?}");
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        assert!(
+            validator().is_valid(&yaml_to_json(value)),
+            "the schema refuses `{extra}`"
+        );
+    } else {
+        assert_rejected(extra, &yaml);
+    }
+}
+
 /// The committed schema is a build output. This is the same comparison
 /// `task schema:check` makes, run inside `cargo test` so a contributor who
 /// never runs the task still learns before CI does.

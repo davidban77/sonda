@@ -15,6 +15,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::usm::Usm;
 use super::{responder, AgentSettings, SnmpVersion};
 use crate::encoder::snmp::ber::{self, Reader, Tag};
 use crate::encoder::snmp::oid::Oid;
@@ -81,10 +82,18 @@ pub(crate) enum Lookup {
 /// A datagram is checked in this order: its shape, its version, its
 /// community, then its PDU. It is counted once, under the first check it
 /// fails or under its PDU type; a request answered `tooBig` is also counted
-/// under [`too_big`](Self::too_big), and one answered as SNMPv1 under
-/// [`v1`](Self::v1). The shape comes first: an SNMPv1 message carrying a
-/// `GetBulkRequest` or a `Trap` is [`malformed`](Self::malformed) whatever
-/// versions the agent serves and whatever its community.
+/// under [`too_big`](Self::too_big), one answered as SNMPv1 under
+/// [`v1`](Self::v1), and one answered as SNMPv3 under [`v3`](Self::v3).
+/// The shape comes first: an SNMPv1 message carrying a `GetBulkRequest` or
+/// a `Trap` is [`malformed`](Self::malformed) whatever versions the agent
+/// serves and whatever its community.
+///
+/// An SNMPv3 message to an agent serving SNMPv3 is checked for its shape,
+/// then by the User-based Security Model in this order: its engine ID, its
+/// privacy flag, its user, its security level, its digest, its time window.
+/// The first check it fails is counted under the `usm_` counter of the
+/// `Report` it is answered with; a message that passes is answered and
+/// counted under its PDU type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RequestCounters {
@@ -109,13 +118,32 @@ pub struct RequestCounters {
     /// `tooBig`, because their answer did not fit `max_message_size`. A
     /// `GetBulkRequest` answer is trimmed to fit instead.
     pub too_big: u64,
-    /// SNMPv1 and SNMPv2c messages in a version the agent does not serve,
-    /// and SNMPv3 messages. Dropped unanswered, the community never compared.
+    /// Messages in a version the agent does not serve. Dropped unanswered,
+    /// the community never compared and an SNMPv3 message never parsed past
+    /// its version.
     pub unsupported_version: u64,
     /// Answers the socket failed to send.
     pub send_errors: u64,
     /// Requests answered as SNMPv1, also counted under their PDU type.
     pub v1: u64,
+    /// Requests answered as SNMPv3, also counted under their PDU type.
+    pub v3: u64,
+    /// SNMPv3 messages whose engine ID was empty (discovery) or not the
+    /// agent's, answered with a `usmStatsUnknownEngineIDs` report.
+    pub usm_unknown_engine_ids: u64,
+    /// SNMPv3 messages from a user the agent does not have, answered with a
+    /// `usmStatsUnknownUserNames` report.
+    pub usm_unknown_user_names: u64,
+    /// SNMPv3 messages asking for privacy, or for a security level other
+    /// than their user's, answered with a `usmStatsUnsupportedSecLevels`
+    /// report.
+    pub usm_unsupported_sec_levels: u64,
+    /// SNMPv3 messages whose digest was not their user's, answered with a
+    /// `usmStatsWrongDigests` report.
+    pub usm_wrong_digests: u64,
+    /// Authenticated SNMPv3 messages outside the agent's time window,
+    /// answered with a `usmStatsNotInTimeWindows` report.
+    pub usm_not_in_time_windows: u64,
 }
 
 /// One of the counters [`RequestCounters`] reports.
@@ -131,6 +159,12 @@ pub(crate) enum Counter {
     UnsupportedVersion,
     SendErrors,
     V1,
+    V3,
+    UsmUnknownEngineIds,
+    UsmUnknownUserNames,
+    UsmUnsupportedSecLevels,
+    UsmWrongDigests,
+    UsmNotInTimeWindows,
 }
 
 /// The live counters behind [`RequestCounters`].
@@ -146,6 +180,12 @@ struct Counters {
     unsupported_version: AtomicU64,
     send_errors: AtomicU64,
     v1: AtomicU64,
+    v3: AtomicU64,
+    usm_unknown_engine_ids: AtomicU64,
+    usm_unknown_user_names: AtomicU64,
+    usm_unsupported_sec_levels: AtomicU64,
+    usm_wrong_digests: AtomicU64,
+    usm_not_in_time_windows: AtomicU64,
 }
 
 impl Counters {
@@ -161,6 +201,12 @@ impl Counters {
             Counter::UnsupportedVersion => &self.unsupported_version,
             Counter::SendErrors => &self.send_errors,
             Counter::V1 => &self.v1,
+            Counter::V3 => &self.v3,
+            Counter::UsmUnknownEngineIds => &self.usm_unknown_engine_ids,
+            Counter::UsmUnknownUserNames => &self.usm_unknown_user_names,
+            Counter::UsmUnsupportedSecLevels => &self.usm_unsupported_sec_levels,
+            Counter::UsmWrongDigests => &self.usm_wrong_digests,
+            Counter::UsmNotInTimeWindows => &self.usm_not_in_time_windows,
         }
     }
 
@@ -177,6 +223,12 @@ impl Counters {
             unsupported_version: read(&self.unsupported_version),
             send_errors: read(&self.send_errors),
             v1: read(&self.v1),
+            v3: read(&self.v3),
+            usm_unknown_engine_ids: read(&self.usm_unknown_engine_ids),
+            usm_unknown_user_names: read(&self.usm_unknown_user_names),
+            usm_unsupported_sec_levels: read(&self.usm_unsupported_sec_levels),
+            usm_wrong_digests: read(&self.usm_wrong_digests),
+            usm_not_in_time_windows: read(&self.usm_not_in_time_windows),
         }
     }
 }
@@ -223,11 +275,19 @@ struct SystemInstance {
 /// serves from the table under its read lock, drops everything else, and
 /// counts each datagram in [`requests`](Self::requests). Dropping the last
 /// handle stops the task and closes the socket.
+///
+/// For SNMPv3 the agent is the authoritative engine of
+/// [`engine_id`](Self::engine_id): its `engineBoots` is 1 from every bind,
+/// because boots are not persisted, and its `engineTime` counts whole
+/// seconds from the bind.
 pub struct SnmpAgent {
     local_addr: SocketAddr,
     settings: AgentSettings,
-    /// When the socket was bound; `sysUpTime` counts from here.
+    /// When the socket was bound; `sysUpTime` and the engine's time count
+    /// from here.
     started: Instant,
+    /// The SNMPv3 engine and users, the users' keys localized at bind.
+    usm: Usm,
     /// The system group's seven instances, in OID order.
     system: Vec<SystemInstance>,
     table: RwLock<MibTable>,
@@ -276,6 +336,9 @@ impl SnmpAgent {
             tracing::info!(addr = %local_addr, "snmp_agent listening");
         }
         let system = system_instances(&settings);
+        let started = Instant::now();
+        // Each user's key is localized here, once: a megabyte of hashing.
+        let usm = Usm::new(&settings, local_addr, started);
         let table = MibTable {
             slots: BTreeMap::new(),
             objects: system
@@ -297,7 +360,8 @@ impl SnmpAgent {
             SnmpAgent {
                 local_addr,
                 settings,
-                started: Instant::now(),
+                started,
+                usm,
                 system,
                 table: RwLock::new(table),
                 uptime: Mutex::new(Vec::with_capacity(UPTIME_VARBIND_MAX)),
@@ -332,6 +396,17 @@ impl SnmpAgent {
     /// The SNMP versions the agent answers, ascending.
     pub fn versions(&self) -> &[SnmpVersion] {
         &self.settings.versions
+    }
+
+    /// The agent's SNMPv3 engine ID: the configured one, or one derived
+    /// from the address the socket bound.
+    pub fn engine_id(&self) -> &[u8] {
+        self.usm.engine().id()
+    }
+
+    /// The SNMPv3 engine and users.
+    pub(crate) fn usm(&self) -> &Usm {
+        &self.usm
     }
 
     /// Resolves once the socket is closed. The returned future does not hold
@@ -467,6 +542,14 @@ impl SnmpAgent {
         self.counters
             .counter(counter)
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add one to `counter` and return its new value.
+    pub(crate) fn count_and_read(&self, counter: Counter) -> u64 {
+        self.counters
+            .counter(counter)
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
     }
 
     /// Log at warn that a request whose first OID is `first` was answered

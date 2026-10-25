@@ -724,7 +724,9 @@ Pair this sink with the [`snmp` encoder](encoders.md#snmp), which renders each s
 | `community` | string | no | `public` | The community a request must carry. |
 | `max_message_size` | integer | no | `1472` | The largest reply the agent sends, in bytes, 484 to 65507. 1472 is the UDP payload of an Ethernet frame. |
 | `system` | object | no | see below | The values of the system group, `1.3.6.1.2.1.1`. |
-| `versions` | list | no | `[v2c]` | The SNMP versions the agent answers: `v1`, `v2c`, or both, each once. See [SNMPv1](#snmp-v1). |
+| `versions` | list | no | `[v2c]` | The SNMP versions the agent answers: any of `v1`, `v2c` and `v3`, each once. See [SNMPv1](#snmp-v1) and [SNMPv3](#snmp-v3). |
+| `users` | list | no | none | The SNMPv3 users, each name once. `v3` in `versions` needs at least one. See [SNMPv3](#snmp-v3). |
+| `engine_id` | string | no | derived | The agent's SNMPv3 engine ID: 5 to 32 bytes written as hex, such as `"80001f8804736f6e6461"`, a leading `0x` allowed. A string: an unquoted value YAML reads as a number is refused with the field named. See [SNMPv3](#snmp-v3). |
 
 | `system` field | MIB object | Default | Description |
 |----------------|------------|---------|-------------|
@@ -747,7 +749,7 @@ sink:
     location: lab-1
 ```
 
-Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set `community`, `max_message_size`, `system` and `versions` alike (`versions` in any order); a difference is refused, naming the fields that differ but never a community. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.
+Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set `community`, `max_message_size`, `system`, `versions`, `users` and `engine_id` alike (`versions` and `users` in any order); a difference is refused, naming the fields that differ but never a community or a password. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.
 
 The agent serves the system group and every instance its entries publish, in OID order, which is the order a walk visits them in. `sysUpTime` counts hundredths of a second from when the agent started listening. No entry may publish under `1.3.6.1.2.1.1`. A request reads:
 
@@ -764,7 +766,7 @@ A [label column](encoders.md#label-columns) is served the same way. Its instance
 
 ### Requests { #snmp-requests }
 
-The agent answers SNMPv2c, and SNMPv1 when `versions` lists it. Each datagram is checked in turn: its version, then its community, then its operation. This table is SNMPv2c's; [SNMPv1](#snmp-v1) lists what differs.
+The agent answers SNMPv2c, SNMPv1 when `versions` lists it, and SNMPv3 when `versions` lists it. Each SNMPv1 or SNMPv2c datagram is checked in turn: its version, then its community, then its operation. This table is SNMPv2c's; [SNMPv1](#snmp-v1) lists what differs, and [SNMPv3](#snmp-v3) what comes before the operation over SNMPv3.
 
 | Received | Answer |
 |----------|--------|
@@ -775,7 +777,7 @@ The agent answers SNMPv2c, and SNMPv1 when `versions` lists it. Each datagram is
 | A request with no OIDs | An empty answer, no error. |
 | An `INFORM`, a trap, a `REPORT` or a response | Dropped. |
 | Another community | Dropped. Logged at warn at most once a minute per sender IP, with the community's length and never its value. |
-| A version `versions` does not list, or SNMPv3 | Dropped, the community never compared. |
+| A version `versions` does not list | Dropped, the community never compared. |
 | Anything that is not an SNMP message | Dropped. |
 
 Every answer fits in `max_message_size` bytes. A `GETBULK` answer ends before the first value that would not fit, and is sent with the values before it. A `GET`, `GETNEXT` or `SET` whose answer does not fit is answered `tooBig` with no values, and logged at warn at most once a minute, naming the request's first OID and the size. Answers go to the address and port the request came from, and leave from the address the request was sent to, also when `listen` is a wildcard such as `0.0.0.0` or `[::]` (on Linux and macOS), so a poller that accepts replies only from the address it polled, as Telegraf does, receives them.
@@ -795,6 +797,45 @@ With `versions: [v1, v2c]`, or `[v1]`, the agent also answers SNMPv1, as RFC 115
 
 A walk over SNMPv1 therefore reads every instance but the `counter64` ones: `ifInErrors`, `ifOperStatus` and the `ifName` label column, not `ifHCInOctets`.
 
+### SNMPv3 { #snmp-v3 }
+
+With `v3` in `versions`, the agent also answers SNMPv3 with the User-based Security Model (RFC 3414), for the users it is given. SNMPv3 adds users in place of the community, and authentication: each request of a user with `auth` carries an HMAC of the whole message made with a key derived from the user's password, so the agent knows who asked and that nothing changed on the way. The operations and their answers are SNMPv2c's.
+
+```yaml title="An snmp_agent sink answering SNMPv3"
+sink:
+  type: snmp_agent
+  listen: 0.0.0.0:1161
+  versions: [v2c, v3]
+  users:
+    - name: telegraf
+      auth: { protocol: sha256, password: lab-only-v3-password }
+    - name: watcher            # noAuthNoPriv: no auth block
+```
+
+| `users` field | Required | Description |
+|---------------|----------|-------------|
+| `name` | yes | The user name, 1 to 32 bytes. |
+| `auth.protocol` | with `auth` | `md5`, `sha1` (also read as `sha`), `sha224`, `sha256`, `sha384` or `sha512`, as Telegraf names them in lower case. MD5 is legacy and SHA-1 is weak; prefer a SHA-2 protocol where the poller has one. |
+| `auth.password` | with `auth` | At least 8 bytes (RFC 3414). A string: a YAML number is refused. Never printed: a config shown for debugging prints `***` in its place. |
+
+A user without `auth` is `noAuthNoPriv`: its requests carry no HMAC. A user with `auth` is `authNoPriv`, and that is its minimum: an unauthenticated request in its name is refused. Privacy (`authPriv`, an encrypted PDU) is not supported; a user with a `priv` block is refused when the file is read, and a request that asks for privacy is answered `usmStatsUnsupportedSecLevels`.
+
+The agent is the SNMPv3 engine the poller talks to. Its engine ID is `engine_id`, or, without one, derived from the listen address: net-snmp's enterprise prefix `80001f88`, format `04` (text), then `sonda:` and the address the agent bound, cut to 27 bytes, so it is the same on every run and differs per agent. Its engine boots are 1 every time it starts listening (boots are not kept between runs, so a poller that cached a higher value discovers the engine again) and its engine time counts whole seconds from then. Each user's key is derived from its password and the engine ID once, when the agent starts listening.
+
+A poller first learns the engine ID, boots and time from the agent: it sends a request with an empty engine ID and gets a report back. An SNMPv3 message is checked in this order, and the first check it fails is answered with a `Report` carrying that `usmStats` counter (`1.3.6.1.6.3.15.1.1`), counted, and not answered further:
+
+| Check | Answer |
+|-------|--------|
+| The security model is not the User-based Security Model | Dropped as malformed. |
+| The engine ID is empty, or another engine's | `usmStatsUnknownEngineIDs`, unauthenticated, carrying the agent's engine ID, boots and time. This is discovery. |
+| The request asks for privacy | `usmStatsUnsupportedSecLevels` |
+| No user has the name | `usmStatsUnknownUserNames`. Logged at warn at most once a minute per sender IP, naming the user. |
+| The request is authenticated for a user without `auth`, or unauthenticated for a user with it | `usmStatsUnsupportedSecLevels` |
+| The HMAC is not the one the user's key makes, or not as long as the protocol's | `usmStatsWrongDigests`, unauthenticated. Logged at warn at most once a minute per sender IP, naming the user and never a key. net-snmp prints it as an authentication failure. |
+| The boots are not the agent's, or the time is more than 150 seconds from the agent's | `usmStatsNotInTimeWindows`, authenticated with the user's key, carrying the agent's boots and time. A poller takes them and asks again. |
+
+A report is sent only when the request asks for one (its reportable flag), as pollers' requests do. A request that passes every check is answered as SNMPv2c answers it, at its security level, authenticated with the user's key when it was, and fits in the smaller of `max_message_size` and the message size the request says the poller accepts. SNMPv3 has no views here: every user reads everything the agent serves, and `SET` is still refused `notWritable`.
+
 ### Ports { #snmp-ports }
 
 SNMP's standard port is 161. Binding a port below 1024 takes the `CAP_NET_BIND_SERVICE` capability (or root); without it the run stops with an error naming the port and the capability. Listen on a port above 1023, such as 1161, and point the poller at it, or grant the binary the capability with `setcap cap_net_bind_service=+ep`.
@@ -807,6 +848,8 @@ With the agent running, net-snmp's tools read it directly:
 snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
 snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
 snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1    # when versions lists v1
+snmpget -v3 -l authNoPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
+  -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0                    # when versions lists v3
 ```
 
 ### Telegraf { #snmp-telegraf }
@@ -827,7 +870,10 @@ defaults:
     type: snmp_agent
     listen: 0.0.0.0:1161
     community: public
-    versions: [v1, v2c]
+    versions: [v1, v2c, v3]
+    users:
+      - name: telegraf
+        auth: { protocol: sha256, password: lab-only-v3-password }
     system:
       name: rtr-core-01
       descr: Sonda synthetic router
@@ -847,7 +893,7 @@ scenarios:
           enum: oper_state
 ```
 
-Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` is the agent label, `ifName` and `ifAlias` are served at `ifName.1` and `ifAlias.1`, and the agent serves no OID for `job`, so the encoder drops it. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1 and SNMPv2c.
+Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` is the agent label, `ifName` and `ifAlias` are served at `ifName.1` and `ifAlias.1`, and the agent serves no OID for `job`, so the encoder drops it. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1, SNMPv2c, and SNMPv3 for the user `telegraf`, whose password is a lab value.
 
 Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK` over SNMPv2c, tagging each interface with its `ifName` and `ifAlias`. Every OID is numeric, so Telegraf loads no MIB:
 
@@ -908,11 +954,35 @@ The table's `name` becomes the measurement, each row's index the `index` tag and
       oid = ".1.3.6.1.2.1.2.2.1.8"
 ```
 
+A third block reads `sysUpTime` and walks the same table over SNMPv3 at `authNoPriv`, as the user `telegraf` with HMAC-SHA-256, writing `interface_v3` and, through its own measurement name, `snmp_v3_uptime`:
+
+```toml title="examples/telegraf/telegraf-snmp.conf (the SNMPv3 block, excerpt)"
+[[inputs.snmp]]
+  name = "snmp_v3"
+  agents = ["udp://sonda:1161"]
+  version = 3
+  sec_level = "authNoPriv"
+  sec_name = "telegraf"
+  auth_protocol = "SHA256"
+  auth_password = "lab-only-v3-password"
+  agent_host_tag = "source"
+
+  [[inputs.snmp.field]]
+    name = "uptime"
+    oid = ".1.3.6.1.2.1.1.3.0"
+
+  [[inputs.snmp.table]]
+    name = "interface_v3"
+    index_as_tag = true
+```
+
 ```text title="What VictoriaMetrics stores (excerpt)"
 interface_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
 interface_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
 interface_v1_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+interface_v3_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
 snmp_uptime{db="telegraf",hostname="rtr-core-01",source="sonda"}
+snmp_v3_uptime{db="telegraf",source="sonda"}
 ```
 
 To run the pair, start the compose stack's `snmp` profile. It runs Telegraf with that config. Then start the scenario on the host:
@@ -929,6 +999,9 @@ docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp
   snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
   snmpwalk -v1 -c public -On sonda:1161 1.3.6.1.2.1
+docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
+  snmpget -v3 -l authNoPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
+  -On sonda:1161 1.3.6.1.2.1.1.5.0
 ```
 
 ## Retry with backoff

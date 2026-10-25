@@ -1,8 +1,10 @@
-//! Answers SNMPv1 and SNMPv2c requests from an [`SnmpAgent`]'s table.
+//! Answers SNMPv1, SNMPv2c and SNMPv3 requests from an [`SnmpAgent`]'s
+//! table.
 //!
 //! [`decode`] classifies a datagram's PDU, [`answer`] writes the response
-//! into a caller's buffer, and [`serve`] is the task that reads the socket
-//! and sends each response to the datagram's source.
+//! into a caller's buffer, [`respond_noting`] does both and hands an SNMPv3
+//! message to the User-based Security Model, and [`serve`] is the task that
+//! reads the socket and sends each response to the datagram's source.
 //!
 //! A response leaves from the address its request was sent to. On a
 //! specific-address bind the socket guarantees it; on a wildcard bind
@@ -25,6 +27,25 @@
 //! A response carries its request's version. An SNMPv1 error response
 //! carries the request's varbinds unchanged.
 //!
+//! An SNMPv3 message, to an agent serving SNMPv3, is checked by the
+//! User-based Security Model (RFC 3414 §3.2) in this order, the first check
+//! it fails answered with a `Report` of that usmStats counter:
+//!
+//! | Check | Report |
+//! |---|---|
+//! | the security model is not the USM | none: dropped as malformed |
+//! | the engine ID is empty (discovery) or not the agent's | `usmStatsUnknownEngineIDs`, unauthenticated, carrying the agent's engine ID, boots and time |
+//! | the privacy flag is set | `usmStatsUnsupportedSecLevels` |
+//! | no user has the name | `usmStatsUnknownUserNames` |
+//! | the authentication flag is set for a user without `auth`, or clear for one with it | `usmStatsUnsupportedSecLevels` |
+//! | the HMAC is not the one the user's key makes | `usmStatsWrongDigests`, unauthenticated |
+//! | the boots are not the agent's, or the time is more than 150 s from the agent's | `usmStatsNotInTimeWindows`, authenticated |
+//!
+//! A report is sent only when the message's reportable flag is set. A
+//! message that passes every check is answered as an SNMPv2c request, at its
+//! security level, its `msgID` echoed, within the smaller of
+//! `max_message_size` and its `msgMaxSize`.
+//!
 //! Every response fits `max_message_size`. The first varbind that would
 //! not fit ends a `GetBulkRequest` response, which is sent with the
 //! varbinds before it; it turns a `GetRequest`, `GetNextRequest` or
@@ -45,9 +66,11 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::agent::{self, warn_due, Counter, Found, SnmpAgent};
+use super::usm::{self, LocalizedUser, Snapshot, UsmStat, UsmVerdict};
 use super::SnmpVersion;
 use crate::encoder::snmp::ber::{self, BerError, Message, Reader, Tag, VarBind};
 use crate::encoder::snmp::oid::{self, Oid};
+use crate::encoder::snmp::v3::{self, V3Message};
 
 /// The largest datagram the responder reads whole; a longer one is read
 /// truncated and does not decode.
@@ -56,7 +79,7 @@ const RECEIVE_BUFFER: usize = 65_535;
 /// How long the responder waits before reading again after a receive error.
 const RECEIVE_BACKOFF: Duration = Duration::from_millis(100);
 
-/// The most peers whose last wrong-community warning is remembered. A peer
+/// The most peers whose last warning of one kind is remembered. A peer
 /// beyond them is counted but not logged until older entries expire.
 const WARNED_PEERS: usize = 1024;
 
@@ -65,9 +88,6 @@ const V1: i64 = 0;
 
 /// The version field of an SNMPv2c message.
 const V2C: i64 = 1;
-
-/// The version field of an SNMPv3 message.
-const V3: i64 = 3;
 
 /// error-status `tooBig`.
 const TOO_BIG: i64 = 1;
@@ -181,7 +201,7 @@ pub(crate) enum Outcome {
     Sent,
     /// The community is not the agent's; nothing is sent.
     DroppedWrongCommunity,
-    /// A version the agent does not serve, or SNMPv3; nothing is sent.
+    /// A version the agent does not serve; nothing is sent.
     DroppedUnsupportedVersion,
     /// Anything else not answered; nothing is sent.
     DroppedOther,
@@ -226,10 +246,24 @@ pub(crate) fn decode(datagram: &[u8]) -> Result<Request<'_>, BerError> {
     if version == Version::V1 && message.pdu == Tag::GetBulkRequest {
         return Err(BerError::BadTag(Tag::GetBulkRequest.byte()));
     }
+    Ok(Request {
+        version,
+        community: message.community,
+        pdu: classify(message)?,
+    })
+}
+
+/// The PDU of `message`, classified.
+///
+/// # Errors
+///
+/// [`BerError::Overflow`] for a request-id outside 32 bits; the error of the
+/// first malformed `VarBind` of a request the agent answers.
+fn classify(message: Message<'_>) -> Result<Pdu<'_>, BerError> {
     let id = || i32::try_from(message.request_id).map_err(|_| BerError::Overflow);
     // A negative count is read as 0; RFC 3416 bounds both at 2³¹ - 1.
     let count = |v: i64| u32::try_from(v.max(0)).unwrap_or(u32::MAX);
-    let pdu = match message.pdu {
+    Ok(match message.pdu {
         Tag::GetRequest => Pdu::Get {
             id: id()?,
             vars: VarList::of(message)?,
@@ -249,11 +283,6 @@ pub(crate) fn decode(datagram: &[u8]) -> Result<Request<'_>, BerError> {
             vars: VarList::of(message)?,
         },
         other => Pdu::Other(other),
-    };
-    Ok(Request {
-        version,
-        community: message.community,
-        pdu,
     })
 }
 
@@ -282,7 +311,24 @@ pub(crate) fn answer(
         agent.count(Counter::WrongCommunity);
         return Outcome::DroppedWrongCommunity;
     }
-    let (counter, id, vars) = match req.pdu {
+    let envelope = Envelope::Community {
+        version: req.version.field(),
+        community,
+    };
+    answer_pdu(req.pdu, envelope, agent, budget, scratch, out)
+}
+
+/// Answer `pdu` from `agent` into `out` in `envelope`, within `budget`
+/// octets, and count it under its PDU type and its version.
+fn answer_pdu(
+    pdu: Pdu<'_>,
+    envelope: Envelope<'_>,
+    agent: &SnmpAgent,
+    budget: usize,
+    scratch: &mut Scratch,
+    out: &mut Vec<u8>,
+) -> Outcome {
+    let (counter, id, vars) = match pdu {
         Pdu::Get { id, vars } => (Counter::Get, id, vars),
         Pdu::GetNext { id, vars } => (Counter::GetNext, id, vars),
         Pdu::GetBulk { id, vars, .. } => (Counter::GetBulk, id, vars),
@@ -292,55 +338,45 @@ pub(crate) fn answer(
             return Outcome::DroppedOther;
         }
     };
-    let v1 = req.version == Version::V1;
+    let v1 = envelope.is_v1();
     let reply = Reply {
-        version: req.version.field(),
-        community,
+        envelope,
         id: i64::from(id),
         budget,
     };
-    let (status, index) = match req.pdu {
+    let (status, index) = match pdu {
         Pdu::Set { .. } if !vars.is_empty() && v1 => (NO_SUCH_NAME, 1),
         Pdu::Set { .. } if !vars.is_empty() => (NOT_WRITABLE, 1),
         _ => (0, 0),
     };
     let mut written = Ok(Written::Complete);
-    ber::write_message(
-        out,
-        reply.version,
-        community,
-        Tag::Response,
-        reply.id,
-        status,
-        index,
-        |out| {
-            let list = List {
-                start: out.len(),
-                reply: &reply,
-            };
-            written = match req.pdu {
-                Pdu::Get { .. } if v1 => get_v1(agent, &vars, list, scratch, out),
-                Pdu::Get { .. } => get(agent, &vars, list, scratch, out),
-                Pdu::GetNext { .. } if v1 => get_next_v1(agent, &vars, list, scratch, out),
-                Pdu::GetNext { .. } => get_next(agent, &vars, list, scratch, out),
-                Pdu::GetBulk {
-                    non_repeaters,
-                    max_repetitions,
-                    ..
-                } => get_bulk(
-                    agent,
-                    &vars,
-                    non_repeaters,
-                    max_repetitions,
-                    list,
-                    scratch,
-                    out,
-                ),
-                Pdu::Set { .. } => echo(&vars, list, out),
-                Pdu::Other(_) => Ok(Written::Complete),
-            };
-        },
-    );
+    reply.envelope.write(out, reply.id, status, index, |out| {
+        let list = List {
+            start: out.len(),
+            reply: &reply,
+        };
+        written = match pdu {
+            Pdu::Get { .. } if v1 => get_v1(agent, &vars, list, scratch, out),
+            Pdu::Get { .. } => get(agent, &vars, list, scratch, out),
+            Pdu::GetNext { .. } if v1 => get_next_v1(agent, &vars, list, scratch, out),
+            Pdu::GetNext { .. } => get_next(agent, &vars, list, scratch, out),
+            Pdu::GetBulk {
+                non_repeaters,
+                max_repetitions,
+                ..
+            } => get_bulk(
+                agent,
+                &vars,
+                non_repeaters,
+                max_repetitions,
+                list,
+                scratch,
+                out,
+            ),
+            Pdu::Set { .. } => echo(&vars, list, out),
+            Pdu::Other(_) => Ok(Written::Complete),
+        };
+    });
     let outcome = match written {
         Ok(Written::Complete) => Outcome::Sent,
         Ok(Written::Full) => too_big(agent, &reply, &vars, out),
@@ -352,16 +388,28 @@ pub(crate) fn answer(
         }
     };
     agent.count(counter);
-    if v1 {
-        agent.count(Counter::V1);
+    match reply.envelope {
+        Envelope::Community { .. } if v1 => agent.count(Counter::V1),
+        Envelope::V3 { .. } => agent.count(Counter::V3),
+        Envelope::Community { .. } => {}
     }
     outcome
 }
 
-/// [`decode`] `datagram` and [`answer`] it, calling `wrong_community` with
-/// the request when its community is not the agent's. A datagram that does
-/// not decode is counted: as unsupported for an SNMPv3 message, otherwise
-/// as malformed.
+/// A request [`respond_noting`] refused in a way worth a warning.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Refusal<'a> {
+    /// An SNMPv1 or SNMPv2c request with another community.
+    WrongCommunity(&'a Request<'a>),
+    /// An SNMPv3 request from a user the agent does not have, named here.
+    UnknownUser(&'a [u8]),
+    /// An SNMPv3 request whose digest is not its user's, named here.
+    WrongDigest(&'a [u8]),
+}
+
+/// [`respond_noting`], calling `wrong_community` with the request when its
+/// community is not the agent's.
+#[cfg(test)]
 pub(crate) fn respond(
     datagram: &[u8],
     agent: &SnmpAgent,
@@ -370,13 +418,40 @@ pub(crate) fn respond(
     out: &mut Vec<u8>,
     wrong_community: impl FnOnce(&Request<'_>),
 ) -> Outcome {
+    respond_noting(datagram, agent, budget, scratch, out, |refusal| {
+        if let Refusal::WrongCommunity(request) = refusal {
+            wrong_community(request);
+        }
+    })
+}
+
+/// [`decode`] `datagram` and [`answer`] it, calling `refused` with the
+/// request when its community is not the agent's. A datagram that does not
+/// decode is counted: as unsupported for a version the agent does not
+/// serve, otherwise as malformed. An SNMPv3 message to an agent serving
+/// SNMPv3 is answered by the User-based Security Model ([`answer_v3`]),
+/// which calls `refused` for an unknown user or a wrong digest.
+pub(crate) fn respond_noting(
+    datagram: &[u8],
+    agent: &SnmpAgent,
+    budget: usize,
+    scratch: &mut Scratch,
+    out: &mut Vec<u8>,
+    refused: impl FnOnce(Refusal<'_>),
+) -> Outcome {
     match decode(datagram) {
         Ok(request) => {
             let outcome = answer(&request, agent, budget, scratch, out);
             if outcome == Outcome::DroppedWrongCommunity {
-                wrong_community(&request);
+                refused(Refusal::WrongCommunity(&request));
             }
             outcome
+        }
+        // `Message::decode` reads the version first.
+        Err(BerError::UnsupportedVersion(v3::VERSION))
+            if agent.versions().contains(&SnmpVersion::V3) =>
+        {
+            answer_v3(datagram, agent, budget, scratch, out, refused)
         }
         Err(e) => {
             out.clear();
@@ -385,9 +460,77 @@ pub(crate) fn respond(
     }
 }
 
-/// Count a datagram that did not decode with `e`.
+/// Answer the SNMPv3 message `datagram` from `agent` into `out`, which is
+/// cleared first, within the smaller of `budget` and its `msgMaxSize`: a
+/// `Report` when the User-based Security Model refuses it ([`usm::verify`]),
+/// otherwise its scoped PDU answered as SNMPv2c answers it, at its security
+/// level. A message that does not decode, or whose security model is not
+/// the USM, is malformed; a report is sent only when the message is
+/// reportable. Calls `refused` for an unknown user or a wrong digest.
+fn answer_v3(
+    datagram: &[u8],
+    agent: &SnmpAgent,
+    budget: usize,
+    scratch: &mut Scratch,
+    out: &mut Vec<u8>,
+    refused: impl FnOnce(Refusal<'_>),
+) -> Outcome {
+    out.clear();
+    let malformed = || {
+        agent.count(Counter::Malformed);
+        Outcome::DroppedOther
+    };
+    let request = match v3::decode(datagram) {
+        Ok(request) if request.security_model == v3::USM => request,
+        _ => return malformed(),
+    };
+    let usm = agent.usm();
+    match usm::verify(&request, datagram, usm.engine(), usm.users()) {
+        UsmVerdict::Report {
+            stat,
+            authenticated,
+        } => {
+            // A Counter32: it wraps.
+            let value = agent.count_and_read(stat.counter()) as u32;
+            match stat {
+                UsmStat::UnknownUserNames => refused(Refusal::UnknownUser(request.usm.user)),
+                UsmStat::WrongDigests => refused(Refusal::WrongDigest(request.usm.user)),
+                _ => {}
+            }
+            if !request.flags.reportable {
+                return Outcome::DroppedOther;
+            }
+            let user = if authenticated {
+                usm::user(usm.users(), request.usm.user)
+            } else {
+                None
+            };
+            let engine = usm.engine().snapshot();
+            v3::write_report(out, &request, &engine, stat, value, user);
+            Outcome::Sent
+        }
+        UsmVerdict::Answer {
+            user,
+            authenticated,
+        } => {
+            let Some(pdu) = request.scoped.and_then(|scoped| classify(scoped.pdu).ok()) else {
+                return malformed();
+            };
+            let envelope = Envelope::V3 {
+                request: &request,
+                engine: usm.engine().snapshot(),
+                user: authenticated.then_some(user),
+            };
+            let budget = budget.min(request.msg_max_size);
+            answer_pdu(pdu, envelope, agent, budget, scratch, out)
+        }
+    }
+}
+
+/// Count a datagram that did not decode with `e`: an SNMPv3 message here is
+/// one the agent does not serve.
 fn undecodable(agent: &SnmpAgent, e: BerError) -> Outcome {
-    if e == BerError::UnsupportedVersion(V3) {
+    if e == BerError::UnsupportedVersion(v3::VERSION) {
         agent.count(Counter::UnsupportedVersion);
         Outcome::DroppedUnsupportedVersion
     } else {
@@ -402,13 +545,16 @@ fn undecodable(agent: &SnmpAgent, e: BerError) -> Outcome {
 ///
 /// A wrong community is logged at warn once per peer IP per
 /// [`WARN_INTERVAL`](super::agent::WARN_INTERVAL), with the community's
-/// length and never its value. A send error is counted and logged at
-/// debug; nothing the task does fails it.
+/// length and never its value; so are an unknown SNMPv3 user and a wrong
+/// SNMPv3 digest, each on its own, naming the user and never a key. A send
+/// error is counted and logged at debug; nothing the task does fails it.
 pub(crate) async fn serve(socket: UdpSocket, agent: Weak<SnmpAgent>, cancel: CancellationToken) {
     let mut datagram = vec![0; RECEIVE_BUFFER];
     let mut out = Vec::new();
     let mut scratch = Scratch::default();
     let mut warned = PeerWarnings::default();
+    let mut warned_user = PeerWarnings::default();
+    let mut warned_digest = PeerWarnings::default();
     let pktinfo = pktinfo::enabled(&socket);
     loop {
         let received = tokio::select! {
@@ -433,17 +579,46 @@ pub(crate) async fn serve(socket: UdpSocket, agent: Weak<SnmpAgent>, cancel: Can
         let budget = strong.settings().max_message_size;
         out.clear();
         out.reserve(budget);
-        let outcome = respond(bytes, &strong, budget, &mut scratch, &mut out, |request| {
-            if !warned.due(peer.ip()) {
-                return;
+        let outcome = respond_noting(bytes, &strong, budget, &mut scratch, &mut out, |refusal| {
+            match refusal {
+                Refusal::WrongCommunity(request) => {
+                    if !warned.due(peer.ip()) {
+                        return;
+                    }
+                    tracing::warn!(
+                        addr = %strong.local_addr(),
+                        %peer,
+                        community_len = request.community.len(),
+                        "snmp_agent dropped a request from {peer} with another community ({} bytes)",
+                        request.community.len()
+                    );
+                }
+                Refusal::UnknownUser(user) => {
+                    if !warned_user.due(peer.ip()) {
+                        return;
+                    }
+                    let user = String::from_utf8_lossy(user);
+                    tracing::warn!(
+                        addr = %strong.local_addr(),
+                        %peer,
+                        user = ?user,
+                        "snmp_agent refused an SNMPv3 request from {peer} for the unknown user {user:?}"
+                    );
+                }
+                Refusal::WrongDigest(user) => {
+                    if !warned_digest.due(peer.ip()) {
+                        return;
+                    }
+                    let user = String::from_utf8_lossy(user);
+                    tracing::warn!(
+                        addr = %strong.local_addr(),
+                        %peer,
+                        user = ?user,
+                        "snmp_agent refused an SNMPv3 request from {peer} for user {user:?} with a \
+                         wrong digest: another password or authentication protocol"
+                    );
+                }
             }
-            tracing::warn!(
-                addr = %strong.local_addr(),
-                %peer,
-                community_len = request.community.len(),
-                "snmp_agent dropped a request from {peer} with another community ({} bytes)",
-                request.community.len()
-            );
         });
         drop(strong);
         if outcome != Outcome::Sent {
@@ -790,7 +965,7 @@ mod pktinfo {
     }
 }
 
-/// When each peer IP was last warned about a wrong community.
+/// When each peer IP was last warned about one kind of refusal.
 #[derive(Debug, Default)]
 struct PeerWarnings {
     last: HashMap<IpAddr, Instant>,
@@ -826,11 +1001,89 @@ enum Written {
     NoSuchName(usize),
 }
 
+/// The message a response's PDU is wrapped in.
+#[derive(Clone, Copy)]
+enum Envelope<'a> {
+    /// An SNMPv1 or SNMPv2c message: the version field, the request's, and
+    /// the agent's community.
+    Community { version: i64, community: &'a [u8] },
+    /// An SNMPv3 message answering `request`, with the engine's ID, boots
+    /// and time read once, authenticated by `user` when it is given.
+    V3 {
+        request: &'a V3Message<'a>,
+        engine: Snapshot<'a>,
+        user: Option<&'a LocalizedUser>,
+    },
+}
+
+impl Envelope<'_> {
+    /// Whether this is an SNMPv1 message.
+    fn is_v1(&self) -> bool {
+        matches!(self, Envelope::Community { version: V1, .. })
+    }
+
+    /// Octets the response takes whose varbind list body is `varbinds_len`
+    /// octets.
+    fn len(&self, id: i64, status: i64, index: i64, varbinds_len: usize) -> usize {
+        match *self {
+            Envelope::Community { version, community } => {
+                ber::message_len(version, community, id, status, index, varbinds_len)
+            }
+            Envelope::V3 {
+                request,
+                engine,
+                user,
+            } => {
+                let pdu = ber::tlv_len(
+                    ber::i64_len(id)
+                        + ber::i64_len(status)
+                        + ber::i64_len(index)
+                        + ber::tlv_len(varbinds_len),
+                );
+                v3::response_len(request, &engine, user, pdu)
+            }
+        }
+    }
+
+    /// Write the response whose varbind list body `varbinds` appends.
+    fn write(
+        &self,
+        out: &mut Vec<u8>,
+        id: i64,
+        status: i64,
+        index: i64,
+        varbinds: impl FnOnce(&mut Vec<u8>),
+    ) {
+        match *self {
+            Envelope::Community { version, community } => ber::write_message(
+                out,
+                version,
+                community,
+                Tag::Response,
+                id,
+                status,
+                index,
+                varbinds,
+            ),
+            Envelope::V3 {
+                request,
+                engine,
+                user,
+            } => v3::write_response(out, request, &engine, user, |out| {
+                ber::write_tlv(out, Tag::Response, |out| {
+                    ber::write_i64(out, Tag::Integer, id);
+                    ber::write_i64(out, Tag::Integer, status);
+                    ber::write_i64(out, Tag::Integer, index);
+                    ber::write_tlv(out, Tag::Sequence, varbinds);
+                });
+            }),
+        }
+    }
+}
+
 /// The fields of the response that its size depends on.
 struct Reply<'a> {
-    /// The version field, the request's.
-    version: i64,
-    community: &'a [u8],
+    envelope: Envelope<'a>,
     id: i64,
     budget: usize,
 }
@@ -849,7 +1102,7 @@ impl List<'_> {
         let list = out.len() - self.start + more;
         // error-status and error-index take three octets each whatever their
         // value here (0, 1, 2 or 17).
-        ber::message_len(r.version, r.community, r.id, 0, 0, list) <= r.budget
+        r.envelope.len(r.id, 0, 0, list) <= r.budget
     }
 }
 
@@ -1095,13 +1348,14 @@ fn echo(vars: &VarList<'_>, list: List<'_>, out: &mut Vec<u8>) -> Result<Written
 
 /// Replace the response in `out` with `tooBig`, count it, and warn naming
 /// the request's first OID; nothing is sent if even that does not fit. The
-/// varbind list is empty under SNMPv2c and the request's under SNMPv1.
+/// varbind list is empty under SNMPv2c and SNMPv3 and the request's under
+/// SNMPv1.
 fn too_big(agent: &SnmpAgent, reply: &Reply<'_>, vars: &VarList<'_>, out: &mut Vec<u8>) -> Outcome {
     out.clear();
     agent.count(Counter::TooBig);
     let first = vars.iter().next().map(|var| var.oid);
     agent.warn_too_big(&Dotted(first.unwrap_or_default()), reply.budget);
-    let echoed: &[u8] = if reply.version == V1 {
+    let echoed: &[u8] = if reply.envelope.is_v1() {
         vars.body()
     } else {
         &[]
@@ -1136,27 +1390,13 @@ fn error_response(
     varbinds: &[u8],
     out: &mut Vec<u8>,
 ) -> Outcome {
-    let len = ber::message_len(
-        reply.version,
-        reply.community,
-        reply.id,
-        status,
-        index,
-        varbinds.len(),
-    );
+    let len = reply.envelope.len(reply.id, status, index, varbinds.len());
     if len > reply.budget {
         return Outcome::DroppedOther;
     }
-    ber::write_message(
-        out,
-        reply.version,
-        reply.community,
-        Tag::Response,
-        reply.id,
-        status,
-        index,
-        |out| out.extend_from_slice(varbinds),
-    );
+    reply.envelope.write(out, reply.id, status, index, |out| {
+        out.extend_from_slice(varbinds)
+    });
     Outcome::Sent
 }
 
@@ -3550,5 +3790,551 @@ mod tests {
         );
         assert!(replies >= asked / 2, "{replies} replies of {asked}");
         assert_eq!(held.requests().send_errors, 0);
+    }
+
+    // ---- SNMPv3 -------------------------------------------------------------
+
+    use crate::encoder::snmp::v3::tests::{
+        capture_users, Capture, Client, CAPTURED, CAPTURE_ENGINE_ID, NET_SNMP_V3_SHA256_DISCOVERY,
+        NET_SNMP_V3_SHA256_DISCOVERY_REPORT, NET_SNMP_V3_WRONG_PASSWORD_GET,
+        NET_SNMP_V3_WRONG_PASSWORD_REPORT,
+    };
+
+    /// An agent on an ephemeral port answering SNMPv2c and SNMPv3 for the
+    /// captures' users, as the captures' engine, within `max_message_size`.
+    async fn v3_agent(max_message_size: usize) -> Arc<SnmpAgent> {
+        let cfg = SnmpAgentConfig {
+            system: system(),
+            versions: vec![SnmpVersion::V2c, SnmpVersion::V3],
+            users: capture_users(),
+            engine_id: Some(CAPTURE_ENGINE_ID.to_string()),
+            max_message_size,
+            ..SnmpAgentConfig::new("127.0.0.1:0")
+        };
+        SnmpAgent::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("bind an ephemeral port")
+    }
+
+    /// A client of the capture user `name`, synchronized with `agent`'s
+    /// engine as it stands now.
+    fn client_of(agent: &SnmpAgent, name: &str) -> Client {
+        let user = usm::user(agent.usm().users(), name.as_bytes()).expect("a capture user");
+        let engine = agent.usm().engine().snapshot();
+        Client {
+            engine_id: engine.id.to_vec(),
+            boots: engine.boots,
+            time: engine.time,
+            ..Client::new(name, user.auth().map(|(p, key)| (p, key.to_vec())))
+        }
+    }
+
+    /// The PDU of an SNMPv3 message, and its flags.
+    fn v3_pdu(datagram: &[u8]) -> (v3::Flags, Tag, Response) {
+        let msg = v3::decode(datagram).expect("an SNMPv3 message");
+        let pdu = msg.scoped.expect("plaintext").pdu;
+        let response = Response {
+            id: pdu.request_id,
+            status: pdu.error_status,
+            index: pdu.error_index,
+            varbinds: pdu
+                .varbinds()
+                .map(|var| text(&var.expect("a complete VarBind")))
+                .collect(),
+        };
+        (msg.flags, pdu.pdu, response)
+    }
+
+    /// Every captured net-snmp request, at the engine time it was sent, is
+    /// answered with the bytes net-snmp accepted: the discovery report, the
+    /// response for each protocol and for noAuthNoPriv, and the
+    /// wrong-digest report.
+    #[tokio::test(start_paused = true)]
+    async fn captured_v3_requests_are_answered_as_net_snmp_read_them() {
+        let agent = v3_agent(1472).await;
+        let at = |seconds: u64| tokio::time::advance(Duration::from_secs(seconds));
+        at(3).await;
+        let (outcome, report) = answered(&agent, &hex(NET_SNMP_V3_SHA256_DISCOVERY), 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert_eq!(report, hex(NET_SNMP_V3_SHA256_DISCOVERY_REPORT));
+        // The wrong password was captured at 15 s, before noAuthNoPriv.
+        let mut captures = CAPTURED.to_vec();
+        captures.insert(
+            6,
+            Capture {
+                user: "telegraf",
+                auth: None,
+                request: NET_SNMP_V3_WRONG_PASSWORD_GET,
+                response: NET_SNMP_V3_WRONG_PASSWORD_REPORT,
+                time: 15,
+            },
+        );
+        let mut now = 3;
+        for Capture {
+            user: name,
+            request,
+            response,
+            time,
+            ..
+        } in captures
+        {
+            assert!(time >= now, "the captures in the order they were made");
+            at(u64::from(time - now)).await;
+            now = time;
+            let (outcome, out) = answered(&agent, &hex(request), 1472);
+            assert_eq!(outcome, Outcome::Sent, "{name} at {time} s");
+            assert_eq!(out, hex(response), "{name} at {time} s");
+        }
+        let requests = agent.requests();
+        assert_eq!(
+            (
+                requests.get,
+                requests.v3,
+                requests.usm_unknown_engine_ids,
+                requests.usm_wrong_digests
+            ),
+            (7, 7, 1, 1),
+            "{requests:?}"
+        );
+    }
+
+    /// Each USM refusal is counted under its counter, and its report
+    /// carries the counter's new value; the request without its defect is
+    /// answered and counted under its PDU type and `v3`.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::unknown_engine(  |c: &mut Client| c.engine_id.clear(),             UsmStat::UnknownEngineIds)]
+    #[case::privacy(         |c: &mut Client| c.privacy = true,                UsmStat::UnsupportedSecLevels)]
+    #[case::unknown_user(    |c: &mut Client| c.user = b"stranger".to_vec(),   UsmStat::UnknownUserNames)]
+    #[case::no_auth_for_auth(|c: &mut Client| c.key = None,                    UsmStat::UnsupportedSecLevels)]
+    #[case::wrong_key(       |c: &mut Client| { if let Some((_, key)) = &mut c.key { key[0] ^= 1 } }, UsmStat::WrongDigests)]
+    #[case::stale_time(      |c: &mut Client| c.time += 151,                   UsmStat::NotInTimeWindows)]
+    #[tokio::test]
+    async fn each_usm_refusal_is_counted_and_reported(
+        #[case] defect: fn(&mut Client),
+        #[case] stat: UsmStat,
+    ) {
+        let agent = v3_agent(1472).await;
+        let mut client = client_of(&agent, "telegraf");
+        let (outcome, out) = answered(&agent, &client.get(1, &[SYSTEM[4]]), 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert_eq!(v3_pdu(&out).1, Tag::Response, "the request without its defect");
+        assert_eq!((agent.requests().get, agent.requests().v3), (1, 1));
+
+        defect(&mut client);
+        for value in 1..=2u64 {
+            let (outcome, out) = answered(&agent, &client.get(2, &[SYSTEM[4]]), 1472);
+            assert_eq!(outcome, Outcome::Sent);
+            let (flags, tag, report) = v3_pdu(&out);
+            assert_eq!(tag, Tag::Report);
+            let mut body = Vec::new();
+            body.extend_from_slice(stat.oid_body());
+            let name = Oid::from_ber_body(&body).expect("an OID");
+            assert_eq!(report.varbinds, [format!("{name} = Counter32 {value}")]);
+            assert_eq!(flags.auth, stat == UsmStat::NotInTimeWindows, "only the time window authenticates");
+        }
+        let requests = agent.requests();
+        let counted = match stat {
+            UsmStat::UnknownEngineIds => requests.usm_unknown_engine_ids,
+            UsmStat::UnknownUserNames => requests.usm_unknown_user_names,
+            UsmStat::UnsupportedSecLevels => requests.usm_unsupported_sec_levels,
+            UsmStat::WrongDigests => requests.usm_wrong_digests,
+            UsmStat::NotInTimeWindows => requests.usm_not_in_time_windows,
+        };
+        assert_eq!(counted, 2, "{requests:?}");
+        assert_eq!((requests.get, requests.v3), (1, 1), "a report is not an answer");
+    }
+
+    /// A report is sent only to a reportable message; the refusal is still
+    /// counted.
+    #[tokio::test]
+    async fn an_unreportable_refusal_is_counted_and_not_answered() {
+        let agent = v3_agent(1472).await;
+        let mut discovery = hex(NET_SNMP_V3_SHA256_DISCOVERY);
+        assert_eq!(
+            answered(&agent, &discovery, 1472).0,
+            Outcome::Sent,
+            "reportable, it is answered"
+        );
+        assert_eq!(discovery[20], 0x04, "msgFlags: reportable");
+        discovery[20] = 0x00;
+        let (outcome, out) = answered(&agent, &discovery, 1472);
+        assert_eq!(outcome, Outcome::DroppedOther);
+        assert!(out.is_empty());
+        assert_eq!(agent.requests().usm_unknown_engine_ids, 2);
+    }
+
+    /// A message of another security model is malformed and not reported.
+    #[tokio::test]
+    async fn a_v3_message_of_another_security_model_is_malformed() {
+        let agent = v3_agent(1472).await;
+        let mut discovery = hex(NET_SNMP_V3_SHA256_DISCOVERY);
+        assert_eq!(
+            answered(&agent, &discovery, 1472).0,
+            Outcome::Sent,
+            "the USM's is answered"
+        );
+        // msgSecurityModel: the INTEGER after msgFlags, 02 01 03.
+        assert_eq!(&discovery[21..24], &[0x02, 0x01, 0x03]);
+        discovery[23] = 2;
+        let (outcome, out) = answered(&agent, &discovery, 1472);
+        assert_eq!((outcome, out.is_empty()), (Outcome::DroppedOther, true));
+        let requests = agent.requests();
+        assert_eq!(
+            (requests.malformed, requests.usm_unknown_engine_ids),
+            (1, 1),
+            "{requests:?}"
+        );
+    }
+
+    /// An authenticated request whose scoped PDU carries a varbind that is
+    /// not one is malformed once it has passed the USM's checks.
+    #[tokio::test]
+    async fn an_authenticated_request_with_a_malformed_varbind_is_malformed() {
+        let agent = v3_agent(1472).await;
+        let mut client = client_of(&agent, "telegraf");
+        let good = client.get(1, &[SYSTEM[4]]);
+        assert_eq!(
+            answered(&agent, &good, 1472).0,
+            Outcome::Sent,
+            "the request is answered"
+        );
+        // The varbind's NULL, 05 00, made to claim an octet its VarBind does
+        // not hold, then signed again.
+        let mut bad = client.request(Tag::GetRequest, 2, (0, 0), &[SYSTEM[4]], 24);
+        let at = bad.len() - 2;
+        assert_eq!(&bad[at..], &[0x05, 0x00]);
+        bad[at + 1] = 0x01;
+        client.sign(&mut bad);
+        let (outcome, out) = answered(&agent, &bad, 1472);
+        assert_eq!((outcome, out.is_empty()), (Outcome::DroppedOther, true));
+        let requests = agent.requests();
+        assert_eq!((requests.malformed, requests.get), (1, 1), "{requests:?}");
+    }
+
+    /// msgMaxSize below the agent's max_message_size trims a GETBULK as the
+    /// budget does: the reply fits it and ends on a whole varbind. Guard:
+    /// the same request with a large msgMaxSize gets a longer reply.
+    #[tokio::test]
+    async fn msg_max_size_trims_a_getbulk() {
+        let agent = v3_agent(1472).await;
+        interface_table(&agent);
+        let mut client = client_of(&agent, "telegraf");
+        let bulk = |client: &mut Client| {
+            client.request(Tag::GetBulkRequest, 7, (0, 1000), &[COLUMNS[0]], 24)
+        };
+        let (outcome, full) = answered(&agent, &bulk(&mut client), 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert!(
+            full.len() > 484 && full.len() <= 1472,
+            "{} bytes",
+            full.len()
+        );
+        let full = v3_pdu(&full).2.varbinds.len();
+
+        client.msg_max_size = 484;
+        let (outcome, trimmed) = answered(&agent, &bulk(&mut client), 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert!(trimmed.len() <= 484, "{} bytes", trimmed.len());
+        let (_, tag, reply) = v3_pdu(&trimmed);
+        assert_eq!((tag, reply.status), (Tag::Response, 0));
+        assert!(
+            !reply.varbinds.is_empty() && reply.varbinds.len() < full,
+            "{} of {full}",
+            reply.varbinds.len()
+        );
+        // One more varbind would not have fitted.
+        let next = reply.varbinds.len();
+        assert!(
+            trimmed.len() + 16 > 484,
+            "{} bytes after {next} varbinds",
+            trimmed.len()
+        );
+    }
+
+    /// A GET whose answer does not fit msgMaxSize is tooBig with an empty
+    /// varbind list, as under SNMPv2c.
+    #[tokio::test]
+    async fn a_v3_get_that_does_not_fit_msg_max_size_is_too_big() {
+        let agent = v3_agent(65_507).await;
+        let owner = owner();
+        publish(&agent, owner, LAST, |out| {
+            ber::write_string(out, &[b'x'; 600])
+        });
+        let mut client = client_of(&agent, "telegraf");
+        let (outcome, out) = answered(&agent, &client.get(3, &[LAST]), 65_507);
+        assert_eq!(
+            (outcome, v3_pdu(&out).2.status),
+            (Outcome::Sent, 0),
+            "it fits 65507"
+        );
+        client.msg_max_size = 484;
+        let (outcome, out) = answered(&agent, &client.get(4, &[LAST]), 65_507);
+        assert_eq!(outcome, Outcome::Sent);
+        assert!(out.len() <= 484);
+        let reply = v3_pdu(&out).2;
+        assert_eq!((reply.status, reply.varbinds.len()), (1, 0));
+        assert_eq!(agent.requests().too_big, 1);
+    }
+
+    /// A v2c-only agent counts an SNMPv3 message as an unsupported version
+    /// and never reports; with v3 served the same message is reported.
+    #[tokio::test]
+    async fn only_an_agent_serving_v3_reports() {
+        let discovery = hex(NET_SNMP_V3_SHA256_DISCOVERY);
+        let agent = v3_agent(1472).await;
+        assert_eq!(answered(&agent, &discovery, 1472).0, Outcome::Sent);
+        let agent = agent_serving(&[SnmpVersion::V2c]).await;
+        let (outcome, out) = answered(&agent, &discovery, 1472);
+        assert_eq!(
+            (outcome, out.is_empty()),
+            (Outcome::DroppedUnsupportedVersion, true)
+        );
+        let requests = agent.requests();
+        assert_eq!(
+            (
+                requests.unsupported_version,
+                requests.usm_unknown_engine_ids
+            ),
+            (1, 0)
+        );
+    }
+
+    /// One authenticated SNMPv3 GET allocates nothing once its buffers have
+    /// answered one like it: the HMAC state lives on the stack.
+    #[tokio::test]
+    async fn a_v3_authenticated_get_allocates_nothing() {
+        let agent = v3_agent(1472).await;
+        interface_table(&agent);
+        let names: Vec<String> = (1..=10)
+            .map(|index| format!("{}.{index}", COLUMNS[2]))
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let datagram = client_of(&agent, "sha512user").get(0x1234, &names);
+        let mut scratch = Scratch::default();
+        let mut out = Vec::with_capacity(1472);
+        let respond = |scratch: &mut Scratch, out: &mut Vec<u8>| {
+            respond_noting(&datagram, &agent, 1472, scratch, out, |_| {})
+        };
+        assert_eq!(respond(&mut scratch, &mut out), Outcome::Sent);
+        counting::assert_count_allocations_counts();
+        let (outcome, allocations) =
+            counting::count_allocations(|| respond(&mut scratch, &mut out));
+        assert_eq!(outcome, Outcome::Sent);
+        let (flags, _, reply) = v3_pdu(&out);
+        assert!(flags.auth);
+        assert_eq!((reply.status, reply.varbinds.len()), (0, 10));
+        assert_eq!(allocations, 0);
+    }
+
+    /// A blocking client socket on 127.0.0.1, its replies awaited for at
+    /// most two seconds of real time.
+    fn blocking_client() -> std::net::UdpSocket {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind a client socket");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("a read timeout");
+        socket
+    }
+
+    /// Send `datagram` from `socket` to `addr` and return the reply, off the
+    /// runtime: a blocking task holds the paused clock still.
+    async fn blocking_exchange(
+        socket: &std::net::UdpSocket,
+        addr: SocketAddr,
+        datagram: Vec<u8>,
+    ) -> Vec<u8> {
+        let socket = socket.try_clone().expect("a second handle");
+        tokio::task::spawn_blocking(move || {
+            socket.send_to(&datagram, addr).expect("sent");
+            let mut buffer = vec![0; RECEIVE_BUFFER];
+            let (len, from) = socket.recv_from(&mut buffer).expect("a reply within 2 s");
+            assert_eq!(from, addr);
+            buffer.truncate(len);
+            buffer
+        })
+        .await
+        .expect("joined")
+    }
+
+    /// A client performs what every SNMPv3 client library does, over the
+    /// socket: discovery, then an authenticated GET of sysUpTime.0; with the
+    /// clock 200 s on and its cached time, a NotInTimeWindows report it can
+    /// trust; then, re-synchronized from that report, an answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_discovers_authenticates_and_resynchronizes() {
+        let agent = v3_agent(1472).await;
+        let addr = agent.local_addr();
+        let socket = blocking_client();
+        let user = usm::user(agent.usm().users(), b"telegraf").expect("a user");
+        let mut client = Client::new("telegraf", user.auth().map(|(p, key)| (p, key.to_vec())));
+
+        let mut discovery = Client::new("", None);
+        let report = blocking_exchange(&socket, addr, discovery.get(1, &[])).await;
+        let (flags, tag, reply) = v3_pdu(&report);
+        assert_eq!((flags.auth, tag), (false, Tag::Report));
+        assert_eq!(reply.varbinds, ["1.3.6.1.6.3.15.1.1.4.0 = Counter32 1"]);
+        client.synchronize(&report);
+        assert_eq!(client.engine_id, agent.engine_id());
+
+        let get = |client: &mut Client, id| client.get(id, &[SYSTEM[2]]);
+        let answer = blocking_exchange(&socket, addr, get(&mut client, 2)).await;
+        let (flags, tag, reply) = v3_pdu(&answer);
+        assert_eq!((flags.auth, tag, reply.id), (true, Tag::Response, 2));
+        assert!(
+            reply.varbinds[0].starts_with("1.3.6.1.2.1.1.3.0 = Timeticks"),
+            "{reply:?}"
+        );
+
+        tokio::time::advance(Duration::from_secs(200)).await;
+        let stale = blocking_exchange(&socket, addr, get(&mut client, 3)).await;
+        let (flags, tag, reply) = v3_pdu(&stale);
+        assert_eq!((flags.auth, tag), (true, Tag::Report));
+        assert_eq!(reply.varbinds, ["1.3.6.1.6.3.15.1.1.2.0 = Counter32 1"]);
+        let msg = v3::decode(&stale).expect("decodes");
+        let mut zeroed = stale.clone();
+        zeroed[msg.auth_range.clone()].fill(0);
+        let (protocol, key) = user.auth().expect("a key");
+        let mut digest = vec![0; msg.usm.auth_params.len()];
+        usm::hmac(protocol, key, &zeroed, &mut digest);
+        assert_eq!(
+            digest, msg.usm.auth_params,
+            "the report is authenticated with the user's key"
+        );
+        assert_eq!(msg.usm.time, 200);
+
+        client.synchronize(&stale);
+        let answer = blocking_exchange(&socket, addr, get(&mut client, 4)).await;
+        let (_, tag, reply) = v3_pdu(&answer);
+        assert_eq!((tag, reply.id), (Tag::Response, 4));
+        let requests = agent.requests();
+        assert_eq!(
+            (
+                requests.usm_unknown_engine_ids,
+                requests.usm_not_in_time_windows,
+                requests.get,
+                requests.v3
+            ),
+            (1, 1, 2, 2)
+        );
+    }
+
+    /// An unknown user and a wrong digest each warn once per peer IP, naming
+    /// the peer and the user and never a key or a password.
+    #[tokio::test]
+    async fn an_unknown_user_and_a_wrong_digest_warn_once_per_peer_ip() {
+        let (captured, _capturing) = capture();
+        let agent = v3_agent(1472).await;
+        let addr = agent.local_addr();
+        let (first, second) = (client().await, client().await);
+        // Guard: the socket answers this client.
+        let mut good = client_of(&agent, "telegraf");
+        let reply = exchange(&first, addr, &good.get(1, &[SYSTEM[4]])).await;
+        assert_eq!(v3_pdu(&reply).1, Tag::Response);
+
+        let mut stranger = good.clone();
+        stranger.user = b"stranger".to_vec();
+        let mut wrong = good.clone();
+        if let Some((_, key)) = &mut wrong.key {
+            key[0] ^= 1;
+        }
+        for socket in [&first, &second] {
+            exchange(socket, addr, &stranger.get(2, &[SYSTEM[4]])).await;
+            exchange(socket, addr, &wrong.get(3, &[SYSTEM[4]])).await;
+        }
+        let requests = agent.requests();
+        assert_eq!(
+            (requests.usm_unknown_user_names, requests.usm_wrong_digests),
+            (2, 2)
+        );
+        let unknown = captured.warnings("unknown user");
+        assert_eq!(unknown.len(), 1, "{unknown:#?}");
+        assert!(
+            unknown[0].contains("127.0.0.1") && unknown[0].contains("stranger"),
+            "{}",
+            unknown[0]
+        );
+        let digest = captured.warnings("wrong digest");
+        assert_eq!(digest.len(), 1, "{digest:#?}");
+        assert!(
+            digest[0].contains("127.0.0.1") && digest[0].contains("telegraf"),
+            "{}",
+            digest[0]
+        );
+        let other = UdpSocket::bind("127.0.0.2:0")
+            .await
+            .expect("bind 127.0.0.2");
+        exchange(&other, addr, &wrong.get(4, &[SYSTEM[4]])).await;
+        assert_eq!(captured.warnings("wrong digest").len(), 2);
+        let key = usm::user(agent.usm().users(), b"telegraf")
+            .and_then(|u| u.auth())
+            .expect("a key")
+            .1;
+        let key_hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        assert!(
+            captured
+                .lines()
+                .iter()
+                .all(|line| !line.contains("lab-sha256-pass") && !line.contains(&key_hex)),
+            "no password or key is logged"
+        );
+    }
+
+    /// net-snmp reads sysName over SNMPv3 authNoPriv with SHA-256, MD5 and
+    /// SHA-1, and a wrong password gets its authentication failure.
+    #[tokio::test]
+    #[ignore = "needs net-snmp's snmpget on PATH; run with --ignored"]
+    async fn net_snmp_reads_the_agent_over_v3() {
+        let agent = v3_agent(1472).await;
+        let target = format!("127.0.0.1:{}", agent.local_addr().port());
+        let get = |user: &str, protocol: &str, password: &str| {
+            [
+                "-v3",
+                "-l",
+                "authNoPriv",
+                "-u",
+                user,
+                "-a",
+                protocol,
+                "-A",
+                password,
+                "-On",
+                "-r",
+                "0",
+                "-t",
+                "2",
+                &target,
+                "1.3.6.1.2.1.1.5.0",
+            ]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>()
+        };
+        for (user, protocol, password) in [
+            ("telegraf", "SHA-256", "lab-sha256-pass"),
+            ("md5user", "MD5", "lab-md5-pass"),
+            ("shauser", "SHA", "lab-sha1-pass"),
+        ] {
+            let output = net_snmp("snmpget", get(user, protocol, password)).await;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            println!("{protocol}: {stdout}");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(stdout, ".1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"\n");
+        }
+        let output = net_snmp("snmpget", get("telegraf", "SHA-256", "wrong-password")).await;
+        let printed = String::from_utf8_lossy(&output.stderr).to_string()
+            + &String::from_utf8_lossy(&output.stdout);
+        println!("wrong password: {printed}");
+        assert!(printed.contains("Authentication failure"), "{printed}");
+        let requests = agent.requests();
+        assert_eq!(
+            (requests.get, requests.usm_wrong_digests),
+            (3, 1),
+            "{requests:?}"
+        );
     }
 }

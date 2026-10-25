@@ -1,12 +1,14 @@
-# A router with four interfaces, served as an SNMPv1 and SNMPv2c agent for
-# Telegraf.
+# A router with four interfaces, served as an SNMPv1, SNMPv2c and SNMPv3
+# agent for Telegraf.
 #
 # Sonda listens on UDP 0.0.0.0:1161. Telegraf's inputs.snmp plugin is the
 # poller: it reads sysUpTime and walks the interface table with GETBULK over
-# SNMPv2c, walks it again with GETNEXT over SNMPv1, and writes what it reads
+# SNMPv2c, walks it again with GETNEXT over SNMPv1, a third time over SNMPv3
+# as the user telegraf (authNoPriv, HMAC-SHA-256), and writes what it reads
 # to its outputs. SNMPv1 has no Counter64, so the v1 walk skips the
 # ifHCInOctets and ifHCOutOctets columns. examples/telegraf/telegraf-snmp.conf
-# is the matching Telegraf config.
+# is the matching Telegraf config. The v3 user's password is a lab value;
+# the agent's engine boots are 1 on every run.
 #
 # The telegraf_snmp_interface pack carries each metric's IF-MIB column and
 # SNMP type, and serves the ifName and ifAlias labels as ifXTable columns, so
@@ -22,6 +24,8 @@
 # Walk the agent directly with net-snmp:
 #   snmpbulkwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
 #   snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1
+#   snmpget -v3 -l authNoPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
+#     -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
 #
 # Verify what Telegraf wrote to VictoriaMetrics:
 #   curl -s 'http://localhost:8428/api/v1/series' \
@@ -42,7 +46,10 @@ defaults:
     type: snmp_agent
     listen: 0.0.0.0:1161
     community: public
-    versions: [v1, v2c]
+    versions: [v1, v2c, v3]
+    users:
+      - name: telegraf
+        auth: { protocol: sha256, password: lab-only-v3-password }
     system:
       name: rtr-core-01
       descr: Sonda synthetic router

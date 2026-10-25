@@ -119,6 +119,19 @@
         "firing_within"
       ]
     },
+    "AuthProtocol": {
+      "description": "An SNMPv3 authentication protocol, named as Telegraf names it, in lower case: md5 (legacy; prefer a SHA-2 protocol), sha1 (also read as sha), sha224, sha256, sha384 or sha512.",
+      "type": "string",
+      "enum": [
+        "md5",
+        "sha",
+        "sha1",
+        "sha224",
+        "sha256",
+        "sha384",
+        "sha512"
+      ]
+    },
     "BurstConfig": {
       "description": "Burst window configuration — a recurring high-rate period within a scenario.\n\nDuring a burst the event rate is multiplied by `multiplier`. The burst\nrepeats on a fixed cycle defined by `every`, and each instance lasts for `for`.\n\nIf a gap and burst overlap in time, the gap takes priority and no events\nare emitted.",
       "type": "object",
@@ -3652,6 +3665,13 @@
               ],
               "default": "public"
             },
+            "engine_id": {
+              "description": "The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as\n`\"80001f8804736f6e6461\"`; a leading `0x` is allowed. A string; a YAML\nnumber is an error. Default: derived from `listen` (net-snmp's\nenterprise prefix `80001f88`, format `04`, then the text\n`sonda:<listen>` cut to 27 octets), so it is the same on every run.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "listen": {
               "description": "Address to listen on, e.g. `\"0.0.0.0:1161\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`SnmpAgent::local_addr`]. A port below\n1024, such as SNMP's 161, needs `CAP_NET_BIND_SERVICE`.",
               "type": [
@@ -3683,6 +3703,13 @@
             "type": {
               "type": "string",
               "const": "snmp_agent"
+            },
+            "users": {
+              "description": "The SNMPv3 users the agent accepts, each name once. `v3` in\n`versions` needs at least one. Default none.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UsmUser"
+              }
             },
             "versions": {
               "description": "The SNMP versions the agent answers, at least one and each once.\nDefault `[v2c]`. A request in another version is dropped unanswered.",
@@ -3776,6 +3803,11 @@
           "description": "SNMPv2c (RFC 3416), `v2c`.",
           "type": "string",
           "const": "v2c"
+        },
+        {
+          "description": "SNMPv3 with the User-based Security Model (RFC 3414), `v3`: the\nSNMPv2c operations for the configured `users`, `noAuthNoPriv` or\n`authNoPriv`.",
+          "type": "string",
+          "const": "v3"
         }
       ]
     },
@@ -3900,6 +3932,55 @@
           "type": "string",
           "const": "pending"
         }
+      ]
+    },
+    "UsmAuth": {
+      "description": "An SNMPv3 user's authentication: the `auth:` block of a [`UsmUser`].\n\n`Debug` prints `\"***\"` in place of the password.",
+      "type": "object",
+      "properties": {
+        "password": {
+          "description": "The password the user's key is made from, at least 8 octets. A\nstring; a YAML number is an error.",
+          "type": "string",
+          "writeOnly": true
+        },
+        "protocol": {
+          "description": "The HMAC the user's requests are authenticated with.",
+          "$ref": "#/$defs/AuthProtocol"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "password"
+      ]
+    },
+    "UsmUser": {
+      "description": "An SNMPv3 user of the User-based Security Model (RFC 3414): an item of\nan [`SnmpAgentConfig`]'s `users:`.\n\nWithout `auth` the user is `noAuthNoPriv`; with it, every request must\nbe authenticated with the user's key (`authNoPriv`). Unknown keys are\nrejected; a `priv` key is refused, because privacy (`authPriv`) is not\nsupported.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "The user's authentication protocol and password, when its requests\nare authenticated.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsmAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "The user name (`securityName`), 1 to 32 octets.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     },
     "WhileClause": {
