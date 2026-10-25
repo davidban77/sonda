@@ -86,14 +86,14 @@ jobs:
       - name: Build binaries (native)
         if: matrix.target != 'aarch64-unknown-linux-musl'
         run: |
-          cargo build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi -p sonda
-          cargo build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi -p sonda-server
+          cargo build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi,snmp -p sonda
+          cargo build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi,snmp -p sonda-server
 
       - name: Build binaries (cross)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
-          cross build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi -p sonda
-          cross build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi -p sonda-server
+          cross build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi,snmp -p sonda
+          cross build --release --target ${{ matrix.target }} --features remote-write,kafka,gnmi,snmp -p sonda-server
 
       - name: Create tarball
         run: |

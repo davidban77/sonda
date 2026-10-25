@@ -336,6 +336,7 @@ Pick the tab that matches your scenario.
     | Metrics | `remote_write` | `remote_write` (Alertmanager, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `--alertmanager-url` shape — must exit 1 with `did not fire within` |
     | Metrics | `gnmi` | `gnmi_target` (Telegraf → VM) | `examples/gnmi-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=ifcounters_in_octets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has subscribed |
     | Metrics | `gnmi` | `gnmi_target` over TLS with credentials (Telegraf → VM) | `examples/gnmi-telegraf-tls.yaml` | The same query, once Telegraf has subscribed over TLS with the example username and password |
+    | Metrics | `snmp` | `snmp_agent` (Telegraf → VM) | `examples/snmp-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=interface_ifHCInOctets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has polled |
 
     † These two rows need OTLP, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see [What the pre-built binaries include](#prebuilt-binaries) below.
 
@@ -351,10 +352,12 @@ Pick the tab that matches your scenario.
 
         The gNMI-over-TLS row needs `--profile gnmi-tls`, whose Telegraf dials `sonda:57401` over TLS with the example credentials. Make its certificates first, as the header of `examples/gnmi-telegraf-tls.yaml` shows.
 
+        The SNMP row needs `--profile snmp`. As with gNMI, Sonda runs on your host, here as the SNMP agent, and the profile's Telegraf polls it at `sonda:1161` over UDP every 2 seconds and writes what it reads to VictoriaMetrics.
+
     <a id="prebuilt-binaries"></a>
 
     !!! tip "What the pre-built binaries include"
-        The `remote_write`, `kafka` and `gnmi_target` sinks, and the `gnmi` encoder, are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
+        The `remote_write`, `kafka`, `gnmi_target` and `snmp_agent` sinks, and the `gnmi` and `snmp` encoders, are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
 
         The two OTLP rows still work. How much setup they need depends on where Sonda runs:
 

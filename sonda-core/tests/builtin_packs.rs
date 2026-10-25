@@ -705,3 +705,97 @@ fn the_crate_reaches_the_root_packs_through_a_symlink() {
         "the symlink must resolve to the same bytes as the root copy"
     );
 }
+
+// ---- telegraf_snmp_interface's snmp: hints ----------------------------------
+
+/// The IF-MIB column and SNMP type of every metric `telegraf_snmp_interface`
+/// declares, in the pack's order.
+const TELEGRAF_SNMP_HINTS: [(&str, &str, sonda_core::encoder::snmp::SnmpValueType); 5] = {
+    use sonda_core::encoder::snmp::SnmpValueType::{Counter32, Counter64, Integer};
+    [
+        ("ifOperStatus", "1.3.6.1.2.1.2.2.1.8.{ifIndex}", Integer),
+        (
+            "ifHCInOctets",
+            "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}",
+            Counter64,
+        ),
+        (
+            "ifHCOutOctets",
+            "1.3.6.1.2.1.31.1.1.1.10.{ifIndex}",
+            Counter64,
+        ),
+        ("ifInErrors", "1.3.6.1.2.1.2.2.1.14.{ifIndex}", Counter32),
+        ("ifOutErrors", "1.3.6.1.2.1.2.2.1.20.{ifIndex}", Counter32),
+    ]
+};
+
+/// Every metric of `telegraf_snmp_interface` carries its IF-MIB column and
+/// type as an `snmp:` hint. Runs without the `snmp` feature too: the hints
+/// parse and the pack validates in every build.
+#[test]
+fn every_telegraf_snmp_metric_carries_its_if_mib_hint() {
+    let pack = builtin::find("telegraf_snmp_interface").expect("the pack is embedded");
+    let def = builtin::parse_pack(pack).expect("the pack parses");
+    assert_eq!(sonda_core::packs::validate_pack(&def), Ok(()));
+    let hints: Vec<_> = def
+        .metrics
+        .iter()
+        .map(|spec| {
+            let hint = spec
+                .snmp
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} carries no snmp hint", spec.name));
+            (spec.name.as_str(), hint.oid.as_str(), hint.r#type)
+        })
+        .collect();
+    assert_eq!(hints, TELEGRAF_SNMP_HINTS);
+}
+
+/// `examples/snmp-telegraf.yaml` expands the pack under an snmp encoder
+/// that writes no `oids:` or `types:`: every entry's encoder gets the five
+/// hints, and the file validates with the example's labels.
+#[cfg(feature = "snmp")]
+#[test]
+fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
+    use sonda_core::encoder::EncoderConfig;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/snmp-telegraf.yaml");
+    let yaml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()));
+    assert!(
+        !yaml.contains("oids:") && !yaml.contains("types:"),
+        "the example names no oids: or types: of its own"
+    );
+    let entries = compile_scenario_file(&yaml, &builtin::BuiltinPackResolver::new())
+        .unwrap_or_else(|e| panic!("the example compiles: {}", error_chain(&e)));
+    assert_eq!(
+        entries.len(),
+        4 * TELEGRAF_SNMP_HINTS.len(),
+        "four interfaces"
+    );
+    for entry in &entries {
+        let ScenarioEntry::Metrics(config) = entry else {
+            panic!("a metrics entry: {entry:?}");
+        };
+        let EncoderConfig::Snmp(cfg) = &config.encoder else {
+            panic!("an snmp encoder: {:?}", config.encoder);
+        };
+        let mut oids: Vec<(&str, &str)> = cfg
+            .oids
+            .iter()
+            .map(|(name, oid)| (name.as_str(), oid.as_str()))
+            .collect();
+        oids.sort();
+        let mut want: Vec<(&str, &str)> = TELEGRAF_SNMP_HINTS
+            .iter()
+            .map(|(name, oid, _)| (*name, *oid))
+            .collect();
+        want.sort();
+        assert_eq!(oids, want, "{}", config.name);
+        for (name, _, value_type) in TELEGRAF_SNMP_HINTS {
+            assert_eq!(cfg.types.get(name), Some(&value_type), "{name}");
+        }
+    }
+    sonda_core::schedule::launch::prepare_entries(entries)
+        .unwrap_or_else(|e| panic!("the example validates: {e}"));
+}
