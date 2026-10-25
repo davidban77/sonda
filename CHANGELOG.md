@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.27.0](https://github.com/davidban77/sonda/compare/v1.26.0...v1.27.0) (2026-10-25)
+
+
+### Features
+
+* **snmp:** answer SNMPv2c Get, GetNext and GetBulk from the agent table ([#693](https://github.com/davidban77/sonda/issues/693)) ([bb0b20f](https://github.com/davidban77/sonda/commit/bb0b20f6410e2cb449fb0219abdb07b78ba4624b))
+* **snmp:** snmp encoder with OID templates, BER value types and pack hints ([#691](https://github.com/davidban77/sonda/issues/691)) ([006b92b](https://github.com/davidban77/sonda/commit/006b92b9896e2654c1a25d2e110ac5c301acab02))
+* **snmp:** snmp_agent sink publishing into a per-address OID table ([#692](https://github.com/davidban77/sonda/issues/692)) ([aa35ec7](https://github.com/davidban77/sonda/commit/aa35ec76af59992bef29c8a0649288ec0949304b))
+* **snmp:** Telegraf inputs.snmp example, live UAT row and release build with snmp ([#696](https://github.com/davidban77/sonda/issues/696)) ([0e44ab2](https://github.com/davidban77/sonda/commit/0e44ab278ab7dd74d86e5d02207a0bff3b56dadf))
+
+
+### Bug Fixes
+
+* **snmp:** answer from the address the request was sent to on a wildcard bind ([#695](https://github.com/davidban77/sonda/issues/695)) ([8b3291a](https://github.com/davidban77/sonda/commit/8b3291ad0e9c1190ed400ada50959093341f0f22))
+
+
+### Refactoring
+
+* **sink:** make the listener registry generic over its target type ([#689](https://github.com/davidban77/sonda/issues/689)) ([eda0ac5](https://github.com/davidban77/sonda/commit/eda0ac51b0be1c8254f3f4742664f8b64b74ae2c))
+
 ## [1.26.0](https://github.com/davidban77/sonda/compare/v1.25.0...v1.26.0) (2026-10-23)
 
 
