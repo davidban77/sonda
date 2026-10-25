@@ -5263,7 +5263,7 @@ generator:
     fn validation_checks_the_snmp_agent_versions() {
         use crate::config::ScenarioEntry;
         use crate::schedule::launch::prepare_entries;
-        use crate::sink::snmp::SnmpVersion::{V1, V2c};
+        use crate::sink::snmp::SnmpVersion::{V2c, V1};
 
         let with = |versions: &[crate::sink::snmp::SnmpVersion]| {
             let mut config = snmp_config();
@@ -5275,7 +5275,10 @@ generator:
         };
         validate_config(&with(&[V1, V2c])).expect("v1 and v2c validate");
         let msg = err_msg(validate_config(&with(&[])));
-        assert!(msg.contains("versions must name at least one version"), "{msg}");
+        assert!(
+            msg.contains("versions must name at least one version"),
+            "{msg}"
+        );
         let msg = err_msg(validate_config(&with(&[V1, V1])));
         assert!(msg.contains("versions names v1 more than once"), "{msg}");
 
