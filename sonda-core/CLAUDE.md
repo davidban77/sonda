@@ -662,7 +662,8 @@ src/
 │   │                       stops after a round that is all endOfMibView. SET echoes its
 │   │                       varbinds with notWritable (17) at index 1; Other(_) is malformed.
 │   │                       Scratch (name arcs, cursors) and out are reused, so a steady
-│   │                       request allocates nothing (asserted on a 10-varbind GETBULK).
+│   │                       request allocates nothing (asserted on a 10-varbind GETBULK and on
+│   │                       10-varbind v1 GET and GETNEXT).
 │   │                       respond() = decode + answer, a v3 decode error counted as
 │   │                       unsupported_version, any other as malformed. serve(socket,
 │   │                       Weak<SnmpAgent>, cancel): recv buffer 65 535, one out buffer
