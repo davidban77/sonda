@@ -1,4 +1,4 @@
-//! Answers SNMPv2c requests from an [`SnmpAgent`]'s table.
+//! Answers SNMPv1 and SNMPv2c requests from an [`SnmpAgent`]'s table.
 //!
 //! [`decode`] classifies a datagram's PDU, [`answer`] writes the response
 //! into a caller's buffer, and [`serve`] is the task that reads the socket
@@ -12,21 +12,26 @@
 //! message. Elsewhere a wildcard bind's responses leave from the address
 //! the route chooses.
 //!
-//! | Received | Answer |
-//! |---|---|
-//! | `GetRequest` | each varbind its instance's value, `noSuchInstance` or `noSuchObject`; error-status `noError` |
-//! | `GetNextRequest` | each varbind the next instance in OID order, or `endOfMibView` past the last |
-//! | `GetBulkRequest` | the non-repeaters as `GetNext`, then up to max-repetitions rounds of the repeaters, ending after a round that is all `endOfMibView` |
-//! | `SetRequest` | the request's varbinds, error-status `notWritable`, error-index 1; nothing is changed |
-//! | any other PDU | dropped |
-//! | another community | dropped |
-//! | SNMPv1 or SNMPv3 | dropped, the community never compared |
+//! | Received | SNMPv2c answer | SNMPv1 answer |
+//! |---|---|---|
+//! | `GetRequest` | each varbind its instance's value, `noSuchInstance` or `noSuchObject`; error-status `noError` | each varbind its instance's value; the first with no instance, or a `Counter64` one, makes it `noSuchName` at that varbind |
+//! | `GetNextRequest` | each varbind the next instance in OID order, or `endOfMibView` past the last | each varbind the next instance that is not a `Counter64`; the first past the last makes it `noSuchName` at that varbind |
+//! | `GetBulkRequest` | the non-repeaters as `GetNext`, then up to max-repetitions rounds of the repeaters, ending after a round that is all `endOfMibView` | dropped as malformed |
+//! | `SetRequest` | the request's varbinds, error-status `notWritable`, error-index 1; nothing is changed | the same, error-status `noSuchName` |
+//! | any other PDU | dropped | dropped (a `Trap` as malformed) |
+//! | another community | dropped | dropped |
+//! | a version the agent does not serve, or SNMPv3 | dropped, the community never compared | dropped, the community never compared |
+//!
+//! A response carries its request's version. An SNMPv1 error response
+//! carries the request's varbinds unchanged.
 //!
 //! Every response fits `max_message_size`. The first varbind that would
 //! not fit ends a `GetBulkRequest` response, which is sent with the
 //! varbinds before it; it turns a `GetRequest`, `GetNextRequest` or
-//! `SetRequest` response into `tooBig` with an empty varbind list. A
-//! request with no varbinds is answered with none, `noError`.
+//! `SetRequest` response into `tooBig`, with an empty varbind list under
+//! SNMPv2c and the request's varbinds under SNMPv1. An SNMPv1 `noSuchName`
+//! takes precedence over `tooBig`. A request with no varbinds is answered
+//! with none, `noError`.
 
 use std::collections::HashMap;
 use std::io;
@@ -39,7 +44,8 @@ use tokio::net::UdpSocket;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::agent::{warn_due, Counter, Found, SnmpAgent};
+use super::agent::{self, warn_due, Counter, Found, SnmpAgent};
+use super::SnmpVersion;
 use crate::encoder::snmp::ber::{self, BerError, Message, Reader, Tag, VarBind};
 use crate::encoder::snmp::oid::{self, Oid};
 
@@ -54,6 +60,9 @@ const RECEIVE_BACKOFF: Duration = Duration::from_millis(100);
 /// beyond them is counted but not logged until older entries expire.
 const WARNED_PEERS: usize = 1024;
 
+/// The version field of an SNMPv1 message.
+const V1: i64 = 0;
+
 /// The version field of an SNMPv2c message.
 const V2C: i64 = 1;
 
@@ -62,6 +71,9 @@ const V3: i64 = 3;
 
 /// error-status `tooBig`.
 const TOO_BIG: i64 = 1;
+
+/// error-status `noSuchName`, SNMPv1's error for any name it cannot answer.
+const NO_SUCH_NAME: i64 = 2;
 
 /// error-status `notWritable`.
 const NOT_WRITABLE: i64 = 17;
@@ -73,6 +85,24 @@ pub(crate) enum Version {
     V1,
     /// SNMPv2c, version field 1.
     V2c,
+}
+
+impl Version {
+    /// The message's version field.
+    fn field(self) -> i64 {
+        match self {
+            Version::V1 => V1,
+            Version::V2c => V2C,
+        }
+    }
+
+    /// The configured version this is.
+    fn configured(self) -> SnmpVersion {
+        match self {
+            Version::V1 => SnmpVersion::V1,
+            Version::V2c => SnmpVersion::V2c,
+        }
+    }
 }
 
 /// A decoded request, borrowing from the datagram.
@@ -151,7 +181,7 @@ pub(crate) enum Outcome {
     Sent,
     /// The community is not the agent's; nothing is sent.
     DroppedWrongCommunity,
-    /// SNMPv1 or SNMPv3; nothing is sent.
+    /// A version the agent does not serve, or SNMPv3; nothing is sent.
     DroppedUnsupportedVersion,
     /// Anything else not answered; nothing is sent.
     DroppedOther,
@@ -180,9 +210,11 @@ struct Cursor {
 /// # Errors
 ///
 /// [`Message::decode`]'s error, [`BerError::UnsupportedVersion`] for any
-/// version but SNMPv1 and SNMPv2c among them; [`BerError::Overflow`] for a
-/// request-id outside 32 bits; the error of the first malformed `VarBind`
-/// of a request the agent answers.
+/// version but SNMPv1 and SNMPv2c among them, and [`BerError::BadTag`] for
+/// SNMPv1's `Trap`, which is not a PDU it reads; [`BerError::BadTag`] for a
+/// `GetBulkRequest` in an SNMPv1 message, which has none;
+/// [`BerError::Overflow`] for a request-id outside 32 bits; the error of the
+/// first malformed `VarBind` of a request the agent answers.
 pub(crate) fn decode(datagram: &[u8]) -> Result<Request<'_>, BerError> {
     let message = Message::decode(datagram)?;
     // `Message::decode` admits versions 0 and 1 only.
@@ -191,6 +223,9 @@ pub(crate) fn decode(datagram: &[u8]) -> Result<Request<'_>, BerError> {
     } else {
         Version::V1
     };
+    if version == Version::V1 && message.pdu == Tag::GetBulkRequest {
+        return Err(BerError::BadTag(Tag::GetBulkRequest.byte()));
+    }
     let id = || i32::try_from(message.request_id).map_err(|_| BerError::Overflow);
     // A negative count is read as 0; RFC 3416 bounds both at 2³¹ - 1.
     let count = |v: i64| u32::try_from(v.max(0)).unwrap_or(u32::MAX);
@@ -225,9 +260,11 @@ pub(crate) fn decode(datagram: &[u8]) -> Result<Request<'_>, BerError> {
 /// Answer `req` from `agent` into `out`, which is cleared first, within
 /// `budget` octets, and count it in the agent's requests.
 ///
-/// The version is checked first, then the community, in constant time, then
-/// the PDU. Allocates nothing beyond what `out` and `scratch` already hold
-/// once both have answered a request of the same shape.
+/// The version is checked first against the agent's
+/// [`versions`](SnmpAgent::versions), then the community, in constant time,
+/// then the PDU, answered under the request's version. Allocates nothing
+/// beyond what `out` and `scratch` already hold once both have answered a
+/// request of the same shape.
 pub(crate) fn answer(
     req: &Request<'_>,
     agent: &SnmpAgent,
@@ -236,7 +273,7 @@ pub(crate) fn answer(
     out: &mut Vec<u8>,
 ) -> Outcome {
     out.clear();
-    if req.version != Version::V2c {
+    if !agent.versions().contains(&req.version.configured()) {
         agent.count(Counter::UnsupportedVersion);
         return Outcome::DroppedUnsupportedVersion;
     }
@@ -255,19 +292,22 @@ pub(crate) fn answer(
             return Outcome::DroppedOther;
         }
     };
+    let v1 = req.version == Version::V1;
     let reply = Reply {
+        version: req.version.field(),
         community,
         id: i64::from(id),
         budget,
     };
     let (status, index) = match req.pdu {
+        Pdu::Set { .. } if !vars.is_empty() && v1 => (NO_SUCH_NAME, 1),
         Pdu::Set { .. } if !vars.is_empty() => (NOT_WRITABLE, 1),
         _ => (0, 0),
     };
     let mut written = Ok(Written::Complete);
     ber::write_message(
         out,
-        V2C,
+        reply.version,
         community,
         Tag::Response,
         reply.id,
@@ -279,7 +319,9 @@ pub(crate) fn answer(
                 reply: &reply,
             };
             written = match req.pdu {
+                Pdu::Get { .. } if v1 => get_v1(agent, &vars, list, scratch, out),
                 Pdu::Get { .. } => get(agent, &vars, list, scratch, out),
+                Pdu::GetNext { .. } if v1 => get_next_v1(agent, &vars, list, scratch, out),
                 Pdu::GetNext { .. } => get_next(agent, &vars, list, scratch, out),
                 Pdu::GetBulk {
                     non_repeaters,
@@ -299,21 +341,21 @@ pub(crate) fn answer(
             };
         },
     );
-    match written {
-        Ok(Written::Complete) => {
-            agent.count(counter);
-            Outcome::Sent
-        }
-        Ok(Written::Full) => {
-            agent.count(counter);
-            too_big(agent, &reply, &vars, out)
-        }
+    let outcome = match written {
+        Ok(Written::Complete) => Outcome::Sent,
+        Ok(Written::Full) => too_big(agent, &reply, &vars, out),
+        Ok(Written::NoSuchName(index)) => no_such_name(agent, &reply, &vars, index, out),
         Err(_) => {
             out.clear();
             agent.count(Counter::Malformed);
-            Outcome::DroppedOther
+            return Outcome::DroppedOther;
         }
+    };
+    agent.count(counter);
+    if v1 {
+        agent.count(Counter::V1);
     }
+    outcome
 }
 
 /// [`decode`] `datagram` and [`answer`] it, calling `wrong_community` with
@@ -779,10 +821,15 @@ enum Written {
     Complete,
     /// A varbind did not fit; the response is to be `tooBig`.
     Full,
+    /// The varbind at this 1-based position has no SNMPv1 answer; the
+    /// response is to be `noSuchName` there.
+    NoSuchName(usize),
 }
 
 /// The fields of the response that its size depends on.
 struct Reply<'a> {
+    /// The version field, the request's.
+    version: i64,
     community: &'a [u8],
     id: i64,
     budget: usize,
@@ -801,8 +848,8 @@ impl List<'_> {
         let r = self.reply;
         let list = out.len() - self.start + more;
         // error-status and error-index take three octets each whatever their
-        // value here (0, 1 or 17).
-        ber::message_len(V2C, r.community, r.id, 0, 0, list) <= r.budget
+        // value here (0, 1, 2 or 17).
+        ber::message_len(r.version, r.community, r.id, 0, 0, list) <= r.budget
     }
 }
 
@@ -839,6 +886,78 @@ fn get(
         }
     }
     Ok(Written::Complete)
+}
+
+/// The SNMPv1 `GetRequest` varbinds: each name's value while they fit, or
+/// [`Written::NoSuchName`] at the first name with no instance or a
+/// `Counter64` one, which SNMPv1 cannot carry. Every name is looked up even
+/// once one does not fit, so a later name with no answer still makes the
+/// response `noSuchName`.
+fn get_v1(
+    agent: &SnmpAgent,
+    vars: &VarList<'_>,
+    list: List<'_>,
+    scratch: &mut Scratch,
+    out: &mut Vec<u8>,
+) -> Result<Written, BerError> {
+    let mut full = false;
+    for (index, var) in vars.iter().enumerate() {
+        var.name_into(&mut scratch.name)?;
+        let answered = agent.lookup(&scratch.name, |found| match found {
+            Found::Value(varbind) if !agent::is_counter64(varbind) => {
+                if !full && list.fits(out, varbind.len()) {
+                    out.extend_from_slice(varbind);
+                } else {
+                    full = true;
+                }
+                true
+            }
+            _ => false,
+        });
+        if !answered {
+            return Ok(Written::NoSuchName(index + 1));
+        }
+    }
+    Ok(if full {
+        Written::Full
+    } else {
+        Written::Complete
+    })
+}
+
+/// The SNMPv1 `GetNextRequest` varbinds: each name's successor among the
+/// instances that are not a `Counter64`, while they fit, or
+/// [`Written::NoSuchName`] at the first name with no successor. Every name
+/// is looked up even once one does not fit.
+fn get_next_v1(
+    agent: &SnmpAgent,
+    vars: &VarList<'_>,
+    list: List<'_>,
+    scratch: &mut Scratch,
+    out: &mut Vec<u8>,
+) -> Result<Written, BerError> {
+    let mut full = false;
+    for (index, var) in vars.iter().enumerate() {
+        var.name_into(&mut scratch.name)?;
+        let mut found = false;
+        agent.bulk(&scratch.name, 1, true, |_, varbind| {
+            found = true;
+            if !full && list.fits(out, varbind.len()) {
+                out.extend_from_slice(varbind);
+            } else {
+                full = true;
+            }
+            false
+        });
+        if !found {
+            return Ok(Written::NoSuchName(index + 1));
+        }
+    }
+    Ok(if full {
+        Written::Full
+    } else {
+        Written::Complete
+    })
 }
 
 /// The `GetNextRequest` varbinds: each name's successor, or `endOfMibView`.
@@ -943,7 +1062,7 @@ fn column(
     }
     oid::decode_ber_body(&out[first.name.clone()], &mut scratch.name).ok_or(BerError::BadOid)?;
     let (mut emitted, mut full, mut last) = (0, false, None);
-    agent.bulk(&scratch.name, rounds, |_, varbind| {
+    agent.bulk(&scratch.name, rounds, false, |_, varbind| {
         if !list.fits(out, varbind.len()) {
             full = true;
             return false;
@@ -974,26 +1093,69 @@ fn echo(vars: &VarList<'_>, list: List<'_>, out: &mut Vec<u8>) -> Result<Written
     Ok(Written::Complete)
 }
 
-/// Replace the response in `out` with `tooBig` and an empty varbind list,
-/// count it, and warn naming the request's first OID; nothing is sent if
-/// even that does not fit.
+/// Replace the response in `out` with `tooBig`, count it, and warn naming
+/// the request's first OID; nothing is sent if even that does not fit. The
+/// varbind list is empty under SNMPv2c and the request's under SNMPv1.
 fn too_big(agent: &SnmpAgent, reply: &Reply<'_>, vars: &VarList<'_>, out: &mut Vec<u8>) -> Outcome {
     out.clear();
     agent.count(Counter::TooBig);
     let first = vars.iter().next().map(|var| var.oid);
     agent.warn_too_big(&Dotted(first.unwrap_or_default()), reply.budget);
-    if ber::message_len(V2C, reply.community, reply.id, TOO_BIG, 0, 0) > reply.budget {
+    let echoed: &[u8] = if reply.version == V1 {
+        vars.body()
+    } else {
+        &[]
+    };
+    error_response(reply, TOO_BIG, 0, echoed, out)
+}
+
+/// Replace the response in `out` with SNMPv1's `noSuchName` at the 1-based
+/// `index`, carrying the request's varbinds; `tooBig` when that does not
+/// fit.
+fn no_such_name(
+    agent: &SnmpAgent,
+    reply: &Reply<'_>,
+    vars: &VarList<'_>,
+    index: usize,
+    out: &mut Vec<u8>,
+) -> Outcome {
+    out.clear();
+    let index = i64::try_from(index).unwrap_or(i64::MAX);
+    match error_response(reply, NO_SUCH_NAME, index, vars.body(), out) {
+        Outcome::Sent => Outcome::Sent,
+        _ => too_big(agent, reply, vars, out),
+    }
+}
+
+/// Write into `out` a response of error-status `status` at `index` whose
+/// varbind list body is `varbinds`, or nothing when it does not fit.
+fn error_response(
+    reply: &Reply<'_>,
+    status: i64,
+    index: i64,
+    varbinds: &[u8],
+    out: &mut Vec<u8>,
+) -> Outcome {
+    let len = ber::message_len(
+        reply.version,
+        reply.community,
+        reply.id,
+        status,
+        index,
+        varbinds.len(),
+    );
+    if len > reply.budget {
         return Outcome::DroppedOther;
     }
     ber::write_message(
         out,
-        V2C,
+        reply.version,
         reply.community,
         Tag::Response,
         reply.id,
-        TOO_BIG,
-        0,
-        |_| {},
+        status,
+        index,
+        |out| out.extend_from_slice(varbinds),
     );
     Outcome::Sent
 }
@@ -1036,7 +1198,7 @@ fn next(
     out: &mut Vec<u8>,
 ) -> Step {
     let mut step = Step::Ended;
-    agent.bulk(arcs, 1, |_, varbind| {
+    agent.bulk(arcs, 1, false, |_, varbind| {
         if list.fits(out, varbind.len()) {
             out.extend_from_slice(varbind);
             step = Step::Found;
@@ -1155,6 +1317,63 @@ mod tests {
     /// This codec's tooBig reply to a gosnmp GET under a 200-byte budget.
     const TOO_BIG_REPLY: &str = "301b02010104067075626c6963a20e02042c261a7f0201010201003000";
 
+    /// `snmpget -v1 -c public -On 127.0.0.1:<port> 1.3.6.1.2.1.2.2.1.8.3`,
+    /// net-snmp 5.9.4.pre2.
+    const NET_SNMP_V1_GET: &str =
+        "302b02010004067075626c6963a01e020431704fc80201000201003010300e060a2b060102010202\
+        0108030500";
+
+    /// This codec's reply to [`NET_SNMP_V1_GET`], which snmpget printed as
+    /// `.1.3.6.1.2.1.2.2.1.8.3 = INTEGER: 2`.
+    const NET_SNMP_V1_GET_REPLY: &str =
+        "302c02010004067075626c6963a21f020431704fc80201000201003011300f060a2b060102010202\
+        010803020102";
+
+    /// `snmpget -v1 -c public -On 127.0.0.1:<port> 1.3.6.1.2.1.31.1.1.1.6.1`,
+    /// net-snmp 5.9.4.pre2: a Counter64 instance.
+    const NET_SNMP_V1_GET_COUNTER64: &str =
+        "302c02010004067075626c6963a01f0204383223ac0201000201003011300f060b2b060102011f01\
+        010106010500";
+
+    /// This codec's reply to [`NET_SNMP_V1_GET_COUNTER64`], which snmpget
+    /// printed as `Reason: (noSuchName) There is no such variable name in
+    /// this MIB.` and `Failed object: .1.3.6.1.2.1.31.1.1.1.6.1`.
+    const NET_SNMP_V1_GET_COUNTER64_REPLY: &str =
+        "302c02010004067075626c6963a21f0204383223ac0201020201013011300f060b2b060102011f01\
+        010106010500";
+
+    /// `snmpgetnext -v1 -c public -On 127.0.0.1:<port> 1.3.6.1.2.1.2.2.1.14.10`,
+    /// net-snmp 5.9.4.pre2: the last ifInErrors, before the Counter64 column.
+    const NET_SNMP_V1_GETNEXT: &str =
+        "302b02010004067075626c6963a11e02041882cd920201000201003010300e060a2b060102010202\
+        010e0a0500";
+
+    /// This codec's reply to [`NET_SNMP_V1_GETNEXT`], which snmpgetnext
+    /// printed as `.1.3.6.1.2.1.31.1.1.1.15.1 = Gauge32: 10000`.
+    const NET_SNMP_V1_GETNEXT_REPLY: &str =
+        "302e02010004067075626c6963a22102041882cd9202010002010030133011060b2b060102011f01\
+        01010f0142022710";
+
+    /// `snmpset -v1 -c public -On 127.0.0.1:<port> 1.3.6.1.2.1.1.5.0 s rtr-2`,
+    /// net-snmp 5.9.4.pre2.
+    const NET_SNMP_V1_SET: &str =
+        "302e02010004067075626c6963a32102040e790ca00201000201003013301106082b060102010105\
+        0004057274722d32";
+
+    /// This codec's reply to [`NET_SNMP_V1_SET`], which snmpset printed as
+    /// `Reason: (noSuchName) There is no such variable name in this MIB.` and
+    /// `Failed object: .1.3.6.1.2.1.1.5.0`.
+    const NET_SNMP_V1_SET_REPLY: &str =
+        "302e02010004067075626c6963a22102040e790ca00201020201013013301106082b060102010105\
+        0004057274722d32";
+
+    /// `snmptrap -v1 -c public 127.0.0.1:<port> 1.3.6.1.4.1.8072.9999 127.0.0.1 2 0 ''
+    /// 1.3.6.1.2.1.2.2.1.1.1 i 1`, net-snmp 5.9.4.pre2: a Trap-PDU (0xA4) at
+    /// octet 13.
+    const NET_SNMP_V1_TRAP: &str =
+        "303c02010004067075626c6963a42f06092b06010401bf08ce0f40047f000001020102020100430300\
+        c6943011300f060a2b060102010202010101020101";
+
     /// The system group's seven instances, in OID order.
     const SYSTEM: [&str; 7] = [
         "1.3.6.1.2.1.1.1.0",
@@ -1199,6 +1418,18 @@ mod tests {
         let cfg = SnmpAgentConfig {
             system: system(),
             ..SnmpAgentConfig::new(listen)
+        };
+        SnmpAgent::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("bind an ephemeral port")
+    }
+
+    /// An agent on an ephemeral port answering `versions`.
+    async fn agent_serving(versions: &[SnmpVersion]) -> Arc<SnmpAgent> {
+        let cfg = SnmpAgentConfig {
+            system: system(),
+            versions: versions.to_vec(),
+            ..SnmpAgentConfig::new("127.0.0.1:0")
         };
         SnmpAgent::bind(cfg.settings().expect("valid settings"))
             .await
@@ -1258,10 +1489,23 @@ mod tests {
         fields: (i64, i64),
         names: &[&str],
     ) -> Vec<u8> {
+        message_as(V2C, community, pdu, id, fields, names)
+    }
+
+    /// A request of the version field `version` as `community`, carrying
+    /// `names` with NULL values.
+    fn message_as(
+        version: i64,
+        community: &str,
+        pdu: Tag,
+        id: i64,
+        fields: (i64, i64),
+        names: &[&str],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         ber::write_message(
             &mut out,
-            V2C,
+            version,
             community.as_bytes(),
             pdu,
             id,
@@ -1322,8 +1566,13 @@ mod tests {
     }
 
     fn response(datagram: &[u8]) -> Response {
-        let message = Message::decode(datagram).expect("the reply is a v2c message");
-        assert_eq!(message.version, V2C);
+        response_in(datagram, V2C)
+    }
+
+    /// A Response-PDU of the version field `version`, decoded.
+    fn response_in(datagram: &[u8], version: i64) -> Response {
+        let message = Message::decode(datagram).expect("the reply is a v1 or v2c message");
+        assert_eq!(message.version, version);
         assert_eq!(message.community, b"public");
         assert_eq!(message.pdu, Tag::Response);
         Response {
@@ -2088,6 +2337,289 @@ mod tests {
         }
     }
 
+    // ---- SNMPv1 -------------------------------------------------------------
+
+    /// ifOperStatus.3, an INTEGER.
+    const STATUS_3: &str = "1.3.6.1.2.1.2.2.1.8.3";
+
+    /// ifHCInOctets.1, a Counter64.
+    const OCTETS_1: &str = "1.3.6.1.2.1.31.1.1.1.6.1";
+
+    /// What an agent serving v1 and v2c answers the request `pdu` for
+    /// `names` with under `budget`, in `version`: the outcome and the
+    /// decoded response.
+    async fn answered_in(
+        agent: &SnmpAgent,
+        version: i64,
+        pdu: Tag,
+        names: &[&str],
+        budget: usize,
+    ) -> Response {
+        let datagram = message_as(version, "public", pdu, 0x1234, (0, 0), names);
+        let (outcome, out) = answered(agent, &datagram, budget);
+        assert_eq!(outcome, Outcome::Sent, "version {version}: {names:?}");
+        response_in(&out, version)
+    }
+
+    /// Each request is answered under SNMPv1 as RFC 1157 and RFC 3584
+    /// §4.1.2.3 say. Every case is the same request in both versions, to an
+    /// agent serving both, and asserts the v2c answer too, so the case shows
+    /// the v1 difference: a name with no instance or a Counter64 one makes
+    /// a GET noSuchName at its 1-based position with the request's varbinds;
+    /// a GETNEXT skips Counter64 instances and is noSuchName past the end;
+    /// tooBig carries the request's varbinds; noSuchName takes precedence
+    /// over tooBig; a SET is noSuchName at index 1.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::get_an_integer(Tag::GetRequest, &[STATUS_3], 1472,
+        (0, 0, &["1.3.6.1.2.1.2.2.1.8.3 = INTEGER 2"][..]),
+        (0, 0, &["1.3.6.1.2.1.2.2.1.8.3 = INTEGER 2"][..]))]
+    #[case::get_a_counter64(Tag::GetRequest, &[OCTETS_1], 1472,
+        (0, 0, &["1.3.6.1.2.1.31.1.1.1.6.1 = Counter64 1250000"][..]),
+        (2, 1, &["1.3.6.1.2.1.31.1.1.1.6.1 = NULL"][..]))]
+    #[case::get_three_the_second_missing(Tag::GetRequest, &["1.3.6.1.2.1.2.2.1.8.1", "1.3.6.1.2.1.2.2.1.8.11", "1.3.6.1.2.1.2.2.1.14.2"], 1472,
+        (0, 0, &["1.3.6.1.2.1.2.2.1.8.1 = INTEGER 1", "1.3.6.1.2.1.2.2.1.8.11 = noSuchInstance", "1.3.6.1.2.1.2.2.1.14.2 = Counter32 14"][..]),
+        (2, 2, &["1.3.6.1.2.1.2.2.1.8.1 = NULL", "1.3.6.1.2.1.2.2.1.8.11 = NULL", "1.3.6.1.2.1.2.2.1.14.2 = NULL"][..]))]
+    #[case::get_an_unknown_object(Tag::GetRequest, &["1.3.6.1.2.1.99.1"], 1472,
+        (0, 0, &["1.3.6.1.2.1.99.1 = noSuchObject"][..]),
+        (2, 1, &["1.3.6.1.2.1.99.1 = NULL"][..]))]
+    #[case::getnext_before_a_counter64_column(Tag::GetNextRequest, &["1.3.6.1.2.1.2.2.1.14.10"], 1472,
+        (0, 0, &["1.3.6.1.2.1.31.1.1.1.6.1 = Counter64 1250000"][..]),
+        (0, 0, &["1.3.6.1.2.1.31.1.1.1.15.1 = Gauge32 10000"][..]))]
+    #[case::getnext_inside_a_counter64_column(Tag::GetNextRequest, &["1.3.6.1.2.1.31.1.1.1.6.4"], 1472,
+        (0, 0, &["1.3.6.1.2.1.31.1.1.1.6.5 = Counter64 6250000"][..]),
+        (0, 0, &["1.3.6.1.2.1.31.1.1.1.15.1 = Gauge32 10000"][..]))]
+    #[case::getnext_past_the_end(Tag::GetNextRequest, &[LAST], 1472,
+        (0, 0, &["1.3.6.1.4.1.8072.9999.1.1.0 = endOfMibView"][..]),
+        (2, 1, &["1.3.6.1.4.1.8072.9999.1.1.0 = NULL"][..]))]
+    #[case::getnext_two_the_second_past_the_end(Tag::GetNextRequest, &["1.3.6.1.2.1.2.2.1.8.1", LAST], 1472,
+        (0, 0, &["1.3.6.1.2.1.2.2.1.8.2 = INTEGER 1", "1.3.6.1.4.1.8072.9999.1.1.0 = endOfMibView"][..]),
+        (2, 2, &["1.3.6.1.2.1.2.2.1.8.1 = NULL", "1.3.6.1.4.1.8072.9999.1.1.0 = NULL"][..]))]
+    #[case::too_big(Tag::GetRequest, &["1.3.6.1.2.1.1.1.0"], 50,
+        (1, 0, &[][..]),
+        (1, 0, &["1.3.6.1.2.1.1.1.0 = NULL"][..]))]
+    #[case::no_such_name_before_too_big(Tag::GetRequest, &["1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.2.2.1.8.11"], 60,
+        (1, 0, &[][..]),
+        (2, 2, &["1.3.6.1.2.1.1.1.0 = NULL", "1.3.6.1.2.1.2.2.1.8.11 = NULL"][..]))]
+    #[case::set(Tag::SetRequest, &["1.3.6.1.2.1.1.5.0"], 1472,
+        (17, 1, &["1.3.6.1.2.1.1.5.0 = NULL"][..]),
+        (2, 1, &["1.3.6.1.2.1.1.5.0 = NULL"][..]))]
+    #[tokio::test]
+    async fn a_v1_request_is_answered_as_rfc_1157_says(
+        #[case] pdu: Tag,
+        #[case] names: &[&str],
+        #[case] budget: usize,
+        #[case] v2c: (i64, i64, &[&str]),
+        #[case] v1: (i64, i64, &[&str]),
+    ) {
+        let agent = agent_serving(&[SnmpVersion::V1, SnmpVersion::V2c]).await;
+        interface_table(&agent);
+        let reply = answered_in(&agent, V2C, pdu, names, budget).await;
+        assert_eq!((reply.id, reply.status, reply.index), (0x1234, v2c.0, v2c.1), "v2c");
+        assert_eq!(reply.varbinds, v2c.2, "v2c");
+        assert_eq!(agent.requests().v1, 0);
+
+        let reply = answered_in(&agent, V1, pdu, names, budget).await;
+        assert_eq!((reply.id, reply.status, reply.index), (0x1234, v1.0, v1.1), "v1");
+        assert_eq!(reply.varbinds, v1.2, "v1");
+        assert_eq!(agent.requests().v1, 1);
+    }
+
+    /// The captured net-snmp v1 requests are answered byte for byte as the
+    /// replies net-snmp printed, each carrying version 0.
+    #[tokio::test]
+    async fn captured_v1_requests_are_answered_as_net_snmp_read_them() {
+        let agent = agent_serving(&[SnmpVersion::V1]).await;
+        interface_table(&agent);
+        for (request, expected) in [
+            (NET_SNMP_V1_GET, NET_SNMP_V1_GET_REPLY),
+            (NET_SNMP_V1_GET_COUNTER64, NET_SNMP_V1_GET_COUNTER64_REPLY),
+            (NET_SNMP_V1_GETNEXT, NET_SNMP_V1_GETNEXT_REPLY),
+            (NET_SNMP_V1_SET, NET_SNMP_V1_SET_REPLY),
+        ] {
+            let request = hex(request);
+            assert_eq!(
+                request.get(2..5),
+                Some(&[0x02, 0x01, 0x00][..]),
+                "a v1 fixture"
+            );
+            let (outcome, out) = answered(&agent, &request, 1472);
+            assert_eq!(outcome, Outcome::Sent);
+            assert_eq!(out.get(2..5), Some(&[0x02, 0x01, 0x00][..]), "version 0");
+            assert_eq!(out, hex(expected), "the reply to {request:02x?}");
+        }
+        let requests = agent.requests();
+        assert_eq!(
+            (
+                requests.get,
+                requests.get_next,
+                requests.set_refused,
+                requests.v1
+            ),
+            (2, 1, 1, 4)
+        );
+    }
+
+    /// A GetBulkRequest or a Trap-PDU in a v1 message is malformed: dropped
+    /// unanswered and counted, the community never compared. Guard: the same
+    /// agent answers the v2c form of the GETBULK and a v1 GET.
+    #[rstest]
+    #[case::getbulk(message_as(V1, "public", Tag::GetBulkRequest, 0x1234, (0, 10), &[COLUMNS[0]]))]
+    #[case::trap(hex(NET_SNMP_V1_TRAP))]
+    #[tokio::test]
+    async fn a_getbulk_or_a_trap_in_a_v1_message_is_malformed(#[case] datagram: Vec<u8>) {
+        let agent = agent_serving(&[SnmpVersion::V1, SnmpVersion::V2c]).await;
+        interface_table(&agent);
+        assert_eq!(
+            datagram.get(2..5),
+            Some(&[0x02, 0x01, 0x00][..]),
+            "a v1 message"
+        );
+        assert!(matches!(datagram.get(13), Some(0xa4 | 0xa5)), "the PDU tag");
+        let v2c_bulk = bulk(0, 10, &[COLUMNS[0]]);
+        assert_eq!(
+            response(&answered(&agent, &v2c_bulk, 1472).1)
+                .varbinds
+                .len(),
+            10
+        );
+        let v1_get = message_as(V1, "public", Tag::GetRequest, 1, (0, 0), &[STATUS_3]);
+        assert_eq!(answered(&agent, &v1_get, 1472).0, Outcome::Sent);
+        let before = agent.requests();
+        assert_eq!((before.malformed, before.v1), (0, 1));
+
+        let (outcome, out) = answered(&agent, &datagram, 1472);
+        assert_eq!(outcome, Outcome::DroppedOther);
+        assert!(out.is_empty());
+        let after = agent.requests();
+        assert_eq!((after.malformed, after.v1), (1, 1));
+        assert_eq!(after.wrong_community, 0);
+    }
+
+    /// A request in a version the agent does not serve is dropped and
+    /// counted as unsupported, the community never compared. Guard: the same
+    /// agent answers the same request in the version it serves.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::v1_to_a_v2c_agent(SnmpVersion::V2c, V1,  V2C)]
+    #[case::v2c_to_a_v1_agent(SnmpVersion::V1,  V2C, V1)]
+    #[tokio::test]
+    async fn a_version_the_agent_does_not_serve_is_dropped(
+        #[case] served: SnmpVersion,
+        #[case] sent: i64,
+        #[case] answered_as: i64,
+    ) {
+        let agent = agent_serving(&[served]).await;
+        interface_table(&agent);
+        let reply = answered_in(&agent, answered_as, Tag::GetRequest, &[STATUS_3], 1472).await;
+        assert_eq!(reply.varbinds, ["1.3.6.1.2.1.2.2.1.8.3 = INTEGER 2"]);
+
+        let datagram = message_as(sent, "another", Tag::GetRequest, 1, (0, 0), &[STATUS_3]);
+        let (outcome, out) = answered(&agent, &datagram, 1472);
+        assert_eq!(outcome, Outcome::DroppedUnsupportedVersion);
+        assert!(out.is_empty());
+        let requests = agent.requests();
+        assert_eq!(requests.unsupported_version, 1);
+        assert_eq!(requests.wrong_community, 0, "the community was not compared");
+        assert_eq!(requests.get, 1);
+    }
+
+    /// `v1` counts the requests answered as SNMPv1; `get` and `get_next`
+    /// count both versions; a request that is dropped counts no `v1`.
+    #[tokio::test]
+    async fn the_v1_counter_counts_requests_answered_as_v1() {
+        let agent = agent_serving(&[SnmpVersion::V1, SnmpVersion::V2c]).await;
+        interface_table(&agent);
+        for (version, pdu, community) in [
+            (V1, Tag::GetRequest, "public"),
+            (V1, Tag::GetNextRequest, "public"),
+            (V1, Tag::GetRequest, "another"),
+            (V2C, Tag::GetRequest, "public"),
+            (V2C, Tag::GetNextRequest, "public"),
+        ] {
+            let datagram = message_as(version, community, pdu, 1, (0, 0), &[STATUS_3]);
+            answered(&agent, &datagram, 1472);
+        }
+        let requests = agent.requests();
+        assert_eq!(
+            (
+                requests.get,
+                requests.get_next,
+                requests.wrong_community,
+                requests.v1
+            ),
+            (2, 2, 1, 2)
+        );
+    }
+
+    /// For 200 seeded OID sets with Counter64 and Counter32 values, a v1
+    /// GETNEXT chain from 0.0 visits every instance that is not a Counter64,
+    /// the system group included, once each in OID order, and only those,
+    /// then answers noSuchName at index 1. Guard: each set walked holds at
+    /// least one Counter64 instance and one other.
+    #[tokio::test]
+    async fn a_v1_getnext_walk_visits_every_instance_but_counter64_once_in_order() {
+        let mut checked = 0;
+        for seed in 0..200 {
+            let published = random_oids(seed);
+            if published.len() < 2 {
+                continue;
+            }
+            let agent = agent_serving(&[SnmpVersion::V1]).await;
+            let owner = owner();
+            let mut expected: Vec<Oid> = SYSTEM.iter().map(|text| oid(text)).collect();
+            let mut counter64 = 0;
+            for (n, instance) in published.iter().enumerate() {
+                let mut value = Vec::new();
+                if n % 2 == 0 {
+                    ber::write_counter64(&mut value, n as u64);
+                    counter64 += 1;
+                } else {
+                    ber::write_counter32(&mut value, n as u32);
+                    expected.push(instance.clone());
+                }
+                let mut varbind = Vec::new();
+                ber::write_varbind(&mut varbind, instance, &value);
+                agent
+                    .publish(owner, instance, Bytes::from(varbind), true)
+                    .expect("publishes");
+            }
+            expected.sort();
+            assert!(
+                counter64 >= 1 && expected.len() > SYSTEM.len(),
+                "seed {seed}"
+            );
+
+            let mut walked = Vec::new();
+            let mut at = oid("0.0");
+            loop {
+                let datagram = message_as(
+                    V1,
+                    "public",
+                    Tag::GetNextRequest,
+                    1,
+                    (0, 0),
+                    &[&at.to_string()],
+                );
+                let (outcome, out) = answered(&agent, &datagram, usize::MAX);
+                assert_eq!(outcome, Outcome::Sent);
+                let reply = response_in(&out, V1);
+                let [(next, _)] = names(&out).try_into().expect("one varbind per GETNEXT");
+                if reply.status == NO_SUCH_NAME {
+                    assert_eq!((reply.index, &next), (1, &at), "seed {seed}: the end");
+                    break;
+                }
+                assert_eq!(reply.status, 0, "seed {seed}");
+                assert!(next > at, "seed {seed}: {next} follows {at}");
+                walked.push(next.clone());
+                at = next;
+            }
+            assert_eq!(walked, expected, "seed {seed}");
+            checked += 1;
+        }
+        assert!(checked >= 150, "{checked} sets walked");
+    }
+
     // ---- the socket ---------------------------------------------------------
 
     /// Send `datagram` from `client` to `addr` and return the reply, within
@@ -2347,7 +2879,10 @@ mod tests {
         assert_eq!(response(&reply).varbinds.len(), 1);
     }
 
-    /// An agent on `[::]` answers a request sent to `::1` from `::1`.
+    /// An agent on `[::]` answers a request sent to `::1` from `::1`. On a
+    /// host whose only IPv6 address is `::1` the route back chooses `::1`
+    /// too, so this passes without packet info; the dual-stack test below is
+    /// the one that needs the IPv6 `sendmsg` path.
     #[tokio::test]
     async fn an_ipv6_wildcard_bind_answers_from_the_address_it_was_asked_on() {
         if !ipv6_loopback() {
@@ -2664,6 +3199,93 @@ mod tests {
             requests.get_bulk >= 5 && requests.set_refused == 1,
             "{requests:?}"
         );
+    }
+
+    /// `MIBS= snmpwalk -v1 -c public -On 127.0.0.1:<port> 1.3.6.1.2.1`,
+    /// net-snmp 5.9.4.pre2, over [`interface_table`] and [`system`]: its
+    /// stdout, the TimeTicks masked. [`NET_SNMP_BULKWALK`] without the
+    /// Counter64 column.
+    const NET_SNMP_V1_WALK: &str = ".1.3.6.1.2.1.1.1.0 = STRING: \"Sonda synthetic router\"\n\
+        .1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.8072.3.2.10\n\
+        .1.3.6.1.2.1.1.3.0 = Timeticks: (*)\n\
+        .1.3.6.1.2.1.1.4.0 = STRING: \"noc@example.com\"\n\
+        .1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"\n\
+        .1.3.6.1.2.1.1.6.0 = STRING: \"lab-1\"\n\
+        .1.3.6.1.2.1.1.7.0 = INTEGER: 72\n\
+        .1.3.6.1.2.1.2.2.1.8.1 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.8.2 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.8.3 = INTEGER: 2\n\
+        .1.3.6.1.2.1.2.2.1.8.4 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.8.5 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.8.6 = INTEGER: 2\n\
+        .1.3.6.1.2.1.2.2.1.8.7 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.8.8 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.8.9 = INTEGER: 2\n\
+        .1.3.6.1.2.1.2.2.1.8.10 = INTEGER: 1\n\
+        .1.3.6.1.2.1.2.2.1.14.1 = Counter32: 7\n\
+        .1.3.6.1.2.1.2.2.1.14.2 = Counter32: 14\n\
+        .1.3.6.1.2.1.2.2.1.14.3 = Counter32: 21\n\
+        .1.3.6.1.2.1.2.2.1.14.4 = Counter32: 28\n\
+        .1.3.6.1.2.1.2.2.1.14.5 = Counter32: 35\n\
+        .1.3.6.1.2.1.2.2.1.14.6 = Counter32: 42\n\
+        .1.3.6.1.2.1.2.2.1.14.7 = Counter32: 49\n\
+        .1.3.6.1.2.1.2.2.1.14.8 = Counter32: 56\n\
+        .1.3.6.1.2.1.2.2.1.14.9 = Counter32: 63\n\
+        .1.3.6.1.2.1.2.2.1.14.10 = Counter32: 70\n\
+        .1.3.6.1.2.1.31.1.1.1.15.1 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.2 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.3 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.4 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.5 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.6 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.7 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.8 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.9 = Gauge32: 10000\n\
+        .1.3.6.1.2.1.31.1.1.1.15.10 = Gauge32: 10000\n";
+
+    /// net-snmp's v1 walk of MIB-2 prints every instance but the Counter64
+    /// ones, and its v2c bulk walk of the same agent still prints the v2c
+    /// golden walk.
+    #[tokio::test]
+    #[ignore = "needs net-snmp's snmpwalk and snmpbulkwalk on PATH; run with --ignored"]
+    async fn net_snmp_walks_the_agent_as_v1_without_counter64() {
+        let agent = agent_serving(&[SnmpVersion::V1, SnmpVersion::V2c]).await;
+        interface_table(&agent);
+        let target = format!("127.0.0.1:{}", agent.local_addr().port());
+        let args = |version: &str, rest: &[&str]| {
+            [
+                version, "-c", "public", "-On", "-r", "0", "-t", "2", &target,
+            ]
+            .iter()
+            .chain(rest)
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>()
+        };
+
+        let walk = net_snmp("snmpwalk", args("-v1", &["1.3.6.1.2.1"])).await;
+        assert!(
+            walk.status.success(),
+            "{}",
+            String::from_utf8_lossy(&walk.stderr)
+        );
+        let stdout = String::from_utf8(walk.stdout).expect("UTF-8");
+        println!("{stdout}");
+        assert_eq!(
+            stdout.lines().count(),
+            7 + 30,
+            "every instance under 1.3.6.1.2.1 but the ten Counter64"
+        );
+        assert_eq!(mask_timeticks(&stdout), NET_SNMP_V1_WALK);
+        assert!(agent.requests().v1 >= 37, "{:?}", agent.requests());
+
+        let bulk = net_snmp("snmpbulkwalk", args("-v2c", &["1.3.6.1.2.1"])).await;
+        assert!(
+            bulk.status.success(),
+            "{}",
+            String::from_utf8_lossy(&bulk.stderr)
+        );
+        let stdout = String::from_utf8(bulk.stdout).expect("UTF-8");
+        assert_eq!(mask_timeticks(&stdout), NET_SNMP_BULKWALK);
     }
 
     // ---- the hot path -------------------------------------------------------

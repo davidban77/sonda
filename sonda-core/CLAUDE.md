@@ -560,7 +560,10 @@ src/
 │   │                       subscriber tasks, and only when the value changed.
 │   ├── snmp/           ← snmp_agent sink (feature = "snmp"):
 │   │   ├── mod.rs      ←   SnmpAgentConfig { listen, community "public", max_message_size
-│   │   │                   1472, system: SystemGroup } and SystemGroup { name, descr,
+│   │   │                   1472, system: SystemGroup, versions: Vec<SnmpVersion> [v2c] }
+│   │   │                   (SnmpVersion: V1 "v1" | V2c "v2c", non_exhaustive; versions
+│   │   │                   deserialize_with names the field for an unknown name or a
+│   │   │                   non-list) and SystemGroup { name, descr,
 │   │   │                   contact, location ("" each), object_id "1.3.6.1.4.1.8072.3.2.10"
 │   │   │                   (OidText: a string only; x-sonda-no-widening), services 72 },
 │   │   │                   both deny_unknown_fields; listen, community and the text fields
@@ -568,9 +571,11 @@ src/
 │   │   │                   community. settings() is the ONE field check validation and the
 │   │   │                   sink both call: listen a socket address (IPv4-mapped read as
 │   │   │                   IPv4), max_message_size 484..=65507, object_id an Oid, services
-│   │   │                   ≤ 127 -> AgentSettings. serves() compares every setting but the
-│   │   │                   listen address; beside() names the ones that differ and never a
-│   │   │                   community ("community and another community").
+│   │   │                   ≤ 127, versions non-empty with no repeat (resolved ascending,
+│   │   │                   so equality is set equality) -> AgentSettings. serves()
+│   │   │                   compares every setting but the listen address; beside() names
+│   │   │                   the ones that differ and never a community ("community and
+│   │   │                   another community", "versions [v1, v2c] and [v2c]").
 │   │   │                   registry(): the snmp instance of ListenerRegistry<SnmpAgent>
 │   │   │                   behind SnmpAgentRegistry (acquire, check, join, len, is_empty,
 │   │   │                   targets, as gnmi's). join() never binds and compares the
@@ -606,13 +611,18 @@ src/
 │   │   │                   nothing: lookup(&[u32], f) calls f with Found::Value(&VarBind) for
 │   │   │                   a system instance or slot; else NoSuchInstance when a registered
 │   │   │                   object equals or prefixes the OID (probed through Borrow<[u32]>);
-│   │   │                   else NoSuchObject. bulk(start: &[u32], max, emit) calls emit with
-│   │   │                   each instance after start in OID order, slots and system group
-│   │   │                   merged, at most max, until emit returns false, under one read
-│   │   │                   lock. get()/next_after() are their owned forms, cfg(test) only.
+│   │   │                   else NoSuchObject. bulk(start: &[u32], max, skip_counter64, emit)
+│   │   │                   calls emit with each instance after start in OID order, slots
+│   │   │                   and system group merged, at most max, until emit returns false,
+│   │   │                   under one read lock; skip_counter64 passes over slots whose value
+│   │   │                   is a Counter64 (is_counter64: the value's tag octet 0x46, read
+│   │   │                   without decoding) and they do not count towards max.
+│   │   │                   get()/next_after() are their owned forms, cfg(test) only.
+│   │   │                   versions() is the settings' versions, ascending.
 │   │   │                   RequestCounters (#[non_exhaustive]): get, get_next, get_bulk,
 │   │   │                   set_refused, malformed, wrong_community, too_big,
-│   │   │                   unsupported_version, send_errors; count(Counter) adds one.
+│   │   │                   unsupported_version, send_errors, v1 (answered as SNMPv1, also
+│   │   │                   counted under the PDU); count(Counter) adds one.
 │   │   │                   warn_too_big() logs at most once per WARN_INTERVAL (60 s, tokio
 │   │   │                   clock) per agent. bind() binds a tokio UdpSocket (a refused
 │   │   │                   permission names the port and CAP_NET_BIND_SERVICE), on a
@@ -628,10 +638,21 @@ src/
 │   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
 │   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
 │   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every
-│   │                       VarBind checked; negative bulk counts read as 0). answer(req,
-│   │                       agent, budget, scratch, out) is pure but for the agent's counters
-│   │                       and warn: version (V1 dropped, unsupported_version), then the
-│   │                       community (constant_time_eq; wrong_community), then the PDU.
+│   │                       VarBind checked; negative bulk counts read as 0; a GetBulk in a
+│   │                       v1 message is BadTag(0xA5), and v1's Trap-PDU 0xA4 is BadTag in
+│   │                       Message::decode, both malformed). answer(req, agent, budget,
+│   │                       scratch, out) is pure but for the agent's counters and warn:
+│   │                       version (one agent.versions() lacks is dropped,
+│   │                       unsupported_version), then the community (constant_time_eq;
+│   │                       wrong_community), then the PDU, the reply in the request's
+│   │                       version. SNMPv1 (RFC 1157 / RFC 3584): get_v1 answers a value
+│   │                       or Written::NoSuchName(i) at the first name with no instance or
+│   │                       a Counter64 one; get_next_v1 is bulk(.., skip_counter64 = true)
+│   │                       and NoSuchName past the end; both keep looking up after a value
+│   │                       stops fitting, so noSuchName (2) wins over tooBig; no_such_name
+│   │                       echoes the request's varbinds at index i (tooBig if that does
+│   │                       not fit); SET is noSuchName at 1; v1 tooBig echoes the varbinds
+│   │                       (v2c's is empty), dropped if even that does not fit.
 │   │                       Responses are written into out with write_message, each varbind
 │   │                       checked against message_len before it is appended: GET/GETNEXT/
 │   │                       SET that do not fit become tooBig with an empty list (too_big +
@@ -790,7 +811,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes`, `runtime` and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv2c responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes`, `runtime` and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

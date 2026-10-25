@@ -15,8 +15,8 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::{responder, AgentSettings};
-use crate::encoder::snmp::ber::{self, Tag};
+use super::{responder, AgentSettings, SnmpVersion};
+use crate::encoder::snmp::ber::{self, Reader, Tag};
 use crate::encoder::snmp::oid::Oid;
 use crate::schedule::LaunchId;
 use crate::sink::listener_registry::ListenerTarget;
@@ -78,37 +78,42 @@ pub(crate) enum Lookup {
 /// The requests an agent has received, by kind, as [`SnmpAgent::requests`]
 /// reports them.
 ///
-/// An SNMPv2c message is checked in this order: its version, its community,
-/// then its PDU. It is counted once, under the first check it fails or
-/// under its PDU type; a request answered `tooBig` is also counted under
-/// [`too_big`](Self::too_big).
+/// A message is checked in this order: its version, its community, then its
+/// PDU. It is counted once, under the first check it fails or under its PDU
+/// type; a request answered `tooBig` is also counted under
+/// [`too_big`](Self::too_big), and one answered as SNMPv1 under
+/// [`v1`](Self::v1).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RequestCounters {
-    /// `GetRequest` PDUs answered.
+    /// `GetRequest` PDUs answered, SNMPv1 and SNMPv2c.
     pub get: u64,
-    /// `GetNextRequest` PDUs answered.
+    /// `GetNextRequest` PDUs answered, SNMPv1 and SNMPv2c.
     pub get_next: u64,
     /// `GetBulkRequest` PDUs answered.
     pub get_bulk: u64,
-    /// `SetRequest` PDUs, each answered `notWritable` and none applied.
+    /// `SetRequest` PDUs, each answered `notWritable` (SNMPv1: `noSuchName`)
+    /// and none applied.
     pub set_refused: u64,
     /// Datagrams that are not an SNMP message of a version the agent knows,
-    /// and messages carrying a PDU it does not answer (`Response`,
-    /// `InformRequest`, `SNMPv2-Trap`, `Report`). Dropped unanswered.
+    /// messages carrying a PDU it does not answer (`Response`,
+    /// `InformRequest`, `SNMPv2-Trap`, `Report`), and SNMPv1 messages
+    /// carrying a `GetBulkRequest` or a `Trap`. Dropped unanswered.
     pub malformed: u64,
-    /// SNMPv2c messages whose community is not the agent's. Dropped
-    /// unanswered.
+    /// SNMPv1 and SNMPv2c messages whose community is not the agent's.
+    /// Dropped unanswered.
     pub wrong_community: u64,
     /// `GetRequest`, `GetNextRequest` and `SetRequest` PDUs answered
     /// `tooBig`, because their answer did not fit `max_message_size`. A
     /// `GetBulkRequest` answer is trimmed to fit instead.
     pub too_big: u64,
-    /// SNMPv1 and SNMPv3 messages. Dropped unanswered, the community never
-    /// compared.
+    /// SNMPv1 and SNMPv2c messages in a version the agent does not serve,
+    /// and SNMPv3 messages. Dropped unanswered, the community never compared.
     pub unsupported_version: u64,
     /// Answers the socket failed to send.
     pub send_errors: u64,
+    /// Requests answered as SNMPv1, also counted under their PDU type.
+    pub v1: u64,
 }
 
 /// One of the counters [`RequestCounters`] reports.
@@ -123,6 +128,7 @@ pub(crate) enum Counter {
     TooBig,
     UnsupportedVersion,
     SendErrors,
+    V1,
 }
 
 /// The live counters behind [`RequestCounters`].
@@ -137,6 +143,7 @@ struct Counters {
     too_big: AtomicU64,
     unsupported_version: AtomicU64,
     send_errors: AtomicU64,
+    v1: AtomicU64,
 }
 
 impl Counters {
@@ -151,6 +158,7 @@ impl Counters {
             Counter::TooBig => &self.too_big,
             Counter::UnsupportedVersion => &self.unsupported_version,
             Counter::SendErrors => &self.send_errors,
+            Counter::V1 => &self.v1,
         }
     }
 
@@ -166,6 +174,7 @@ impl Counters {
             too_big: read(&self.too_big),
             unsupported_version: read(&self.unsupported_version),
             send_errors: read(&self.send_errors),
+            v1: read(&self.v1),
         }
     }
 }
@@ -207,11 +216,11 @@ struct SystemInstance {
 /// leave, so a request for it answers "no such instance" rather than "no
 /// such object".
 ///
-/// The socket is read by one responder task, which answers SNMPv2c `Get`,
-/// `GetNext`, `GetBulk` and `Set` requests from the table under its read
-/// lock, drops everything else, and counts each datagram in
-/// [`requests`](Self::requests). Dropping the last handle stops the task
-/// and closes the socket.
+/// The socket is read by one responder task, which answers `Get`, `GetNext`,
+/// `GetBulk` and `Set` requests in the [`versions`](Self::versions) it
+/// serves from the table under its read lock, drops everything else, and
+/// counts each datagram in [`requests`](Self::requests). Dropping the last
+/// handle stops the task and closes the socket.
 pub struct SnmpAgent {
     local_addr: SocketAddr,
     settings: AgentSettings,
@@ -316,6 +325,11 @@ impl SnmpAgent {
     /// The requests the agent has received, by kind.
     pub fn requests(&self) -> RequestCounters {
         self.counters.snapshot()
+    }
+
+    /// The SNMP versions the agent answers, ascending.
+    pub fn versions(&self) -> &[SnmpVersion] {
+        &self.settings.versions
     }
 
     /// Resolves once the socket is closed. The returned future does not hold
@@ -510,10 +524,18 @@ impl SnmpAgent {
 
     /// Call `emit` with each instance after `start`, and its `VarBind`, in
     /// OID order, among the published instances and the system group: at
-    /// most `max` of them, and none after `emit` returns `false`.
+    /// most `max` of them, and none after `emit` returns `false`. With
+    /// `skip_counter64`, an instance whose value is a `Counter64` is passed
+    /// over, as SNMPv1 requires, and does not count towards `max`.
     ///
     /// Takes the table's read lock once, and holds it until it returns.
-    pub(crate) fn bulk(&self, start: &[u32], max: u32, mut emit: impl FnMut(&Oid, &[u8]) -> bool) {
+    pub(crate) fn bulk(
+        &self,
+        start: &[u32],
+        max: u32,
+        skip_counter64: bool,
+        mut emit: impl FnMut(&Oid, &[u8]) -> bool,
+    ) {
         let table = self.read();
         let mut published = table
             .slots
@@ -524,7 +546,8 @@ impl SnmpAgent {
             .iter()
             .skip_while(|instance| instance.oid.arcs() <= start)
             .peekable();
-        for _ in 0..max {
+        let mut emitted = 0;
+        while emitted < max {
             // No published instance shares an OID with the system group.
             let from_system = match (published.peek(), system.peek()) {
                 (Some((next, _)), Some(instance)) => instance.oid < **next,
@@ -536,13 +559,18 @@ impl SnmpAgent {
                 let Some(instance) = system.next() else {
                     return;
                 };
+                // The system group holds no Counter64.
                 self.with_system_varbind(instance, |varbind| emit(&instance.oid, varbind))
             } else {
                 let Some((oid, slot)) = published.next() else {
                     return;
                 };
+                if skip_counter64 && is_counter64(&slot.varbind) {
+                    continue;
+                }
                 emit(oid, &slot.varbind)
             };
+            emitted += 1;
             if !more {
                 return;
             }
@@ -590,7 +618,7 @@ impl SnmpAgent {
     /// `None` past the last.
     pub(crate) fn next_after(&self, oid: &Oid) -> Option<(Oid, Bytes)> {
         let mut next = None;
-        self.bulk(oid.arcs(), 1, |oid, varbind| {
+        self.bulk(oid.arcs(), 1, false, |oid, varbind| {
             next = Some((oid.clone(), Bytes::copy_from_slice(varbind)));
             true
         });
@@ -671,6 +699,20 @@ fn bind_error(listen: SocketAddr, e: io::Error) -> SondaError {
 fn object_of(instance: &Oid) -> Oid {
     let arcs = instance.arcs();
     Oid::from_arcs(arcs[..arcs.len() - 1].to_vec()).unwrap_or_else(|| instance.clone())
+}
+
+/// Whether the `VarBind` `varbind`'s value is a `Counter64`, read from the
+/// value's identifier octet without decoding it. `false` for bytes that are
+/// not a `VarBind`.
+pub(crate) fn is_counter64(varbind: &[u8]) -> bool {
+    let Ok(body) = Reader::new(varbind).expect(Tag::Sequence) else {
+        return false;
+    };
+    let mut fields = Reader::new(body);
+    if fields.expect(Tag::Oid).is_err() {
+        return false;
+    }
+    matches!(fields.raw_tlv(), Ok((tag, _)) if tag == Tag::Counter64.byte())
 }
 
 /// A `VarBind` of `oid` and the already-encoded value TLV `value`.

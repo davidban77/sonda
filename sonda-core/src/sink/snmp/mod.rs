@@ -107,6 +107,49 @@ pub struct SnmpAgentConfig {
     /// The system group (`1.3.6.1.2.1.1`) the agent serves.
     #[cfg_attr(feature = "config", serde(default))]
     pub system: SystemGroup,
+    /// The SNMP versions the agent answers, at least one and each once.
+    /// Default `[v2c]`. A request in another version is dropped unanswered.
+    #[cfg_attr(
+        feature = "config",
+        serde(default = "default_versions", deserialize_with = "versions")
+    )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(length(min = 1), extend("uniqueItems" = true))
+    )]
+    pub versions: Vec<SnmpVersion>,
+}
+
+/// An SNMP version an agent can answer: the `versions:` items of an
+/// [`SnmpAgentConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[non_exhaustive]
+pub enum SnmpVersion {
+    /// SNMPv1 (RFC 1157), `v1`: `Get`, `GetNext` and `Set` without
+    /// `Counter64`, every error `noSuchName` at its varbind.
+    #[cfg_attr(feature = "config", serde(rename = "v1"))]
+    V1,
+    /// SNMPv2c (RFC 3416), `v2c`.
+    #[cfg_attr(feature = "config", serde(rename = "v2c"))]
+    V2c,
+}
+
+impl SnmpVersion {
+    /// The version's name in a config: `v1` or `v2c`.
+    pub fn name(self) -> &'static str {
+        match self {
+            SnmpVersion::V1 => "v1",
+            SnmpVersion::V2c => "v2c",
+        }
+    }
+}
+
+impl fmt::Display for SnmpVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// The `system:` block of an [`SnmpAgentConfig`]: the values of the system
@@ -168,6 +211,11 @@ fn default_max_message_size() -> usize {
 }
 
 #[cfg(feature = "config")]
+fn default_versions() -> Vec<SnmpVersion> {
+    vec![SnmpVersion::V2c]
+}
+
+#[cfg(feature = "config")]
 fn default_object_id() -> String {
     DEFAULT_SYS_OBJECT_ID.to_string()
 }
@@ -175,6 +223,45 @@ fn default_object_id() -> String {
 #[cfg(feature = "config")]
 fn default_services() -> u8 {
     DEFAULT_SYS_SERVICES
+}
+
+/// `deserialize_with` for `versions`: a sequence of version names, any
+/// other value or name an error naming the field.
+#[cfg(feature = "config")]
+fn versions<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<SnmpVersion>, D::Error> {
+    use serde::de::{Error, SeqAccess, Visitor};
+
+    use crate::config::scalar_text::ScalarText;
+
+    struct Versions;
+
+    impl<'de> Visitor<'de> for Versions {
+        type Value = Vec<SnmpVersion>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("snmp_agent versions as a list of v1 and v2c, such as [v1, v2c]")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut versions = Vec::new();
+            while let Some(ScalarText(name)) = seq.next_element()? {
+                versions.push(match name.as_str() {
+                    "v1" => SnmpVersion::V1,
+                    "v2c" => SnmpVersion::V2c,
+                    _ => {
+                        return Err(A::Error::custom(format!(
+                            "snmp_agent versions: unknown version {name:?}; expected v1 or v2c"
+                        )))
+                    }
+                });
+            }
+            Ok(versions)
+        }
+    }
+
+    deserializer.deserialize_seq(Versions)
 }
 
 /// `deserialize_with` for `system.object_id`: a string only
@@ -211,6 +298,7 @@ impl fmt::Debug for SnmpAgentConfig {
             .field("community", &"***")
             .field("max_message_size", &self.max_message_size)
             .field("system", &self.system)
+            .field("versions", &self.versions)
             .finish()
     }
 }
@@ -223,6 +311,7 @@ impl SnmpAgentConfig {
             community: DEFAULT_COMMUNITY.to_string(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             system: SystemGroup::default(),
+            versions: vec![SnmpVersion::V2c],
         }
     }
 
@@ -231,9 +320,10 @@ impl SnmpAgentConfig {
     /// This is the one place the fields are checked; validation and
     /// [`SnmpAgentSink::new`] both call it. Returns [`SondaError::Config`]
     /// when `listen` is not a socket address, `max_message_size` is outside
-    /// 484 to 65507, `system.object_id` is not an OID, or `system.services`
-    /// is above 127. An IPv4-mapped `listen` resolves to the IPv4 address it
-    /// maps.
+    /// 484 to 65507, `system.object_id` is not an OID, `system.services` is
+    /// above 127, or `versions` is empty or names a version twice. An
+    /// IPv4-mapped `listen` resolves to the IPv4 address it maps; `versions`
+    /// resolves to its versions in ascending order.
     pub(crate) fn settings(&self) -> Result<AgentSettings, SondaError> {
         let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
         let listen: SocketAddr = self.listen.parse().map_err(|_| {
@@ -258,6 +348,19 @@ impl SnmpAgentConfig {
                 system.services
             )));
         }
+        let mut versions = self.versions.clone();
+        versions.sort_unstable();
+        if versions.is_empty() {
+            return Err(invalid(
+                "snmp_agent versions must name at least one version, such as [v2c]".to_string(),
+            ));
+        }
+        if let Some(twice) = versions.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(invalid(format!(
+                "snmp_agent versions names {} more than once",
+                twice[0]
+            )));
+        }
         Ok(AgentSettings {
             // An IPv4-mapped address binds the IPv4 socket it maps, so it is
             // that address everywhere a listen address is compared or keyed.
@@ -272,6 +375,7 @@ impl SnmpAgentConfig {
                 object_id,
                 services: system.services,
             },
+            versions,
         })
     }
 }
@@ -286,6 +390,8 @@ pub(crate) struct AgentSettings {
     pub(crate) community: String,
     pub(crate) max_message_size: usize,
     pub(crate) system: SystemSettings,
+    /// The versions answered, ascending, each once.
+    pub(crate) versions: Vec<SnmpVersion>,
 }
 
 /// A [`SystemGroup`] with its OID parsed.
@@ -306,6 +412,7 @@ impl fmt::Debug for AgentSettings {
             .field("community", &"***")
             .field("max_message_size", &self.max_message_size)
             .field("system", &self.system)
+            .field("versions", &self.versions)
             .finish()
     }
 }
@@ -318,6 +425,7 @@ impl AgentSettings {
         crate::util::constant_time_eq(self.community.as_bytes(), other.community.as_bytes())
             && self.max_message_size == other.max_message_size
             && self.system == other.system
+            && self.versions == other.versions
     }
 
     /// The settings in which `self` and `other` differ, `self`'s first, for
@@ -355,6 +463,17 @@ impl AgentSettings {
         }
         if a.services != b.services {
             differences.push(format!("system.services {} and {}", a.services, b.services));
+        }
+        if self.versions != other.versions {
+            let list = |versions: &[SnmpVersion]| {
+                let names: Vec<&str> = versions.iter().map(|v| v.name()).collect();
+                format!("[{}]", names.join(", "))
+            };
+            differences.push(format!(
+                "versions {} and {}",
+                list(&self.versions),
+                list(&other.versions)
+            ));
         }
         differences.join(", ")
     }
@@ -879,6 +998,94 @@ mod tests {
         );
     }
 
+    /// `versions` is `[v2c]` when absent, reads `v1` and `v2c` in any order,
+    /// and resolves to its versions ascending.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::absent(       "",                       &[SnmpVersion::V2c],                   &[SnmpVersion::V2c])]
+    #[case::v1_alone(     "versions: [v1]\n",       &[SnmpVersion::V1],                    &[SnmpVersion::V1])]
+    #[case::both(         "versions: [v1, v2c]\n",  &[SnmpVersion::V1, SnmpVersion::V2c],  &[SnmpVersion::V1, SnmpVersion::V2c])]
+    #[case::both_reversed("versions: [v2c, v1]\n",  &[SnmpVersion::V2c, SnmpVersion::V1],  &[SnmpVersion::V1, SnmpVersion::V2c])]
+    fn versions_default_to_v2c_and_resolve_ascending(
+        #[case] line: &str,
+        #[case] parsed: &[SnmpVersion],
+        #[case] resolved: &[SnmpVersion],
+    ) {
+        let yaml = format!("type: snmp_agent\nlisten: 0.0.0.0:1161\n{line}");
+        let config: SinkConfig = serde_yaml_ng::from_str(&yaml).expect("the block parses");
+        let SinkConfig::SnmpAgent(cfg) = config else {
+            panic!("an snmp_agent sink, got {config:?}");
+        };
+        assert_eq!(cfg.versions, parsed);
+        let settings = cfg.settings().expect("valid settings");
+        assert_eq!(settings.versions, resolved);
+        assert_eq!(SnmpAgentConfig::new("0.0.0.0:1161").versions, [SnmpVersion::V2c]);
+    }
+
+    /// `settings()` refuses an empty `versions` and one naming a version
+    /// twice, naming the field.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::empty(    &[],                                     "snmp_agent versions must name at least one version")]
+    #[case::duplicate(&[SnmpVersion::V2c, SnmpVersion::V2c],   "snmp_agent versions names v2c more than once")]
+    #[case::duplicate_among_two(&[SnmpVersion::V1, SnmpVersion::V2c, SnmpVersion::V1], "snmp_agent versions names v1 more than once")]
+    fn settings_refuse_an_empty_or_repeated_versions_list(
+        #[case] versions: &[SnmpVersion],
+        #[case] refused: &str,
+    ) {
+        let mut cfg = SnmpAgentConfig::new("127.0.0.1:1161");
+        cfg.settings().expect("the baseline is valid");
+        cfg.versions = versions.to_vec();
+        match cfg.settings() {
+            Err(SondaError::Config(e)) => assert!(e.to_string().contains(refused), "{e}"),
+            other => panic!("expected {refused:?}, got {other:?}"),
+        }
+    }
+
+    /// A version name other than `v1` and `v2c`, a value that is not a list,
+    /// and a misspelt `version:` key are refused at parse time, naming the
+    /// field.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::v3(          "versions: [v3]",       "snmp_agent versions: unknown version \"v3\"; expected v1 or v2c")]
+    #[case::upper_case(  "versions: [V1]",       "snmp_agent versions: unknown version \"V1\"")]
+    #[case::a_number(    "versions: [1]",        "snmp_agent versions: unknown version \"1\"")]
+    #[case::not_a_list(  "versions: v1",         "expected snmp_agent versions as a list of v1 and v2c")]
+    #[case::misspelt_key("version: [v1]",        "unknown field `version`")]
+    fn an_unknown_version_is_refused_naming_the_field(#[case] line: &str, #[case] refused: &str) {
+        let parse = |line: &str| {
+            serde_yaml_ng::from_str::<SinkConfig>(&format!(
+                "type: snmp_agent\nlisten: 0.0.0.0:1161\n{line}\n"
+            ))
+        };
+        parse("versions: [v1, v2c]").expect("the baseline parses");
+        let msg = parse(line).expect_err("refused").to_string();
+        assert!(msg.contains(refused), "{msg}");
+    }
+
+    /// Two agent configs on one address that differ in `versions` do not
+    /// serve each other, and the difference names both lists; the same
+    /// versions in another order do.
+    #[test]
+    fn versions_are_compared_as_a_set() {
+        let with = |versions: &[SnmpVersion]| {
+            SnmpAgentConfig {
+                versions: versions.to_vec(),
+                ..SnmpAgentConfig::new("127.0.0.1:1161")
+            }
+            .settings()
+            .expect("valid settings")
+        };
+        let both = with(&[SnmpVersion::V1, SnmpVersion::V2c]);
+        assert!(both.serves(&with(&[SnmpVersion::V2c, SnmpVersion::V1])));
+        assert_eq!(both.beside(&with(&[SnmpVersion::V2c, SnmpVersion::V1])), "");
+        let v2c = with(&[SnmpVersion::V2c]);
+        assert!(!both.serves(&v2c));
+        assert_eq!(both.beside(&v2c), "versions [v1, v2c] and [v2c]");
+    }
+
     // ---- registry -----------------------------------------------------------
 
     /// Each test that counts agents uses its own registry, so agents other
@@ -970,6 +1177,44 @@ mod tests {
             .join(&elsewise)
             .expect("a join compares the community only");
         assert!(Arc::ptr_eq(&first, &joined));
+        assert_eq!(registry.len(), 1, "nothing else was bound");
+    }
+
+    /// A second agent config on a live agent's address with other
+    /// `versions` is refused by `acquire` and `check`, naming both lists;
+    /// the same versions in another order share the agent, and a join takes
+    /// the agent's versions.
+    #[tokio::test]
+    async fn differing_versions_on_one_address_are_a_config_error() {
+        let registry = SnmpAgentRegistry::new();
+        let with = |listen: &str, versions: &[SnmpVersion]| SnmpAgentConfig {
+            versions: versions.to_vec(),
+            ..SnmpAgentConfig::new(listen)
+        };
+        let first = registry
+            .acquire(&with("127.0.0.1:0", &[SnmpVersion::V1, SnmpVersion::V2c]))
+            .await
+            .expect("bind an ephemeral port");
+        assert_eq!(first.versions(), [SnmpVersion::V1, SnmpVersion::V2c]);
+        let addr = first.local_addr().to_string();
+        let shared = registry
+            .acquire(&with(&addr, &[SnmpVersion::V2c, SnmpVersion::V1]))
+            .await
+            .expect("the same versions share the agent");
+        assert!(Arc::ptr_eq(&first, &shared));
+
+        let other = with(&addr, &[SnmpVersion::V2c]);
+        for result in [
+            registry.acquire(&other).await.map(|_| ()),
+            registry.check(&other),
+        ] {
+            let msg = result.expect_err("other versions are refused").to_string();
+            assert!(msg.contains("versions [v1, v2c] and [v2c]"), "{msg}");
+        }
+        let joined = registry
+            .join(&other)
+            .expect("a join compares the community only");
+        assert_eq!(joined.versions(), [SnmpVersion::V1, SnmpVersion::V2c]);
         assert_eq!(registry.len(), 1, "nothing else was bound");
     }
 
