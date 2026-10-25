@@ -2,4 +2,4 @@
 source: sonda-core/src/encoder/snmp/mod.rs
 expression: "shown.join(\" \")"
 ---
-01 30 12 06 0b 2b 06 01 02 01 1f 01 01 01 06 03 43 03 13 12 d0
+01 00 30 12 06 0b 2b 06 01 02 01 1f 01 01 01 06 03 43 03 13 12 d0

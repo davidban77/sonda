@@ -622,7 +622,9 @@ mod tests {
         assert_ne!(after, before, "the value changed");
         assert_eq!(
             after,
-            crate::sink::snmp::agent::Lookup::Value(bytes::Bytes::copy_from_slice(&expected[1..])),
+            crate::sink::snmp::agent::Lookup::Value(bytes::Bytes::copy_from_slice(
+                &expected[crate::encoder::snmp::RECORD_HEADER..]
+            )),
             "the latest value is the event's"
         );
         assert_eq!(agent.instance_count(), 1, "nothing was added");

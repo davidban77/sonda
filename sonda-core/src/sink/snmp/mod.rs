@@ -9,10 +9,12 @@
 //! [`Sink::write_metric_event`] and never awaits: publishing is an upsert
 //! into the agent's table under its write lock. Once the agent has taken a
 //! series' first record, the sink also registers the object its instance
-//! belongs to, which the agent keeps after the instance leaves.
+//! belongs to, which the agent keeps after the instance leaves. A record's
+//! companions, the label columns of its series, are published the same way
+//! and held with the instance.
 //!
-//! An instance leaves the agent when the last sink of its launch that
-//! published it drops, and at no other time.
+//! An instance, or a label column's instance, leaves the agent when the last
+//! sink of its launch that published it drops, and at no other time.
 //!
 //! Requires the `snmp` feature flag.
 
@@ -30,7 +32,7 @@ use bytes::{Bytes, BytesMut};
 
 use crate::encoder::snmp::ber::{Reader, Tag};
 use crate::encoder::snmp::oid::Oid;
-use crate::encoder::snmp::RECORD_HEADER;
+use crate::encoder::snmp::{split_record, Companions};
 use crate::model::metric::{MetricEvent, MetricKey};
 use crate::schedule::LaunchId;
 use crate::sink::listener_registry::{canonical, ListenerRegistry};
@@ -583,20 +585,26 @@ impl SnmpAgentRegistry {
 /// Only [`Sink::write_metric_event`] carries data: the sink needs the
 /// event's series identity, so it opts in through
 /// [`Sink::wants_metric_events`] and [`Sink::write`] is an error. Each write
-/// is one publish record: a byte holding the number of index arcs at the end
-/// of the instance OID, then the instance's `VarBind`. The first record of
-/// each series decodes the instance OID, publishes it and, once the agent
-/// has taken it, registers the object it belongs to (the OID without its
-/// index arcs); later records of the series reuse the decoded OID. An
+/// is one publish record ([`split_record`]): the number of index arcs at the
+/// end of the instance OID, the instance's `VarBind`, and the companion
+/// records of label columns, which the encoder sends with a series' first
+/// record only. The first record of each series decodes the instance OID,
+/// publishes it and, once the agent has taken it, registers the object it
+/// belongs to (the OID without its index arcs); later records of the series
+/// reuse the decoded OID. Each companion is published under the same owner,
+/// once per instance that carries it, and its object registered; the sink
+/// remembers it with the instance and releases it after the instance. An
 /// instance is owned by the launch whose sink created it and held while any
 /// sink of that launch has published it: the sinks of that launch share it,
 /// a sink of another launch is refused it, and it leaves the agent when the
-/// last of its publishers drops. Dropping the last sink on an address stops
-/// its agent.
+/// last of its publishers drops. A label column's instance is held the same
+/// way, so it stays while any instance carrying it lives. Dropping the last
+/// sink on an address stops its agent.
 ///
 /// A sink made by joining a running agent publishes no instance of its own:
 /// it replaces the latest value of an instance the agent already serves,
-/// and refuses an event for any other OID.
+/// and refuses an event for any other OID. It replaces a companion only
+/// where the agent already serves its OID.
 pub struct SnmpAgentSink {
     agent: Arc<SnmpAgent>,
     owner: Owner,
@@ -612,11 +620,13 @@ pub struct SnmpAgentSink {
     joined: bool,
 }
 
-/// An instance this sink has published: its OID and the buffers its
-/// `VarBind`s are copied into.
+/// An instance this sink has published: its OID, the buffers its
+/// `VarBind`s are copied into, and the label columns' instances published
+/// with it, once each.
 struct Publication {
     oid: Oid,
     buffers: PublishBuffers,
+    companions: Vec<Oid>,
 }
 
 /// Two buffers used in turn: each `VarBind` of an instance is copied into the
@@ -650,19 +660,6 @@ fn not_a_record(detail: impl fmt::Display) -> SondaError {
              the snmp encoder's output"
         ),
     ))
-}
-
-/// The index-arc count and the `VarBind` of the publish record `encoded`: a
-/// header byte, then exactly one SEQUENCE.
-fn split_record(encoded: &[u8]) -> Result<(u8, &[u8]), SondaError> {
-    let index_arcs = *encoded.first().ok_or_else(|| not_a_record("it is empty"))?;
-    let varbind = &encoded[RECORD_HEADER..];
-    let mut reader = Reader::new(varbind);
-    reader.expect(Tag::Sequence).map_err(not_a_record)?;
-    if !reader.is_empty() {
-        return Err(not_a_record("bytes follow its VarBind"));
-    }
-    Ok((index_arcs, varbind))
 }
 
 /// The instance OID of `varbind`.
@@ -766,15 +763,17 @@ impl Sink for SnmpAgentSink {
     }
 
     /// Publish the record `encoded` as the latest `VarBind` of the event's
-    /// instance, copied into one of the [`PublishBuffers`] of that instance.
-    /// Never awaits.
+    /// instance, copied into one of the [`PublishBuffers`] of that instance,
+    /// then each of its companions as a label column's instance held with
+    /// it. Never awaits.
     ///
     /// # Errors
     ///
     /// [`SondaError::Sink`] when the agent's responder task has exited, or
     /// when `encoded` is not a publish record; [`SondaError::Config`] when
-    /// the instance belongs to another launch or is under the system group,
-    /// or a joined sink's event names an instance the agent does not serve.
+    /// the instance or a companion belongs to another launch or is under the
+    /// system group, or a joined sink's event names an instance the agent
+    /// does not serve.
     async fn write_metric_event(
         &mut self,
         event: &MetricEvent,
@@ -782,7 +781,8 @@ impl Sink for SnmpAgentSink {
     ) -> Result<(), SondaError> {
         self.last_delivered = false;
         self.agent.check_serving()?;
-        let (index_arcs, varbind) = split_record(encoded)?;
+        let record = split_record(encoded)?;
+        let varbind = record.varbind;
         if self.joined {
             let oid = instance_oid(varbind)?;
             if !self.agent.overwrite(&oid, Bytes::copy_from_slice(varbind)) {
@@ -792,6 +792,11 @@ impl Sink for SnmpAgentSink {
                 ))));
             }
             self.last_delivered = true;
+            for companion in record.companions {
+                let oid = instance_oid(companion.varbind)?;
+                self.agent
+                    .overwrite(&oid, Bytes::copy_from_slice(companion.varbind));
+            }
             return Ok(());
         }
         let key = (event.name.clone(), Arc::clone(&event.labels));
@@ -806,7 +811,7 @@ impl Sink for SnmpAgentSink {
                         entry
                     }
                     None => {
-                        let object = object_of(&oid, index_arcs)?;
+                        let object = object_of(&oid, record.index_arcs)?;
                         let mut buffers = PublishBuffers::default();
                         let stored = buffers.frozen(varbind);
                         self.agent.publish(self.owner, &oid, stored, true)?;
@@ -815,11 +820,12 @@ impl Sink for SnmpAgentSink {
                         self.published.push(Publication {
                             oid: oid.clone(),
                             buffers,
+                            companions: Vec::new(),
                         });
                         self.instances.insert(oid, entry);
                         self.owned.insert(key, entry);
                         self.last_delivered = true;
-                        return Ok(());
+                        return self.publish_companions(entry, record.companions);
                     }
                 }
             }
@@ -829,16 +835,55 @@ impl Sink for SnmpAgentSink {
         self.agent
             .publish(self.owner, &publication.oid, stored, false)?;
         self.last_delivered = true;
+        if record.companions.len() > 0 {
+            return self.publish_companions(entry, record.companions);
+        }
+        Ok(())
+    }
+}
+
+impl SnmpAgentSink {
+    /// Publish each companion of a record as a label column's instance held
+    /// with `published[entry]`: under this sink's owner, counted as a
+    /// publisher once per instance that carries it, its object registered
+    /// the first time.
+    fn publish_companions(
+        &mut self,
+        entry: usize,
+        companions: Companions<'_>,
+    ) -> Result<(), SondaError> {
+        for companion in companions {
+            let oid = instance_oid(companion.varbind)?;
+            let first = !self.published[entry].companions.contains(&oid);
+            let object = if first {
+                Some(object_of(&oid, companion.index_arcs)?)
+            } else {
+                None
+            };
+            self.agent.publish(
+                self.owner,
+                &oid,
+                Bytes::copy_from_slice(companion.varbind),
+                first,
+            )?;
+            if let Some(object) = object {
+                self.agent.register_object(&object);
+                self.published[entry].companions.push(oid);
+            }
+        }
         Ok(())
     }
 }
 
 impl Drop for SnmpAgentSink {
     /// Release this sink's claim on each instance it published, once per
-    /// instance.
+    /// instance, then on the label columns' instances published with it.
     fn drop(&mut self) {
         for publication in &self.published {
             self.agent.release(self.owner, &publication.oid);
+            for companion in &publication.companions {
+                self.agent.release(self.owner, companion);
+            }
         }
     }
 }
@@ -853,7 +898,8 @@ mod tests {
     use super::agent::Lookup;
     use super::*;
     use crate::config::{BaseScheduleConfig, ScenarioConfig};
-    use crate::encoder::snmp::{SnmpEncoder, SnmpEncoderConfig, SnmpValueType};
+    use crate::encoder::snmp::ber;
+    use crate::encoder::snmp::{SnmpEncoder, SnmpEncoderConfig, SnmpValueType, RECORD_HEADER};
     use crate::encoder::{Encoder, EncoderConfig};
     use crate::generator::GeneratorConfig;
     use crate::model::metric::Labels;
@@ -1474,11 +1520,17 @@ mod tests {
 
     /// Bytes that are not a publish record are refused on a series' first
     /// event and on a later one, and the instance keeps its latest value.
+    #[rustfmt::skip]
     #[rstest::rstest]
     #[case::empty(&[])]
-    #[case::header_only(&[1])]
-    #[case::not_a_sequence(&[1, 0x04, 0x00])]
-    #[case::bytes_after_the_varbind(&[1, 0x30, 0x00, 0x00])]
+    #[case::no_companion_count(&[1])]
+    #[case::no_varbind(&[1, 0])]
+    #[case::not_a_sequence(&[1, 0, 0x04, 0x00])]
+    #[case::bytes_after_the_varbind(&[1, 0, 0x30, 0x00, 0x00])]
+    #[case::fewer_companions_than_announced(&[1, 1, 0x30, 0x00])]
+    #[case::companion_without_varbind(&[1, 1, 0x30, 0x00, 1])]
+    #[case::companion_not_a_sequence(&[1, 1, 0x30, 0x00, 1, 0x04, 0x00])]
+    #[case::bytes_after_the_last_companion(&[1, 1, 0x30, 0x00, 1, 0x30, 0x00, 0x00])]
     #[tokio::test]
     async fn a_write_that_is_not_a_publish_record_is_refused(#[case] encoded: &[u8]) {
         let mut sink = sink().await;
@@ -1643,6 +1695,243 @@ mod tests {
         let agent = Arc::clone(sink.agent());
         drop(sink);
         assert_eq!(agent.instance_count(), 0, "released once");
+    }
+
+    // ---- label columns --------------------------------------------------------
+
+    const IF_NAME: &str = "1.3.6.1.2.1.31.1.1.1.1";
+    const IF_ALIAS: &str = "1.3.6.1.2.1.31.1.1.1.18";
+
+    /// [`encoder_config`] with `ifName` and `ifAlias` served as columns.
+    fn column_encoder() -> SnmpEncoder {
+        let mut cfg = encoder_config();
+        cfg.label_columns = HashMap::from([
+            ("ifName".to_string(), format!("{IF_NAME}.{{ifIndex}}")),
+            ("ifAlias".to_string(), format!("{IF_ALIAS}.{{ifIndex}}")),
+        ]);
+        SnmpEncoder::new(&cfg).expect("a valid encoder")
+    }
+
+    /// `event` as `encoder` writes it.
+    fn encoded(encoder: &SnmpEncoder, event: &MetricEvent) -> Vec<u8> {
+        let mut buf = Vec::new();
+        encoder.encode_metric(event, &mut buf).expect("encodes");
+        buf
+    }
+
+    async fn write(sink: &mut SnmpAgentSink, encoder: &SnmpEncoder, event: &MetricEvent) {
+        sink.write_metric_event(event, &encoded(encoder, event))
+            .await
+            .expect("the write succeeds");
+    }
+
+    /// An event of `metric` on interface `if_index`, named `if_name`.
+    fn named(metric: &str, if_index: &str, if_name: &str) -> MetricEvent {
+        event(
+            metric,
+            1.0,
+            &[("ifIndex", if_index), ("ifName", if_name), ("job", "snmp")],
+        )
+    }
+
+    /// The `VarBind` serving `text` at `instance`, built by hand.
+    fn string_varbind(instance: &str, text: &str) -> Bytes {
+        let mut value = Vec::new();
+        ber::write_string(&mut value, text.as_bytes());
+        let mut varbind = Vec::new();
+        ber::write_varbind(&mut varbind, &oid(instance), &value);
+        varbind.into()
+    }
+
+    /// Every instance under `column`, in walk order.
+    fn walk(agent: &SnmpAgent, column: &str) -> Vec<(Oid, Bytes)> {
+        let column = oid(column);
+        let mut walked = Vec::new();
+        let mut at = column.clone();
+        while let Some((next, varbind)) = agent.next_after(&at) {
+            if !column.is_prefix_of(&next) {
+                break;
+            }
+            at = next.clone();
+            walked.push((next, varbind));
+        }
+        walked
+    }
+
+    /// Two series of index 1 carry `ifName.1`, one per sink of a launch, and
+    /// one series of index 2 carries `ifName.2`. The column walks one string
+    /// per live index; `ifName.1` outlives either series of index 1 alone
+    /// and leaves with the second, its object still registered.
+    #[tokio::test]
+    async fn a_label_column_stays_while_any_series_of_its_index_lives() {
+        let launch = LaunchId::next();
+        let mut octets = SnmpAgentSink::new_in(&SnmpAgentConfig::new("127.0.0.1:0"), launch)
+            .await
+            .expect("bind an ephemeral port");
+        let addr = octets.agent().local_addr().to_string();
+        let mut errors = SnmpAgentSink::new_in(&SnmpAgentConfig::new(addr), launch)
+            .await
+            .expect("join the live agent");
+        let agent = Arc::clone(octets.agent());
+        let (octets_encoder, errors_encoder) = (column_encoder(), column_encoder());
+        for _ in 0..3 {
+            write(
+                &mut octets,
+                &octets_encoder,
+                &named("ifHCInOctets", "1", "Gi0/0/0"),
+            )
+            .await;
+            write(
+                &mut errors,
+                &errors_encoder,
+                &named("ifInErrors", "1", "Gi0/0/0"),
+            )
+            .await;
+            write(
+                &mut octets,
+                &octets_encoder,
+                &named("ifHCInOctets", "2", "Gi0/0/1"),
+            )
+            .await;
+        }
+        let name_1 = string_varbind(&format!("{IF_NAME}.1"), "Gi0/0/0");
+        let name_2 = string_varbind(&format!("{IF_NAME}.2"), "Gi0/0/1");
+        assert_eq!(
+            walk(&agent, IF_NAME),
+            [
+                (oid(&format!("{IF_NAME}.1")), name_1.clone()),
+                (oid(&format!("{IF_NAME}.2")), name_2.clone()),
+            ],
+            "one string per live index, in index order"
+        );
+        assert!(
+            walk(&agent, IF_ALIAS).is_empty(),
+            "no series carries ifAlias"
+        );
+        assert_eq!(agent.instance_count(), 5, "three series and two names");
+
+        drop(octets);
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_NAME}.1"))),
+            Lookup::Value(name_1),
+            "the errors series of index 1 still carries it"
+        );
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_NAME}.2"))),
+            Lookup::NoSuchInstance,
+            "index 2's only series left"
+        );
+        drop(errors);
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_NAME}.1"))),
+            Lookup::NoSuchInstance,
+            "gone with the last series of index 1, its object still registered"
+        );
+        assert_eq!(agent.instance_count(), 0);
+    }
+
+    /// A second series key on an instance's OID publishes its own label
+    /// value over the first's, holds the column once, and releases it once.
+    #[tokio::test]
+    async fn a_series_sharing_an_instance_replaces_its_label_column() {
+        let mut sink = sink().await;
+        let agent = Arc::clone(sink.agent());
+        let encoder = column_encoder();
+        write(&mut sink, &encoder, &named("ifHCInOctets", "1", "Gi0/0/0")).await;
+        write(&mut sink, &encoder, &named("ifHCInOctets", "1", "Gi0/0/9")).await;
+        assert_eq!(sink.owned.len(), 2, "two series keys");
+        assert_eq!(sink.published.len(), 1, "sharing one entry");
+        assert_eq!(sink.published[0].companions, [oid(&format!("{IF_NAME}.1"))]);
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_NAME}.1"))),
+            Lookup::Value(string_varbind(&format!("{IF_NAME}.1"), "Gi0/0/9")),
+            "the last writer wins"
+        );
+        drop(sink);
+        assert_eq!(agent.instance_count(), 0, "each released once");
+    }
+
+    /// A label column's instance belongs to its launch like any other: a
+    /// second launch's series carrying it is refused, the owner keeps it,
+    /// and the refused sink still releases the instance it did publish.
+    #[tokio::test]
+    async fn another_launchs_label_column_is_refused() {
+        let mut owner = sink().await;
+        let agent = Arc::clone(owner.agent());
+        let mut intruder =
+            SnmpAgentSink::new(&SnmpAgentConfig::new(agent.local_addr().to_string()))
+                .await
+                .expect("join the live agent");
+        write(
+            &mut owner,
+            &column_encoder(),
+            &named("ifHCInOctets", "1", "Gi0/0/0"),
+        )
+        .await;
+        let event = named("ifInErrors", "1", "Gi0/0/7");
+        let err = intruder
+            .write_metric_event(&event, &encoded(&column_encoder(), &event))
+            .await
+            .expect_err("ifName.1 belongs to the first launch");
+        assert!(matches!(err, SondaError::Config(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains(&format!("{IF_NAME}.1")),
+            "names the column's instance: {err}"
+        );
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_NAME}.1"))),
+            Lookup::Value(string_varbind(&format!("{IF_NAME}.1"), "Gi0/0/0"))
+        );
+        assert!(matches!(
+            agent.get(&oid("1.3.6.1.2.1.2.2.1.14.1")),
+            Lookup::Value(_)
+        ));
+        drop(intruder);
+        assert_eq!(
+            agent.get(&oid("1.3.6.1.2.1.2.2.1.14.1")),
+            Lookup::NoSuchInstance,
+            "the intruder released what it published"
+        );
+        assert_eq!(agent.instance_count(), 2, "the owner's instance and name");
+    }
+
+    /// A joined sink replaces a label column the agent serves and creates
+    /// none it does not.
+    #[tokio::test]
+    async fn a_joined_sink_replaces_only_a_served_label_column() {
+        let mut owner = sink().await;
+        let agent = Arc::clone(owner.agent());
+        write(
+            &mut owner,
+            &column_encoder(),
+            &named("ifHCInOctets", "1", "Gi0/0/0"),
+        )
+        .await;
+        let mut joined = SnmpAgentSink::join(&SnmpAgentConfig::new(agent.local_addr().to_string()))
+            .expect("join the live agent");
+        let event = event(
+            "ifHCInOctets",
+            2.0,
+            &[
+                ("ifIndex", "1"),
+                ("ifName", "uplink"),
+                ("ifAlias", "to core"),
+            ],
+        );
+        joined
+            .write_metric_event(&event, &encoded(&column_encoder(), &event))
+            .await
+            .expect("the instance is served");
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_NAME}.1"))),
+            Lookup::Value(string_varbind(&format!("{IF_NAME}.1"), "uplink"))
+        );
+        assert_eq!(
+            agent.get(&oid(&format!("{IF_ALIAS}.1"))),
+            Lookup::NoSuchObject,
+            "no ifAlias was ever published"
+        );
+        assert_eq!(agent.instance_count(), 2);
     }
 
     /// A write through an agent whose responder stopped fails.

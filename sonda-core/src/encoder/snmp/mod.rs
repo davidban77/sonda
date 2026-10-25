@@ -1,14 +1,22 @@
 //! SNMP encoder: one `MetricEvent` in, one publish record out.
 //!
-//! A publish record is one byte holding the number of index arcs at the end
-//! of the instance OID, then a BER `VarBind` SEQUENCE { OID, value }. The
-//! instance OID is rendered from the metric's [`OidTemplate`] the first time
-//! a series is seen and cached as its encoded OBJECT IDENTIFIER; later events
-//! copy those bytes and encode only the value. A series is its metric name
-//! and the labels its template can see, so events that differ only in the
-//! agent label or a `drop_labels` label share one entry. A series whose OID
-//! cannot be rendered is cached with the reason, and its later events are
-//! rejected without rendering again.
+//! A publish record is
+//! `[index_arcs: u8][companions: u8][VarBind]([index_arcs: u8][VarBind])*`:
+//! the number of index arcs at the end of the instance OID, the number of
+//! companion records after the instance, the instance's BER `VarBind`
+//! SEQUENCE { OID, value }, then one companion record per label column the
+//! series serves: its index-arc count and its `VarBind` { OID, OCTET STRING
+//! holding the label's value }. The instance OID is rendered from the
+//! metric's [`OidTemplate`] the first time a series is seen and cached as its
+//! encoded OBJECT IDENTIFIER, with its companion records; later events copy
+//! those bytes and encode only the value. Only the series' first record that
+//! is written carries its companions; every other record carries none. A
+//! series is its metric name and the labels its template can see, so events
+//! that differ only in the agent label or a `drop_labels` label share one
+//! entry. A series whose OID cannot be rendered is cached with the reason,
+//! and its later events are rejected without rendering again.
+//!
+//! [`split_record`] is the one reader of the format.
 //!
 //! Requires the `snmp` feature flag.
 
@@ -23,23 +31,28 @@ pub mod value;
 pub use value::SnmpValueType;
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
-use crate::model::metric::{is_valid_metric_name, Labels, MetricEvent, ValidatedMetricName};
+use crate::model::metric::{
+    is_valid_label_key, is_valid_metric_name, Labels, MetricEvent, ValidatedMetricName,
+};
 use crate::{ConfigError, EncoderError, SondaError};
 
 use super::Encoder;
-use ber::Tag;
+use ber::{BerError, Reader, Tag};
 use oid::{Oid, OidTemplate};
 
 /// Default label that names the device: excluded from the coverage rule and
 /// never part of an OID.
 pub const DEFAULT_AGENT_LABEL: &str = "device";
 
-/// Length of a publish record's header: the one index-arc-count byte before
-/// the `VarBind`.
-pub(crate) const RECORD_HEADER: usize = 1;
+/// Length of a publish record's header before the instance's `VarBind`: its
+/// index-arc count, then the number of companion records after it.
+pub(crate) const RECORD_HEADER: usize = 2;
 
 /// Configuration for [`SnmpEncoder`]; the body of `encoder: { type: snmp, ... }`.
 ///
@@ -61,13 +74,27 @@ pub struct SnmpEncoderConfig {
     )]
     pub agent_label: String,
     /// OID template per metric name, such as
-    /// `"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"`: the object's OID, then one
-    /// `{label}` placeholder per index arc, or `.0` for a scalar. Every
-    /// metric the entry emits needs one. Each is a string; a YAML number is
-    /// an error.
+    /// `"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"`: the object's OID, then its
+    /// index placeholders, `{label}` for one arc or `{label:str}` for a
+    /// string index, or `.0` for a scalar. Every metric the entry emits
+    /// needs one. Each is a string; a YAML number is an error.
     #[cfg_attr(feature = "config", serde(default, deserialize_with = "oid_templates"))]
     #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
     pub oids: HashMap<String, String>,
+    /// OID template per label whose value the agent serves as an OCTET
+    /// STRING, such as `ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"`: a
+    /// column beside the metrics' columns, one instance per index. A
+    /// template uses only placeholders every `oids:` template uses. A label
+    /// named here needs no placeholder and no `drop_labels` entry, and
+    /// validation requires it to be a static label of the entry; a series
+    /// without the label serves no instance of its column. Each is a string;
+    /// a YAML number is an error.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, deserialize_with = "label_column_templates")
+    )]
+    #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
+    pub label_columns: HashMap<String, String>,
     /// Value type per metric name; default `gauge32`.
     #[cfg_attr(feature = "config", serde(default))]
     pub types: HashMap<String, SnmpValueType>,
@@ -95,27 +122,49 @@ fn default_agent_label() -> String {
 fn oid_templates<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<HashMap<String, String>, D::Error> {
-    use crate::config::scalar_text::OidText;
-    struct Templates;
-    impl<'de> serde::de::Visitor<'de> for Templates {
-        type Value = HashMap<String, String>;
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a map from metric names to OID templates")
-        }
-        fn visit_map<A: serde::de::MapAccess<'de>>(
-            self,
-            mut map: A,
-        ) -> Result<Self::Value, A::Error> {
-            let mut templates = HashMap::new();
-            while let Some(metric) = map.next_key::<String>()? {
-                let field = format!("oids.{metric}");
-                let template = map.next_value_seed(OidText { field: &field })?;
-                templates.insert(metric, template);
-            }
-            Ok(templates)
-        }
+    deserializer.deserialize_map(Templates {
+        field: "oids",
+        keys: "metric names",
+    })
+}
+
+/// `deserialize_with` for `label_columns:`: each template is a string, and
+/// an error names its `label_columns.<label>` field.
+#[cfg(feature = "config")]
+fn label_column_templates<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<String, String>, D::Error> {
+    deserializer.deserialize_map(Templates {
+        field: "label_columns",
+        keys: "labels",
+    })
+}
+
+/// A map of OID templates read as strings
+/// ([`OidText`](crate::config::scalar_text::OidText)), each error naming
+/// `<field>.<key>`.
+#[cfg(feature = "config")]
+struct Templates {
+    field: &'static str,
+    keys: &'static str,
+}
+
+#[cfg(feature = "config")]
+impl<'de> serde::de::Visitor<'de> for Templates {
+    type Value = HashMap<String, String>;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a map from {} to OID templates", self.keys)
     }
-    deserializer.deserialize_map(Templates)
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        use crate::config::scalar_text::OidText;
+        let mut templates = HashMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let field = format!("{}.{key}", self.field);
+            let template = map.next_value_seed(OidText { field: &field })?;
+            templates.insert(key, template);
+        }
+        Ok(templates)
+    }
 }
 
 /// `deserialize_with` for a list of text items: each item may be any scalar.
@@ -129,11 +178,13 @@ fn scalar_text_items<'de, D: serde::Deserializer<'de>>(
 }
 
 impl Default for SnmpEncoderConfig {
-    /// Default agent label, no templates, no types, no dropped labels.
+    /// Default agent label, no templates, no label columns, no types, no
+    /// dropped labels.
     fn default() -> Self {
         Self {
             agent_label: default_agent_label(),
             oids: HashMap::new(),
+            label_columns: HashMap::new(),
             types: HashMap::new(),
             drop_labels: Vec::new(),
         }
@@ -141,8 +192,8 @@ impl Default for SnmpEncoderConfig {
 }
 
 /// The first of `keys` that `template` does not cover: not one of its
-/// placeholders, not the `agent_label`, and not listed in `drop_labels`.
-/// `None` when every key is covered.
+/// placeholders, not a `label_columns` label, not the `agent_label`, and not
+/// listed in `drop_labels`. `None` when every key is covered.
 ///
 /// Validation and [`Encoder::encode_metric`] both apply this one rule, so a
 /// configuration that validates never has an event rejected by it.
@@ -154,25 +205,149 @@ pub(crate) fn uncovered_label<'a>(
     keys.find(|key| {
         *key != cfg.agent_label
             && !cfg.drop_labels.iter().any(|dropped| dropped == key)
+            && !cfg.label_columns.contains_key(*key)
             && !template.placeholders().any(|p| p == *key)
+    })
+}
+
+/// A publish record, split by [`split_record`].
+#[derive(Debug, Clone)]
+pub(crate) struct Record<'a> {
+    /// How many arcs at the end of the instance OID are its index.
+    pub(crate) index_arcs: u8,
+    /// The instance's `VarBind`.
+    pub(crate) varbind: &'a [u8],
+    /// The companion records after the instance's `VarBind`, in order.
+    pub(crate) companions: Companions<'a>,
+}
+
+/// One companion record of a [`Record`]: a label column's instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Companion<'a> {
+    /// How many arcs at the end of the column instance's OID are its index.
+    pub(crate) index_arcs: u8,
+    /// The column instance's `VarBind`: its OID and the label's value as an
+    /// OCTET STRING.
+    pub(crate) varbind: &'a [u8],
+}
+
+/// The companion records of a [`Record`], which [`split_record`] has
+/// checked.
+#[derive(Debug, Clone)]
+pub(crate) struct Companions<'a> {
+    rest: &'a [u8],
+    left: u8,
+}
+
+impl<'a> Iterator for Companions<'a> {
+    type Item = Companion<'a>;
+
+    fn next(&mut self) -> Option<Companion<'a>> {
+        if self.left == 0 {
+            return None;
+        }
+        let (&index_arcs, rest) = self.rest.split_first()?;
+        let (varbind, rest) = split_varbind(rest).ok()?;
+        self.rest = rest;
+        self.left -= 1;
+        Some(Companion {
+            index_arcs,
+            varbind,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::from(self.left), Some(usize::from(self.left)))
+    }
+}
+
+impl ExactSizeIterator for Companions<'_> {}
+
+/// The SEQUENCE TLV at the start of `input`, and the bytes after it.
+fn split_varbind(input: &[u8]) -> Result<(&[u8], &[u8]), BerError> {
+    let body = Reader::new(input).expect(Tag::Sequence)?;
+    // `body` borrows from `input`, so the TLV ends where it does.
+    let end = body.as_ptr() as usize - input.as_ptr() as usize + body.len();
+    Ok(input.split_at(end))
+}
+
+/// [`SondaError::Sink`]: the bytes are not a publish record, for `detail`.
+fn not_a_record(detail: impl fmt::Display) -> SondaError {
+    SondaError::Sink(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "the event is not an snmp publish record ({detail}); the snmp_agent sink takes \
+             the snmp encoder's output"
+        ),
+    ))
+}
+
+/// Split the publish record `encoded`: the index-arc count, the companion
+/// count, one SEQUENCE, then exactly that many companion records, each a
+/// byte and one SEQUENCE, and nothing after them.
+///
+/// Returns [`SondaError::Sink`] for bytes of any other shape. Allocates
+/// nothing unless it returns an error.
+pub(crate) fn split_record(encoded: &[u8]) -> Result<Record<'_>, SondaError> {
+    let (&index_arcs, rest) = encoded
+        .split_first()
+        .ok_or_else(|| not_a_record("it is empty"))?;
+    let (&count, rest) = rest
+        .split_first()
+        .ok_or_else(|| not_a_record("it has no companion count"))?;
+    let (varbind, companions) = split_varbind(rest).map_err(not_a_record)?;
+    let mut rest = companions;
+    for _ in 0..count {
+        let (_, after) = rest.split_first().ok_or_else(|| {
+            not_a_record(format!(
+                "it announces {count} companion records and carries fewer"
+            ))
+        })?;
+        rest = split_varbind(after).map_err(not_a_record)?.1;
+    }
+    if !rest.is_empty() {
+        return Err(not_a_record("bytes follow its last VarBind"));
+    }
+    Ok(Record {
+        index_arcs,
+        varbind,
+        companions: Companions {
+            rest: companions,
+            left: count,
+        },
     })
 }
 
 /// Encodes metric events as SNMP publish records.
 ///
-/// Each call to [`Encoder::encode_metric`] appends one record: a byte
-/// holding the template's [`index_arcs`](OidTemplate::index_arcs), then one
-/// `VarBind` SEQUENCE { OBJECT IDENTIFIER, value }. Log events are not
-/// supported.
+/// Each call to [`Encoder::encode_metric`] appends one record:
+/// `[index_arcs][companions][VarBind]([index_arcs][VarBind])*`. The first
+/// byte is the number of index arcs the instance OID was rendered with, the
+/// second the number of companion records that follow the instance's
+/// `VarBind` SEQUENCE { OBJECT IDENTIFIER, value }. A companion record is a
+/// label column's instance: its index-arc count, then a `VarBind` { the
+/// column's template rendered for the event, OCTET STRING holding the
+/// label's value }, one per `label_columns` label the event carries, in
+/// label order. A series' companions ride its first record that is written;
+/// every other record has none. Log events are not supported.
 pub struct SnmpEncoder {
     cfg: SnmpEncoderConfig,
     templates: HashMap<String, Template>,
+    /// The label columns, in label order.
+    columns: Vec<LabelColumn>,
     /// Each series' encoded OBJECT IDENTIFIER or rejection, filled on first
     /// sight, keyed by the series' [fingerprint](Template::fingerprint).
     oids: RwLock<HashMap<u64, Vec<CachedOid>>>,
     /// OIDs rendered, for tests.
     #[cfg(test)]
     renders: std::sync::atomic::AtomicUsize,
+}
+
+/// A label column: the label whose value the agent serves, and the template
+/// of its instances.
+struct LabelColumn {
+    label: String,
+    template: OidTemplate,
 }
 
 /// A metric's template, its value type, and the labels the template cannot
@@ -204,11 +379,39 @@ impl Template {
 }
 
 /// One series' cache entry: the name and labels of its first event, and its
-/// encoded OBJECT IDENTIFIER or the text it is rejected with.
+/// rendered instance or the text it is rejected with.
 struct CachedOid {
     name: ValidatedMetricName,
     labels: Arc<Labels>,
-    oid: Result<Arc<[u8]>, String>,
+    oid: Result<Arc<Rendered>, String>,
+}
+
+/// A series' instance, rendered on first sight.
+struct Rendered {
+    /// The instance's encoded OBJECT IDENTIFIER.
+    oid: Box<[u8]>,
+    /// How many arcs at the end of the instance OID are its index, as
+    /// rendered.
+    index_arcs: u8,
+    /// The series' companion records, one per label column it serves.
+    companions: Box<[u8]>,
+    /// How many records `companions` holds.
+    companion_count: u8,
+    /// Set until a record carrying the companions has been written.
+    companions_pending: AtomicBool,
+}
+
+impl Rendered {
+    /// Whether the record being written carries the companions: `true` once,
+    /// for the first caller after they became pending, and never when there
+    /// are none.
+    fn take_companions(&self) -> bool {
+        self.companions_pending.load(Ordering::Relaxed)
+            && self
+                .companions_pending
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+    }
 }
 
 impl CachedOid {
@@ -218,9 +421,9 @@ impl CachedOid {
         *self.name == *name && template.seen(&self.labels).eq(template.seen(labels))
     }
 
-    /// The cached OID, or the cached rejection as an
+    /// The cached instance, or the cached rejection as an
     /// [`EncoderError::EventRejected`].
-    fn oid(&self) -> Result<Arc<[u8]>, SondaError> {
+    fn oid(&self) -> Result<Arc<Rendered>, SondaError> {
         self.oid
             .clone()
             .map_err(|reason| SondaError::Encoder(EncoderError::EventRejected(reason)))
@@ -231,9 +434,10 @@ impl SnmpEncoder {
     /// Build an encoder, parsing every template in `cfg`.
     ///
     /// Returns [`SondaError::Config`] when an `oids:` or `types:` key is not
-    /// a valid metric name, or an `oids:` entry is not a valid
-    /// [`OidTemplate`]. Both maps are checked in key order, so the same
-    /// config always reports the same first error.
+    /// a valid metric name, a `label_columns:` key is not a valid label key,
+    /// an `oids:` or `label_columns:` entry is not a valid [`OidTemplate`],
+    /// or there are more than 255 label columns. Every map is checked in key
+    /// order, so the same config always reports the same first error.
     pub fn new(cfg: &SnmpEncoderConfig) -> Result<Self, SondaError> {
         let check_key = |field: &str, metric: &str| {
             if is_valid_metric_name(metric) {
@@ -277,10 +481,40 @@ impl SnmpEncoder {
                 ))
             })
             .collect::<Result<HashMap<_, _>, SondaError>>()?;
+        let columns = cfg
+            .label_columns
+            .iter()
+            .collect::<BTreeMap<_, _>>()
+            .into_iter()
+            .map(|(label, text)| {
+                if !is_valid_label_key(label) {
+                    return Err(SondaError::Config(ConfigError::invalid(format!(
+                        "snmp encoder label_columns key {label:?} is not a label key; keys \
+                         are the labels whose values the agent serves"
+                    ))));
+                }
+                let template = OidTemplate::parse(text).map_err(|e| {
+                    SondaError::Config(ConfigError::invalid(format!(
+                        "snmp encoder label_columns.{label}: {e}"
+                    )))
+                })?;
+                Ok(LabelColumn {
+                    label: label.clone(),
+                    template,
+                })
+            })
+            .collect::<Result<Vec<_>, SondaError>>()?;
+        if u8::try_from(columns.len()).is_err() {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "snmp encoder has {} label_columns; a record carries at most 255",
+                columns.len()
+            ))));
+        }
 
         Ok(Self {
             cfg: cfg.clone(),
             templates,
+            columns,
             oids: RwLock::new(HashMap::new()),
             #[cfg(test)]
             renders: std::sync::atomic::AtomicUsize::new(0),
@@ -304,17 +538,22 @@ impl SnmpEncoder {
         })
     }
 
-    /// Encoded OBJECT IDENTIFIER of the event's series under `template`,
-    /// rendering and caching it on first sight.
+    /// The event's series' instance under `template`, rendering and caching
+    /// it on first sight.
     ///
     /// A hit allocates nothing: the entry is found by a hash of the name and
     /// the labels the template sees, then compared label by label. A series
     /// whose OID is rejected ([`EncoderError::EventRejected`]: a label the
     /// template does not cover, a placeholder whose label the event lacks,
-    /// or a label value that is not an arc) is cached with the rejection's
-    /// text, and each later event of it gets that text without the OID being
+    /// a label value that is not an index of its placeholder, or a label
+    /// column that cannot be rendered) is cached with the rejection's text,
+    /// and each later event of it gets that text without the OID being
     /// rendered again.
-    fn oid_bytes(&self, template: &Template, event: &MetricEvent) -> Result<Arc<[u8]>, SondaError> {
+    fn rendered(
+        &self,
+        template: &Template,
+        event: &MetricEvent,
+    ) -> Result<Arc<Rendered>, SondaError> {
         let name: &str = &event.name;
         let fingerprint = template.fingerprint(name, &event.labels);
         let cached = |oids: &HashMap<u64, Vec<CachedOid>>| {
@@ -345,13 +584,16 @@ impl SnmpEncoder {
         oid
     }
 
-    /// The event's instance OID under `template`, BER-encoded, or the text
-    /// it is rejected with: the event carries a label the template does not
-    /// cover, or the render fails.
-    fn render_oid(&self, template: &Template, event: &MetricEvent) -> Result<Arc<[u8]>, String> {
+    /// The event's instance under `template`, with its OID BER-encoded and
+    /// its companion records, or the text it is rejected with: the event
+    /// carries a label the template does not cover, or a render fails.
+    fn render_oid(
+        &self,
+        template: &Template,
+        event: &MetricEvent,
+    ) -> Result<Arc<Rendered>, String> {
         #[cfg(test)]
-        self.renders
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.renders.fetch_add(1, Ordering::Relaxed);
         let name: &str = &event.name;
         let template = &template.template;
         if let Some(label) =
@@ -360,18 +602,36 @@ impl SnmpEncoder {
             return Err(format!(
                 "metric {name:?} carries label `{label}`, which the snmp OID template does \
                  not reference; reference it as an index placeholder, make it the \
-                 agent_label, or list it in drop_labels"
+                 agent_label, list it in label_columns, or list it in drop_labels"
             ));
         }
-        let mut arcs = Vec::new();
-        template
-            .render(&event.labels, &mut arcs)
+        let (oid, index_arcs) = render_instance(template, &event.labels)
             .map_err(|e| format!("metric {name:?}: {e}"))?;
-        let oid = Oid::from_arcs(arcs)
-            .ok_or_else(|| format!("metric {name:?}: the rendered OID cannot be encoded"))?;
+        let mut companions = Vec::new();
+        let mut companion_count = 0u8;
+        for column in &self.columns {
+            let Some(value) = label_value(&event.labels, &column.label) else {
+                continue;
+            };
+            let (column_oid, column_arcs) = render_instance(&column.template, &event.labels)
+                .map_err(|e| format!("metric {name:?}: label column {}: {e}", column.label))?;
+            companions.push(column_arcs);
+            ber::write_tlv(&mut companions, Tag::Sequence, |out| {
+                ber::write_oid(out, &column_oid);
+                ber::write_string(out, value.as_bytes());
+            });
+            // new() caps the label columns at 255.
+            companion_count += 1;
+        }
         let mut bytes = Vec::with_capacity(2 + oid.ber_body_len());
         ber::write_oid(&mut bytes, &oid);
-        Ok(bytes.into())
+        Ok(Arc::new(Rendered {
+            oid: bytes.into(),
+            index_arcs,
+            companions: companions.into(),
+            companion_count,
+            companions_pending: AtomicBool::new(companion_count > 0),
+        }))
     }
 
     /// How many series the OID cache holds.
@@ -387,11 +647,12 @@ impl SnmpEncoder {
 }
 
 impl Encoder for SnmpEncoder {
-    /// Appends exactly one publish record into `buf`: one byte, the template's
-    /// [`index_arcs`](OidTemplate::index_arcs), then a BER `VarBind`
-    /// SEQUENCE { OBJECT IDENTIFIER, value }. The output is not a bare
-    /// `VarBind` and not an SNMP message. `buf` is cleared by the caller, not
-    /// here.
+    /// Appends exactly one publish record into `buf`: the number of index
+    /// arcs the instance OID was rendered with, the number of companion
+    /// records, a BER `VarBind` SEQUENCE { OBJECT IDENTIFIER, value }, then
+    /// the companion records (see [`SnmpEncoder`]), which only the series'
+    /// first written record carries. The output is not a bare `VarBind` and
+    /// not an SNMP message. `buf` is cleared by the caller, not here.
     ///
     /// Returns [`SondaError::Config`] when the metric has no `oids:` entry,
     /// which is a defect of the configuration rather than of this event.
@@ -401,38 +662,80 @@ impl Encoder for SnmpEncoder {
     /// - the event carries a label the template does not reference that is
     ///   neither the `agent_label` nor listed in `drop_labels`;
     /// - a template placeholder names a label the event lacks;
-    /// - a placeholder's label value is not a canonical decimal `u32`;
+    /// - a `{label}` placeholder's label value is not a canonical decimal
+    ///   `u32`, or a `{label:str}` placeholder's is empty or would make the
+    ///   OID longer than 128 arcs;
+    /// - a label column the event carries cannot be rendered, for the same
+    ///   reasons;
     /// - the value is NaN or infinite and the type is not `string`;
     /// - the rounded value is outside the type's range.
     ///
     /// The label checks run only when a series is first seen and its OID is
     /// rendered and cached; later events for the same series skip them. A
     /// series rejected by them is rejected with the same text on every later
-    /// event without being rendered again.
+    /// event without being rendered again. A record rejected for its value
+    /// carries no companions, and the series' next written record does.
     ///
     /// Validation pairs this encoder with the `snmp_agent` sink only.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         let name: &str = &event.name;
         let template = self.template_of(name)?;
-        let oid = self.oid_bytes(template, event)?;
+        let rendered = self.rendered(template, event)?;
+        let companions = rendered.take_companions();
         let start = buf.len();
-        // The header byte, a SEQUENCE header, the OID, and the longest
-        // numeric value TLV (a Counter64: tag, length, nine octets).
-        buf.reserve(RECORD_HEADER + 2 + oid.len() + 11);
-        buf.push(template.template.index_arcs());
+        // The header, a SEQUENCE header, the OID, the longest numeric value
+        // TLV (a Counter64: tag, length, nine octets), and the companions.
+        let companion_len = if companions {
+            rendered.companions.len()
+        } else {
+            0
+        };
+        buf.reserve(RECORD_HEADER + 2 + rendered.oid.len() + 11 + companion_len);
+        buf.push(rendered.index_arcs);
+        buf.push(if companions {
+            rendered.companion_count
+        } else {
+            0
+        });
         let mut written = Ok(());
         ber::write_tlv(buf, Tag::Sequence, |out| {
-            out.extend_from_slice(&oid);
+            out.extend_from_slice(&rendered.oid);
             written = template.ty.write(event.value, out);
         });
         if let Err(e) = written {
             buf.truncate(start);
+            if companions {
+                rendered.companions_pending.store(true, Ordering::Relaxed);
+            }
             return Err(SondaError::Encoder(EncoderError::EventRejected(format!(
                 "metric {name:?}: {e}"
             ))));
         }
+        if companions {
+            buf.extend_from_slice(&rendered.companions);
+        }
         Ok(())
     }
+}
+
+/// The value of `label` in `labels`, if it is there.
+fn label_value<'a>(labels: &'a Labels, label: &str) -> Option<&'a str> {
+    labels
+        .iter()
+        .find_map(|(key, value)| (key == label).then_some(value))
+}
+
+/// `template` rendered for `labels`: the instance OID and how many of its
+/// arcs are the index.
+fn render_instance(template: &OidTemplate, labels: &Labels) -> Result<(Oid, u8), String> {
+    let mut arcs = Vec::new();
+    template
+        .render(labels, &mut arcs)
+        .map_err(|e| e.to_string())?;
+    // render() caps the OID at 128 arcs and the object has at least two.
+    let index_arcs = (arcs.len() - template.object().arcs().len()) as u8;
+    let oid = Oid::from_arcs(arcs).ok_or("the rendered OID cannot be encoded")?;
+    Ok((oid, index_arcs))
 }
 
 #[cfg(test)]
@@ -517,7 +820,214 @@ mod tests {
         let out = record(&encoder, &event("m", value, &pairs));
         assert_eq!(out[0], index_arcs);
         assert_eq!(out[0], encoder.template_for("m").expect("template").index_arcs());
+        assert_eq!(out[1], 0, "no label columns, no companions");
         assert_eq!(&out[RECORD_HEADER..], &expected[..]);
+    }
+
+    /// `snmptrap -v2c -c public 127.0.0.1:<port> 0 1.3.6.1.4.1.8072.9999.0.2`
+    /// with `1.3.6.1.2.1.31.1.1.1.6.1 C 1250000`,
+    /// `1.3.6.1.2.1.31.1.1.1.1.1 s GigabitEthernet0/0/0`,
+    /// `1.3.6.1.2.1.31.1.1.1.18.1 s "uplink to core"` and
+    /// `1.3.6.1.4.1.8072.9999.3.1.20.71.105.103.97.98.105.116.69.116.104.101.114.110.101.116.48.47.48.47.48 i 2`
+    /// as varbinds, net-snmp 5.9.4: each `VarBind` as net-snmp encodes it.
+    const NET_SNMP_IF_HC_IN_OCTETS_1: &str = "3012060b2b060102011f010101060146031312d0";
+    const NET_SNMP_IF_NAME_1: &str =
+        "3023060b2b060102011f010101010104144769676162697445746865726e6574302f302f30";
+    const NET_SNMP_IF_ALIAS_1: &str =
+        "301d060b2b060102011f0101011201040e75706c696e6b20746f20636f7265";
+    const NET_SNMP_STRING_INDEX: &str =
+        "302506202b06010401bf08ce0f0301144769676162697445746865726e6574302f302f30020102";
+
+    /// ifHCInOctets with ifName and ifAlias served as columns.
+    fn column_encoder() -> SnmpEncoder {
+        SnmpEncoder::new(&SnmpEncoderConfig {
+            oids: HashMap::from([(
+                "ifHCInOctets".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}".to_string(),
+            )]),
+            types: HashMap::from([("ifHCInOctets".to_string(), SnmpValueType::Counter64)]),
+            label_columns: HashMap::from([
+                (
+                    "ifName".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+                ),
+                (
+                    "ifAlias".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                ),
+            ]),
+            drop_labels: vec!["job".to_string()],
+            ..SnmpEncoderConfig::default()
+        })
+        .expect("a valid encoder")
+    }
+
+    fn interface_one(value: f64) -> MetricEvent {
+        event(
+            "ifHCInOctets",
+            value,
+            &[
+                ("device", "rtr-1"),
+                ("ifIndex", "1"),
+                ("ifName", "GigabitEthernet0/0/0"),
+                ("ifAlias", "uplink to core"),
+                ("job", "snmp"),
+            ],
+        )
+    }
+
+    /// A series' first record carries one companion per label column, in
+    /// label order, each its index-arc count and the `VarBind` net-snmp
+    /// writes for the label's value; its second record carries none.
+    #[test]
+    fn the_first_record_of_a_series_carries_its_label_columns() {
+        let (instance, if_alias, if_name) = (
+            hex(NET_SNMP_IF_HC_IN_OCTETS_1),
+            hex(NET_SNMP_IF_ALIAS_1),
+            hex(NET_SNMP_IF_NAME_1),
+        );
+        for fixture in [&instance, &if_alias, &if_name] {
+            assert_eq!(fixture.first(), Some(&0x30), "fixture present");
+        }
+        let encoder = column_encoder();
+        let first = record(&encoder, &interface_one(1_250_000.0));
+        assert_eq!(first[0], 1, "the instance's rendered index arcs");
+        assert_eq!(first[1], 2, "two companions");
+        let mut expected = vec![1, 2];
+        expected.extend_from_slice(&instance);
+        expected.push(1);
+        expected.extend_from_slice(&if_alias);
+        expected.push(1);
+        expected.extend_from_slice(&if_name);
+        assert_eq!(first, expected);
+
+        let second = record(&encoder, &interface_one(1_250_000.0));
+        assert_eq!(second[1], 0, "a later record carries no companions");
+        let mut expected = vec![1, 0];
+        expected.extend_from_slice(&instance);
+        assert_eq!(second, expected);
+
+        let split = split_record(&first).expect("a record");
+        assert_eq!(split.varbind, &instance[..]);
+        assert_eq!(
+            split.companions.collect::<Vec<_>>(),
+            [
+                Companion {
+                    index_arcs: 1,
+                    varbind: &if_alias[..]
+                },
+                Companion {
+                    index_arcs: 1,
+                    varbind: &if_name[..]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn record_snapshot_of_a_first_sight_with_label_columns() {
+        let out = record(&column_encoder(), &interface_one(1_250_000.0));
+        assert_eq!(out[0], 1, "the instance's rendered index arcs");
+        let shown: Vec<String> = out.iter().map(|b| format!("{b:02x}")).collect();
+        insta::assert_snapshot!("snmp_record_first_sight_label_columns", shown.join(" "));
+    }
+
+    /// A record's first byte is the index arcs the OID was rendered with: a
+    /// 20-byte string index is 21 arcs, which the template alone cannot
+    /// say.
+    #[test]
+    fn a_string_index_record_carries_its_rendered_index_arcs() {
+        let expected = hex(NET_SNMP_STRING_INDEX);
+        assert_eq!(expected.first(), Some(&0x30), "fixture present");
+        let encoder = encoder_of(
+            "m",
+            "1.3.6.1.4.1.8072.9999.3.1.{ifName:str}",
+            SnmpValueType::Integer,
+        );
+        let out = record(
+            &encoder,
+            &event("m", 2.0, &[("ifName", "GigabitEthernet0/0/0")]),
+        );
+        assert_eq!(out[0], 21);
+        assert_eq!(
+            encoder.template_for("m").expect("template").index_arcs(),
+            2,
+            "the fewest"
+        );
+        assert_eq!(out[1], 0);
+        assert_eq!(&out[RECORD_HEADER..], &expected[..]);
+    }
+
+    #[test]
+    fn an_empty_string_index_rejects_the_series() {
+        let encoder = encoder_of(
+            "m",
+            "1.3.6.1.4.1.8072.9999.3.1.{ifName:str}",
+            SnmpValueType::Integer,
+        );
+        assert!(!record(&encoder, &event("m", 2.0, &[("ifName", "x")])).is_empty());
+        let reason = rejection(&encoder, &event("m", 2.0, &[("ifName", "")]));
+        assert!(reason.contains("label `ifName` is empty"), "{reason}");
+    }
+
+    /// The companions ride the series' first record that is written: a first
+    /// event refused for its value carries none away with it.
+    #[test]
+    fn companions_wait_for_a_written_record() {
+        let encoder = column_encoder();
+        let mut buf = Vec::new();
+        encoder
+            .encode_metric(&interface_one(-1.0), &mut buf)
+            .expect_err("a negative counter64");
+        assert!(buf.is_empty());
+        assert_eq!(encoder.cached_series(), 1, "the OID was cached");
+        assert_eq!(record(&encoder, &interface_one(1.0))[1], 2);
+        assert_eq!(record(&encoder, &interface_one(1.0))[1], 0);
+    }
+
+    /// A series without a column's label serves no instance of that column.
+    #[test]
+    fn a_series_without_the_label_serves_no_column() {
+        let encoder = column_encoder();
+        let out = record(
+            &encoder,
+            &event(
+                "ifHCInOctets",
+                1_250_000.0,
+                &[("ifIndex", "1"), ("ifName", "GigabitEthernet0/0/0")],
+            ),
+        );
+        let split = split_record(&out).expect("a record");
+        let companions: Vec<_> = split.companions.collect();
+        assert_eq!(companions.len(), 1);
+        assert_eq!(companions[0].varbind, &hex(NET_SNMP_IF_NAME_1)[..]);
+    }
+
+    #[test]
+    fn a_label_column_that_cannot_render_rejects_the_series() {
+        let mut cfg = with(|_| {});
+        cfg.label_columns.insert(
+            "ifName".to_string(),
+            "1.3.6.1.4.1.8072.9999.3.1.{slot}".to_string(),
+        );
+        let encoder = SnmpEncoder::new(&cfg).expect("valid");
+        let reason = rejection(
+            &encoder,
+            &event("m", 1.0, &[("ifIndex", "1"), ("ifName", "Gi0")]),
+        );
+        assert!(reason.contains("label column ifName"), "{reason}");
+        assert!(reason.contains("{slot}"), "{reason}");
+    }
+
+    /// Series that differ only in a label-column label are two series.
+    #[test]
+    fn each_label_value_is_its_own_series() {
+        let encoder = column_encoder();
+        for name in ["Gi0", "Gi1", "Gi0"] {
+            let event = event("ifHCInOctets", 1.0, &[("ifIndex", "1"), ("ifName", name)]);
+            record(&encoder, &event);
+        }
+        assert_eq!(encoder.cached_series(), 2);
     }
 
     /// One record per value type, from one event on a one-index column.
@@ -557,7 +1067,8 @@ mod tests {
             .expect("encodes");
         assert_eq!(buf[0], 0xAA);
         assert_eq!(buf[1], 1, "a scalar's one index arc, its .0");
-        assert_eq!(buf[2], 0x30);
+        assert_eq!(buf[2], 0, "no companions");
+        assert_eq!(buf[3], 0x30);
     }
 
     #[test]
@@ -729,10 +1240,25 @@ mod tests {
             ..SnmpEncoderConfig::default()
         };
         let template = OidTemplate::parse("1.3.6.1.2.1.2.2.1.8.{ifIndex}").expect("valid");
-        let check = |keys: &[&'static str]| uncovered_label(&cfg, &template, keys.iter().copied());
-        assert_eq!(check(&["device", "ifIndex", "job"]), None);
-        assert_eq!(check(&["device", "ifName", "ifIndex"]), Some("ifName"));
-        assert_eq!(check(&[]), None);
+        let check = |cfg: &SnmpEncoderConfig, keys: &[&'static str]| {
+            uncovered_label(cfg, &template, keys.iter().copied())
+        };
+        assert_eq!(check(&cfg, &["device", "ifIndex", "job"]), None);
+        assert_eq!(
+            check(&cfg, &["device", "ifName", "ifIndex"]),
+            Some("ifName")
+        );
+        assert_eq!(check(&cfg, &[]), None);
+        let mut columns = cfg.clone();
+        columns.label_columns.insert(
+            "ifName".to_string(),
+            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+        );
+        assert_eq!(
+            check(&columns, &["device", "ifName", "ifIndex"]),
+            None,
+            "a label column is covered"
+        );
     }
 
     fn with(change: impl FnOnce(&mut SnmpEncoderConfig)) -> SnmpEncoderConfig {
@@ -746,7 +1272,9 @@ mod tests {
 
     #[rstest]
     #[case::bad_template(with(|c| { c.oids.insert("m".into(), "1.{x}".into()); }), "oids.m: OID template \"1.{x}\"")]
-    #[case::string_index(with(|c| { c.oids.insert("m".into(), "1.3.6.{ifName:str}".into()); }), "is not supported")]
+    #[case::unknown_placeholder_form(with(|c| { c.oids.insert("m".into(), "1.3.6.{ifName:x}".into()); }), "is not supported")]
+    #[case::bad_label_column(with(|c| { c.label_columns.insert("ifName".into(), "1.3.6.1.2.1.31.1.1.1.1".into()); }), "label_columns.ifName: OID template")]
+    #[case::label_column_key_not_a_label(with(|c| { c.label_columns.insert("if-name".into(), "1.3.6.{ifIndex}".into()); }), "label_columns key \"if-name\"")]
     #[case::oids_key_not_a_metric(with(|c| { c.oids.insert("in-octets".into(), "1.3.6.1".into()); }), "oids key \"in-octets\"")]
     #[case::types_key_not_a_metric(with(|c| { c.types.insert("in-octets".into(), SnmpValueType::Integer); }), "types key \"in-octets\"")]
     fn new_rejects(#[case] cfg: SnmpEncoderConfig, #[case] fragment: &str) {
@@ -765,6 +1293,15 @@ mod tests {
         assert_eq!(cfg.agent_label, "device");
         assert_eq!(cfg.types["ifHCInOctets"], SnmpValueType::Counter64);
         assert!(cfg.drop_labels.is_empty());
+        assert!(cfg.label_columns.is_empty());
+        let columns: SnmpEncoderConfig = serde_yaml_ng::from_str(
+            "label_columns:\n  ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            columns.label_columns["ifName"],
+            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"
+        );
         let empty: SnmpEncoderConfig = serde_yaml_ng::from_str("{}").expect("all fields default");
         assert_eq!(empty, SnmpEncoderConfig::default());
     }
@@ -797,6 +1334,8 @@ mod tests {
     #[rstest]
     #[case::encoder_block("type: snmp\noids:\n  ifHCInOctets: ")]
     #[case::config_alone("oids:\n  ifHCInOctets: ")]
+    #[case::label_column_in_the_encoder_block("type: snmp\nlabel_columns:\n  ifHCInOctets: ")]
+    #[case::label_column_alone("label_columns:\n  ifHCInOctets: ")]
     fn an_unquoted_oid_is_an_error_naming_the_field(#[case] prefix: &str) {
         let parse = |value: &str| {
             let yaml = format!("{prefix}{value}\n");
@@ -809,10 +1348,12 @@ mod tests {
         parse("\"1.30\"").expect("quoted parses");
         for value in ["1.30", "7", "true"] {
             let shown = parse(value).expect_err("not a string").to_string();
-            assert!(
-                shown.contains("oids.ifHCInOctets"),
-                "names the field: {shown}"
-            );
+            let field = if prefix.contains("label_columns") {
+                "label_columns.ifHCInOctets"
+            } else {
+                "oids.ifHCInOctets"
+            };
+            assert!(shown.contains(field), "names the field: {shown}");
             assert!(shown.contains("quote it"), "says to quote it: {shown}");
         }
     }
@@ -821,6 +1362,7 @@ mod tests {
     #[rstest]
     #[case::misspelt_oids("oid:\n  m: \"1.3.6.1\"\n", "oid")]
     #[case::misspelt_drop_labels("drop_label: [job]\n", "drop_label")]
+    #[case::misspelt_label_columns("label_column:\n  ifName: \"1.3.6.1\"\n", "label_column")]
     fn unknown_encoder_keys_are_rejected(#[case] yaml: &str, #[case] key: &str) {
         let err = serde_yaml_ng::from_str::<SnmpEncoderConfig>(yaml).expect_err("unknown key");
         let shown = err.to_string();

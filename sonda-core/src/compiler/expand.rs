@@ -114,7 +114,7 @@
 //! |-------|------------------|
 //! | `rate` | copied verbatim (inherited from defaults in Phase 2) |
 //! | `duration` | copied verbatim |
-//! | `encoder` | copied, with the pack's `gnmi:` and `snmp:` hints folded in (see [`crate::packs::fold_gnmi_hints`] and [`crate::packs::fold_snmp_hints`]) |
+//! | `encoder` | copied, with the pack's `gnmi:` and `snmp:` hints and `snmp_label_columns:` folded in (see [`crate::packs::fold_gnmi_hints`] and [`crate::packs::fold_snmp_hints`]) |
 //! | `sink` | copied verbatim |
 //! | `jitter`, `jitter_seed` | copied verbatim |
 //! | `gaps` | cloned verbatim |
@@ -778,7 +778,7 @@ fn expand_pack_entry<R: PackResolver>(
     record_id(id_registry, &effective_entry_id, effective_id_source)?;
 
     let mut encoder = crate::packs::fold_gnmi_hints(&pack, &entry.encoder);
-    crate::packs::fold_snmp_hints(&mut encoder, &pack.metrics);
+    crate::packs::fold_snmp_hints(&mut encoder, &pack);
 
     for (spec_index, metric) in pack.metrics.iter().enumerate() {
         let override_for_metric = override_indices
@@ -1137,6 +1137,7 @@ mod tests {
                     snmp: None,
                 },
             ],
+            snmp_label_columns: Default::default(),
         }
     }
 
@@ -1183,6 +1184,7 @@ mod tests {
                     snmp: None,
                 },
             ],
+            snmp_label_columns: Default::default(),
         }
     }
 
@@ -1373,6 +1375,7 @@ scenarios:
                 gnmi: None,
                 snmp: None,
             }],
+            snmp_label_columns: Default::default(),
         };
 
         let mut resolver = InMemoryPackResolver::new();
@@ -1451,6 +1454,7 @@ scenarios:
                 gnmi: None,
                 snmp: None,
             }],
+            snmp_label_columns: Default::default(),
         };
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("p", pack);
@@ -1551,6 +1555,7 @@ scenarios:
                 gnmi: None,
                 snmp: None,
             }],
+            snmp_label_columns: Default::default(),
         };
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("p", pack);
@@ -1951,6 +1956,7 @@ scenarios:
             category: "c".to_string(),
             shared_labels: None,
             metrics: vec![],
+            snmp_label_columns: Default::default(),
         };
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("empty", pack);
@@ -2378,6 +2384,7 @@ scenarios:
                 gnmi: None,
                 snmp: None,
             }],
+            snmp_label_columns: Default::default(),
         };
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("single", pack);
@@ -2427,6 +2434,7 @@ scenarios:
                 snmp: None,
             }],
             deviations: Vec::new(),
+            snmp_label_columns: Default::default(),
         }
     }
 

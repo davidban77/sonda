@@ -1311,14 +1311,14 @@ sink:
         let event = MetricEvent::new("m".to_string(), 2.0, labels).expect("valid");
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encodes");
-        // One index arc, then net-snmp 5.9.4's encoding of
+        // One index arc, no companions, then net-snmp 5.9.4's encoding of
         // `1.3.6.1.2.1.2.2.1.8.4 i 2` (snmptrap -v2c).
         let varbind = [
             0x30, 0x0f, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x02, 0x01, 0x02, 0x02, 0x01, 0x08, 0x04,
             0x02, 0x01, 0x02,
         ];
-        assert_eq!(buf[0], 1);
-        assert_eq!(&buf[1..], &varbind);
+        assert_eq!(buf[..snmp::RECORD_HEADER], [1, 0]);
+        assert_eq!(&buf[snmp::RECORD_HEADER..], &varbind);
     }
 
     #[cfg(feature = "snmp")]

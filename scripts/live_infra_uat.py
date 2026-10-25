@@ -186,6 +186,28 @@ def parse_vm_export(
     return out
 
 
+def parse_vm_export_tags(
+    body: bytes, tag: str, label: str = "index"
+) -> dict[tuple[str, str], dict[str, list[int]]]:
+    """Group a VictoriaMetrics ``/api/v1/export`` body by (series name, the
+    value of ``label``), as :func:`parse_vm_export` does, then by the value of
+    ``tag`` ("" for a series without it), keeping each sample's timestamp
+    (milliseconds). A line that does not parse is skipped.
+    """
+    out: dict[tuple[str, str], dict[str, list[int]]] = {}
+    for line in body.splitlines():
+        try:
+            entry = json.loads(line)
+            metric = entry["metric"]
+            key = (metric["__name__"], metric.get(label, ""))
+            value = metric.get(tag, "")
+            stamps = [int(ts) for ts in entry["timestamps"]]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        out.setdefault(key, {}).setdefault(value, []).extend(stamps)
+    return out
+
+
 def telegraf_connected_at(
     telegraf_log: str,
     started_s: float,
@@ -380,6 +402,10 @@ SNMP_V1_ABSENT_SERIES = ("interface_v1_ifHCInOctets", "interface_v1_ifHCOutOctet
 SNMP_OPER_STATUS_SERIES = "interface_ifOperStatus"
 SNMP_UPTIME_SERIES = "snmp_uptime"
 SNMP_INTERFACES = ("1", "2", "3", "4")
+# The tag Telegraf sets on each interface row from the ifName column the
+# agent serves, and the name the example gives each interface.
+SNMP_IF_NAME_TAG = "ifName"
+SNMP_IF_NAMES = {index: f"GigabitEthernet0/0/{int(index) - 1}" for index in SNMP_INTERFACES}
 SNMP_MIN_SAMPLES = 3
 # Each interface series has SNMP_MIN_SAMPLES this soon after the first sample.
 SNMP_SAMPLES_WITHIN_S = 30.0
@@ -537,6 +563,7 @@ def telegraf_log_stamp(line: str) -> float | None:
 def snmp_findings(
     telegraf_log: str,
     samples: dict[tuple[str, str], list[tuple[int, float]]],
+    if_names: dict[tuple[str, str], dict[str, list[int]]],
     walk: str,
     golden: str,
     started_s: float,
@@ -548,30 +575,35 @@ def snmp_findings(
     """Every way the snmp row's evidence falls short, in check order; empty
     when all hold.
 
-    Only samples timestamped within [started_s, ended_s] count. In order:
-    Telegraf logged a SNMP_LOADED_INPUTS line naming snmp; no SNMP_ERROR_LINE
-    is stamped after the second of its input's first sample and at least a
-    second before ended_s, or carries no stamp (a poll that began before
-    sonda listened logs its error before the first poll of the same input
-    that succeeds begins, and a sample is stamped when its poll begins; the
-    two inputs poll independently, so one input's first sample says nothing
+    ``if_names`` is the export grouped by series, interface and
+    SNMP_IF_NAME_TAG value (:func:`parse_vm_export_tags`). Only samples
+    timestamped within [started_s, ended_s] count. In order: Telegraf logged
+    a SNMP_LOADED_INPUTS line naming snmp; no SNMP_ERROR_LINE is stamped
+    after the second of its input's first sample and at least a second
+    before ended_s, or carries no stamp (a poll that began before sonda
+    listened logs its error before the first poll of the same input that
+    succeeds begins, and a sample is stamped when its poll begins; the two
+    inputs poll independently, so one input's first sample says nothing
     about the other's polls; an error in the second the run ended may be the
     first poll after sonda stopped). An error's input is the alias in its
     prefix (SNMP_V2C_INPUT, SNMP_V1_INPUT); a series' input is
     :func:`snmp_input_of` it. An error naming no known alias is measured
     from the first sample of any input; an input with no sample, from the
-    run's start; some sample
-    exists (with none, named with SNMP_EXPORT_MATCH, the checks after this
-    one do not run); each SNMP_INTERFACE_SERIES has at least
-    SNMP_MIN_SAMPLES samples for each interface within SNMP_SAMPLES_WITHIN_S
-    of the first sample; SNMP_UPTIME_SERIES has at least SNMP_MIN_SAMPLES
-    samples, each greater than the one before; the flapping interface's
-    ifOperStatus takes every SNMP_OPER_STATUS_CODES value; each
-    SNMP_V1_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES samples for each
-    interface within SNMP_SAMPLES_WITHIN_S of the first sample, and no
-    SNMP_V1_ABSENT_SERIES has any sample; ``walk``, masked, is ``golden``,
-    masked, and ``v1_walk`` is ``v1_golden`` (an empty walk is named as
-    such).
+    run's start; some sample exists (with none, named with
+    SNMP_EXPORT_MATCH, the checks after this one do not run); each
+    SNMP_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES samples for each
+    interface within SNMP_SAMPLES_WITHIN_S of the first sample; every sample
+    of each SNMP_INTERFACE_SERIES and SNMP_V1_INTERFACE_SERIES for each
+    interface is tagged SNMP_IF_NAME_TAG with that interface's SNMP_IF_NAMES
+    name (samples without the tag, or with another value, are named, and so
+    is a series with samples and none so tagged); SNMP_UPTIME_SERIES has at
+    least SNMP_MIN_SAMPLES samples, each greater than the one before; the
+    flapping interface's ifOperStatus takes every SNMP_OPER_STATUS_CODES
+    value; each SNMP_V1_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES
+    samples for each interface within SNMP_SAMPLES_WITHIN_S of the first
+    sample, and no SNMP_V1_ABSENT_SERIES has any sample; ``walk``, masked,
+    is ``golden``, masked, and ``v1_walk`` is ``v1_golden`` (an empty walk
+    is named as such).
     """
     findings: list[str] = []
     loaded = any(
@@ -632,6 +664,26 @@ def snmp_findings(
                     )
 
     every_interface(SNMP_INTERFACE_SERIES)
+
+    for series in SNMP_INTERFACE_SERIES + SNMP_V1_INTERFACE_SERIES:
+        for index in SNMP_INTERFACES:
+            want = SNMP_IF_NAMES[index]
+            tagged = {
+                value: sum(1 for ts in stamps if start_ms <= ts <= end_ms)
+                for value, stamps in if_names.get((series, index), {}).items()
+            }
+            if in_window.get((series, index)) and not tagged.get(want):
+                findings.append(
+                    f'{series}{{index="{index}"}}: no sample tagged '
+                    f'{SNMP_IF_NAME_TAG}="{want}"'
+                )
+            for value, count in sorted(tagged.items()):
+                if value != want and count:
+                    shown = f'{SNMP_IF_NAME_TAG}="{value}"' if value else f"no {SNMP_IF_NAME_TAG}"
+                    findings.append(
+                        f'{series}{{index="{index}"}}: {count} sample(s) tagged {shown}, '
+                        f'want {SNMP_IF_NAME_TAG}="{want}"'
+                    )
 
     uptime = in_window.get((SNMP_UPTIME_SERIES, ""), [])
     if len(uptime) < SNMP_MIN_SAMPLES:
@@ -702,6 +754,7 @@ def verify_snmp_row(
         snmp_findings(
             telegraf_log,
             parse_vm_export(body, label="index"),
+            parse_vm_export_tags(body, SNMP_IF_NAME_TAG),
             walks.v2c,
             goldens[0],
             started_s,
