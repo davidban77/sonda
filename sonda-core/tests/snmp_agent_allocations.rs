@@ -129,6 +129,7 @@ fn allocations_per_event(rt: &tokio::runtime::Runtime, sink: &mut Box<dyn Sink>)
     });
 
     let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| {
         rt.block_on(async {
             sonda_core::schedule::runner::run_with_sink(
@@ -155,6 +156,13 @@ fn allocations_per_event(rt: &tokio::runtime::Runtime, sink: &mut Box<dyn Sink>)
     (allocs as f64 / events as f64, events)
 }
 
+/// One known allocation on this thread reads as one: this binary's counting
+/// allocator is installed.
+#[test]
+fn a_known_allocation_counts_as_one() {
+    counting::assert_count_allocations_counts();
+}
+
 /// Another thread allocating throughout a counted window adds nothing to it,
 /// so this binary's cases can run in parallel.
 #[test]
@@ -174,16 +182,21 @@ fn allocations_on_other_threads_are_not_counted() {
             }
         })
     };
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| {
         go.store(true, Ordering::SeqCst);
         while done.load(Ordering::SeqCst) < OTHER_ALLOCS {
             std::hint::spin_loop();
         }
+        std::hint::black_box(Box::new(1u8));
     });
     other.join().expect("allocating thread panicked");
     // Vacuity guard: the other thread did allocate, all of it inside the window.
     assert_eq!(done.load(Ordering::SeqCst), OTHER_ALLOCS);
-    assert_eq!(allocs, 0, "another thread's allocations were counted");
+    assert_eq!(
+        allocs, 1,
+        "only this thread's own allocation is counted, none of the other thread's"
+    );
 }
 
 /// The agent behind a new `snmp_agent` sink on an ephemeral port, built on
@@ -213,6 +226,7 @@ fn snmp_agent_surcharge_over_a_plain_sink_is_zero() {
         delivered.load(Ordering::Relaxed) as u64 >= plain_events,
         "the plain sink received every event through write"
     );
+    assert!(plain_cost > 0.0, "the plain sink's figure was counted");
 
     let (mut sink, agent) = agent_sink(&rt);
     let (agent_cost, _) = allocations_per_event(&rt, &mut sink);
@@ -282,6 +296,7 @@ fn publish_cost(
         write(sink, event);
     }
     let mut written = 0usize;
+    counting::assert_count_allocations_counts();
     let ((), allocs) = count_allocations(|| {
         for event in events.iter().cycle().take(PUBLISHES) {
             write(sink, event);
@@ -309,6 +324,7 @@ fn direct_publishes_cost_nothing_over_a_plain_sink(#[case] series: usize) {
     });
     let plain_cost = publish_cost(&rt, &mut plain, &events);
     assert!(delivered.load(Ordering::Relaxed) >= PUBLISHES);
+    assert!(plain_cost > 0.0, "the plain sink's figure was counted");
 
     let (mut sink, agent) = agent_sink(&rt);
     let agent_cost = publish_cost(&rt, &mut sink, &events);

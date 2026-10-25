@@ -42,6 +42,13 @@ fn count_allocations(body: impl FnOnce()) -> usize {
     counting::count_allocations(body).1
 }
 
+/// One known allocation on this thread reads as one: this binary's counting
+/// allocator is installed.
+#[test]
+fn a_known_allocation_counts_as_one() {
+    counting::assert_count_allocations_counts();
+}
+
 /// Another thread allocating throughout a counted window adds nothing to it,
 /// so this binary's cases can run in parallel.
 #[test]
@@ -61,16 +68,21 @@ fn allocations_on_other_threads_are_not_counted() {
             }
         })
     };
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         go.store(true, Ordering::SeqCst);
         while done.load(Ordering::SeqCst) < OTHER_ALLOCS {
             std::hint::spin_loop();
         }
+        std::hint::black_box(Box::new(1u8));
     });
     other.join().expect("allocating thread panicked");
     // Vacuity guard: the other thread did allocate, all of it inside the window.
     assert_eq!(done.load(Ordering::SeqCst), OTHER_ALLOCS);
-    assert_eq!(allocs, 0, "another thread's allocations were counted");
+    assert_eq!(
+        allocs, 1,
+        "only this thread's own allocation is counted, none of the other thread's"
+    );
 }
 
 /// Sink that does not opt in, so it keeps the plain byte path.
@@ -169,6 +181,7 @@ fn run_cost(encoder: EncoderConfig) -> RunCost {
     let once = {
         let event = event_with(&[("device", "rtr-1"), ("ifIndex", "3")], 0.0);
         let mut buf = Vec::with_capacity(256);
+        counting::assert_count_allocations_counts();
         count_allocations(|| {
             let built = sonda_core::encoder::create_encoder(&encoder).expect("the encoder builds");
             built
@@ -197,6 +210,7 @@ fn run_cost(encoder: EncoderConfig) -> RunCost {
     delivered.store(0, Ordering::Relaxed);
     bytes.store(0, Ordering::Relaxed);
     let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         rt.block_on(async {
             sonda_core::schedule::runner::run_with_sink(
@@ -251,6 +265,7 @@ fn snmp_encoder_surcharge_over_the_plain_path_is_zero() {
         snmp.bytes_per_event
     );
     let (plain_cost, snmp_cost) = (plain.per_event(), snmp.per_event());
+    assert!(plain_cost > 0.0, "the plain path's figure was counted");
     let surcharge = snmp_cost - plain_cost;
     println!(
         "once per run: prometheus_text {} allocations, snmp {}; per event: \
@@ -297,6 +312,7 @@ fn steady_state_encode_allocates_nothing() {
     let one_record = buf.len();
 
     let mut calls = 0usize;
+    counting::assert_count_allocations_counts();
     let allocs = count_allocations(|| {
         for _ in 0..CALLS {
             buf.clear();
@@ -326,6 +342,7 @@ fn steady_state_encode_allocates_nothing() {
         })
         .collect();
     let mut spike_calls = 0usize;
+    counting::assert_count_allocations_counts();
     let spike_allocs = count_allocations(|| {
         for event in &spiked {
             buf.clear();
