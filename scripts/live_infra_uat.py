@@ -360,8 +360,15 @@ def verify_gnmi_row(
 SNMP_RUN_S = 90.0
 # Telegraf's startup line naming the inputs it loaded.
 SNMP_LOADED_INPUTS = "Loaded inputs:"
-# The prefix of every error Telegraf's inputs.snmp logs.
-SNMP_ERROR_LINE = "E! [inputs.snmp]"
+# Every error Telegraf's inputs.snmp logs begins "E! [inputs.snmp]", or
+# "E! [inputs.snmp::<alias>]" for an input with an alias.
+SNMP_ERROR_LINE = re.compile(r"E! \[inputs\.snmp(?:::(?P<alias>[^\]]*))?\]")
+# The aliases of examples/telegraf/telegraf-snmp.conf's two inputs.snmp
+# blocks, which poll and fail independently: the SNMPv2c one and the SNMPv1
+# one (whose series are the interface_v1_ ones).
+SNMP_V2C_INPUT = "v2c"
+SNMP_V1_INPUT = "v1"
+SNMP_V1_SERIES_PREFIX = "interface_v1_"
 # The series examples/telegraf/telegraf-snmp.conf has Telegraf write, as
 # VictoriaMetrics names them: the table name + "_" + field, tagged
 # index="<ifIndex>"; and the uptime field of the top level, untagged.
@@ -512,6 +519,11 @@ def walk_finding(walk: str, golden: str, name: str, golden_path: Path) -> str | 
     )
 
 
+def snmp_input_of(series: str) -> str:
+    """The alias of the conf's inputs.snmp block that writes ``series``."""
+    return SNMP_V1_INPUT if series.startswith(SNMP_V1_SERIES_PREFIX) else SNMP_V2C_INPUT
+
+
 def telegraf_log_stamp(line: str) -> float | None:
     """The UTC time, in seconds since the epoch, that begins a Telegraf log
     line; None when the line carries none."""
@@ -538,11 +550,17 @@ def snmp_findings(
 
     Only samples timestamped within [started_s, ended_s] count. In order:
     Telegraf logged a SNMP_LOADED_INPUTS line naming snmp; no SNMP_ERROR_LINE
-    is stamped after the second of the first sample and at least a second
-    before ended_s, or carries no stamp (a poll that began before sonda
-    listened logs its error before the first poll that succeeds begins,
-    and a sample is stamped when its poll begins; an error in the second
-    the run ended may be the first poll after sonda stopped); some sample
+    is stamped after the second of its input's first sample and at least a
+    second before ended_s, or carries no stamp (a poll that began before
+    sonda listened logs its error before the first poll of the same input
+    that succeeds begins, and a sample is stamped when its poll begins; the
+    two inputs poll independently, so one input's first sample says nothing
+    about the other's polls; an error in the second the run ended may be the
+    first poll after sonda stopped). An error's input is the alias in its
+    prefix (SNMP_V2C_INPUT, SNMP_V1_INPUT); a series' input is
+    :func:`snmp_input_of` it. An error naming no known alias is measured
+    from the first sample of any input; an input with no sample, from the
+    run's start; some sample
     exists (with none, named with SNMP_EXPORT_MATCH, the checks after this
     one do not run); each SNMP_INTERFACE_SERIES has at least
     SNMP_MIN_SAMPLES samples for each interface within SNMP_SAMPLES_WITHIN_S
@@ -571,10 +589,24 @@ def snmp_findings(
     }
     timestamps = [ts for pairs in in_window.values() for ts, _ in pairs]
     first_ms = min(timestamps) if timestamps else None
-    after_s = first_ms // 1000 if first_ms is not None else math.floor(started_s) - 1
+    input_first_ms: dict[str, int] = {}
+    for (series, _), pairs in in_window.items():
+        if pairs:
+            alias = snmp_input_of(series)
+            input_first_ms[alias] = min(input_first_ms.get(alias, pairs[0][0]), pairs[0][0])
+
+    def excused_until_s(first: int | None) -> float:
+        return first // 1000 if first is not None else math.floor(started_s) - 1
+
     for line in telegraf_log.splitlines():
-        if SNMP_ERROR_LINE not in line:
+        error = SNMP_ERROR_LINE.search(line)
+        if error is None:
             continue
+        alias = error.group("alias")
+        if alias in (SNMP_V2C_INPUT, SNMP_V1_INPUT):
+            after_s = excused_until_s(input_first_ms.get(alias))
+        else:
+            after_s = excused_until_s(first_ms)
         stamp = telegraf_log_stamp(line)
         if stamp is None or after_s < stamp <= ended_s - 1:
             findings.append(f"telegraf logged an error while sonda served: {line.strip()}")

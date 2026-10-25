@@ -48,11 +48,32 @@ def telegraf_line(at_s: float, message: str) -> str:
 
 
 def refused(at_s: float) -> str:
+    """An error of the v2c input, as Telegraf 1.40.2 logs it."""
     return telegraf_line(
         at_s,
-        "E! [inputs.snmp] Error in plugin: agent udp://sonda:1161: performing get "
+        "E! [inputs.snmp::v2c] Error in plugin: agent udp://sonda:1161: performing get "
         "on field uptime: error reading from socket: read udp 172.18.0.3:40860->"
         "172.17.0.1:1161: recvfrom: connection refused",
+    )
+
+
+def refused_v1(at_s: float) -> str:
+    """An error of the v1 input, as Telegraf 1.40.2 logs it."""
+    return telegraf_line(
+        at_s,
+        "E! [inputs.snmp::v1] Error in plugin: agent udp://sonda:1161: gathering table "
+        "interface_v1: performing bulk walk for field ifOperStatus: error reading from "
+        "socket: read udp 172.18.0.3:35909->172.17.0.1:1161: recvfrom: connection refused",
+    )
+
+
+def timed_out(at_s: float) -> str:
+    """The v2c input's error for a poll whose retries ran out, as CI logged it."""
+    return telegraf_line(
+        at_s,
+        "E! [inputs.snmp::v2c] Error in plugin: agent udp://sonda:1161: gathering table "
+        "interface: performing bulk walk for field ifOperStatus: request timeout "
+        "(after 3 retries)",
     )
 
 
@@ -62,11 +83,14 @@ def good_log() -> str:
     second the run ended), and nothing else."""
     return (
         telegraf_line(STARTED_S - 600, "I! Loading config: /etc/telegraf/telegraf.conf")
-        + telegraf_line(STARTED_S - 600, "I! Loaded inputs: snmp")
+        + telegraf_line(STARTED_S - 600, "I! Loaded inputs: snmp (2x)")
         + telegraf_line(STARTED_S - 600, "I! Loaded outputs: health influxdb")
         + refused(STARTED_S - 600)
+        + refused_v1(STARTED_S - 600)
         + refused(FIRST_POLL_S)
+        + refused_v1(FIRST_POLL_S)
         + refused(ENDED_S)
+        + refused_v1(ENDED_S)
     )
 
 
@@ -103,28 +127,31 @@ def good_export(
     status=oper_status,
     v1_interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
     v1_fields: tuple[str, ...] = V1_FIELDS,
+    v2c_from_s: float = FIRST_POLL_S,
 ) -> bytes:
     """What VictoriaMetrics exports for a run in which Telegraf read every
     poll: each field of each of ``interfaces``, each of ``v1_fields`` of each
-    of ``v1_interfaces`` in the interface_v1 table, and snmp_uptime."""
+    of ``v1_interfaces`` in the interface_v1 table, and snmp_uptime. The v2c
+    input's series (all but interface_v1) start at ``v2c_from_s``."""
     times = poll_times()
+    v2c_times = poll_times(first_s=v2c_from_s)
     lines = []
-    for table, indices, fields in (
-        ("interface", interfaces, FIELDS),
-        ("interface_v1", v1_interfaces, v1_fields),
+    for table, indices, fields, polls in (
+        ("interface", interfaces, FIELDS, v2c_times),
+        ("interface_v1", v1_interfaces, v1_fields, times),
     ):
         for index in indices:
             for field in fields:
                 if field == "ifOperStatus":
-                    samples = [(at, status(index, at)) for at in times]
+                    samples = [(at, status(index, at)) for at in polls]
                 else:
-                    samples = [(at, 125_000.0 * (at - STARTED_S)) for at in times]
+                    samples = [(at, 125_000.0 * (at - STARTED_S)) for at in polls]
                 lines.append(export_line(f"{table}_{field}", {"index": index}, samples))
     lines.append(
         export_line(
             uat.SNMP_UPTIME_SERIES,
             {"hostname": "rtr-core-01"},
-            [(at, float(uptime(at))) for at in times],
+            [(at, float(uptime(at))) for at in v2c_times],
         )
     )
     return "\n".join(lines).encode()
@@ -240,7 +267,7 @@ class SnmpFindingsTests(unittest.TestCase):
         )
 
     def test_no_loaded_inputs_line_is_named(self) -> None:
-        log = good_log().replace("I! Loaded inputs: snmp", "I! Loaded inputs: cpu")
+        log = good_log().replace("I! Loaded inputs: snmp (2x)", "I! Loaded inputs: cpu")
         self.assertEqual(
             findings(log=log),
             ["telegraf log has no 'Loaded inputs:' line naming snmp"],
@@ -260,6 +287,53 @@ class SnmpFindingsTests(unittest.TestCase):
             [f"telegraf logged an error while sonda served: {error.strip()}"],
         )
 
+    def test_a_v2c_timeout_after_the_first_v1_sample_is_excused(self) -> None:
+        # The two inputs poll independently. The v1 input answers first; the
+        # v2c input's poll that began before sonda listened times out after
+        # it, and the v2c input's own first sample comes after that.
+        export = good_export(v2c_from_s=FIRST_POLL_S + 4)
+        error = timed_out(FIRST_POLL_S + 3)
+        self.assertEqual(findings(log=good_log() + error, export=export), [])
+        # Guard: the same moment is not excused for the v1 input, whose first
+        # sample came earlier.
+        late_v1 = refused_v1(FIRST_POLL_S + 3)
+        self.assertEqual(
+            findings(log=good_log() + late_v1, export=export),
+            [f"telegraf logged an error while sonda served: {late_v1.strip()}"],
+        )
+
+    def test_a_v2c_error_after_its_own_first_sample_is_named(self) -> None:
+        export = good_export(v2c_from_s=FIRST_POLL_S + 4)
+        error = timed_out(FIRST_POLL_S + 5)
+        self.assertEqual(
+            findings(log=good_log() + error, export=export),
+            [f"telegraf logged an error while sonda served: {error.strip()}"],
+        )
+
+    def test_an_error_naming_no_known_alias_is_measured_from_the_first_sample(self) -> None:
+        export = good_export(v2c_from_s=FIRST_POLL_S + 4)
+        error = telegraf_line(
+            FIRST_POLL_S + 3, "E! [inputs.snmp] Error in plugin: request timeout"
+        )
+        self.assertEqual(
+            findings(log=good_log() + error, export=export),
+            [f"telegraf logged an error while sonda served: {error.strip()}"],
+        )
+
+    def test_an_input_with_no_sample_has_its_errors_counted_from_the_start(self) -> None:
+        export = good_export(v1_interfaces=())
+        found = findings(log=good_log(), export=export)
+        self.assertEqual(
+            found[0], f"telegraf logged an error while sonda served: {refused_v1(FIRST_POLL_S).strip()}"
+        )
+        self.assertEqual(len(found), 1 + len(uat.SNMP_V1_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES))
+
+    def test_every_series_belongs_to_the_input_that_writes_it(self) -> None:
+        for series in uat.SNMP_V1_INTERFACE_SERIES + uat.SNMP_V1_ABSENT_SERIES:
+            self.assertEqual(uat.snmp_input_of(series), uat.SNMP_V1_INPUT, series)
+        for series in uat.SNMP_INTERFACE_SERIES + (uat.SNMP_UPTIME_SERIES,):
+            self.assertEqual(uat.snmp_input_of(series), uat.SNMP_V2C_INPUT, series)
+
     def test_an_error_a_second_after_the_first_sample_is_named(self) -> None:
         self.assertEqual(len(findings(log=good_log() + refused(FIRST_POLL_S + 1))), 1)
 
@@ -268,12 +342,13 @@ class SnmpFindingsTests(unittest.TestCase):
 
     def test_no_sample_stops_the_checks_after_it(self) -> None:
         # With no first sample, every error stamped from the run's start
-        # counts: here the one a second in.
+        # counts: here the two a second in.
         found = findings(export=b"")
         self.assertEqual(
             found,
             [
                 f"telegraf logged an error while sonda served: {refused(FIRST_POLL_S).strip()}",
+                f"telegraf logged an error while sonda served: {refused_v1(FIRST_POLL_S).strip()}",
                 f"no sample matching {uat.SNMP_EXPORT_MATCH} within the run's window",
             ],
         )
@@ -367,7 +442,7 @@ class SnmpFindingsTests(unittest.TestCase):
         self.assertEqual(findings(v1_walk=""), ["the in-container v1 walk printed nothing"])
 
     def test_the_findings_come_in_check_order(self) -> None:
-        log = good_log().replace("Loaded inputs: snmp", "Loaded inputs: cpu") + refused(STARTED_S + 30)
+        log = good_log().replace("Loaded inputs: snmp (2x)", "Loaded inputs: cpu") + refused(STARTED_S + 30)
         export = good_export(
             interfaces=("1", "2", "3"),
             uptime=lambda _: 5,
@@ -501,6 +576,17 @@ class TelegrafConfTests(unittest.TestCase):
         self.assertEqual(len(fields), 12)
         for field in fields:
             self.assertRegex(field["oid"], r"^(\.[0-9]+)+$", field["name"])
+
+    def test_each_block_has_the_alias_the_checker_attributes_errors_by(self) -> None:
+        v2c, v1 = telegraf_conf()["inputs"]["snmp"]
+        self.assertEqual((v2c["alias"], v1["alias"]), (uat.SNMP_V2C_INPUT, uat.SNMP_V1_INPUT))
+        self.assertEqual(v2c["version"], 2)
+        (table,) = v1["table"]
+        self.assertEqual(f"{table['name']}_", uat.SNMP_V1_SERIES_PREFIX)
+        for alias in (uat.SNMP_V2C_INPUT, uat.SNMP_V1_INPUT):
+            match = uat.SNMP_ERROR_LINE.search(f"E! [inputs.snmp::{alias}] Error in plugin: x")
+            self.assertIsNotNone(match, alias)
+            self.assertEqual(match.group("alias"), alias)
 
     def test_the_v1_block_polls_the_same_table_as_v1(self) -> None:
         v2c, v1 = telegraf_conf()["inputs"]["snmp"]
