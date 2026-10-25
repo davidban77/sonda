@@ -537,7 +537,12 @@ mod tests {
     /// A GET of sysUpTime.0 from `name`, at the engine's boots and time
     /// unless `defect` says otherwise, authenticated with `name`'s key when
     /// its flags say so.
-    fn request(engine: &Engine, users: &[LocalizedUser], name: &str, defect: Defect) -> Vec<u8> {
+    fn request(
+        engine: &Engine,
+        users: &[LocalizedUser],
+        name: &str,
+        defects: &[Defect],
+    ) -> Vec<u8> {
         let time = engine.time();
         let mut client = v3::tests::Client {
             engine_id: hex(ENGINE_ID),
@@ -548,43 +553,44 @@ mod tests {
                 user(users, name.as_bytes()).and_then(|u| u.auth.clone()),
             )
         };
-        match defect {
-            Defect::None | Defect::WrongDigest | Defect::ShortDigest => {}
-            Defect::EmptyEngine => client.engine_id.clear(),
-            Defect::ForeignEngine => client.engine_id = hex("80001f8804666f726569676e"),
-            Defect::UnknownUser => client.user = b"stranger".to_vec(),
-            Defect::AuthWithoutKey => {
-                client.key = Some((
-                    AuthProtocol::Sha256,
-                    localize(AuthProtocol::Sha256, b"lab-only-password", &hex(ENGINE_ID)),
-                ))
+        for defect in defects {
+            match defect {
+                Defect::None | Defect::WrongDigest | Defect::ShortDigest => {}
+                Defect::EmptyEngine => client.engine_id.clear(),
+                Defect::ForeignEngine => client.engine_id = hex("80001f8804666f726569676e"),
+                Defect::UnknownUser => client.user = b"stranger".to_vec(),
+                Defect::AuthWithoutKey => {
+                    client.key = Some((
+                        AuthProtocol::Sha256,
+                        localize(AuthProtocol::Sha256, b"lab-only-password", &hex(ENGINE_ID)),
+                    ))
+                }
+                Defect::KeyWithoutAuth => client.key = None,
+                Defect::Privacy => client.privacy = true,
+                Defect::BootsOffByOne => client.boots = 2,
+                Defect::Time151Behind => client.time = time.wrapping_sub(151),
+                Defect::Time151Ahead => client.time = time + 151,
+                Defect::Time150Behind => client.time = time.wrapping_sub(150),
+                Defect::BootsAtMax => client.boots = MAX_BOOTS_OR_TIME,
             }
-            Defect::KeyWithoutAuth => client.key = None,
-            Defect::Privacy => client.privacy = true,
-            Defect::BootsOffByOne => client.boots = 2,
-            Defect::Time151Behind => client.time = time.wrapping_sub(151),
-            Defect::Time151Ahead => client.time = time + 151,
-            Defect::Time150Behind => client.time = time.wrapping_sub(150),
-            Defect::BootsAtMax => client.boots = MAX_BOOTS_OR_TIME,
         }
-        let mut datagram = client.get(0x1234, &["1.3.6.1.2.1.1.3.0"]);
-        match defect {
-            Defect::WrongDigest => {
-                let msg = v3::decode(&datagram).expect("decodes");
-                let at = msg.auth_range.start;
-                datagram[at] ^= 0x01;
-            }
-            Defect::ShortDigest => {
-                datagram = client.get_with_auth_len(0x1234, &["1.3.6.1.2.1.1.3.0"], 12);
-            }
-            _ => {}
+        let mut datagram = if defects.contains(&Defect::ShortDigest) {
+            client.get_with_auth_len(0x1234, &["1.3.6.1.2.1.1.3.0"], 12)
+        } else {
+            client.get(0x1234, &["1.3.6.1.2.1.1.3.0"])
+        };
+        if defects.contains(&Defect::WrongDigest) {
+            let msg = v3::decode(&datagram).expect("decodes");
+            assert!(!msg.auth_range.is_empty(), "a digest to make wrong");
+            let at = msg.auth_range.start;
+            datagram[at] ^= 0x01;
         }
         datagram
     }
 
     /// `verify`'s verdict for `defect` in a request from `name`.
-    fn verdict(engine: &Engine, users: &[LocalizedUser], name: &str, defect: Defect) -> String {
-        let datagram = request(engine, users, name, defect);
+    fn verdict(engine: &Engine, users: &[LocalizedUser], name: &str, defects: &[Defect]) -> String {
+        let datagram = request(engine, users, name, defects);
         let msg = v3::decode(&datagram).expect("the request decodes");
         match verify(&msg, &datagram, engine, users) {
             UsmVerdict::Answer {
@@ -644,8 +650,36 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_secs(1000)).await;
         let users = users();
         let clean = if name == "watcher" { "answer watcher unauthenticated" } else { "answer telegraf authenticated" };
-        assert_eq!(verdict(&engine, &users, name, Defect::None), clean, "the request without its defect");
-        assert_eq!(verdict(&engine, &users, name, defect), expected);
+        assert_eq!(verdict(&engine, &users, name, &[Defect::None]), clean, "the request without its defect");
+        assert_eq!(verdict(&engine, &users, name, &[defect]), expected);
+    }
+
+    /// A request failing two consecutive checks is decided by the earlier
+    /// one, for each pair in `verify`'s order. Guard: the second defect
+    /// alone, from a user it applies to, gets its own verdict, so the pair's
+    /// verdict is the order's.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::engine_before_privacy(    "telegraf", [Defect::ForeignEngine,  Defect::Privacy],       "report UnknownEngineIds unauthenticated",     ("telegraf", "report UnsupportedSecLevels unauthenticated"))]
+    #[case::privacy_before_user(      "telegraf", [Defect::Privacy,        Defect::UnknownUser],   "report UnsupportedSecLevels unauthenticated", ("telegraf", "report UnknownUserNames unauthenticated"))]
+    #[case::user_before_level(        "watcher",  [Defect::UnknownUser,    Defect::AuthWithoutKey], "report UnknownUserNames unauthenticated",    ("watcher",  "report UnsupportedSecLevels unauthenticated"))]
+    #[case::level_before_digest(      "watcher",  [Defect::AuthWithoutKey, Defect::WrongDigest],   "report UnsupportedSecLevels unauthenticated", ("telegraf", "report WrongDigests unauthenticated"))]
+    #[case::digest_before_time_window("telegraf", [Defect::WrongDigest,    Defect::Time151Behind], "report WrongDigests unauthenticated",         ("telegraf", "report NotInTimeWindows authenticated"))]
+    #[tokio::test(start_paused = true)]
+    async fn verify_decides_by_the_first_failing_check(
+        #[case] name: &str,
+        #[case] defects: [Defect; 2],
+        #[case] expected: &str,
+        #[case] second_alone: (&str, &str),
+    ) {
+        let engine = engine();
+        tokio::time::advance(std::time::Duration::from_secs(1000)).await;
+        let users = users();
+        let (second_name, second_verdict) = second_alone;
+        assert_eq!(verdict(&engine, &users, second_name, &defects[1..]), second_verdict);
+        assert_ne!(second_verdict, expected);
+        assert_eq!(verdict(&engine, &users, name, &defects[..1]), expected);
+        assert_eq!(verdict(&engine, &users, name, &defects), expected);
     }
 
     /// An engine whose boots reached 2³¹ − 1 refuses a request carrying the

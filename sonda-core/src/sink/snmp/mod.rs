@@ -170,8 +170,8 @@ pub struct SnmpAgentConfig {
 /// supported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct UsmUser {
     /// The user name (`securityName`), 1 to 32 octets.
     pub name: String,
@@ -186,8 +186,8 @@ pub struct UsmUser {
 /// `Debug` prints `"***"` in place of the password.
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct UsmAuth {
     /// The HMAC the user's requests are authenticated with.
     pub protocol: AuthProtocol,
