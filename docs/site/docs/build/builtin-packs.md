@@ -123,6 +123,13 @@ Every metric carries an `snmp:` hint: its IF-MIB column, indexed by the `ifIndex
 | `ifInErrors` | `1.3.6.1.2.1.2.2.1.14.{ifIndex}` | `counter32` |
 | `ifOutErrors` | `1.3.6.1.2.1.2.2.1.20.{ifIndex}` | `counter32` |
 
+The pack's `snmp_label_columns` serve two labels as ifXTable columns, so a poller reads each interface's name and description beside its counters. They fill the encoder's [`label_columns:`](encoders.md#label-columns):
+
+| Label | OID |
+|-------|-----|
+| `ifName` | `1.3.6.1.2.1.31.1.1.1.1.{ifIndex}` |
+| `ifAlias` | `1.3.6.1.2.1.31.1.1.1.18.{ifIndex}` |
+
 ```yaml
 version: 2
 kind: runnable
@@ -131,7 +138,7 @@ defaults:
   rate: 1
   encoder:
     type: snmp
-    drop_labels: [ifName, ifAlias, job]
+    drop_labels: [job]
   sink:
     type: snmp_agent
     listen: 0.0.0.0:1161
@@ -142,7 +149,7 @@ scenarios:
     labels: { device: rtr-edge-01, ifIndex: 1, ifName: Ethernet1 }
 ```
 
-`ifHCInOctets` on interface 1 is served at `1.3.6.1.2.1.31.1.1.1.6.1` as a `Counter64`. Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc and `device` the agent label, so `ifName`, `ifAlias` and `job` are dropped. An `oids:` or `types:` entry in the encoder block wins over the hint. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) runs it for four interfaces, polled by [Telegraf](sinks.md#snmp-telegraf).
+`ifHCInOctets` on interface 1 is served at `1.3.6.1.2.1.31.1.1.1.6.1` as a `Counter64`, and its name at `1.3.6.1.2.1.31.1.1.1.1.1` as the string `Ethernet1`. Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` the agent label, `ifName` and `ifAlias` label columns, so only `job` is dropped. An `oids:`, `types:` or `label_columns:` entry in the encoder block wins over the pack's. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) runs it for four interfaces, polled by [Telegraf](sinks.md#snmp-telegraf).
 
 ## Change one metric without editing the pack
 

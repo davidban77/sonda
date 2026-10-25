@@ -6,13 +6,16 @@
 # dashboards and alert rules.
 #
 # Each metric carries an `snmp:` hint with its IF-MIB column and SNMP type,
-# indexed by the ifIndex label, so a scenario that encodes this pack with the
-# snmp encoder needs no `oids:` or `types:` of its own:
+# indexed by the ifIndex label, and `snmp_label_columns` serves the ifName and
+# ifAlias labels as their ifXTable columns, so a scenario that encodes this
+# pack with the snmp encoder needs no `oids:`, `types:` or `label_columns:`
+# of its own:
 #
-#   encoder: { type: snmp, drop_labels: [ifName, ifAlias, job] }
+#   encoder: { type: snmp, drop_labels: [job] }
 #
-# Entries the scenario's encoder block does write in `oids:` or `types:` win
-# over the hints. Under any other encoder the hints are not used.
+# Entries the scenario's encoder block does write in `oids:`, `types:` or
+# `label_columns:` win over the pack's. Under any other encoder they are not
+# used.
 #
 # ifOperStatus is an enum code: 1 up, 2 down.
 
@@ -28,6 +31,10 @@ shared_labels:
   ifAlias: ""
   ifIndex: ""
   job: snmp
+
+snmp_label_columns:
+  ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"
+  ifAlias: "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"
 
 metrics:
   - name: ifOperStatus

@@ -337,6 +337,7 @@ Pair this encoder with the `snmp_agent` sink. Each takes only the other.
 |-----------|------|----------|---------|-------------|
 | `oids` | map | yes, an entry for every metric | -- | OID template per metric, keyed by exact metric name. See [OID templates](#oid-templates). |
 | `types` | map | no | `{}` | Per-metric value type keyed by exact metric name. Unlisted metrics are `gauge32`. See [SNMP value types](#snmp-value-types). |
+| `label_columns` | map | no | `{}` | OID template per label whose value the agent serves as a string column, keyed by label. See [Label columns](#label-columns). |
 | `agent_label` | string | no | `"device"` | Label that names the device. It needs no placeholder and is never part of an OID. |
 | `drop_labels` | list of strings | no | `[]` | Labels deliberately left out of the OID. |
 
@@ -361,6 +362,25 @@ encoder:
 
 With that block, `ifHCInOctets{device="rtr-core-01", ifIndex="3", job="snmp"}` is the instance `1.3.6.1.2.1.31.1.1.1.6.3` with a Counter64 value. `device` is the agent label and `job` is dropped, so neither changes the OID.
 
+### Label columns
+
+A label can be served as a column of its own: its value, an OCTET STRING, at an OID rendered from the same index labels as the metrics, which is how IF-MIB gives each interface a name beside its counters:
+
+```yaml title="ifName and ifAlias served beside the counters"
+encoder:
+  type: snmp
+  oids:
+    ifHCInOctets: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"
+  types:
+    ifHCInOctets: counter64
+  label_columns:
+    ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"
+    ifAlias: "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"
+  drop_labels: [job]
+```
+
+With that block, `ifHCInOctets{device="rtr-core-01", ifIndex="3", ifName="GigabitEthernet0/0/2", job="snmp"}` serves `1.3.6.1.2.1.31.1.1.1.6.3` as a Counter64 and `1.3.6.1.2.1.31.1.1.1.1.3` as the string `GigabitEthernet0/0/2`. A label named in `label_columns` needs no placeholder and no `drop_labels` entry, and must be a static label of the entry, set in `labels` or a pack's shared labels: series that differ only in a label-column label share the metric's OID, so a `dynamic_labels` or `cardinality_spikes` label, or a label the entry does not have, is refused. Each template is a string and follows the [OID template](#oid-templates) rules, and uses only placeholders that every `oids:` template uses. The agent holds a column's instance while any series carrying it is live (see [the `snmp_agent` sink](sinks.md#snmp_agent)).
+
 ### OIDs and types from a pack
 
 A pack's metrics can carry an `snmp:` hint, an OID template and a value type:
@@ -375,30 +395,35 @@ metrics:
       type: counter64
 ```
 
-When a pack entry's encoder is `snmp`, each hint fills `oids:` and `types:` for its metric. Your entries win: an `oids:` entry for a metric replaces its hint's OID, a `types:` entry its hint's type, each on its own. Under any other encoder the hints are not used.
+When a pack entry's encoder is `snmp`, each hint fills `oids:` and `types:` for its metric, and the pack's `snmp_label_columns` map fills `label_columns:`. Your entries win: an `oids:` entry for a metric replaces its hint's OID, a `types:` entry its hint's type, a `label_columns:` entry the pack's template for that label, each on its own. Under any other encoder the hints are not used.
 
 ### OID templates
 
-- A template is the object's OID in dotted decimal, without a leading dot, followed by one `{label}` placeholder per index arc: `1.3.6.1.2.1.2.2.1.8.{ifIndex}`.
+- A template is the object's OID in dotted decimal, without a leading dot, followed by its index: one or more placeholders, `{label}` or `{label:str}`: `1.3.6.1.2.1.2.2.1.8.{ifIndex}`.
 - A template is a string. Quote it: an unquoted value such as `1.30` is a YAML number, which would read as `1.3`, and is refused with the field named.
 - Placeholders are the last arcs. A literal arc after a placeholder is an error.
-- The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs.
+- The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs, counting a `{label:str}` placeholder as two, and so does every OID it renders.
 - A template with no placeholder is a scalar and must end in `.0`, its one instance: `1.3.6.1.4.1.8072.9999.1.1.0` is the instance of the scalar `1.3.6.1.4.1.8072.9999.1.1`.
-- A placeholder renders its label's value as one arc. The value must be an unsigned 32-bit integer written in decimal, without a sign or leading zeros: `3`, not `03`. `{label:str}` and any other form are refused.
-- No template may render an OID under `1.3.6.1.2.1.1`, the system group, which the agent serves itself.
+- A `{label}` placeholder renders its label's value as one arc. The value must be an unsigned 32-bit integer written in decimal, without a sign or leading zeros: `3`, not `03`.
+- A `{label:str}` placeholder renders its label's value as a string index: its length in bytes, then one arc per byte. `GigabitEthernet0/0/0` is `20.71.105.103.97.98.105.116.69.116.104.101.114.110.101.116.48.47.48.47.48`. Any value but the empty string renders; an event with an empty one is rejected. Any other `{label:...}` form is refused.
+- No template, in `oids:` or `label_columns:`, may render an OID under `1.3.6.1.2.1.1`, the system group, which the agent serves itself.
 
 A scenario file is refused, with the metric and the label named, when any of these do not hold for an entry:
 
 - Every metric the entry emits has an `oids:` entry, from the encoder block or a pack hint.
 - Every placeholder names a key of the entry's `labels` or `dynamic_labels`. A `cardinality_spikes` label cannot be a placeholder: events carry it only while its window is open.
-- Every value a placeholder's label can take is an arc: its static value, every `values:` entry of a dynamic label, and every value of a `counter` dynamic label or `counter` cardinality spike on it. A counter's values are its prefix followed by a number, and the default prefix (`<label>_`) is not a number, so set `prefix: ""`. A `random` cardinality spike on a placeholder's label is refused.
-- Every label key of the entry, from `labels`, `dynamic_labels` and `cardinality_spikes`, is a placeholder, the `agent_label`, or listed in `drop_labels`. Otherwise series that differ only in that label would share one OID.
-- No two metrics can render the same OID for the entry. Two templates can when they have the same number of arcs and the arcs at every position can be equal:
+- Every placeholder of a `label_columns` template is a placeholder of every `oids:` template.
+- Every `label_columns` label is a static label of the entry, not a `dynamic_labels` or `cardinality_spikes` label.
+- Every value the label of a `{label}` placeholder can take is an arc: its static value, every `values:` entry of a dynamic label, and every value of a `counter` dynamic label or `counter` cardinality spike on it. A counter's values are its prefix followed by a number, and the default prefix (`<label>_`) is not a number, so set `prefix: ""`. A `random` cardinality spike on such a label is refused. A `{label:str}` placeholder takes any value.
+- Every label key of the entry, from `labels`, `dynamic_labels` and `cardinality_spikes`, is a placeholder, a `label_columns` label, the `agent_label`, or listed in `drop_labels`. Otherwise series that differ only in that label would share one OID. Series that differ only in a `label_columns` label do share the metric's OID, which is why that label must be static.
+- No two templates can render the same OID for the entry: its metric's template and each `label_columns` template are compared with each other and with every other `oids:` template. Two templates can when they have the same number of arcs and the arcs at every position can be equal:
     - two numbers when they are the same number;
     - a number and a placeholder when the number is one of the values the placeholder's label takes;
     - two placeholders when their labels share a value.
 
-    A label's values are its static value, or every entry of a `values` dynamic label. A `counter` dynamic label or `counter` cardinality spike counts as every number, a `random` cardinality spike as only the values outside its window, and a label the entry does not have as none. `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` is refused when `ifIndex` is `0` or takes `0` among its `values`; the refusal names both metrics, the OID and the label values that render it.
+    A label's values are its static value, every entry of a `values` dynamic label, and the values of a `counter` dynamic label or `counter` cardinality spike: its prefix followed by `0` to `cardinality - 1`, with a spike's values outside its window as well. A label the entry does not have has none. `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` is refused when `ifIndex` is `0` or takes `0` among its values; the refusal names both templates, the OID and the label values that render it.
+
+    When either template has a `{label:str}` placeholder, the two can render the same OID exactly when one's object OID equals or begins with the other's: `1.3.6.1.4.1.8072.9999.3.1.{ifName:str}` and `1.3.6.1.4.1.8072.9999.3.2.{ifName:str}` are accepted, `1.3.6.1.4.1.8072.9999.3.{ifName:str}` beside either is refused.
 
 Histogram, summary and logs entries refuse both this encoder and the `snmp_agent` sink.
 

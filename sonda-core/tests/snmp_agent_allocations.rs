@@ -247,20 +247,62 @@ fn snmp_agent_surcharge_over_a_plain_sink_is_zero() {
     drop(sink);
 }
 
+/// What a series' first record costs through the `snmp_agent` sink when it
+/// carries an `ifName` column, encode and write together, printed as a
+/// figure and not bounded: the sink decodes and stores the instance and the
+/// column's instance once each.
+#[test]
+fn a_first_record_with_a_label_column_is_measured() {
+    let rt = current_thread_runtime();
+    let (mut sink, agent) = agent_sink(&rt);
+    let encoder = SnmpEncoder::new(&column_encoder_config()).expect("a valid encoder");
+    let events = interface_events(1, true);
+    let mut buf = Vec::with_capacity(4096);
+    counting::assert_count_allocations_counts();
+    let ((), allocs) = count_allocations(|| {
+        encoder
+            .encode_metric(&events[0], &mut buf)
+            .expect("encodes");
+        rt.block_on(sink.write_metric_event(&events[0], &buf))
+            .expect("the write succeeds");
+    });
+    // Vacuity guard: the record carried the column and the agent took both.
+    assert_eq!(buf[1], 1, "one companion");
+    assert_eq!(agent.instance_count(), 2, "the instance and its ifName");
+    println!("first record with one label column, encode and write: {allocs} allocations");
+    drop(sink);
+}
+
 /// Publishes [`publish_cost`] counts, after its warm-up.
 const PUBLISHES: usize = 10_000;
 
+/// [`encoder_config`] with `ifName` served as a column.
+fn column_encoder_config() -> SnmpEncoderConfig {
+    SnmpEncoderConfig {
+        label_columns: HashMap::from([(
+            "ifName".to_string(),
+            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+        )]),
+        ..encoder_config()
+    }
+}
+
 /// `series` events on distinct interfaces, with values that differ per
-/// event, built before any counted window.
-fn interface_events(series: usize) -> Vec<MetricEvent> {
+/// event, each named with `ifName` when `named`, built before any counted
+/// window.
+fn interface_events(series: usize, named: bool) -> Vec<MetricEvent> {
     (0..series)
         .map(|i| {
             let if_index = (i + 1).to_string();
+            let if_name = format!("GigabitEthernet0/0/{i}");
+            let mut labels = vec![("device", "rtr-1"), ("ifIndex", if_index.as_str())];
+            if named {
+                labels.push(("ifName", if_name.as_str()));
+            }
             MetricEvent::with_timestamp(
                 "ifHCInOctets".to_string(),
                 (i * 1_000) as f64,
-                Labels::from_pairs(&[("device", "rtr-1"), ("ifIndex", &if_index)])
-                    .expect("valid labels"),
+                Labels::from_pairs(&labels).expect("valid labels"),
                 UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             )
             .expect("a valid event")
@@ -272,13 +314,14 @@ fn interface_events(series: usize) -> Vec<MetricEvent> {
 /// in all, after a warm-up of two writes per event: through
 /// [`Sink::write_metric_event`] when the sink takes metric events, else
 /// through [`Sink::write`], as the runner calls them. Each event is encoded
-/// into one reused buffer before its write.
+/// with `config` into one reused buffer before its write.
 fn publish_cost(
     rt: &tokio::runtime::Runtime,
     sink: &mut Box<dyn Sink>,
     events: &[MetricEvent],
+    config: &SnmpEncoderConfig,
 ) -> f64 {
-    let encoder = SnmpEncoder::new(&encoder_config()).expect("a valid encoder");
+    let encoder = SnmpEncoder::new(config).expect("a valid encoder");
     let mut buf = Vec::with_capacity(4096);
     let mut write = |sink: &mut Box<dyn Sink>, event: &MetricEvent| {
         buf.clear();
@@ -310,31 +353,42 @@ fn publish_cost(
 
 /// Over 10 000 publishes after a warm-up of two per instance, the
 /// `snmp_agent` sink allocates per event what a plain sink does, for a sink
-/// publishing one instance and for one publishing two in turn.
+/// publishing one instance and for one publishing two in turn, with and
+/// without an `ifName` column: the column's instance arrives with the
+/// series' first record and costs nothing after it.
 #[rstest::rstest]
-#[case::one_instance(1)]
-#[case::two_instances(2)]
-fn direct_publishes_cost_nothing_over_a_plain_sink(#[case] series: usize) {
+#[case::one_instance(1, false)]
+#[case::two_instances(2, false)]
+#[case::one_instance_with_a_label_column(1, true)]
+#[case::two_instances_with_a_label_column(2, true)]
+fn direct_publishes_cost_nothing_over_a_plain_sink(#[case] series: usize, #[case] named: bool) {
     let rt = current_thread_runtime();
-    let events = interface_events(series);
+    let events = interface_events(series, named);
+    let config = if named {
+        column_encoder_config()
+    } else {
+        encoder_config()
+    };
 
     let delivered = Arc::new(AtomicUsize::new(0));
     let mut plain: Box<dyn Sink> = Box::new(PlainSink {
         delivered: Arc::clone(&delivered),
     });
-    let plain_cost = publish_cost(&rt, &mut plain, &events);
+    let plain_cost = publish_cost(&rt, &mut plain, &events, &config);
     assert!(delivered.load(Ordering::Relaxed) >= PUBLISHES);
     assert!(plain_cost > 0.0, "the plain sink's figure was counted");
 
     let (mut sink, agent) = agent_sink(&rt);
-    let agent_cost = publish_cost(&rt, &mut sink, &events);
-    // Vacuity guard: every event reached the agent as its own instance.
-    assert_eq!(agent.instance_count(), series);
+    let agent_cost = publish_cost(&rt, &mut sink, &events, &config);
+    // Vacuity guard: every event reached the agent as its own instance, with
+    // its ifName column's instance when named.
+    let per_series = if named { 2 } else { 1 };
+    assert_eq!(agent.instance_count(), series * per_series);
 
     let surcharge = agent_cost - plain_cost;
     println!(
-        "allocations per publish, {series} instance(s): plain {plain_cost:.4}, \
-         snmp_agent {agent_cost:.4}, surcharge {surcharge:.4}"
+        "allocations per publish, {series} instance(s), label column {named}: plain \
+         {plain_cost:.4}, snmp_agent {agent_cost:.4}, surcharge {surcharge:.4}"
     );
     assert!(
         surcharge < 0.01,

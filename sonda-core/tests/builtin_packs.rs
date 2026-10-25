@@ -751,9 +751,33 @@ fn every_telegraf_snmp_metric_carries_its_if_mib_hint() {
     assert_eq!(hints, TELEGRAF_SNMP_HINTS);
 }
 
+/// The labels `telegraf_snmp_interface` serves as IF-MIB columns, and the
+/// column of each, in label order.
+const TELEGRAF_SNMP_LABEL_COLUMNS: [(&str, &str); 2] = [
+    ("ifAlias", "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"),
+    ("ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"),
+];
+
+/// `telegraf_snmp_interface` serves `ifName` and `ifAlias` as ifXTable
+/// columns. Runs without the `snmp` feature too.
+#[test]
+fn telegraf_snmp_interface_serves_if_name_and_if_alias_as_columns() {
+    let pack = builtin::find("telegraf_snmp_interface").expect("the pack is embedded");
+    let def = builtin::parse_pack(pack).expect("the pack parses");
+    assert_eq!(sonda_core::packs::validate_pack(&def), Ok(()));
+    let mut columns: Vec<(&str, &str)> = def
+        .snmp_label_columns
+        .iter()
+        .map(|(label, oid)| (label.as_str(), oid.as_str()))
+        .collect();
+    columns.sort();
+    assert_eq!(columns, TELEGRAF_SNMP_LABEL_COLUMNS);
+}
+
 /// `examples/snmp-telegraf.yaml` expands the pack under an snmp encoder
-/// that writes no `oids:` or `types:`: every entry's encoder gets the five
-/// hints, and the file validates with the example's labels.
+/// that writes no `oids:`, `types:` or `label_columns:`: every entry's
+/// encoder gets the five hints and the two label columns, drops only `job`,
+/// and the file validates with the example's labels.
 #[cfg(feature = "snmp")]
 #[test]
 fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
@@ -763,8 +787,8 @@ fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
     let yaml = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()));
     assert!(
-        !yaml.contains("oids:") && !yaml.contains("types:"),
-        "the example names no oids: or types: of its own"
+        !yaml.contains("oids:") && !yaml.contains("types:") && !yaml.contains("label_columns:"),
+        "the example names no oids:, types: or label_columns: of its own"
     );
     let entries = compile_scenario_file(&yaml, &builtin::BuiltinPackResolver::new())
         .unwrap_or_else(|e| panic!("the example compiles: {}", error_chain(&e)));
@@ -795,6 +819,14 @@ fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
         for (name, _, value_type) in TELEGRAF_SNMP_HINTS {
             assert_eq!(cfg.types.get(name), Some(&value_type), "{name}");
         }
+        let mut columns: Vec<(&str, &str)> = cfg
+            .label_columns
+            .iter()
+            .map(|(label, oid)| (label.as_str(), oid.as_str()))
+            .collect();
+        columns.sort();
+        assert_eq!(columns, TELEGRAF_SNMP_LABEL_COLUMNS, "{}", config.name);
+        assert_eq!(cfg.drop_labels, ["job"], "{}", config.name);
     }
     sonda_core::schedule::launch::prepare_entries(entries)
         .unwrap_or_else(|e| panic!("the example validates: {e}"));

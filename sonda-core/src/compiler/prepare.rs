@@ -1008,6 +1008,7 @@ scenarios:
                     snmp: None,
                 },
             ],
+            snmp_label_columns: Default::default(),
         };
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("test_pack", pack);

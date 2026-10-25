@@ -202,6 +202,12 @@ pub fn materialize(
         shared_labels: merge_shared_labels(base, extension),
         metrics,
         deviations: Vec::new(),
+        snmp_label_columns: base
+            .snmp_label_columns
+            .iter()
+            .chain(&extension.snmp_label_columns)
+            .map(|(label, template)| (label.clone(), template.clone()))
+            .collect(),
     })
 }
 
@@ -252,6 +258,7 @@ mod tests {
             shared_labels: None,
             metrics,
             deviations: Vec::new(),
+            snmp_label_columns: Default::default(),
         }
     }
 
@@ -373,6 +380,50 @@ mod tests {
         let out = materialize(&ext, &base).expect("must materialize");
         assert_eq!(constant_of(&out.metrics[0]), 1.0, "user untouched");
         assert_eq!(constant_of(&out.metrics[1]), 99.0, "idle deviated");
+    }
+
+    #[test]
+    fn the_extensions_snmp_label_columns_win_over_the_bases() {
+        let mut base = pack("base", vec![spec("a", None, 1.0)]);
+        base.snmp_label_columns = HashMap::from([
+            (
+                "ifName".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+            ),
+            (
+                "ifAlias".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+            ),
+        ]);
+        let mut ext = pack("ext", vec![]);
+        ext.snmp_label_columns = HashMap::from([
+            (
+                "ifAlias".to_string(),
+                "1.3.6.1.4.1.8072.9999.3.18.{ifIndex}".to_string(),
+            ),
+            (
+                "ifDescr".to_string(),
+                "1.3.6.1.2.1.2.2.1.2.{ifIndex}".to_string(),
+            ),
+        ]);
+        let out = materialize(&ext, &base).expect("materializes");
+        assert_eq!(
+            out.snmp_label_columns,
+            HashMap::from([
+                (
+                    "ifName".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string()
+                ),
+                (
+                    "ifAlias".to_string(),
+                    "1.3.6.1.4.1.8072.9999.3.18.{ifIndex}".to_string()
+                ),
+                (
+                    "ifDescr".to_string(),
+                    "1.3.6.1.2.1.2.2.1.2.{ifIndex}".to_string()
+                ),
+            ])
+        );
     }
 
     #[test]

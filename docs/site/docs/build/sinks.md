@@ -760,6 +760,8 @@ The agent serves the system group and every instance its entries publish, in OID
 
 An instance leaves the agent when the last scenario publishing it stops (scenarios of one scenario file can publish the same OID), and at no other time: a series that stops changing keeps its latest value, as a stalled counter does on a device. Once it has left, a walk skips it and a request for it answers `noSuchInstance`.
 
+A [label column](encoders.md#label-columns) is served the same way. Its instance, such as `ifName.1`, arrives with the first value of the first series that carries it and stays while any series carrying it is live: `ifName.1` stays while any metric of interface 1 is published and leaves with the last. A label column's label is a static label of each entry, so the series of one entry agree on its value; entries that give one index different values share the instance, and the last one written is served. Another run's label column is owned like any other instance.
+
 ### Requests { #snmp-requests }
 
 The agent answers SNMPv2c, and SNMPv1 when `versions` lists it. Each datagram is checked in turn: its version, then its community, then its operation. This table is SNMPv2c's; [SNMPv1](#snmp-v1) lists what differs.
@@ -791,7 +793,7 @@ With `versions: [v1, v2c]`, or `[v1]`, the agent also answers SNMPv1, as RFC 115
 | A trap | Dropped. |
 | An answer that does not fit | `tooBig` with the request's OIDs and values unchanged, where SNMPv2c sends none; dropped when even that does not fit. An OID that makes the answer `noSuchName` decides it first. |
 
-A walk over SNMPv1 therefore reads every instance but the `counter64` ones: `ifInErrors` and `ifOperStatus`, not `ifHCInOctets`.
+A walk over SNMPv1 therefore reads every instance but the `counter64` ones: `ifInErrors`, `ifOperStatus` and the `ifName` label column, not `ifHCInOctets`.
 
 ### Ports { #snmp-ports }
 
@@ -809,7 +811,7 @@ snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1    # when versions lists v
 
 ### Telegraf { #snmp-telegraf }
 
-The example below is a router with four interfaces, polled by Telegraf's `inputs.snmp`. The [`telegraf_snmp_interface`](builtin-packs.md#snmp-hints) pack carries each metric's IF-MIB column and SNMP type, so the encoder block names no OIDs. Only the first interface is shown here; the complete scenario is [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml):
+The example below is a router with four interfaces, polled by Telegraf's `inputs.snmp`. The [`telegraf_snmp_interface`](builtin-packs.md#snmp-hints) pack carries each metric's IF-MIB column and SNMP type, and serves `ifName` and `ifAlias` as ifXTable columns, so the encoder block names no OIDs. Only the first interface is shown here; the complete scenario is [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml):
 
 ```yaml title="examples/snmp-telegraf.yaml (excerpt)"
 # sonda:static - excerpt only; an snmp_agent listens for a poller, which the browser playground cannot provide
@@ -820,7 +822,7 @@ defaults:
   rate: 1
   encoder:
     type: snmp
-    drop_labels: [ifName, ifAlias, job]
+    drop_labels: [job]
   sink:
     type: snmp_agent
     listen: 0.0.0.0:1161
@@ -845,9 +847,9 @@ scenarios:
           enum: oper_state
 ```
 
-Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc, `device` is the agent label, and the agent serves no OID for `ifName`, `ifAlias` or `job`, so the encoder drops them. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1 and SNMPv2c.
+Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` is the agent label, `ifName` and `ifAlias` are served at `ifName.1` and `ifAlias.1`, and the agent serves no OID for `job`, so the encoder drops it. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1 and SNMPv2c.
 
-Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK` over SNMPv2c. Every OID is numeric, so Telegraf loads no MIB:
+Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK` over SNMPv2c, tagging each interface with its `ifName` and `ifAlias`. Every OID is numeric, so Telegraf loads no MIB:
 
 ```toml title="examples/telegraf/telegraf-snmp.conf (excerpt)"
 [[inputs.snmp]]
@@ -870,6 +872,11 @@ Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the
     index_as_tag = true
 
     [[inputs.snmp.table.field]]
+      name = "ifName"
+      oid = ".1.3.6.1.2.1.31.1.1.1.1"
+      is_tag = true
+
+    [[inputs.snmp.table.field]]
       name = "ifOperStatus"
       oid = ".1.3.6.1.2.1.2.2.1.8"
 
@@ -878,7 +885,7 @@ Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the
       oid = ".1.3.6.1.2.1.31.1.1.1.6"
 ```
 
-The table's `name` becomes the measurement and each row's index the `index` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets`, and walks the same table again over SNMPv1 as `interface_v1`, with `GETNEXT`. Telegraf writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface. The SNMPv1 table has no `ifHCInOctets` or `ifHCOutOctets` series, because the agent passes over `counter64` instances for an SNMPv1 poller:
+The table's `name` becomes the measurement, each row's index the `index` tag and its `ifName` the `ifName` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets`, tags each row with its `ifAlias` (the example sets none, and an empty tag is left off), and walks the same table again over SNMPv1 as `interface_v1`, with `GETNEXT` and the same tags. Telegraf writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface. The SNMPv1 table has no `ifHCInOctets` or `ifHCOutOctets` series, because the agent passes over `counter64` instances for an SNMPv1 poller:
 
 ```toml title="examples/telegraf/telegraf-snmp.conf (the SNMPv1 block, excerpt)"
 [[inputs.snmp]]
@@ -892,14 +899,19 @@ The table's `name` becomes the measurement and each row's index the `index` tag,
     index_as_tag = true
 
     [[inputs.snmp.table.field]]
+      name = "ifName"
+      oid = ".1.3.6.1.2.1.31.1.1.1.1"
+      is_tag = true
+
+    [[inputs.snmp.table.field]]
       name = "ifOperStatus"
       oid = ".1.3.6.1.2.1.2.2.1.8"
 ```
 
 ```text title="What VictoriaMetrics stores (excerpt)"
-interface_ifOperStatus{db="telegraf",index="1",source="sonda"}
-interface_ifHCInOctets{db="telegraf",index="1",source="sonda"}
-interface_v1_ifOperStatus{db="telegraf",index="1",source="sonda"}
+interface_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+interface_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+interface_v1_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
 snmp_uptime{db="telegraf",hostname="rtr-core-01",source="sonda"}
 ```
 
