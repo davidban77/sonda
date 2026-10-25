@@ -361,6 +361,79 @@ fn steady_state_encode_allocates_nothing() {
     );
 }
 
+/// With `ifName` and `ifAlias` served as columns, a series' first record
+/// carries both companions and every later record none, so steady-state
+/// encode still allocates nothing. What the first record costs is printed as
+/// a figure.
+#[test]
+fn label_columns_leave_steady_state_encode_at_zero() {
+    let encoder = SnmpEncoder::new(&SnmpEncoderConfig {
+        label_columns: HashMap::from([
+            (
+                "ifName".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+            ),
+            (
+                "ifAlias".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+            ),
+        ]),
+        ..snmp_encoder_config()
+    })
+    .expect("encoder config is valid");
+    let event = event_with(
+        &[
+            ("device", "rtr-1"),
+            ("ifIndex", "3"),
+            ("ifName", "GigabitEthernet0/0/2"),
+            ("ifAlias", "uplink to core"),
+        ],
+        1_250_000.0,
+    );
+    let mut buf = Vec::with_capacity(4096);
+    counting::assert_count_allocations_counts();
+    let first_sight = count_allocations(|| {
+        encoder
+            .encode_metric(&event, &mut buf)
+            .expect("the first encode succeeds");
+    });
+    // Guard: the first record carried both companions.
+    assert_eq!(buf[1], 2, "two companions on first sight");
+    let first_record = buf.len();
+    buf.clear();
+    encoder
+        .encode_metric(&event, &mut buf)
+        .expect("the second encode succeeds");
+    assert_eq!(buf[1], 0, "none after it");
+    let one_record = buf.len();
+    assert!(one_record > 20 && one_record < first_record);
+
+    let mut calls = 0usize;
+    counting::assert_count_allocations_counts();
+    let allocs = count_allocations(|| {
+        for _ in 0..CALLS {
+            buf.clear();
+            encoder
+                .encode_metric(&event, &mut buf)
+                .expect("steady-state encode succeeds");
+            calls += 1;
+        }
+    });
+    // Vacuity guard: the loop ran and each call wrote a whole record without
+    // companions.
+    assert_eq!(calls, CALLS);
+    assert_eq!(buf.len(), one_record);
+    assert_eq!(buf[1], 0);
+    println!(
+        "first-sight record with two label columns: {first_sight} allocations, \
+         {first_record} bytes; steady state: {allocs} over {calls} calls"
+    );
+    assert_eq!(
+        allocs, 0,
+        "steady-state encode with label columns must not allocate: {allocs} allocations          over {calls} calls"
+    );
+}
+
 /// A series rejected on first sight, because its `ifIndex` is not an arc,
 /// costs each later event exactly one allocation: the rejection's text,
 /// copied into the error. Its OID is not rendered again.

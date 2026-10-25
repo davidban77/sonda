@@ -53,9 +53,14 @@ src/
 │                          encoder's paths:/values: (an existing entry wins, each map on its
 │                          own; any other encoder unchanged), called by expand_pack and by
 │                          compiler/expand.rs once per pack entry. MetricSpec.snmp:
-│                          Option<SnmpHint { oid, type }> and fold_snmp_hints(&mut encoder,
-│                          specs), the same rules for an snmp encoder's oids:/types:, applied
-│                          right after the gnmi fold at both call sites. resolve_override_keys() is the
+│                          Option<SnmpHint { oid, type }>, MetricPackDef.snmp_label_columns
+│                          (label -> OID template; strings only, OidText; an extension's map
+│                          merged over its base's in extend.rs) and fold_snmp_hints(&mut
+│                          encoder, pack), the same rules for an snmp encoder's oids:/types:/
+│                          label_columns:, applied right after the gnmi fold at both call
+│                          sites. validate_pack (snmp feature) refuses a label column whose key
+│                          is not a label key or whose OID is not an OidTemplate
+│                          (InvalidSnmpLabelColumn). resolve_override_keys() is the
 │                          ONE definition of override keying — v1 expand_pack and the v2
 │                          compiler both call it, so they cannot drift; it also refuses two
 │                          keys reaching one spec, which addressability alone permits (a
@@ -203,19 +208,35 @@ src/
 │   │                       the Capability, Get and Subscribe request/response messages
 │   ├── snmp/           ← SNMP encoder (feature = "snmp"):
 │   │   ├── mod.rs      ←   SnmpEncoder, SnmpEncoderConfig (deny_unknown_fields; oids:,
-│   │   │                   types:, agent_label "device", drop_labels). Output is a PUBLISH
-│   │   │                   RECORD, not a bare VarBind: one byte (the template's
-│   │   │                   index_arcs, 1 for a scalar; RECORD_HEADER = 1), then a BER
-│   │   │                   VarBind SEQUENCE { OID, value }. The instance OID is rendered
-│   │   │                   once per series and cached as its encoded OBJECT IDENTIFIER
-│   │   │                   (fingerprint, then label-by-label compare, as gnmi's path
-│   │   │                   cache: agent_label and drop_labels are unseen unless
-│   │   │                   referenced); a rejection is cached as its text (one
-│   │   │                   allocation per later event). A value rejection is per event,
-│   │   │                   not cached, and truncates what the record wrote. uncovered_label
-│   │   │                   (free fn over the config) is the ONE coverage rule validation
-│   │   │                   also calls. Metrics only; validation pairs it with the
-│   │   │                   snmp_agent sink both ways.
+│   │   │                   label_columns: (label -> OID template, strings only), types:,
+│   │   │                   agent_label "device", drop_labels). Output is a PUBLISH RECORD,
+│   │   │                   not a bare VarBind: [index_arcs: u8][companions: u8][VarBind]
+│   │   │                   ([index_arcs: u8][VarBind])* (RECORD_HEADER = 2): the index
+│   │   │                   arcs the instance OID was RENDERED with (1 for a scalar; a
+│   │   │                   {x:str} index makes it depend on the value), the companion
+│   │   │                   count, the BER VarBind SEQUENCE { OID, value }, then one
+│   │   │                   companion per label_columns label the event carries, in label
+│   │   │                   order: its own index-arc count and VarBind { the column's
+│   │   │                   template rendered for the event, OCTET STRING label value }.
+│   │   │                   split_record (Record { index_arcs, varbind, companions:
+│   │   │                   Companions }, an iterator of Companion { index_arcs, varbind })
+│   │   │                   is the ONE reader: header, one SEQUENCE, exactly that many
+│   │   │                   companions, nothing after (SondaError::Sink otherwise); allocates
+│   │   │                   only on error. The instance OID and the companions are rendered
+│   │   │                   once per series and cached (Rendered: fingerprint, then
+│   │   │                   label-by-label compare, as gnmi's path cache: agent_label and
+│   │   │                   drop_labels are unseen unless referenced; label_columns labels
+│   │   │                   are seen); only the series' first record that is WRITTEN carries
+│   │   │                   its companions (companions_pending, reset when a value rejection
+│   │   │                   truncates the record), every other record has 0, so steady
+│   │   │                   state allocates nothing. A series without a column's label has
+│   │   │                   no companion for it; a column that cannot render rejects the
+│   │   │                   series. A rejection is cached as its text (one allocation per
+│   │   │                   later event). A value rejection is per event, not cached, and
+│   │   │                   truncates what the record wrote. uncovered_label (free fn over
+│   │   │                   the config; a label_columns label is covered) is the ONE coverage
+│   │   │                   rule validation also calls. Metrics only; validation pairs it
+│   │   │                   with the snmp_agent sink both ways.
 │   │   ├── ber.rs      ←   pub(crate) BER subset: Tag, BerError (incl. UnsupportedVersion),
 │   │   │                   definite lengths (write_tlv back-patches, long form above 127),
 │   │   │                   write_i64/write_u64 and the typed writers the value layer uses
@@ -230,12 +251,19 @@ src/
 │   │   │                   index_arc() is the ONE label-value → arc rule (canonical
 │   │   │                   decimal u32: no sign, no leading zero), applied by render and
 │   │   │                   validation; OidTemplate (pub(crate)): object OID then whole
-│   │   │                   trailing {label} arcs, or a scalar's literal .0 (a template
-│   │   │                   with no placeholder must end in .0; its object() excludes it
-│   │   │                   and index_arcs() is 1), object()/index_arcs()/placeholders()/
-│   │   │                   render()/arcs() (TemplateArc: Literal or Label, in order)/
-│   │   │                   can_render_under() (the system-group rule);
-│   │   │                   {x:str} is Unsupported; at most 128 arcs.
+│   │   │                   trailing {label} or {label:str} arcs, or a scalar's literal .0
+│   │   │                   (a template with no placeholder must end in .0; its object()
+│   │   │                   excludes it and index_arcs() is 1), object()/index_arcs()/
+│   │   │                   placeholders() (string ones included)/has_string_index()/
+│   │   │                   render()/arcs() (TemplateArc: Literal, Label or StringLabel, in
+│   │   │                   order)/can_render_under() (the system-group rule; a string
+│   │   │                   index reaches any depth). {label:str} renders RFC 2578 §7.7's
+│   │   │                   variable-length string index: the byte length, then one arc per
+│   │   │                   byte; an empty value is RenderError::EmptyString, an OID past
+│   │   │                   128 arcs RenderError::TooManyArcs. index_arcs() is then the
+│   │   │                   fewest (a string index counts 2); the rendered count is the
+│   │   │                   OID's arcs beyond the object's. Any other {x:...} form is
+│   │   │                   Unsupported; at most 128 arcs, a string index counting 2.
 │   │   └── value.rs    ←   SnmpValueType (integer, counter32, counter64, gauge32 = default,
 │   │                       unsigned32, timeticks, string; non_exhaustive). Compiled WITHOUT
 │   │                       the snmp feature too, through an inline `snmp` module in
@@ -583,20 +611,25 @@ src/
 │   │   │                   naming the field): max_message_size and system are the agent's.
 │   │   │                   serves() compares the community with constant_time_eq too.
 │   │   │                   SnmpAgentSink: wants_metric_events() = true; write() is an error.
-│   │   │                   Each write is the snmp encoder's publish record: split_record
-│   │   │                   checks it is the header byte then exactly one SEQUENCE (every
-│   │   │                   event) and strips the byte. A key's first event decodes the
-│   │   │                   instance OID, publishes with first = true and, once that
-│   │   │                   succeeded, registers its object (the OID minus the header's
-│   │   │                   index-arc count, ≥ 2 arcs left), so a refused publish registers
-│   │   │                   nothing;
+│   │   │                   Each write is the snmp encoder's publish record, split by the
+│   │   │                   encoder's split_record (every event). A key's first event
+│   │   │                   decodes the instance OID, publishes with first = true and, once
+│   │   │                   that succeeded, registers its object (the OID minus the
+│   │   │                   header's index-arc count, ≥ 2 arcs left), so a refused publish
+│   │   │                   registers nothing;
 │   │   │                   later events reuse the decoded OID (keys rendering one OID share
-│   │   │                   an entry). Owner per launch as gnmi's; a joined sink owns nothing
-│   │   │                   and overwrite()s only a served instance. PublishBuffers: two
+│   │   │                   an entry). A record's companions (label columns) are published
+│   │   │                   under the same owner into that entry's Publication.companions:
+│   │   │                   first = true and the object registered the first time the entry
+│   │   │                   carries that OID, first = false after (the value replaced), so
+│   │   │                   a column's slot counts one publisher per Publication carrying it
+│   │   │                   and leaves with the last. Owner per launch as gnmi's; a joined
+│   │   │                   sink owns nothing, overwrite()s only a served instance and only
+│   │   │                   served companions (others ignored). PublishBuffers: two
 │   │   │                   BytesMut used in turn, so each copy goes into the buffer whose
 │   │   │                   Bytes the agent dropped a publish ago and reuses its allocation:
-│   │   │                   a steady publish allocates nothing.
-│   │   │                   Drop releases each instance once.
+│   │   │                   a steady publish allocates nothing (companions are copied, once).
+│   │   │                   Drop releases each instance once, then its companions.
 │   │   ├── agent.rs    ←   SnmpAgent: RwLock<MibTable { slots: BTreeMap<Oid, Slot { varbind,
 │   │   │                   owner, publishers }>, objects: BTreeSet<Oid> }> (OID order = walk
 │   │   │                   order) and the system group: seven VarBinds 1.3.6.1.2.1.1.N.0
@@ -789,12 +822,18 @@ src/
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
                            validate_snmp_encoder (snmp feature; from validate_config): pairing,
                            an oids: entry for the metric, placeholders are static or dynamic
-                           labels, every value they take is an index_arc (counters checked at
-                           the first and last value, random spikes refused), coverage, no two
-                           metrics able to render one OID (snmp_collision: same arc count and
-                           every position can match; a label's values are its static value or
-                           values list, every u32 for a counter; O(arcs x values) per pair),
-                           nothing under the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
+                           labels and every label_columns placeholder is one of every oids:
+                           template, every value a {label} placeholder of the metric's or a
+                           label column's template takes is an index_arc (counters checked
+                           at the first and last value, random spikes refused; {label:str}
+                           not checked), coverage (label_columns labels covered), no two
+                           metrics able to render one OID (snmp_collision: with a string
+                           index in either, one object equal to or a prefix of the other;
+                           else same arc count and every position can match, ArcSet = listed
+                           arcs plus counters prefix ++ 0..cardinality, exact, a spike's
+                           outside values included; each label named once in the refusal;
+                           O(arcs x values) per pair), nothing in oids: or label_columns:
+                           under the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
                            and the snmp_agent sink on histogram, summary and logs entries,
                            validate_cardinality_spike_config, validate_dynamic_label_config,
                            validate_histogram_config, validate_summary_config,

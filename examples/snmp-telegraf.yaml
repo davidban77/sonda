@@ -9,8 +9,9 @@
 # is the matching Telegraf config.
 #
 # The telegraf_snmp_interface pack carries each metric's IF-MIB column and
-# SNMP type, so the encoder block names no OIDs. Interface 1's ifOperStatus
-# flaps: up for 60s, down for 5s.
+# SNMP type, and serves the ifName and ifAlias labels as ifXTable columns, so
+# the encoder block names no OIDs. Interface 1's ifOperStatus flaps: up for
+# 60s, down for 5s.
 #
 # Prerequisites (for the Telegraf side):
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile snmp up -d
@@ -35,8 +36,8 @@ defaults:
   rate: 1
   encoder:
     type: snmp
-    # The agent serves no OID for these labels, so they are dropped.
-    drop_labels: [ifName, ifAlias, job]
+    # The agent serves no OID for this label, so it is dropped.
+    drop_labels: [job]
   sink:
     type: snmp_agent
     listen: 0.0.0.0:1161

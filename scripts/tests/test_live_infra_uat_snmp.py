@@ -121,6 +121,11 @@ def oper_status(index: str, at_s: float) -> float:
     return 1.0
 
 
+def if_name_tag(index: str) -> dict[str, str]:
+    """The ifName tag Telegraf sets on interface ``index``'s rows."""
+    return {uat.SNMP_IF_NAME_TAG: uat.SNMP_IF_NAMES[index]}
+
+
 def good_export(
     interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
     uptime=lambda at_s: round((at_s - STARTED_S) * 100),
@@ -128,17 +133,21 @@ def good_export(
     v1_interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
     v1_fields: tuple[str, ...] = V1_FIELDS,
     v2c_from_s: float = FIRST_POLL_S,
+    tags=if_name_tag,
+    v1_tags=None,
 ) -> bytes:
     """What VictoriaMetrics exports for a run in which Telegraf read every
     poll: each field of each of ``interfaces``, each of ``v1_fields`` of each
-    of ``v1_interfaces`` in the interface_v1 table, and snmp_uptime. The v2c
-    input's series (all but interface_v1) start at ``v2c_from_s``."""
+    of ``v1_interfaces`` in the interface_v1 table, every row tagged with
+    ``tags`` of its interface (``v1_tags`` in the interface_v1 table, when
+    given), and snmp_uptime. The v2c input's series (all but interface_v1)
+    start at ``v2c_from_s``."""
     times = poll_times()
     v2c_times = poll_times(first_s=v2c_from_s)
     lines = []
-    for table, indices, fields, polls in (
-        ("interface", interfaces, FIELDS, v2c_times),
-        ("interface_v1", v1_interfaces, v1_fields, times),
+    for table, indices, fields, polls, tagged in (
+        ("interface", interfaces, FIELDS, v2c_times, tags),
+        ("interface_v1", v1_interfaces, v1_fields, times, v1_tags or tags),
     ):
         for index in indices:
             for field in fields:
@@ -146,7 +155,8 @@ def good_export(
                     samples = [(at, status(index, at)) for at in polls]
                 else:
                     samples = [(at, 125_000.0 * (at - STARTED_S)) for at in polls]
-                lines.append(export_line(f"{table}_{field}", {"index": index}, samples))
+                labels = {"index": index, **tagged(index)}
+                lines.append(export_line(f"{table}_{field}", labels, samples))
     lines.append(
         export_line(
             uat.SNMP_UPTIME_SERIES,
@@ -182,9 +192,11 @@ def findings(
     walk: str | None = None,
     v1_walk: str | None = None,
 ) -> list[str]:
+    export = good_export() if export is None else export
     return uat.snmp_findings(
         good_log() if log is None else log,
-        uat.parse_vm_export(good_export() if export is None else export, label="index"),
+        uat.parse_vm_export(export, label="index"),
+        uat.parse_vm_export_tags(export, uat.SNMP_IF_NAME_TAG),
         walked() if walk is None else walk,
         golden(),
         STARTED_S,
@@ -209,6 +221,15 @@ class SnmpFindingsTests(unittest.TestCase):
         self.assertIn((uat.SNMP_UPTIME_SERIES, ""), samples)
         self.assertEqual(len(samples[("interface_ifOperStatus", "4")]), len(poll_times()))
         self.assertEqual(len(samples[("interface_v1_ifOperStatus", "4")]), len(poll_times()))
+        tags = uat.parse_vm_export_tags(good_export(), uat.SNMP_IF_NAME_TAG)
+        self.assertEqual(
+            tags[("interface_ifHCInOctets", "4")],
+            {"GigabitEthernet0/0/3": [int(at * 1000) for at in poll_times()]},
+        )
+        self.assertEqual(
+            tags[("interface_v1_ifInErrors", "4")],
+            {"GigabitEthernet0/0/3": [int(at * 1000) for at in poll_times()]},
+        )
 
     def test_a_missing_interface_is_named_in_each_series(self) -> None:
         found = findings(export=good_export(interfaces=("1", "2", "3"), v1_interfaces=("1", "2", "3")))
@@ -239,7 +260,7 @@ class SnmpFindingsTests(unittest.TestCase):
             lines.append(
                 export_line(
                     entry["metric"]["__name__"],
-                    {"index": "3"},
+                    {"index": "3", **if_name_tag("3")},
                     [(ts / 1000, v) for ts, v in kept],
                 )
             )
@@ -361,6 +382,7 @@ class SnmpFindingsTests(unittest.TestCase):
         outside = uat.snmp_findings(
             good_log(),
             uat.parse_vm_export(good_export(), label="index"),
+            uat.parse_vm_export_tags(good_export(), uat.SNMP_IF_NAME_TAG),
             walked(),
             golden(),
             ENDED_S + 10,
@@ -372,6 +394,81 @@ class SnmpFindingsTests(unittest.TestCase):
             outside[-1],
             f"no sample matching {uat.SNMP_EXPORT_MATCH} within the run's window",
         )
+
+    def test_rows_without_the_if_name_tag_are_named(self) -> None:
+        found = findings(export=good_export(tags=lambda index: {}))
+        polls = len(poll_times())
+        self.assertEqual(
+            found,
+            [
+                line
+                for series in uat.SNMP_INTERFACE_SERIES + uat.SNMP_V1_INTERFACE_SERIES
+                for index in uat.SNMP_INTERFACES
+                for line in (
+                    f'{series}{{index="{index}"}}: no sample tagged '
+                    f'ifName="GigabitEthernet0/0/{int(index) - 1}"',
+                    f'{series}{{index="{index}"}}: {polls} sample(s) tagged no ifName, '
+                    f'want ifName="GigabitEthernet0/0/{int(index) - 1}"',
+                )
+            ],
+        )
+
+    def test_one_interface_without_the_tag_is_named(self) -> None:
+        tags = lambda index: {} if index == "2" else if_name_tag(index)  # noqa: E731
+        found = findings(export=good_export(tags=tags))
+        self.assertEqual(len(found), 8, found)
+        for line in found:
+            self.assertIn('{index="2"}', line)
+
+    def test_v1_rows_without_the_if_name_tag_are_named(self) -> None:
+        found = findings(export=good_export(v1_tags=lambda index: {}))
+        polls = len(poll_times())
+        self.assertEqual(
+            found,
+            [
+                line
+                for series in uat.SNMP_V1_INTERFACE_SERIES
+                for index in uat.SNMP_INTERFACES
+                for line in (
+                    f'{series}{{index="{index}"}}: no sample tagged '
+                    f'ifName="GigabitEthernet0/0/{int(index) - 1}"',
+                    f'{series}{{index="{index}"}}: {polls} sample(s) tagged no ifName, '
+                    f'want ifName="GigabitEthernet0/0/{int(index) - 1}"',
+                )
+            ],
+        )
+
+    def test_a_wrong_if_name_is_named(self) -> None:
+        tags = lambda index: {"ifName": "Gi9"} if index == "4" else if_name_tag(index)  # noqa: E731
+        found = findings(export=good_export(tags=tags))
+        self.assertEqual(len(found), 8, found)
+        for series in ("interface_ifHCInOctets", "interface_v1_ifInErrors"):
+            self.assertIn(
+                f'{series}{{index="4"}}: {len(poll_times())} sample(s) tagged '
+                'ifName="Gi9", want ifName="GigabitEthernet0/0/3"',
+                found,
+            )
+
+    def test_the_if_name_check_reads_the_export_it_is_given(self) -> None:
+        # Guards the green case: tags read from the wrong label would give no
+        # tagged sample at all, which is named rather than passed.
+        found = uat.snmp_findings(
+            good_log(),
+            uat.parse_vm_export(good_export(), label="index"),
+            uat.parse_vm_export_tags(good_export(), uat.SNMP_IF_NAME_TAG, label="name"),
+            walked(),
+            golden(),
+            STARTED_S,
+            ENDED_S,
+            v1_walk=v1_walked(),
+            v1_golden=v1_golden(),
+        )
+        self.assertEqual(
+            len(found),
+            len(uat.SNMP_INTERFACE_SERIES + uat.SNMP_V1_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES),
+        )
+        for line in found:
+            self.assertIn("no sample tagged ifName=", line)
 
     def test_a_flap_that_never_went_down_is_named(self) -> None:
         found = findings(export=good_export(status=lambda index, at: 1.0))
@@ -501,14 +598,28 @@ def oid_order(oid: str) -> list[int]:
     return [int(arc) for arc in oid.strip(".").split(".")]
 
 
+def pack_label_columns() -> dict[str, str]:
+    """The IF-MIB column of each label in the telegraf_snmp_interface pack's
+    snmp_label_columns."""
+    pack = (REPO_ROOT / "packs/telegraf-snmp-interface.yaml").read_text()
+    block = pack.split("\nsnmp_label_columns:\n", 1)[1].split("\n\n", 1)[0]
+    return dict(re.findall(r'^  (\w+): "([0-9.]+)\.\{ifIndex\}"$', block, re.MULTILINE))
+
+
 class GoldenWalkTests(unittest.TestCase):
-    def test_the_golden_walk_is_the_system_group_and_every_hinted_column(self) -> None:
-        columns = pack_hint_columns()
-        self.assertEqual(len(columns), 5)
+    def test_the_pack_serves_if_name_and_if_alias(self) -> None:
+        self.assertEqual(
+            pack_label_columns(),
+            {"ifName": "1.3.6.1.2.1.31.1.1.1.1", "ifAlias": "1.3.6.1.2.1.31.1.1.1.18"},
+        )
+
+    def test_the_golden_walk_is_the_system_group_and_every_served_column(self) -> None:
+        columns = pack_hint_columns() + list(pack_label_columns().values())
+        self.assertEqual(len(columns), 7)
         lines = golden().splitlines()
         self.assertEqual(
             lines[-1],
-            ".1.3.6.1.2.1.31.1.1.1.10.4 = No more variables left in this MIB "
+            ".1.3.6.1.2.1.31.1.1.1.18.4 = No more variables left in this MIB "
             "View (It is past the end of the MIB tree)",
         )
         names = [line.split(" = ")[0] for line in lines[:-1]]
@@ -524,6 +635,8 @@ class GoldenWalkTests(unittest.TestCase):
         self.assertEqual(uat.mask_snmp_walk(text), text)
         self.assertIn('.1.3.6.1.2.1.1.5.0 = STRING: "rtr-core-01"', text)
         self.assertEqual(text.count("Counter64: *"), 8)
+        for index, name in uat.SNMP_IF_NAMES.items():
+            self.assertIn(f'.1.3.6.1.2.1.31.1.1.1.1.{index} = STRING: "{name}"', text)
 
     def test_the_v1_golden_walk_is_the_system_group_and_every_column_but_counter64(self) -> None:
         hints = pack_hints()
@@ -573,7 +686,7 @@ class TelegrafConfTests(unittest.TestCase):
             for snmp in telegraf_conf()["inputs"]["snmp"]
             for field in snmp.get("field", []) + [f for table in snmp["table"] for f in table["field"]]
         ]
-        self.assertEqual(len(fields), 12)
+        self.assertEqual(len(fields), 16)
         for field in fields:
             self.assertRegex(field["oid"], r"^(\.[0-9]+)+$", field["name"])
 
@@ -609,10 +722,15 @@ class TelegrafConfTests(unittest.TestCase):
         (table,) = snmp["table"]
         self.assertEqual(table["name"], "interface")
         self.assertIs(table["index_as_tag"], True)
-        polled = {f["name"]: f["oid"].lstrip(".") for f in table["field"]}
+        polled = {
+            f["name"]: f["oid"].lstrip(".") for f in table["field"] if not f.get("is_tag")
+        }
         self.assertEqual(sorted(polled.values()), sorted(pack_hint_columns()))
         for series in uat.SNMP_INTERFACE_SERIES:
             self.assertIn(series.removeprefix("interface_"), polled)
+        tags = {f["name"]: f["oid"].lstrip(".") for f in table["field"] if f.get("is_tag")}
+        self.assertEqual(tags, pack_label_columns())
+        self.assertIn(uat.SNMP_IF_NAME_TAG, tags)
         uptime = {f["name"]: f["oid"] for f in snmp["field"]}
         self.assertEqual(uptime["uptime"], ".1.3.6.1.2.1.1.3.0")
 

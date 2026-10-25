@@ -26,8 +26,10 @@
 //! more placeholders, each one whole trailing arc, or the literal `.0` of a
 //! scalar. `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` renders the event's `ifIndex`
 //! label as the last arc; `1.3.6.1.4.1.8072.9999.1.1.0` is the one instance
-//! of the scalar `1.3.6.1.4.1.8072.9999.1.1`. A label value renders as an arc
-//! only in the form [`index_arc`] accepts.
+//! of the scalar `1.3.6.1.4.1.8072.9999.1.1`. A `{label}` value renders as an
+//! arc only in the form [`index_arc`] accepts. A `{label:str}` value renders
+//! as a string index: its length in bytes, then one arc per byte (RFC 2578
+//! §7.7).
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -189,11 +191,34 @@ pub(crate) fn index_arc(value: &str) -> Option<u32> {
 /// one index arc; `1.3.6.1.2.1.31.1.1.1.6.{a}.{b}` has two. A template with
 /// no placeholder is a scalar and ends in a literal `.0`, its one index arc:
 /// `1.3.6.1.4.1.8072.9999.1.1.0` is the object `1.3.6.1.4.1.8072.9999.1.1`.
+/// `1.3.6.1.4.1.8072.9999.3.1.{ifName:str}` has a string index, whose number
+/// of arcs depends on the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OidTemplate {
     object: Oid,
     /// Empty for a scalar, whose index arc is the literal `0`.
-    placeholders: Vec<String>,
+    placeholders: Vec<Placeholder>,
+}
+
+/// One index placeholder: the label it names and how its value renders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Placeholder {
+    name: String,
+    /// `{label:str}`: the value's length, then one arc per byte. Otherwise
+    /// `{label}`: the value as one [`index_arc`].
+    string: bool,
+}
+
+impl Placeholder {
+    /// The fewest arcs this placeholder renders as: one, or for a string
+    /// its length and at least one byte, since an empty value is refused.
+    fn min_arcs(&self) -> usize {
+        if self.string {
+            2
+        } else {
+            1
+        }
+    }
 }
 
 /// Why an OID template did not parse.
@@ -217,11 +242,12 @@ pub(crate) enum OidTemplateError {
         /// The template as written.
         template: String,
     },
-    /// A placeholder in a form other than `{label}`, such as `{ifName:str}`.
+    /// A placeholder in a form other than `{label}` or `{label:str}`, such
+    /// as `{ifName:x}`.
     #[error(
         "OID template {template:?}: placeholder {placeholder} is not supported; an \
-         index placeholder is a label whose values are unsigned integers, written \
-         {{label}}"
+         index placeholder is {{label}}, a label whose values are unsigned integers, \
+         or {{label:str}}, a label whose values are strings"
     )]
     Unsupported {
         /// The template as written.
@@ -261,7 +287,8 @@ pub(crate) enum OidTemplateError {
         /// The template as written.
         template: String,
     },
-    /// More arcs than an OID may have.
+    /// More arcs than an OID may have, counting each string index as the
+    /// two arcs its shortest value renders.
     #[error("OID template {template:?} has {arcs} arcs; an OID has at most 128")]
     TooManyArcs {
         /// The template as written.
@@ -277,8 +304,11 @@ pub(crate) enum OidTemplateError {
 pub(crate) enum TemplateArc<'a> {
     /// A literal arc, such as each arc of the object or a scalar's `0`.
     Literal(u32),
-    /// A placeholder, by the label it names.
+    /// A `{label}` placeholder, by the label it names: one arc.
     Label(&'a str),
+    /// A `{label:str}` placeholder, by the label it names: the value's
+    /// length, then one arc per byte.
+    StringLabel(&'a str),
 }
 
 /// Why a template could not be rendered for an event.
@@ -298,32 +328,60 @@ pub(crate) enum RenderError {
         /// Its value.
         value: String,
     },
+    /// A `{label:str}` placeholder's label is empty; a string index has at
+    /// least one byte.
+    #[error(
+        "label `{0}` is empty, and the OID template's placeholder {{{0}:str}} renders \
+         it as a string index, which needs at least one byte"
+    )]
+    EmptyString(String),
+    /// The rendered OID has more arcs than an OID may have.
+    #[error(
+        "label `{name}` makes the OID {arcs} arcs or more, and an OID has at most 128; \
+         its placeholder {{{name}:str}} renders one arc per byte"
+    )]
+    TooManyArcs {
+        /// The string-index label that made the OID too long.
+        name: String,
+        /// How many arcs the OID had reached.
+        arcs: usize,
+    },
 }
 
 impl OidTemplate {
-    /// Parse a template such as `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` or
+    /// Parse a template such as `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}`,
+    /// `1.3.6.1.4.1.8072.9999.3.1.{ifName:str}` or
     /// `1.3.6.1.4.1.8072.9999.1.1.0`.
     ///
-    /// Each placeholder is a whole arc `{label}` naming a valid label key,
-    /// and only placeholders follow the first one. `{label:str}`, or any
-    /// other `{label:...}` form, is [`OidTemplateError::Unsupported`]. A
-    /// template with no placeholder must end in a literal `.0`
+    /// Each placeholder is a whole arc, `{label}` or `{label:str}`, naming a
+    /// valid label key, and only placeholders follow the first one. Any other
+    /// `{label:...}` form is [`OidTemplateError::Unsupported`]. A template
+    /// with no placeholder must end in a literal `.0`
     /// ([`OidTemplateError::ScalarWithoutZero`]). The object, the arcs before
     /// the first placeholder or before a scalar's `.0`, must parse as an
     /// [`Oid`] (at least two arcs, an encodable first pair). The template
-    /// has at most [`MAX_ARCS`] arcs.
+    /// has at most [`MAX_ARCS`] arcs, a string index counting as two.
     pub(crate) fn parse(text: &str) -> Result<Self, OidTemplateError> {
         let mut literal: Vec<&str> = Vec::new();
-        let mut placeholders: Vec<String> = Vec::new();
+        let mut placeholders: Vec<Placeholder> = Vec::new();
         for arc in text.split('.') {
             let placeholder = match arc.strip_prefix('{').and_then(|a| a.strip_suffix('}')) {
-                Some(inner) if inner.contains(':') => {
-                    return Err(OidTemplateError::Unsupported {
-                        template: text.to_owned(),
-                        placeholder: arc.to_owned(),
-                    })
-                }
-                Some(inner) if is_valid_label_key(inner) => Some(inner),
+                Some(inner) if inner.contains(':') => match inner.strip_suffix(":str") {
+                    Some(name) if is_valid_label_key(name) => Some(Placeholder {
+                        name: name.to_owned(),
+                        string: true,
+                    }),
+                    _ => {
+                        return Err(OidTemplateError::Unsupported {
+                            template: text.to_owned(),
+                            placeholder: arc.to_owned(),
+                        })
+                    }
+                },
+                Some(inner) if is_valid_label_key(inner) => Some(Placeholder {
+                    name: inner.to_owned(),
+                    string: false,
+                }),
                 Some(_) => {
                     return Err(OidTemplateError::BadPlaceholder {
                         template: text.to_owned(),
@@ -339,7 +397,7 @@ impl OidTemplate {
                 None => None,
             };
             match placeholder {
-                Some(name) => placeholders.push(name.to_owned()),
+                Some(placeholder) => placeholders.push(placeholder),
                 None if !placeholders.is_empty() => {
                     return Err(OidTemplateError::NotTrailing {
                         template: text.to_owned(),
@@ -363,7 +421,8 @@ impl OidTemplate {
             template: text.to_owned(),
             source,
         })?;
-        let arcs = object.arcs().len() + placeholders.len().max(1);
+        let index: usize = placeholders.iter().map(Placeholder::min_arcs).sum();
+        let arcs = object.arcs().len() + index.max(1);
         if arcs > MAX_ARCS {
             return Err(OidTemplateError::TooManyArcs {
                 template: text.to_owned(),
@@ -376,9 +435,17 @@ impl OidTemplate {
         })
     }
 
-    /// The labels the placeholders name, in arc order.
+    /// The labels the placeholders name, in arc order, string indices
+    /// included.
     pub(crate) fn placeholders(&self) -> impl Iterator<Item = &str> {
-        self.placeholders.iter().map(String::as_str)
+        self.placeholders.iter().map(|p| p.name.as_str())
+    }
+
+    /// Whether a placeholder is a string index, `{label:str}`. The number of
+    /// index arcs then depends on the label's value, and
+    /// [`index_arcs`](Self::index_arcs) is only the fewest.
+    pub(crate) fn has_string_index(&self) -> bool {
+        self.placeholders.iter().any(|p| p.string)
     }
 
     /// The object the instances belong to: the arcs before the first
@@ -388,15 +455,20 @@ impl OidTemplate {
     }
 
     /// How many index arcs follow the object: the number of placeholders,
-    /// or 1 for a scalar (its `.0`). At most [`MAX_ARCS`] minus two, so it
-    /// fits a `u8`.
+    /// or 1 for a scalar (its `.0`). With a string index
+    /// ([`has_string_index`](Self::has_string_index)) it is the fewest a
+    /// render produces, each string index counting as two; the arcs a render
+    /// produces are its OID's arcs beyond the object's. At most
+    /// [`MAX_ARCS`] minus two, so it fits a `u8`.
     pub(crate) fn index_arcs(&self) -> u8 {
         // parse() caps the arcs at MAX_ARCS (128) and the object has two.
-        self.placeholders.len().max(1) as u8
+        let index: usize = self.placeholders.iter().map(Placeholder::min_arcs).sum();
+        index.max(1) as u8
     }
 
-    /// Every arc of the instance OIDs this template renders, in order: the
-    /// object's arcs, then the placeholders, or a scalar's literal `0`.
+    /// Every arc of the template, in order: the object's arcs, then the
+    /// placeholders, or a scalar's literal `0`. A string index is one item
+    /// here and several arcs in a rendered OID.
     pub(crate) fn arcs(&self) -> impl Iterator<Item = TemplateArc<'_>> {
         let scalar_zero = self
             .placeholders
@@ -407,11 +479,13 @@ impl OidTemplate {
             .iter()
             .map(|arc| TemplateArc::Literal(*arc))
             .chain(scalar_zero)
-            .chain(
-                self.placeholders
-                    .iter()
-                    .map(|name| TemplateArc::Label(name)),
-            )
+            .chain(self.placeholders.iter().map(|p| {
+                if p.string {
+                    TemplateArc::StringLabel(&p.name)
+                } else {
+                    TemplateArc::Label(&p.name)
+                }
+            }))
     }
 
     /// Whether an instance OID this template can render lies under
@@ -420,7 +494,8 @@ impl OidTemplate {
     /// A scalar renders exactly one instance, `object.0`. A column's object
     /// lies under `prefix`, or is a prefix of it with at least as many
     /// placeholders as the arcs it lacks, since a placeholder can render any
-    /// arc. O(arcs).
+    /// arc. A column with a string index, which renders any number of arcs,
+    /// counts when its object is a prefix of `prefix` at all. O(arcs).
     pub(crate) fn can_render_under(&self, prefix: &Oid) -> bool {
         let object = self.object.arcs();
         let wanted = prefix.arcs();
@@ -432,32 +507,59 @@ impl OidTemplate {
         if object.len() >= wanted.len() {
             return object.starts_with(wanted);
         }
-        wanted.starts_with(object) && object.len() + self.placeholders.len() >= wanted.len()
+        wanted.starts_with(object)
+            && (self.has_string_index() || object.len() + self.placeholders.len() >= wanted.len())
     }
 
     /// Write the instance OID's arcs for `labels` into `out` (cleared first):
-    /// the object's arcs, then each placeholder's label value as an arc, or
-    /// a scalar's `0`.
+    /// the object's arcs, then each `{label}` placeholder's value as an arc
+    /// and each `{label:str}` placeholder's value as its length in bytes then
+    /// one arc per byte, or a scalar's `0`. The index arcs rendered are the
+    /// arcs of `out` beyond the object's.
     ///
     /// [`RenderError::MissingLabel`] when `labels` lacks a placeholder's
-    /// label, [`RenderError::NotAnArc`] when its value is not an
-    /// [`index_arc`].
+    /// label, [`RenderError::NotAnArc`] when a `{label}` value is not an
+    /// [`index_arc`], [`RenderError::EmptyString`] when a `{label:str}` value
+    /// is empty, [`RenderError::TooManyArcs`] when the OID would have more
+    /// than [`MAX_ARCS`] arcs.
     pub(crate) fn render(&self, labels: &Labels, out: &mut Vec<u32>) -> Result<(), RenderError> {
         out.clear();
         out.extend_from_slice(self.object.arcs());
         if self.placeholders.is_empty() {
             out.push(0);
         }
-        for name in &self.placeholders {
+        for (i, placeholder) in self.placeholders.iter().enumerate() {
+            let name = &placeholder.name;
             let value = labels
                 .iter()
                 .find_map(|(key, value)| (key == name).then_some(value))
                 .ok_or_else(|| RenderError::MissingLabel(name.clone()))?;
-            let arc = index_arc(value).ok_or_else(|| RenderError::NotAnArc {
-                name: name.clone(),
-                value: value.to_owned(),
-            })?;
-            out.push(arc);
+            if !placeholder.string {
+                let arc = index_arc(value).ok_or_else(|| RenderError::NotAnArc {
+                    name: name.clone(),
+                    value: value.to_owned(),
+                })?;
+                out.push(arc);
+                continue;
+            }
+            if value.is_empty() {
+                return Err(RenderError::EmptyString(name.clone()));
+            }
+            // This index, then the fewest the placeholders after it render.
+            let after: usize = self.placeholders[i + 1..]
+                .iter()
+                .map(Placeholder::min_arcs)
+                .sum();
+            let arcs = out.len() + 1 + value.len() + after;
+            if arcs > MAX_ARCS {
+                return Err(RenderError::TooManyArcs {
+                    name: name.clone(),
+                    arcs,
+                });
+            }
+            // At most MAX_ARCS bytes, checked above.
+            out.push(value.len() as u32);
+            out.extend(value.bytes().map(u32::from));
         }
         Ok(())
     }
@@ -469,8 +571,9 @@ impl fmt::Display for OidTemplate {
         if self.placeholders.is_empty() {
             write!(f, ".0")?;
         }
-        for name in &self.placeholders {
-            write!(f, ".{{{name}}}")?;
+        for placeholder in &self.placeholders {
+            let suffix = if placeholder.string { ":str" } else { "" };
+            write!(f, ".{{{}{suffix}}}", placeholder.name)?;
         }
         Ok(())
     }
@@ -689,6 +792,8 @@ mod tests {
     #[case::one_index_column( "1.3.6.1.2.1.2.2.1.8.{ifIndex}",      "1.3.6.1.2.1.2.2.1.8",         &["ifIndex"],      1)]
     #[case::two_index_column( "1.3.6.1.4.1.8072.9999.2.1.7.{a}.{b}", "1.3.6.1.4.1.8072.9999.2.1.7", &["a", "b"],       2)]
     #[case::two_arc_object(   "1.3.{x}",                            "1.3",                         &["x"],            1)]
+    #[case::string_index(     "1.3.6.1.4.1.8072.9999.3.1.{ifName:str}", "1.3.6.1.4.1.8072.9999.3.1", &["ifName"],      2)]
+    #[case::mixed_index(      "1.3.6.1.4.1.8072.9999.3.2.{ifIndex}.{ifName:str}", "1.3.6.1.4.1.8072.9999.3.2", &["ifIndex", "ifName"], 3)]
     fn template_splits_object_and_index_arcs(
         #[case] text: &str,
         #[case] object: &str,
@@ -704,8 +809,10 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case::string_index(         "1.3.6.1.2.1.31.1.1.1.1.{ifName:str}", "placeholder {ifName:str} is not supported")]
     #[case::any_colon_form(       "1.3.6.1.2.1.31.1.1.1.1.{ifName:x}",   "placeholder {ifName:x} is not supported")]
+    #[case::str_bad_label_key(    "1.3.6.1.2.1.31.1.1.1.1.{9x:str}",     "placeholder {9x:str} is not supported")]
+    #[case::str_twice(            "1.3.6.1.2.1.31.1.1.1.1.{x:str:str}",  "placeholder {x:str:str} is not supported")]
+    #[case::str_mid(              "1.3.6.1.4.1.8072.{ifName:str}.1",     "arc \"1\" follows a placeholder")]
     #[case::placeholder_mid(      "1.3.6.1.2.1.2.2.1.{col}.1",           "arc \"1\" follows a placeholder")]
     #[case::trailing_dot(         "1.3.6.1.2.1.2.2.1.8.{ifIndex}.",      "arc \"\" follows a placeholder")]
     #[case::starts_with_one(      "{x}.{y}",                             "starts with a placeholder")]
@@ -726,6 +833,14 @@ mod tests {
         let shown = err.to_string();
         assert!(shown.contains(fragment), "{shown}");
         assert!(shown.contains(text), "the error names the template: {shown}");
+    }
+
+    #[test]
+    fn only_a_string_placeholder_makes_a_string_index() {
+        assert!(template("1.3.6.1.4.1.8072.9999.3.1.{ifName:str}").has_string_index());
+        assert!(template("1.3.6.1.4.1.8072.9999.3.2.{ifIndex}.{ifName:str}").has_string_index());
+        assert!(!template("1.3.6.1.2.1.2.2.1.8.{ifIndex}").has_string_index());
+        assert!(!template("1.3.6.1.4.1.8072.9999.1.1.0").has_string_index());
     }
 
     #[test]
@@ -750,6 +865,111 @@ mod tests {
     }
 
     #[test]
+    fn a_string_index_counts_two_arcs_toward_the_cap() {
+        let at_limit = format!("1.3{}.{{s:str}}", ".{x}".repeat(MAX_ARCS - 4));
+        assert_eq!(template(&at_limit).index_arcs() as usize, MAX_ARCS - 2);
+        let over = format!("1.3{}.{{s:str}}", ".{x}".repeat(MAX_ARCS - 3));
+        assert!(matches!(
+            OidTemplate::parse(&over),
+            Err(OidTemplateError::TooManyArcs { arcs: 129, .. })
+        ));
+    }
+
+    /// RFC 2578 §7.7: a variable-length string index is its length, then
+    /// one arc per octet. `GigabitEthernet0/0/0` is 20 octets.
+    #[test]
+    fn a_string_index_renders_its_length_then_one_arc_per_byte() {
+        let value = "GigabitEthernet0/0/0";
+        assert_eq!(value.len(), 20, "fixture present");
+        let parsed = template("1.3.6.1.4.1.8072.9999.3.1.{ifName:str}");
+        let mut out = vec![99];
+        parsed
+            .render(&labels(&[("ifName", value)]), &mut out)
+            .expect("renders");
+        assert_eq!(
+            out,
+            [
+                1, 3, 6, 1, 4, 1, 8072, 9999, 3, 1, // the object
+                20, 71, 105, 103, 97, 98, 105, 116, 69, 116, 104, 101, 114, 110, 101, 116, 48, 47,
+                48, 47, 48,
+            ]
+        );
+        assert_eq!(
+            out.len() - parsed.object().arcs().len(),
+            21,
+            "21 index arcs"
+        );
+    }
+
+    #[test]
+    fn a_template_mixing_an_integer_and_a_string_index_renders_both() {
+        let parsed = template("1.3.6.1.4.1.8072.9999.3.2.{ifIndex}.{ifName:str}");
+        let mut out = Vec::new();
+        parsed
+            .render(&labels(&[("ifName", "Gi0"), ("ifIndex", "7")]), &mut out)
+            .expect("renders");
+        assert_eq!(out, [1, 3, 6, 1, 4, 1, 8072, 9999, 3, 2, 7, 3, 71, 105, 48]);
+        assert_eq!(
+            parsed.to_string(),
+            "1.3.6.1.4.1.8072.9999.3.2.{ifIndex}.{ifName:str}"
+        );
+    }
+
+    #[test]
+    fn a_string_index_takes_any_text_an_integer_index_refuses() {
+        let parsed = template("1.3.6.1.4.1.8072.9999.3.1.{v:str}");
+        let mut out = Vec::new();
+        for value in ["01", "-1", "eth 0", "é"] {
+            parsed
+                .render(&labels(&[("v", value)]), &mut out)
+                .unwrap_or_else(|e| panic!("{value:?} renders: {e}"));
+            assert_eq!(
+                out[10] as usize,
+                value.len(),
+                "{value:?}: its length in bytes"
+            );
+            assert_eq!(out.len(), 11 + value.len(), "{value:?}: one arc per byte");
+        }
+    }
+
+    #[test]
+    fn an_empty_string_index_is_refused_naming_the_label() {
+        let mut out = Vec::new();
+        let parsed = template("1.3.6.1.4.1.8072.9999.3.1.{ifName:str}");
+        parsed
+            .render(&labels(&[("ifName", "x")]), &mut out)
+            .expect("one byte renders");
+        let err = parsed
+            .render(&labels(&[("ifName", "")]), &mut out)
+            .expect_err("an empty string index");
+        assert_eq!(err, RenderError::EmptyString("ifName".to_string()));
+        assert!(err.to_string().contains("`ifName` is empty"), "{err}");
+    }
+
+    #[test]
+    fn a_string_index_that_overflows_the_oid_is_refused() {
+        let parsed = template("1.3.6.1.4.1.8072.9999.3.1.{ifName:str}");
+        let mut out = Vec::new();
+        // The object has 10 arcs and the length one: 117 bytes fill 128.
+        let fits = "x".repeat(MAX_ARCS - 11);
+        parsed
+            .render(&labels(&[("ifName", &fits)]), &mut out)
+            .expect("128 arcs render");
+        assert_eq!(out.len(), MAX_ARCS);
+        let over = "x".repeat(MAX_ARCS - 10);
+        let err = parsed
+            .render(&labels(&[("ifName", &over)]), &mut out)
+            .expect_err("129 arcs");
+        assert_eq!(
+            err,
+            RenderError::TooManyArcs {
+                name: "ifName".to_string(),
+                arcs: 129
+            }
+        );
+    }
+
+    #[test]
     fn render_writes_object_then_label_arcs() {
         let parsed = template("1.3.6.1.4.1.8072.9999.2.1.7.{a}.{b}");
         let mut out = vec![99, 99];
@@ -764,12 +984,23 @@ mod tests {
 
     #[test]
     fn arcs_list_the_object_then_the_index() {
-        use TemplateArc::{Label, Literal};
+        use TemplateArc::{Label, Literal, StringLabel};
         let column = template("1.3.6.{a}.{b}");
         let scalar = template("1.3.6.0");
+        let string = template("1.3.6.{a}.{b:str}");
         assert_eq!(
             column.arcs().collect::<Vec<_>>(),
             [Literal(1), Literal(3), Literal(6), Label("a"), Label("b")]
+        );
+        assert_eq!(
+            string.arcs().collect::<Vec<_>>(),
+            [
+                Literal(1),
+                Literal(3),
+                Literal(6),
+                Label("a"),
+                StringLabel("b")
+            ]
         );
         assert_eq!(
             scalar.arcs().collect::<Vec<_>>(),
@@ -799,6 +1030,8 @@ mod tests {
     #[case::column_two_short(         "1.3.6.1.2.{x}",                 "1.3.6.1.2.1.1",     false)]
     #[case::column_reaches_with_two(  "1.3.6.1.2.{x}.{y}",             "1.3.6.1.2.1.1",     true)]
     #[case::column_beside(            "1.3.6.1.2.1.2.2.1.8.{ifIndex}", "1.3.6.1.2.1.1",     false)]
+    #[case::string_reaches_any_depth( "1.3.6.1.2.{x:str}",             "1.3.6.1.2.1.1",     true)]
+    #[case::string_beside(            "1.3.6.1.2.1.31.1.1.1.1.{x:str}", "1.3.6.1.2.1.1",    false)]
     fn can_render_under_a_prefix(#[case] text: &str, #[case] prefix: &str, #[case] expected: bool) {
         assert_eq!(template(text).can_render_under(&oid(prefix)), expected, "{text} under {prefix}");
     }
