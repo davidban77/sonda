@@ -107,7 +107,7 @@ class MatrixRow:
     # Called with repo_root on a thread while the sonda run is in flight;
     # what it returns reaches post_verify as its `during` keyword. For
     # evidence only a running sonda can give.
-    during: Callable[[Path], str] | None = None
+    during: Callable[[Path], object] | None = None
 
 
 @dataclasses.dataclass
@@ -360,12 +360,23 @@ def verify_gnmi_row(
 SNMP_RUN_S = 90.0
 # Telegraf's startup line naming the inputs it loaded.
 SNMP_LOADED_INPUTS = "Loaded inputs:"
-# The prefix of every error Telegraf's inputs.snmp logs.
-SNMP_ERROR_LINE = "E! [inputs.snmp]"
+# Every error Telegraf's inputs.snmp logs begins "E! [inputs.snmp]", or
+# "E! [inputs.snmp::<alias>]" for an input with an alias.
+SNMP_ERROR_LINE = re.compile(r"E! \[inputs\.snmp(?:::(?P<alias>[^\]]*))?\]")
+# The aliases of examples/telegraf/telegraf-snmp.conf's two inputs.snmp
+# blocks, which poll and fail independently: the SNMPv2c one and the SNMPv1
+# one (whose series are the interface_v1_ ones).
+SNMP_V2C_INPUT = "v2c"
+SNMP_V1_INPUT = "v1"
+SNMP_V1_SERIES_PREFIX = "interface_v1_"
 # The series examples/telegraf/telegraf-snmp.conf has Telegraf write, as
 # VictoriaMetrics names them: the table name + "_" + field, tagged
 # index="<ifIndex>"; and the uptime field of the top level, untagged.
 SNMP_INTERFACE_SERIES = ("interface_ifHCInOctets", "interface_ifOperStatus")
+# The same table polled over SNMPv1 (the conf's second inputs.snmp block):
+# the series every interface has, and the Counter64 ones SNMPv1 cannot carry.
+SNMP_V1_INTERFACE_SERIES = ("interface_v1_ifOperStatus", "interface_v1_ifInErrors")
+SNMP_V1_ABSENT_SERIES = ("interface_v1_ifHCInOctets", "interface_v1_ifHCOutOctets")
 SNMP_OPER_STATUS_SERIES = "interface_ifOperStatus"
 SNMP_UPTIME_SERIES = "snmp_uptime"
 SNMP_INTERFACES = ("1", "2", "3", "4")
@@ -385,8 +396,14 @@ SNMP_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf.walk")
 SNMP_WALK_COMMAND = (
     "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
 )
-# How long walk_snmp_agent retries before giving up; the walk is taken well
-# before the flap's first down at 60s.
+# The SNMPv1 walk and what it prints, masked: every instance but the
+# Counter64 ones.
+SNMP_V1_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf-v1.walk")
+SNMP_V1_WALK_COMMAND = (
+    "snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
+)
+# How long walk_snmp_versions retries both walks before giving up; both are
+# taken well before the flap's first down at 60s.
 SNMP_WALK_WITHIN_S = 30.0
 # The values that move between walks: sysUpTime and the octet counters.
 SNMP_WALK_MASKS = (
@@ -405,25 +422,27 @@ def mask_snmp_walk(walk: str) -> str:
 def walk_snmp_agent(
     repo_root: Path,
     *,
+    command: tuple[str, ...] = SNMP_WALK_COMMAND,
+    golden_path: Path = SNMP_WALK_GOLDEN,
     within_s: float = SNMP_WALK_WITHIN_S,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
     """Walk sonda's agent with net-snmp from inside the telegraf-snmp service
-    (SNMP_WALK_COMMAND with MIBS set empty), once a second until a walk
-    exits 0 printing SNMP_WALK_GOLDEN under ``repo_root`` (both masked; any
-    output when the golden cannot be read) or ``within_s`` has passed. The
+    (``command`` with MIBS set empty), once a second until a walk exits 0
+    printing ``golden_path`` under ``repo_root`` (both masked; any output
+    when the golden cannot be read) or ``within_s`` has passed. The
     scenarios publish their first values after the agent binds, so an early
     walk can see fewer instances. Returns the matching walk's stdout,
     otherwise the last attempt's: its stdout, and its stderr when it did not
     exit 0."""
     try:
-        golden: str | None = mask_snmp_walk((repo_root / SNMP_WALK_GOLDEN).read_text())
+        golden: str | None = mask_snmp_walk((repo_root / golden_path).read_text())
     except OSError:
         golden = None
     argv = compose_command(
-        repo_root, "exec", "-T", "-e", "MIBS=", "telegraf-snmp", *SNMP_WALK_COMMAND
+        repo_root, "exec", "-T", "-e", "MIBS=", "telegraf-snmp", *command
     )
     deadline = now() + within_s
     while True:
@@ -444,6 +463,67 @@ def walk_snmp_agent(
         sleep(1.0)
 
 
+@dataclasses.dataclass(frozen=True)
+class SnmpWalks:
+    """The snmp row's two in-container walks."""
+
+    # SNMP_WALK_COMMAND's output.
+    v2c: str
+    # SNMP_V1_WALK_COMMAND's output.
+    v1: str
+
+
+def walk_snmp_versions(
+    repo_root: Path,
+    *,
+    within_s: float = SNMP_WALK_WITHIN_S,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> SnmpWalks:
+    """:func:`walk_snmp_agent` over SNMPv2c against SNMP_WALK_GOLDEN, then
+    over SNMPv1 against SNMP_V1_WALK_GOLDEN with what is left of
+    ``within_s`` (at least a second), so both walks finish within one
+    window."""
+    deadline = now() + within_s
+    v2c = walk_snmp_agent(repo_root, within_s=within_s, run=run, now=now, sleep=sleep)
+    v1 = walk_snmp_agent(
+        repo_root,
+        command=SNMP_V1_WALK_COMMAND,
+        golden_path=SNMP_V1_WALK_GOLDEN,
+        within_s=max(deadline - now(), 1.0),
+        run=run,
+        now=now,
+        sleep=sleep,
+    )
+    return SnmpWalks(v2c=v2c, v1=v1)
+
+
+def walk_finding(walk: str, golden: str, name: str, golden_path: Path) -> str | None:
+    """Why ``walk``, masked, is not ``golden``, masked, with the first lines
+    of the diff; None when it is. ``name`` names the walk."""
+    if not walk.strip():
+        return f"the in-container {name} printed nothing"
+    if mask_snmp_walk(walk) == mask_snmp_walk(golden):
+        return None
+    diff = difflib.unified_diff(
+        mask_snmp_walk(golden).splitlines(),
+        mask_snmp_walk(walk).splitlines(),
+        str(golden_path),
+        f"the {name}",
+        lineterm="",
+        n=1,
+    )
+    return f"the in-container {name} differs from {golden_path}:\n" + "\n".join(
+        list(diff)[:40]
+    )
+
+
+def snmp_input_of(series: str) -> str:
+    """The alias of the conf's inputs.snmp block that writes ``series``."""
+    return SNMP_V1_INPUT if series.startswith(SNMP_V1_SERIES_PREFIX) else SNMP_V2C_INPUT
+
+
 def telegraf_log_stamp(line: str) -> float | None:
     """The UTC time, in seconds since the epoch, that begins a Telegraf log
     line; None when the line carries none."""
@@ -461,24 +541,37 @@ def snmp_findings(
     golden: str,
     started_s: float,
     ended_s: float,
+    *,
+    v1_walk: str,
+    v1_golden: str,
 ) -> list[str]:
     """Every way the snmp row's evidence falls short, in check order; empty
     when all hold.
 
     Only samples timestamped within [started_s, ended_s] count. In order:
     Telegraf logged a SNMP_LOADED_INPUTS line naming snmp; no SNMP_ERROR_LINE
-    is stamped after the second of the first sample and at least a second
-    before ended_s, or carries no stamp (a poll that began before sonda
-    listened logs its error before the first poll that succeeds begins,
-    and a sample is stamped when its poll begins; an error in the second
-    the run ended may be the first poll after sonda stopped); some sample
+    is stamped after the second of its input's first sample and at least a
+    second before ended_s, or carries no stamp (a poll that began before
+    sonda listened logs its error before the first poll of the same input
+    that succeeds begins, and a sample is stamped when its poll begins; the
+    two inputs poll independently, so one input's first sample says nothing
+    about the other's polls; an error in the second the run ended may be the
+    first poll after sonda stopped). An error's input is the alias in its
+    prefix (SNMP_V2C_INPUT, SNMP_V1_INPUT); a series' input is
+    :func:`snmp_input_of` it. An error naming no known alias is measured
+    from the first sample of any input; an input with no sample, from the
+    run's start; some sample
     exists (with none, named with SNMP_EXPORT_MATCH, the checks after this
     one do not run); each SNMP_INTERFACE_SERIES has at least
     SNMP_MIN_SAMPLES samples for each interface within SNMP_SAMPLES_WITHIN_S
     of the first sample; SNMP_UPTIME_SERIES has at least SNMP_MIN_SAMPLES
     samples, each greater than the one before; the flapping interface's
-    ifOperStatus takes every SNMP_OPER_STATUS_CODES value; and ``walk``,
-    masked, is ``golden``, masked (an empty walk is named as such).
+    ifOperStatus takes every SNMP_OPER_STATUS_CODES value; each
+    SNMP_V1_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES samples for each
+    interface within SNMP_SAMPLES_WITHIN_S of the first sample, and no
+    SNMP_V1_ABSENT_SERIES has any sample; ``walk``, masked, is ``golden``,
+    masked, and ``v1_walk`` is ``v1_golden`` (an empty walk is named as
+    such).
     """
     findings: list[str] = []
     loaded = any(
@@ -496,10 +589,24 @@ def snmp_findings(
     }
     timestamps = [ts for pairs in in_window.values() for ts, _ in pairs]
     first_ms = min(timestamps) if timestamps else None
-    after_s = first_ms // 1000 if first_ms is not None else math.floor(started_s) - 1
+    input_first_ms: dict[str, int] = {}
+    for (series, _), pairs in in_window.items():
+        if pairs:
+            alias = snmp_input_of(series)
+            input_first_ms[alias] = min(input_first_ms.get(alias, pairs[0][0]), pairs[0][0])
+
+    def excused_until_s(first: int | None) -> float:
+        return first // 1000 if first is not None else math.floor(started_s) - 1
+
     for line in telegraf_log.splitlines():
-        if SNMP_ERROR_LINE not in line:
+        error = SNMP_ERROR_LINE.search(line)
+        if error is None:
             continue
+        alias = error.group("alias")
+        if alias in (SNMP_V2C_INPUT, SNMP_V1_INPUT):
+            after_s = excused_until_s(input_first_ms.get(alias))
+        else:
+            after_s = excused_until_s(first_ms)
         stamp = telegraf_log_stamp(line)
         if stamp is None or after_s < stamp <= ended_s - 1:
             findings.append(f"telegraf logged an error while sonda served: {line.strip()}")
@@ -511,16 +618,20 @@ def snmp_findings(
         return findings
 
     within_ms = first_ms + int(SNMP_SAMPLES_WITHIN_S * 1000)
-    for series in SNMP_INTERFACE_SERIES:
-        for index in SNMP_INTERFACES:
-            pairs = in_window.get((series, index), [])
-            count = sum(1 for ts, _ in pairs if ts <= within_ms)
-            if count < SNMP_MIN_SAMPLES:
-                findings.append(
-                    f'{series}{{index="{index}"}}: {count} sample(s) within '
-                    f"{SNMP_SAMPLES_WITHIN_S:.0f}s of the first sample, want >= "
-                    f"{SNMP_MIN_SAMPLES}"
-                )
+
+    def every_interface(series_names: tuple[str, ...]) -> None:
+        for series in series_names:
+            for index in SNMP_INTERFACES:
+                pairs = in_window.get((series, index), [])
+                count = sum(1 for ts, _ in pairs if ts <= within_ms)
+                if count < SNMP_MIN_SAMPLES:
+                    findings.append(
+                        f'{series}{{index="{index}"}}: {count} sample(s) within '
+                        f"{SNMP_SAMPLES_WITHIN_S:.0f}s of the first sample, want >= "
+                        f"{SNMP_MIN_SAMPLES}"
+                    )
+
+    every_interface(SNMP_INTERFACE_SERIES)
 
     uptime = in_window.get((SNMP_UPTIME_SERIES, ""), [])
     if len(uptime) < SNMP_MIN_SAMPLES:
@@ -543,30 +654,32 @@ def snmp_findings(
                 f"never took {state} ({code:g}) within the run; saw {sorted(seen)}"
             )
 
-    if not walk.strip():
-        findings.append("the in-container walk printed nothing")
-    elif mask_snmp_walk(walk) != mask_snmp_walk(golden):
-        diff = difflib.unified_diff(
-            mask_snmp_walk(golden).splitlines(),
-            mask_snmp_walk(walk).splitlines(),
-            str(SNMP_WALK_GOLDEN),
-            "the walk",
-            lineterm="",
-            n=1,
-        )
-        findings.append(
-            f"the in-container walk differs from {SNMP_WALK_GOLDEN}:\n"
-            + "\n".join(list(diff)[:40])
-        )
+    every_interface(SNMP_V1_INTERFACE_SERIES)
+    for series in SNMP_V1_ABSENT_SERIES:
+        carried = sorted(index for name, index in in_window if name == series)
+        if carried:
+            findings.append(
+                f"{series}: samples for index {', '.join(carried)}; SNMPv1 carries "
+                "no Counter64, so the agent must skip the column"
+            )
+
+    for found in (
+        walk_finding(walk, golden, "walk", SNMP_WALK_GOLDEN),
+        walk_finding(v1_walk, v1_golden, "v1 walk", SNMP_V1_WALK_GOLDEN),
+    ):
+        if found is not None:
+            findings.append(found)
     return findings
 
 
 def verify_snmp_row(
-    repo_root: Path, started_s: float, ended_s: float, during: str = ""
+    repo_root: Path, started_s: float, ended_s: float, during: SnmpWalks | str = ""
 ) -> str:
     """Collect the telegraf-snmp service's log, the run's samples matching
-    SNMP_EXPORT_MATCH and SNMP_WALK_GOLDEN, then apply :func:`snmp_findings`
-    with ``during``, the walk :func:`walk_snmp_agent` took."""
+    SNMP_EXPORT_MATCH, SNMP_WALK_GOLDEN and SNMP_V1_WALK_GOLDEN, then apply
+    :func:`snmp_findings` with ``during``, the walks
+    :func:`walk_snmp_versions` took; a text ``during`` (no hook, or the
+    hook's failure) stands for both walks."""
     telegraf_log = compose_logs_tail(repo_root, "telegraf-snmp", tail_lines=None)
     query = urllib.parse.urlencode(
         {
@@ -578,18 +691,23 @@ def verify_snmp_row(
     status, body = http_get(f"http://localhost:8428/api/v1/export?{query}")
     if status != 200:
         return f"VictoriaMetrics export answered {status}: {body[:200]!r}"
-    try:
-        golden = (repo_root / SNMP_WALK_GOLDEN).read_text()
-    except OSError as e:
-        return f"cannot read {SNMP_WALK_GOLDEN}: {e}"
+    goldens = []
+    for path in (SNMP_WALK_GOLDEN, SNMP_V1_WALK_GOLDEN):
+        try:
+            goldens.append((repo_root / path).read_text())
+        except OSError as e:
+            return f"cannot read {path}: {e}"
+    walks = during if isinstance(during, SnmpWalks) else SnmpWalks(v2c=during, v1=during)
     return "\n".join(
         snmp_findings(
             telegraf_log,
             parse_vm_export(body, label="index"),
-            during,
-            golden,
+            walks.v2c,
+            goldens[0],
             started_s,
             ended_s,
+            v1_walk=walks.v1,
+            v1_golden=goldens[1],
         )
     )
 
@@ -862,10 +980,11 @@ MATRIX: tuple[MatrixRow, ...] = (
     ),
     # -- SNMP: sonda is the agent and Telegraf (profile snmp) the poller.
     # `sonda run` serves for SNMP_RUN_S while Telegraf polls it every 2s and
-    # writes to VictoriaMetrics, and walk_snmp_agent walks it from inside the
+    # writes to VictoriaMetrics over SNMPv2c and SNMPv1, and
+    # walk_snmp_versions walks it in both versions from inside the
     # telegraf-snmp container. The verify URL proves some series arrived at
-    # all; verify_snmp_row then checks each interface, the uptime, the flap
-    # and the walk against its golden file.
+    # all; verify_snmp_row then checks each interface in both tables, the
+    # uptime, the flap and each walk against its golden file.
     MatrixRow(
         name="snmp",
         profiles=("snmp",),
@@ -878,7 +997,7 @@ MATRIX: tuple[MatrixRow, ...] = (
         failure_log_containers=("telegraf-snmp", "victoriametrics"),
         extra_args=("--duration", f"{SNMP_RUN_S:.0f}s"),
         timeout_s=SNMP_RUN_S + 60.0,
-        during=walk_snmp_agent,
+        during=walk_snmp_versions,
         post_verify=verify_snmp_row,
     ),
 )

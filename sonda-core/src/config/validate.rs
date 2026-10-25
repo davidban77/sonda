@@ -5254,6 +5254,50 @@ generator:
         assert!(msg.contains("max_message_size"), "{msg}");
     }
 
+    /// Validation refuses an `snmp_agent` sink's empty or repeated
+    /// `versions` through `settings()`, and two entries of one file on one
+    /// address whose `versions` differ, naming both lists; the same versions
+    /// in another order share the address.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn validation_checks_the_snmp_agent_versions() {
+        use crate::config::ScenarioEntry;
+        use crate::schedule::launch::prepare_entries;
+        use crate::sink::snmp::SnmpVersion::{V2c, V1};
+
+        let with = |versions: &[crate::sink::snmp::SnmpVersion]| {
+            let mut config = snmp_config();
+            let SinkConfig::SnmpAgent(sink) = &mut config.base.sink else {
+                panic!("the baseline is on an snmp_agent sink");
+            };
+            sink.versions = versions.to_vec();
+            config
+        };
+        validate_config(&with(&[V1, V2c])).expect("v1 and v2c validate");
+        let msg = err_msg(validate_config(&with(&[])));
+        assert!(
+            msg.contains("versions must name at least one version"),
+            "{msg}"
+        );
+        let msg = err_msg(validate_config(&with(&[V1, V1])));
+        assert!(msg.contains("versions names v1 more than once"), "{msg}");
+
+        let file = |a: &[_], b: &[_]| {
+            prepare_entries(vec![
+                ScenarioEntry::Metrics(with(a)),
+                ScenarioEntry::Metrics(with(b)),
+            ])
+            .map(|_| ())
+        };
+        file(&[V1, V2c], &[V2c, V1]).expect("the same versions share the address");
+        let msg = err_msg(file(&[V1, V2c], &[V2c]));
+        assert!(
+            msg.contains("snmp_agent 127.0.0.1:1161 with different settings")
+                && msg.contains("versions [v1, v2c] and [v2c]"),
+            "{msg}"
+        );
+    }
+
     #[test]
     fn validate_sink_config_stdout_is_ok() {
         assert!(validate_sink_config(&SinkConfig::Stdout).is_ok());

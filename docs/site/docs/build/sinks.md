@@ -721,9 +721,10 @@ Pair this sink with the [`snmp` encoder](encoders.md#snmp), which renders each s
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `listen` | string | yes | -- | Address to listen on, for example `"0.0.0.0:1161"`. See [Ports](#snmp-ports). |
-| `community` | string | no | `public` | The SNMPv2c community a request must carry. |
+| `community` | string | no | `public` | The community a request must carry. |
 | `max_message_size` | integer | no | `1472` | The largest reply the agent sends, in bytes, 484 to 65507. 1472 is the UDP payload of an Ethernet frame. |
 | `system` | object | no | see below | The values of the system group, `1.3.6.1.2.1.1`. |
+| `versions` | list | no | `[v2c]` | The SNMP versions the agent answers: `v1`, `v2c`, or both, each once. See [SNMPv1](#snmp-v1). |
 
 | `system` field | MIB object | Default | Description |
 |----------------|------------|---------|-------------|
@@ -746,7 +747,7 @@ sink:
     location: lab-1
 ```
 
-Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set `community`, `max_message_size` and `system` alike; a difference is refused, naming the fields that differ but never a community. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.
+Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set `community`, `max_message_size`, `system` and `versions` alike (`versions` in any order); a difference is refused, naming the fields that differ but never a community. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.
 
 The agent serves the system group and every instance its entries publish, in OID order, which is the order a walk visits them in. `sysUpTime` counts hundredths of a second from when the agent started listening. No entry may publish under `1.3.6.1.2.1.1`. A request reads:
 
@@ -761,7 +762,7 @@ An instance leaves the agent when the last scenario publishing it stops (scenari
 
 ### Requests { #snmp-requests }
 
-The agent answers SNMPv2c. Each datagram is checked in turn: its version, then its community, then its operation.
+The agent answers SNMPv2c, and SNMPv1 when `versions` lists it. Each datagram is checked in turn: its version, then its community, then its operation. This table is SNMPv2c's; [SNMPv1](#snmp-v1) lists what differs.
 
 | Received | Answer |
 |----------|--------|
@@ -772,10 +773,25 @@ The agent answers SNMPv2c. Each datagram is checked in turn: its version, then i
 | A request with no OIDs | An empty answer, no error. |
 | An `INFORM`, a trap, a `REPORT` or a response | Dropped. |
 | Another community | Dropped. Logged at warn at most once a minute per sender IP, with the community's length and never its value. |
-| SNMPv1 or SNMPv3 | Dropped, the community never compared. |
+| A version `versions` does not list, or SNMPv3 | Dropped, the community never compared. |
 | Anything that is not an SNMP message | Dropped. |
 
 Every answer fits in `max_message_size` bytes. A `GETBULK` answer ends before the first value that would not fit, and is sent with the values before it. A `GET`, `GETNEXT` or `SET` whose answer does not fit is answered `tooBig` with no values, and logged at warn at most once a minute, naming the request's first OID and the size. Answers go to the address and port the request came from, and leave from the address the request was sent to, also when `listen` is a wildcard such as `0.0.0.0` or `[::]` (on Linux and macOS), so a poller that accepts replies only from the address it polled, as Telegraf does, receives them.
+
+### SNMPv1 { #snmp-v1 }
+
+With `versions: [v1, v2c]`, or `[v1]`, the agent also answers SNMPv1, as RFC 1157 and RFC 3584 describe. An answer carries the version of its request. SNMPv1 has no `counter64` type and no exceptions in its values, so the answers differ from SNMPv2c's:
+
+| Received over SNMPv1 | Answer |
+|----------------------|--------|
+| `GET` | Each OID's value. The first OID that has no instance (where SNMPv2c answers `noSuchInstance` or `noSuchObject`), or whose value is a `counter64`, makes the answer `noSuchName` (error status 2) with that OID's position, from 1, as the error index, and the request's OIDs and values unchanged. |
+| `GETNEXT` | Each OID's next instance in OID order, passing over every `counter64` instance. The first OID with no instance after it (where SNMPv2c answers `endOfMibView`) makes the answer `noSuchName` at its position, the request's OIDs and values unchanged. |
+| `GETBULK` | Dropped: SNMPv1 has none. |
+| `SET` | `noSuchName` at error index 1, the request's values echoed. Nothing changes. |
+| A trap | Dropped. |
+| An answer that does not fit | `tooBig` with the request's OIDs and values unchanged, where SNMPv2c sends none; dropped when even that does not fit. An OID that makes the answer `noSuchName` decides it first. |
+
+A walk over SNMPv1 therefore reads every instance but the `counter64` ones: `ifInErrors` and `ifOperStatus`, not `ifHCInOctets`.
 
 ### Ports { #snmp-ports }
 
@@ -788,6 +804,7 @@ With the agent running, net-snmp's tools read it directly:
 ```bash
 snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
 snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
+snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1    # when versions lists v1
 ```
 
 ### Telegraf { #snmp-telegraf }
@@ -808,6 +825,7 @@ defaults:
     type: snmp_agent
     listen: 0.0.0.0:1161
     community: public
+    versions: [v1, v2c]
     system:
       name: rtr-core-01
       descr: Sonda synthetic router
@@ -827,9 +845,9 @@ scenarios:
           enum: oper_state
 ```
 
-Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc, `device` is the agent label, and the agent serves no OID for `ifName`, `ifAlias` or `job`, so the encoder drops them. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5.
+Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc, `device` is the agent label, and the agent serves no OID for `ifName`, `ifAlias` or `job`, so the encoder drops them. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1 and SNMPv2c.
 
-Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK`. Every OID is numeric, so Telegraf loads no MIB:
+Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK` over SNMPv2c. Every OID is numeric, so Telegraf loads no MIB:
 
 ```toml title="examples/telegraf/telegraf-snmp.conf (excerpt)"
 [[inputs.snmp]]
@@ -860,11 +878,28 @@ Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the
       oid = ".1.3.6.1.2.1.31.1.1.1.6"
 ```
 
-The table's `name` becomes the measurement and each row's index the `index` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets` and writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface:
+The table's `name` becomes the measurement and each row's index the `index` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets`, and walks the same table again over SNMPv1 as `interface_v1`, with `GETNEXT`. Telegraf writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface. The SNMPv1 table has no `ifHCInOctets` or `ifHCOutOctets` series, because the agent passes over `counter64` instances for an SNMPv1 poller:
+
+```toml title="examples/telegraf/telegraf-snmp.conf (the SNMPv1 block, excerpt)"
+[[inputs.snmp]]
+  agents = ["udp://sonda:1161"]
+  version = 1
+  community = "public"
+  agent_host_tag = "source"
+
+  [[inputs.snmp.table]]
+    name = "interface_v1"
+    index_as_tag = true
+
+    [[inputs.snmp.table.field]]
+      name = "ifOperStatus"
+      oid = ".1.3.6.1.2.1.2.2.1.8"
+```
 
 ```text title="What VictoriaMetrics stores (excerpt)"
 interface_ifOperStatus{db="telegraf",index="1",source="sonda"}
 interface_ifHCInOctets{db="telegraf",index="1",source="sonda"}
+interface_v1_ifOperStatus{db="telegraf",index="1",source="sonda"}
 snmp_uptime{db="telegraf",hostname="rtr-core-01",source="sonda"}
 ```
 
@@ -880,6 +915,8 @@ The Telegraf image ships net-snmp, so the agent can be walked from inside the co
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
   snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
+docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
+  snmpwalk -v1 -c public -On sonda:1161 1.3.6.1.2.1
 ```
 
 ## Retry with backoff
