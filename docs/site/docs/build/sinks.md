@@ -775,7 +775,7 @@ The agent answers SNMPv2c. Each datagram is checked in turn: its version, then i
 | SNMPv1 or SNMPv3 | Dropped, the community never compared. |
 | Anything that is not an SNMP message | Dropped. |
 
-Every answer fits in `max_message_size` bytes. A `GETBULK` answer ends before the first value that would not fit, and is sent with the values before it. A `GET`, `GETNEXT` or `SET` whose answer does not fit is answered `tooBig` with no values, and logged at warn at most once a minute, naming the request's first OID and the size. Answers go to the address and port the request came from.
+Every answer fits in `max_message_size` bytes. A `GETBULK` answer ends before the first value that would not fit, and is sent with the values before it. A `GET`, `GETNEXT` or `SET` whose answer does not fit is answered `tooBig` with no values, and logged at warn at most once a minute, naming the request's first OID and the size. Answers go to the address and port the request came from, and leave from the address the request was sent to, also when `listen` is a wildcard such as `0.0.0.0` or `[::]` (on Linux and macOS), so a poller that accepts replies only from the address it polled, as Telegraf does, receives them.
 
 ### Ports { #snmp-ports }
 

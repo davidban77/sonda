@@ -41,7 +41,7 @@ kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]
 gnmi = ["dep:prost", "dep:tonic", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "dep:rustls", "dep:rustls-pki-types", "runtime"]
-snmp = ["dep:bytes", "runtime"]
+snmp = ["dep:bytes", "dep:nix", "runtime"]
 # JSON Schema for the scenario config types. Implies `config`: schemars
 # reads the `#[serde(...)]` attributes to know the WIRE shape, and those
 # attributes are themselves behind the config feature.
@@ -71,6 +71,11 @@ http = { version = "1", optional = true }
 tower = { version = "0.5", default-features = false, optional = true }
 tokio-stream = { version = "0.1", default-features = false, optional = true }
 schemars = { version = "1", optional = true }
+
+# The snmp_agent responder's recvmsg/sendmsg with packet info, on the targets
+# where it pins a wildcard bind's reply source.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "net", "uio"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

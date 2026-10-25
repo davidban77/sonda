@@ -4,6 +4,14 @@
 //! into a caller's buffer, and [`serve`] is the task that reads the socket
 //! and sends each response to the datagram's source.
 //!
+//! A response leaves from the address its request was sent to. On a
+//! specific-address bind the socket guarantees it; on a wildcard bind
+//! (`0.0.0.0` or `[::]`) the socket reports each datagram's packet info
+//! (`IP_PKTINFO` / `IPV6_RECVPKTINFO`, Linux and macOS) and the response
+//! is sent with [`reply_source`]'s address in its packet-info control
+//! message. Elsewhere a wildcard bind's responses leave from the address
+//! the route chooses.
+//!
 //! | Received | Answer |
 //! |---|---|
 //! | `GetRequest` | each varbind its instance's value, `noSuchInstance` or `noSuchObject`; error-status `noError` |
@@ -21,7 +29,8 @@
 //! request with no varbinds is answered with none, `noError`.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::Range;
 use std::sync::Weak;
 use std::time::Duration;
@@ -346,7 +355,8 @@ fn undecodable(agent: &SnmpAgent, e: BerError) -> Outcome {
 }
 
 /// Read datagrams until `cancel` fires or the agent is gone, answering each
-/// to its source.
+/// to its source, from the address it was sent to when the socket reports
+/// packet info ([`enable_pktinfo`]).
 ///
 /// A wrong community is logged at warn once per peer IP per
 /// [`WARN_INTERVAL`](super::agent::WARN_INTERVAL), with the community's
@@ -357,15 +367,16 @@ pub(crate) async fn serve(socket: UdpSocket, agent: Weak<SnmpAgent>, cancel: Can
     let mut out = Vec::new();
     let mut scratch = Scratch::default();
     let mut warned = PeerWarnings::default();
+    let pktinfo = pktinfo::enabled(&socket);
     loop {
         let received = tokio::select! {
             () = cancel.cancelled() => break,
-            received = socket.recv_from(&mut datagram) => received,
+            received = recv(&socket, &mut datagram, pktinfo) => received,
         };
         let Some(strong) = agent.upgrade() else {
             break;
         };
-        let (len, peer) = match received {
+        let Datagram { bytes, peer, from } = match received {
             Ok(received) => received,
             Err(e) => {
                 tracing::debug!(error = %e, addr = %strong.local_addr(), "snmp_agent receive failed");
@@ -380,35 +391,360 @@ pub(crate) async fn serve(socket: UdpSocket, agent: Weak<SnmpAgent>, cancel: Can
         let budget = strong.settings().max_message_size;
         out.clear();
         out.reserve(budget);
-        let outcome = respond(
-            &datagram[..len],
-            &strong,
-            budget,
-            &mut scratch,
-            &mut out,
-            |request| {
-                if !warned.due(peer.ip()) {
-                    return;
-                }
-                tracing::warn!(
-                    addr = %strong.local_addr(),
-                    %peer,
-                    community_len = request.community.len(),
-                    "snmp_agent dropped a request from {peer} with another community ({} bytes)",
-                    request.community.len()
-                );
-            },
-        );
+        let outcome = respond(bytes, &strong, budget, &mut scratch, &mut out, |request| {
+            if !warned.due(peer.ip()) {
+                return;
+            }
+            tracing::warn!(
+                addr = %strong.local_addr(),
+                %peer,
+                community_len = request.community.len(),
+                "snmp_agent dropped a request from {peer} with another community ({} bytes)",
+                request.community.len()
+            );
+        });
         drop(strong);
         if outcome != Outcome::Sent {
             continue;
         }
-        if let Err(e) = socket.send_to(&out, peer).await {
+        if let Err(e) = send(&socket, &out, peer, from).await {
             if let Some(strong) = agent.upgrade() {
                 strong.count(Counter::SendErrors);
                 tracing::debug!(error = %e, addr = %strong.local_addr(), %peer, "snmp_agent send failed");
             }
         }
+    }
+}
+
+/// A datagram the responder read.
+#[derive(Debug)]
+struct Datagram<'a> {
+    bytes: &'a [u8],
+    peer: SocketAddr,
+    /// Where its response leaves from: [`reply_source`] of its packet info,
+    /// when the socket reported it.
+    from: Option<ReplySource>,
+}
+
+/// The source of a response, as a packet-info control message carries it.
+/// An unspecified `addr` leaves the address to the kernel; an `ifindex` of
+/// 0 leaves the interface to the route. An IPv4 source has no interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplySource {
+    addr: IpAddr,
+    ifindex: u32,
+}
+
+/// The packet info a datagram arrived with.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketInfo {
+    /// `IP_PKTINFO`: the header's destination, and the local address the
+    /// datagram was received for (`ipi_spec_dst`: the receiving interface's
+    /// address for a broadcast or multicast; unspecified where the platform
+    /// does not report it).
+    V4 {
+        destination: Ipv4Addr,
+        local: Ipv4Addr,
+    },
+    /// `IPV6_PKTINFO`: the header's destination and the receiving interface.
+    /// An IPv4 datagram on a dual-stack socket has its destination
+    /// IPv4-mapped.
+    V6 { destination: Ipv6Addr, ifindex: u32 },
+}
+
+/// The source of the response to a datagram that arrived with `info`: the
+/// local unicast address it was received for.
+///
+/// IPv4: the local address; where it is unspecified, the destination when
+/// that is unicast, otherwise none (the response leaves as `send_to` sends
+/// it). IPv6: the destination when it is unicast, otherwise the receiving
+/// interface with the address unspecified. An IPv4-mapped destination is
+/// unicast unless it maps a multicast, the limited broadcast or the
+/// unspecified address; otherwise its unspecified address is IPv4-mapped
+/// too.
+fn reply_source(info: PacketInfo) -> Option<ReplySource> {
+    let unicast =
+        |addr: Ipv4Addr| !(addr.is_multicast() || addr.is_broadcast() || addr.is_unspecified());
+    match info {
+        PacketInfo::V4 { destination, local } => {
+            let addr = if !local.is_unspecified() {
+                local
+            } else if unicast(destination) {
+                destination
+            } else {
+                return None;
+            };
+            Some(ReplySource {
+                addr: IpAddr::V4(addr),
+                ifindex: 0,
+            })
+        }
+        PacketInfo::V6 {
+            destination,
+            ifindex,
+        } => {
+            let (is_unicast, unspecified) = match destination.to_ipv4_mapped() {
+                Some(mapped) => (unicast(mapped), Ipv4Addr::UNSPECIFIED.to_ipv6_mapped()),
+                None => (
+                    !(destination.is_multicast() || destination.is_unspecified()),
+                    Ipv6Addr::UNSPECIFIED,
+                ),
+            };
+            Some(if is_unicast {
+                ReplySource {
+                    addr: IpAddr::V6(destination),
+                    ifindex: 0,
+                }
+            } else {
+                ReplySource {
+                    addr: IpAddr::V6(unspecified),
+                    ifindex,
+                }
+            })
+        }
+    }
+}
+
+/// Whether a socket bound to `local` needs packet info to answer from the
+/// address each request was sent to: a wildcard address.
+pub(crate) fn wants_pktinfo(local: SocketAddr) -> bool {
+    local.ip().is_unspecified()
+}
+
+/// Have `socket`, bound to `local`, report each datagram's packet info
+/// (`IP_PKTINFO` or `IPV6_RECVPKTINFO`, by the address family), which
+/// [`serve`] then answers from.
+///
+/// # Errors
+///
+/// The socket option's error, or [`io::ErrorKind::Unsupported`] on a
+/// platform other than Linux and macOS.
+pub(crate) fn enable_pktinfo(socket: &UdpSocket, local: SocketAddr) -> io::Result<()> {
+    pktinfo::enable(socket, local)
+}
+
+/// Read one datagram into `buf`: with `recvmsg` and its packet info when
+/// `pktinfo`, with `recv_from` otherwise.
+async fn recv<'b>(
+    socket: &UdpSocket,
+    buf: &'b mut [u8],
+    pktinfo: bool,
+) -> io::Result<Datagram<'b>> {
+    let (len, peer, info) = if pktinfo {
+        pktinfo::recv(socket, &mut *buf).await?
+    } else {
+        let (len, peer) = socket.recv_from(&mut *buf).await?;
+        (len, peer, None)
+    };
+    let buf: &'b [u8] = buf;
+    Ok(Datagram {
+        bytes: &buf[..len],
+        peer,
+        from: info.and_then(reply_source),
+    })
+}
+
+/// Send `reply` to `to`: with `send_to` when `from` is `None`, otherwise
+/// with `sendmsg` carrying `from` as its packet info.
+async fn send(
+    socket: &UdpSocket,
+    reply: &[u8],
+    to: SocketAddr,
+    from: Option<ReplySource>,
+) -> io::Result<usize> {
+    match from {
+        None => socket.send_to(reply, to).await,
+        Some(from) => pktinfo::send(socket, reply, to, from).await,
+    }
+}
+
+/// `recvmsg` and `sendmsg` with packet info, through the socket's readiness.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod pktinfo {
+    use std::io::{self, IoSlice, IoSliceMut};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+    use std::os::fd::AsRawFd;
+
+    use nix::libc;
+    use nix::sys::socket::{
+        self, sockopt, ControlMessage, ControlMessageOwned, MsgFlags, SockaddrStorage,
+    };
+    use tokio::io::Interest;
+    use tokio::net::UdpSocket;
+
+    use super::{PacketInfo, ReplySource};
+
+    /// Room for one packet-info control message of either family, aligned
+    /// as a `cmsghdr`.
+    #[repr(C, align(8))]
+    struct Control([u8; 64]);
+
+    pub(super) fn enable(socket: &UdpSocket, local: SocketAddr) -> io::Result<()> {
+        match local {
+            SocketAddr::V4(_) => socket::setsockopt(socket, sockopt::Ipv4PacketInfo, &true),
+            SocketAddr::V6(_) => socket::setsockopt(socket, sockopt::Ipv6RecvPacketInfo, &true),
+        }
+        .map_err(io::Error::from)
+    }
+
+    /// Whether `socket` reports packet info.
+    pub(super) fn enabled(socket: &UdpSocket) -> bool {
+        match socket.local_addr() {
+            Ok(SocketAddr::V4(_)) => socket::getsockopt(socket, sockopt::Ipv4PacketInfo),
+            Ok(SocketAddr::V6(_)) => socket::getsockopt(socket, sockopt::Ipv6RecvPacketInfo),
+            Err(_) => return false,
+        }
+        .unwrap_or(false)
+    }
+
+    pub(super) async fn recv(
+        socket: &UdpSocket,
+        buf: &mut [u8],
+    ) -> io::Result<(usize, SocketAddr, Option<PacketInfo>)> {
+        let fd = socket.as_raw_fd();
+        let mut control = Control([0; 64]);
+        loop {
+            socket.readable().await?;
+            let received = socket.try_io(Interest::READABLE, || {
+                let mut iov = [IoSliceMut::new(&mut *buf)];
+                let message = socket::recvmsg::<SockaddrStorage>(
+                    fd,
+                    &mut iov,
+                    Some(&mut control.0),
+                    MsgFlags::empty(),
+                )?;
+                let peer = message
+                    .address
+                    .as_ref()
+                    .and_then(socket_addr)
+                    .ok_or_else(|| io::Error::other("recvmsg reported no peer address"))?;
+                let info = message
+                    .cmsgs()
+                    .ok()
+                    .and_then(|mut cmsgs| cmsgs.find_map(packet_info));
+                Ok((message.bytes, peer, info))
+            });
+            match received {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                received => return received,
+            }
+        }
+    }
+
+    pub(super) async fn send(
+        socket: &UdpSocket,
+        reply: &[u8],
+        to: SocketAddr,
+        from: ReplySource,
+    ) -> io::Result<usize> {
+        let fd = socket.as_raw_fd();
+        let iov = [IoSlice::new(reply)];
+        let to = SockaddrStorage::from(to);
+        let (v4, v6);
+        let cmsgs = [match from.addr {
+            IpAddr::V4(addr) => {
+                v4 = libc::in_pktinfo {
+                    ipi_ifindex: 0,
+                    ipi_spec_dst: in_addr(addr),
+                    ipi_addr: in_addr(Ipv4Addr::UNSPECIFIED),
+                };
+                ControlMessage::Ipv4PacketInfo(&v4)
+            }
+            IpAddr::V6(addr) => {
+                v6 = libc::in6_pktinfo {
+                    ipi6_addr: libc::in6_addr {
+                        s6_addr: addr.octets(),
+                    },
+                    ipi6_ifindex: from.ifindex,
+                };
+                ControlMessage::Ipv6PacketInfo(&v6)
+            }
+        }];
+        loop {
+            socket.writable().await?;
+            let sent = socket.try_io(Interest::WRITABLE, || {
+                socket::sendmsg(fd, &iov, &cmsgs, MsgFlags::empty(), Some(&to))
+                    .map_err(io::Error::from)
+            });
+            match sent {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                sent => return sent,
+            }
+        }
+    }
+
+    fn socket_addr(address: &SockaddrStorage) -> Option<SocketAddr> {
+        if let Some(v4) = address.as_sockaddr_in() {
+            return Some(SocketAddr::V4(SocketAddrV4::from(*v4)));
+        }
+        address
+            .as_sockaddr_in6()
+            .map(|v6| SocketAddr::V6(SocketAddrV6::from(*v6)))
+    }
+
+    fn packet_info(cmsg: ControlMessageOwned) -> Option<PacketInfo> {
+        match cmsg {
+            ControlMessageOwned::Ipv4PacketInfo(info) => Some(PacketInfo::V4 {
+                destination: ipv4(info.ipi_addr),
+                local: ipv4(info.ipi_spec_dst),
+            }),
+            ControlMessageOwned::Ipv6PacketInfo(info) => Some(PacketInfo::V6 {
+                destination: Ipv6Addr::from(info.ipi6_addr.s6_addr),
+                ifindex: info.ipi6_ifindex,
+            }),
+            _ => None,
+        }
+    }
+
+    fn ipv4(addr: libc::in_addr) -> Ipv4Addr {
+        Ipv4Addr::from(u32::from_be(addr.s_addr))
+    }
+
+    fn in_addr(addr: Ipv4Addr) -> libc::in_addr {
+        libc::in_addr {
+            s_addr: u32::from(addr).to_be(),
+        }
+    }
+}
+
+/// Without packet info: every datagram is read with `recv_from` and every
+/// response sent with `send_to`.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+mod pktinfo {
+    use std::io;
+    use std::net::SocketAddr;
+
+    use tokio::net::UdpSocket;
+
+    use super::{PacketInfo, ReplySource};
+
+    pub(super) fn enable(_: &UdpSocket, _: SocketAddr) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "packet info is not available on this platform",
+        ))
+    }
+
+    pub(super) fn enabled(_: &UdpSocket) -> bool {
+        false
+    }
+
+    pub(super) async fn recv(
+        socket: &UdpSocket,
+        buf: &mut [u8],
+    ) -> io::Result<(usize, SocketAddr, Option<PacketInfo>)> {
+        let (len, peer) = socket.recv_from(buf).await?;
+        Ok((len, peer, None))
+    }
+
+    pub(super) async fn send(
+        socket: &UdpSocket,
+        reply: &[u8],
+        to: SocketAddr,
+        _: ReplySource,
+    ) -> io::Result<usize> {
+        socket.send_to(reply, to).await
     }
 }
 
@@ -856,9 +1192,13 @@ mod tests {
     }
 
     async fn agent() -> Arc<SnmpAgent> {
+        agent_on("127.0.0.1:0").await
+    }
+
+    async fn agent_on(listen: &str) -> Arc<SnmpAgent> {
         let cfg = SnmpAgentConfig {
             system: system(),
-            ..SnmpAgentConfig::new("127.0.0.1:0")
+            ..SnmpAgentConfig::new(listen)
         };
         SnmpAgent::bind(cfg.settings().expect("valid settings"))
             .await
@@ -1544,11 +1884,7 @@ mod tests {
             answer(&request, &agent, 1472, &mut scratch, &mut out),
             Outcome::Sent
         );
-        assert_eq!(
-            counting::count_allocations(|| std::hint::black_box(Box::new(1u8))).1,
-            1,
-            "the lib's counting allocator is installed"
-        );
+        counting::assert_count_allocations_counts();
         let ((outcome, len), allocations) = counting::count_allocations(|| {
             let outcome = answer(&request, &agent, 1472, &mut scratch, &mut out);
             (outcome, out.len())
@@ -1891,6 +2227,163 @@ mod tests {
         assert!(long.len() > RECEIVE_BUFFER);
         assert!(decode(&long).is_ok(), "whole, it is a message");
         assert_eq!(decode(&long[..RECEIVE_BUFFER]), Err(BerError::Truncated));
+    }
+
+    // ---- the reply's source address -------------------------------------------
+
+    fn v4(destination: &str, local: &str) -> PacketInfo {
+        PacketInfo::V4 {
+            destination: destination.parse().expect("an IPv4 address"),
+            local: local.parse().expect("an IPv4 address"),
+        }
+    }
+
+    fn v6(destination: &str, ifindex: u32) -> PacketInfo {
+        PacketInfo::V6 {
+            destination: destination.parse().expect("an IPv6 address"),
+            ifindex,
+        }
+    }
+
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::ipv4_unicast_is_itself(                         v4("10.0.0.5", "10.0.0.5"),        Some(("10.0.0.5", 0)))]
+    #[case::ipv4_subnet_broadcast_is_the_interface(         v4("10.0.0.255", "10.0.0.5"),      Some(("10.0.0.5", 0)))]
+    #[case::ipv4_limited_broadcast_is_the_interface(        v4("255.255.255.255", "10.0.0.5"), Some(("10.0.0.5", 0)))]
+    #[case::ipv4_multicast_is_the_interface(                v4("224.0.0.1", "10.0.0.5"),       Some(("10.0.0.5", 0)))]
+    #[case::ipv4_unicast_without_a_local_address_is_itself( v4("10.0.0.5", "0.0.0.0"),         Some(("10.0.0.5", 0)))]
+    #[case::ipv4_multicast_without_a_local_address_is_none( v4("224.0.0.1", "0.0.0.0"),        None)]
+    #[case::ipv6_unicast_is_itself(                         v6("2001:db8::5", 3),              Some(("2001:db8::5", 0)))]
+    #[case::ipv6_multicast_is_the_interface(                v6("ff02::1", 3),                  Some(("::", 3)))]
+    #[case::ipv4_mapped_unicast_is_itself(                  v6("::ffff:10.0.0.5", 3),          Some(("::ffff:10.0.0.5", 0)))]
+    #[case::ipv4_mapped_broadcast_is_the_interface(         v6("::ffff:255.255.255.255", 3),   Some(("::ffff:0.0.0.0", 3)))]
+    #[case::ipv4_mapped_multicast_is_the_interface(         v6("::ffff:224.0.0.1", 3),         Some(("::ffff:0.0.0.0", 3)))]
+    fn a_reply_leaves_from_the_local_unicast_address(
+        #[case] info: PacketInfo,
+        #[case] expected: Option<(&str, u32)>,
+    ) {
+        let expected = expected.map(|(addr, ifindex)| ReplySource {
+            addr: addr.parse().expect("an address"),
+            ifindex,
+        });
+        assert_eq!(reply_source(info), expected);
+    }
+
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::ipv4_wildcard("0.0.0.0:1161",   true)]
+    #[case::ipv6_wildcard("[::]:1161",      true)]
+    #[case::ipv4_address( "127.0.0.1:1161", false)]
+    #[case::ipv6_address( "[::1]:1161",     false)]
+    fn only_a_wildcard_bind_wants_packet_info(#[case] local: &str, #[case] wanted: bool) {
+        assert_eq!(wants_pktinfo(local.parse().expect("a socket address")), wanted);
+    }
+
+    /// The responder reads packet info exactly when the socket was asked
+    /// for it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn a_socket_reports_packet_info_once_enabled() {
+        let socket = UdpSocket::bind("0.0.0.0:0").await.expect("bind");
+        assert!(!pktinfo::enabled(&socket));
+        enable_pktinfo(&socket, socket.local_addr().expect("bound")).expect("enabled");
+        assert!(pktinfo::enabled(&socket));
+    }
+
+    /// Whether `[::1]` can be bound. Without it the caller is skipped, with
+    /// a message, except under CI (`CI` set), where its absence fails.
+    fn ipv6_loopback() -> bool {
+        match std::net::UdpSocket::bind("[::1]:0") {
+            Ok(_) => true,
+            Err(e) => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "CI has IPv6 loopback, so this test runs there: {e}"
+                );
+                eprintln!("skipped: no IPv6 loopback here ({e})");
+                false
+            }
+        }
+    }
+
+    /// Send a GET of sysUpTime.0 from a socket bound on `client` and
+    /// connected to `asked`, and return the reply it receives within 1 s,
+    /// after the agent counted the GET.
+    async fn connected_get(agent: &SnmpAgent, client: &str, asked: SocketAddr) -> Vec<u8> {
+        let socket = UdpSocket::bind(client).await.expect("bind the client");
+        socket.connect(asked).await.expect("connect the client");
+        let before = agent.requests().get;
+        socket.send(&hex(NET_SNMP_GET)).await.expect("sent");
+        let requests = counted(agent, |r| r.get > before).await;
+        assert_eq!(
+            requests.get,
+            before + 1,
+            "the agent answered the GET to {asked}"
+        );
+        let mut buffer = vec![0; RECEIVE_BUFFER];
+        let len = tokio::time::timeout(Duration::from_secs(1), socket.recv(&mut buffer))
+            .await
+            .unwrap_or_else(|_| panic!("no reply from {asked} within 1 s"))
+            .expect("received");
+        buffer.truncate(len);
+        assert_eq!(agent.requests().send_errors, 0);
+        assert_eq!(
+            Message::decode(&buffer).expect("a reply").request_id,
+            0x3ac2_5c77
+        );
+        buffer
+    }
+
+    /// A wildcard-bound agent answers a request sent to 127.0.0.2 from
+    /// 127.0.0.2, though the route back to the client leaves from
+    /// 127.0.0.1: the client's connected socket drops a reply from any
+    /// address but the one it sent to.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_wildcard_bind_answers_from_the_address_it_was_asked_on() {
+        let agent = agent_on("0.0.0.0:0").await;
+        let asked = SocketAddr::from(([127, 0, 0, 2], agent.local_addr().port()));
+        let reply = connected_get(&agent, "127.0.0.1:0", asked).await;
+        assert_eq!(response(&reply).varbinds.len(), 1);
+    }
+
+    /// An agent on `[::]` answers a request sent to `::1` from `::1`.
+    #[tokio::test]
+    async fn an_ipv6_wildcard_bind_answers_from_the_address_it_was_asked_on() {
+        if !ipv6_loopback() {
+            return;
+        }
+        let agent = agent_on("[::]:0").await;
+        let asked = SocketAddr::from((Ipv6Addr::LOCALHOST, agent.local_addr().port()));
+        let reply = connected_get(&agent, "[::1]:0", asked).await;
+        assert_eq!(response(&reply).varbinds.len(), 1);
+    }
+
+    /// An agent on `[::]` answers an IPv4 request sent to 127.0.0.2 from
+    /// 127.0.0.2, as it does on `0.0.0.0`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_dual_stack_wildcard_bind_answers_ipv4_from_the_address_it_was_asked_on() {
+        if !ipv6_loopback() {
+            return;
+        }
+        let agent = agent_on("[::]:0").await;
+        let asked = SocketAddr::from((
+            Ipv4Addr::new(127, 0, 0, 2).to_ipv6_mapped(),
+            agent.local_addr().port(),
+        ));
+        let reply = connected_get(&agent, "[::ffff:127.0.0.1]:0", asked).await;
+        assert_eq!(response(&reply).varbinds.len(), 1);
+    }
+
+    /// An agent on a specific address reads without packet info, sends with
+    /// `send_to`, and answers a connected client.
+    #[tokio::test]
+    async fn a_specific_bind_answers_a_connected_client() {
+        let agent = agent().await;
+        assert!(!wants_pktinfo(agent.local_addr()));
+        let reply = connected_get(&agent, "127.0.0.1:0", agent.local_addr()).await;
+        assert_eq!(response(&reply).varbinds.len(), 1);
     }
 
     /// Every event logged while it is a thread's default subscriber, as

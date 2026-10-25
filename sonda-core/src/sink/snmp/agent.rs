@@ -231,7 +231,11 @@ pub struct SnmpAgent {
 }
 
 impl SnmpAgent {
-    /// Bind `settings.listen` and start the responder on a spawned task.
+    /// Bind `settings.listen` and start the responder on a spawned task. On a
+    /// wildcard address the socket reports each datagram's packet info, so
+    /// the responder answers from the address each request was sent to;
+    /// where it cannot, a warning says so once and responses leave from the
+    /// address the route chooses.
     ///
     /// # Errors
     ///
@@ -244,6 +248,17 @@ impl SnmpAgent {
             .await
             .map_err(|e| bind_error(listen, e))?;
         let local_addr = socket.local_addr().map_err(SondaError::Sink)?;
+        if responder::wants_pktinfo(local_addr) {
+            if let Err(e) = responder::enable_pktinfo(&socket, local_addr) {
+                tracing::warn!(
+                    addr = %local_addr,
+                    error = %e,
+                    "snmp_agent on a wildcard address cannot answer from the address each \
+                     request was sent to here ({e}); responses leave from the address the \
+                     route chooses, which a client with a connected socket drops"
+                );
+            }
+        }
         if listen.port() == 0 {
             tracing::warn!(addr = %local_addr, "snmp_agent listening on an ephemeral port");
         } else {
