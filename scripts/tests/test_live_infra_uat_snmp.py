@@ -643,6 +643,8 @@ class GoldenWalkTests(unittest.TestCase):
         self.assertEqual(len(hints), 5)
         kept = [column for column, kind in hints if kind != "counter64"]
         self.assertEqual(len(kept), 3, hints)
+        # Label columns are OCTET STRINGs, which SNMPv1 carries.
+        kept += list(pack_label_columns().values())
         lines = v1_golden().splitlines()
         self.assertEqual(lines[-1], "End of MIB")
         names = [line.split(" = ")[0] for line in lines[:-1]]
@@ -662,6 +664,8 @@ class GoldenWalkTests(unittest.TestCase):
         self.assertEqual(
             v1_golden().splitlines()[:7], golden().splitlines()[:7], "the same system group"
         )
+        for index, name in uat.SNMP_IF_NAMES.items():
+            self.assertIn(f'.1.3.6.1.2.1.31.1.1.1.1.{index} = STRING: "{name}"', text)
 
 
 def telegraf_conf() -> dict:
