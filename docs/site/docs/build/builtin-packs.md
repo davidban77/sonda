@@ -142,7 +142,7 @@ scenarios:
     labels: { device: rtr-edge-01, ifIndex: 1, ifName: Ethernet1 }
 ```
 
-`ifHCInOctets` on interface 1 is served at `1.3.6.1.2.1.31.1.1.1.6.1` as a `Counter64`. Every label is either in the instance OID or dropped: `ifIndex` is the index arc and `device` the agent label, so `ifName`, `ifAlias` and `job` are dropped. An `oids:` or `types:` entry in the encoder block wins over the hint. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) runs it for four interfaces, polled by [Telegraf](sinks.md#snmp-telegraf).
+`ifHCInOctets` on interface 1 is served at `1.3.6.1.2.1.31.1.1.1.6.1` as a `Counter64`. Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc and `device` the agent label, so `ifName`, `ifAlias` and `job` are dropped. An `oids:` or `types:` entry in the encoder block wins over the hint. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) runs it for four interfaces, polled by [Telegraf](sinks.md#snmp-telegraf).
 
 ## Change one metric without editing the pack
 

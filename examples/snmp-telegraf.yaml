@@ -31,8 +31,7 @@ defaults:
   rate: 1
   encoder:
     type: snmp
-    # The agent serves no OID for these labels yet; SNMP Phase 2's label
-    # columns will serve ifName and ifAlias. Until then they are dropped.
+    # The agent serves no OID for these labels, so they are dropped.
     drop_labels: [ifName, ifAlias, job]
   sink:
     type: snmp_agent

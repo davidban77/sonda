@@ -827,7 +827,7 @@ scenarios:
           enum: oper_state
 ```
 
-Every label is either in the instance OID or dropped: `ifIndex` is the index arc, `device` is the agent label, and the agent serves no OID for `ifName`, `ifAlias` or `job`, so the encoder drops them. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5.
+Every label is in the instance OID, is the agent label, or is dropped: `ifIndex` is the index arc, `device` is the agent label, and the agent serves no OID for `ifName`, `ifAlias` or `job`, so the encoder drops them. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5.
 
 Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK`. Every OID is numeric, so Telegraf loads no MIB:
 
