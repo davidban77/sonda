@@ -618,7 +618,7 @@
       ]
     },
     "EncoderConfig": {
-      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, `otlp`, or `gnmi`.\n\nFeature-gated encoders (`remote_write`, `otlp`, `gnmi`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
+      "description": "Configuration selecting which encoder to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `prometheus_text`, `influx_lp`,\n`json_lines`, `syslog`, `remote_write`, `otlp`, `gnmi`, or `snmp`.\n\nFeature-gated encoders (`remote_write`, `otlp`, `gnmi`, `snmp`) have companion\n`*Disabled` variants that are compiled in when their feature is absent.\nThese accept the YAML tag so that deserialization succeeds with a\ndescriptive error from [`create_encoder`] instead of a generic\n\"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Prometheus text exposition format (version 0.0.4).\n\n`precision` optionally limits the number of decimal places in metric values.",
@@ -823,6 +823,57 @@
               "type": "object",
               "additionalProperties": {
                 "$ref": "#/$defs/GnmiValueType"
+              },
+              "default": {}
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "SNMP publish records: one BER `VarBind` per event, behind a byte that\ncounts its index arcs.\n\nEach metric's OID is rendered from its `oids:` template. See\n[`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the\n`snmp_agent` sink. Requires the `snmp` feature flag.",
+          "type": "object",
+          "properties": {
+            "agent_label": {
+              "description": "Label that names the device. Default `\"device\"`. It needs no\nplaceholder and no `drop_labels` entry, and never reaches the OID.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "device"
+            },
+            "drop_labels": {
+              "description": "Labels deliberately left out of the OID.\n\nValidation requires every label key of an entry to be a placeholder\nof its template, the `agent_label`, or listed here; series that\ndiffer only in an unlisted, unreferenced label would otherwise share\none OID.",
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "oids": {
+              "description": "OID template per metric name, such as\n`\"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"`: the object's OID, then one\n`{label}` placeholder per index arc, or `.0` for a scalar. Every\nmetric the entry emits needs one. Each is a string; a YAML number is\nan error.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            },
+            "type": {
+              "type": "string",
+              "const": "snmp"
+            },
+            "types": {
+              "description": "Value type per metric name; default `gauge32`.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/SnmpValueType"
               },
               "default": {}
             }
@@ -2828,6 +2879,17 @@
             "number",
             "boolean"
           ]
+        },
+        "snmp": {
+          "description": "SNMP OID template and value type for this metric. Under an `snmp`\nencoder, expansion writes them into the encoder's `oids:` and\n`types:` for this metric's name where the scenario's encoder block\nhas no entry (see [`fold_snmp_hints`]); under any other encoder they\nare unused.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SnmpHint"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3031,7 +3093,7 @@
       ]
     },
     "SinkConfig": {
-      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, or `gnmi_target`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
+      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,\nor `snmp_agent`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`, `snmp_agent`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).",
@@ -3560,6 +3622,117 @@
             "type",
             "listen"
           ]
+        },
+        {
+          "description": "Serve metric events to SNMP pollers from an agent listening on\n`listen`.\n\nSinks naming the same address share one agent. Pairs only with the\n`snmp` encoder, in both directions. See [`snmp::SnmpAgentConfig`] for\nthe fields. Requires the `snmp` feature flag.",
+          "type": "object",
+          "properties": {
+            "community": {
+              "description": "The SNMPv2c community a request must carry. Default `\"public\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "public"
+            },
+            "listen": {
+              "description": "Address to listen on, e.g. `\"0.0.0.0:1161\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`SnmpAgent::local_addr`]. A port below\n1024, such as SNMP's 161, needs `CAP_NET_BIND_SERVICE`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "max_message_size": {
+              "description": "The largest reply the agent sends, in bytes, 484 to 65507. Default\n1472, the UDP payload of an Ethernet frame.",
+              "type": "integer",
+              "format": "uint",
+              "default": 1472,
+              "maximum": 65507,
+              "minimum": 484
+            },
+            "system": {
+              "description": "The system group (`1.3.6.1.2.1.1`) the agent serves.",
+              "$ref": "#/$defs/SystemGroup",
+              "default": {
+                "contact": "",
+                "descr": "",
+                "location": "",
+                "name": "",
+                "object_id": "1.3.6.1.4.1.8072.3.2.10",
+                "services": 72
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "snmp_agent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "listen"
+          ]
+        }
+      ]
+    },
+    "SnmpHint": {
+      "description": "A pack metric's SNMP OID template and value type.\n\n# YAML Schema\n\n```yaml\nsnmp:\n  oid: \"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"\n  type: counter64\n```",
+      "type": "object",
+      "properties": {
+        "oid": {
+          "description": "OID template for the metric, as an `oids:` entry of the snmp encoder\ntakes it: the object's OID, then one `{label}` placeholder per index\narc, or `.0` for a scalar. A string; a YAML number is an error.",
+          "type": "string"
+        },
+        "type": {
+          "description": "Value type for the metric, as a `types:` entry of the snmp encoder\ntakes it.",
+          "$ref": "#/$defs/SnmpValueType"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "oid",
+        "type"
+      ]
+    },
+    "SnmpValueType": {
+      "description": "The BER type a metric's value is encoded as.\n\nYAML forms: `integer`, `counter32`, `counter64`, `gauge32`, `unsigned32`,\n`timeticks`, `string`. The default is `gauge32`.\n\nEvery type but `string` rounds the value to the nearest integer, halves\naway from zero, and rejects the event when the value is not finite or\nthe rounded value is outside the type's range. A counter does not wrap:\na value past its range is rejected, not reduced.",
+      "oneOf": [
+        {
+          "description": "INTEGER (Integer32): -2³¹ to 2³¹ − 1.",
+          "type": "string",
+          "const": "integer"
+        },
+        {
+          "description": "Counter32: 0 to 2³² − 1.",
+          "type": "string",
+          "const": "counter32"
+        },
+        {
+          "description": "Counter64: 0 to 2⁶⁴ − 1.",
+          "type": "string",
+          "const": "counter64"
+        },
+        {
+          "description": "Gauge32: 0 to 2³² − 1.",
+          "type": "string",
+          "const": "gauge32"
+        },
+        {
+          "description": "Unsigned32: 0 to 2³² − 1, encoded as a Gauge32.",
+          "type": "string",
+          "const": "unsigned32"
+        },
+        {
+          "description": "TimeTicks, hundredths of a second: 0 to 2³² − 1.",
+          "type": "string",
+          "const": "timeticks"
+        },
+        {
+          "description": "OCTET STRING: the shortest decimal text that round-trips the `f64`.",
+          "type": "string",
+          "const": "string"
         }
       ]
     },
@@ -3577,6 +3750,62 @@
           "const": "random"
         }
       ]
+    },
+    "SystemGroup": {
+      "description": "The `system:` block of an [`SnmpAgentConfig`]: the values of the system\ngroup's scalars. `sysUpTime` is not configured: it counts from when the\nagent bound its socket.\n\nEvery field is optional. The text fields default to the empty string.",
+      "type": "object",
+      "properties": {
+        "contact": {
+          "description": "`sysContact`: who to contact about the device.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "default": ""
+        },
+        "descr": {
+          "description": "`sysDescr`: a description of the device.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "default": ""
+        },
+        "location": {
+          "description": "`sysLocation`: where the device is.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "default": ""
+        },
+        "name": {
+          "description": "`sysName`: the device's name.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "default": ""
+        },
+        "object_id": {
+          "description": "`sysObjectID`: the device's vendor OID, in dotted decimal. A string;\na YAML number is an error. Default `\"1.3.6.1.4.1.8072.3.2.10\"`.",
+          "type": "string",
+          "default": "1.3.6.1.4.1.8072.3.2.10"
+        },
+        "services": {
+          "description": "`sysServices`: the layers the device serves, 0 to 127. Default 72.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 72,
+          "maximum": 127,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "TemplateConfig": {
       "description": "Configuration for one message template used by [`LogGeneratorConfig::Template`].\n\nThe `message` field may contain `{placeholder}` tokens that are resolved\nusing the corresponding value pool from `field_pools`.\n\n# Example YAML\n\n```yaml\nmessage: \"Request from {ip} to {endpoint}\"\nfield_pools:\n  ip:\n    - \"10.0.0.1\"\n    - \"10.0.0.2\"\n  endpoint:\n    - \"/api\"\n    - \"/health\"\n```",
