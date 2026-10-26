@@ -20,6 +20,7 @@
 
 pub mod agent;
 mod responder;
+pub(crate) mod usm;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -67,6 +68,22 @@ pub(crate) const DEFAULT_SYS_SERVICES: u8 = 72;
 /// Largest accepted `system.services`: the seven layer bits RFC 3418
 /// defines.
 pub(crate) const MAX_SYS_SERVICES: u8 = 127;
+
+/// The shortest SNMPv3 engine ID, in octets (RFC 3411).
+pub(crate) const MIN_ENGINE_ID: usize = 5;
+
+/// The longest SNMPv3 engine ID, in octets (RFC 3411).
+pub(crate) const MAX_ENGINE_ID: usize = 32;
+
+/// The longest SNMPv3 user name, in octets (RFC 3414).
+pub(crate) const MAX_USER_NAME: usize = 32;
+
+/// The shortest SNMPv3 password, in octets (RFC 3414 §11.2).
+pub(crate) const MIN_PASSWORD: usize = 8;
+
+/// The first five octets of a derived engine ID: net-snmp's enterprise
+/// number 8072 with the high bit set, then format 4, text.
+const DERIVED_ENGINE_ID_PREFIX: [u8; 5] = [0x80, 0x00, 0x1f, 0x88, 0x04];
 
 /// Configuration for [`SnmpAgentSink`]; the body of
 /// `sink: { type: snmp_agent, ... }`.
@@ -120,6 +137,302 @@ pub struct SnmpAgentConfig {
         schemars(length(min = 1), extend("uniqueItems" = true))
     )]
     pub versions: Vec<SnmpVersion>,
+    /// The SNMPv3 users the agent accepts, each name once. `v3` in
+    /// `versions` needs at least one. Default none.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub users: Vec<UsmUser>,
+    /// The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as
+    /// `"80001f8804736f6e6461"`; a leading `0x` is allowed. A string; a YAML
+    /// number is an error. Default: derived from the address the agent binds
+    /// (net-snmp's enterprise prefix `80001f88`, format `04`, then the text
+    /// `sonda:<bound address>` cut to 27 octets; a `listen` on port 0 gives
+    /// the port it was bound to), so an agent on a fixed address has the same
+    /// one on every run.
+    #[cfg_attr(
+        feature = "config",
+        serde(
+            default,
+            deserialize_with = "engine_id",
+            skip_serializing_if = "Option::is_none"
+        )
+    )]
+    #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
+    pub engine_id: Option<String>,
+}
+
+/// An SNMPv3 user of the User-based Security Model (RFC 3414): an item of
+/// an [`SnmpAgentConfig`]'s `users:`.
+///
+/// Without `auth` the user is `noAuthNoPriv`; with it, every request must
+/// be authenticated with the user's key (`authNoPriv`). Unknown keys are
+/// rejected; a `priv` key is refused, because privacy (`authPriv`) is not
+/// supported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsmUser {
+    /// The user name (`securityName`), 1 to 32 octets.
+    pub name: String,
+    /// The user's authentication protocol and password, when its requests
+    /// are authenticated.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub auth: Option<UsmAuth>,
+}
+
+/// An SNMPv3 user's authentication: the `auth:` block of a [`UsmUser`].
+///
+/// `Debug` prints `"***"` in place of the password.
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsmAuth {
+    /// The HMAC the user's requests are authenticated with.
+    pub protocol: AuthProtocol,
+    /// The password the user's key is made from, at least 8 octets. A
+    /// string; a YAML number is an error.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("writeOnly" = true, "x-sonda-no-widening" = true))
+    )]
+    pub password: String,
+}
+
+/// An SNMPv3 authentication protocol, named as Telegraf names it, in lower
+/// case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum AuthProtocol {
+    /// HMAC-MD5-96 (RFC 3414), `md5`. Legacy; prefer a SHA-2 protocol.
+    #[cfg_attr(feature = "config", serde(rename = "md5"))]
+    Md5,
+    /// HMAC-SHA-96 (RFC 3414), `sha1`, also read as `sha`.
+    #[cfg_attr(feature = "config", serde(rename = "sha1"))]
+    Sha1,
+    /// HMAC-SHA-224 truncated to 128 bits (RFC 7860), `sha224`.
+    #[cfg_attr(feature = "config", serde(rename = "sha224"))]
+    Sha224,
+    /// HMAC-SHA-256 truncated to 192 bits (RFC 7860), `sha256`.
+    #[cfg_attr(feature = "config", serde(rename = "sha256"))]
+    Sha256,
+    /// HMAC-SHA-384 truncated to 256 bits (RFC 7860), `sha384`.
+    #[cfg_attr(feature = "config", serde(rename = "sha384"))]
+    Sha384,
+    /// HMAC-SHA-512 truncated to 384 bits (RFC 7860), `sha512`.
+    #[cfg_attr(feature = "config", serde(rename = "sha512"))]
+    Sha512,
+}
+
+impl AuthProtocol {
+    /// The protocol's name in a config: `md5`, `sha1`, `sha224`, `sha256`,
+    /// `sha384` or `sha512`.
+    pub fn name(self) -> &'static str {
+        match self {
+            AuthProtocol::Md5 => "md5",
+            AuthProtocol::Sha1 => "sha1",
+            AuthProtocol::Sha224 => "sha224",
+            AuthProtocol::Sha256 => "sha256",
+            AuthProtocol::Sha384 => "sha384",
+            AuthProtocol::Sha512 => "sha512",
+        }
+    }
+
+    /// The protocol a config name reads as, `sha` as `sha1`.
+    #[cfg(feature = "config")]
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "md5" => AuthProtocol::Md5,
+            "sha" | "sha1" => AuthProtocol::Sha1,
+            "sha224" => AuthProtocol::Sha224,
+            "sha256" => AuthProtocol::Sha256,
+            "sha384" => AuthProtocol::Sha384,
+            "sha512" => AuthProtocol::Sha512,
+            _ => return None,
+        })
+    }
+}
+
+// Not a derive: the parser also reads `sha`, which no variant is named.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for AuthProtocol {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "AuthProtocol".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        "sonda_core::sink::snmp::AuthProtocol".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "An SNMPv3 authentication protocol, named as Telegraf names it, in \
+                            lower case: md5 (legacy; prefer a SHA-2 protocol), sha1 (also \
+                            read as sha), sha224, sha256, sha384 or sha512.",
+            "type": "string",
+            "enum": ["md5", "sha", "sha1", "sha224", "sha256", "sha384", "sha512"],
+        })
+    }
+}
+
+impl fmt::Display for AuthProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Prints `"***"` in place of the password.
+impl fmt::Debug for UsmAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UsmAuth")
+            .field("protocol", &self.protocol)
+            .field("password", &"***")
+            .finish()
+    }
+}
+
+/// The fields of a `users:` item and its `auth:` block as written. The
+/// derives' errors name these structs, `UsmUser` and `UsmAuth`.
+#[cfg(feature = "config")]
+mod user_fields {
+    /// A user: its name read as text, its `auth`, and a `priv` key, which
+    /// is read only to be refused.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct UsmUser {
+        #[serde(deserialize_with = "crate::config::scalar_text::required")]
+        pub(super) name: String,
+        #[serde(default)]
+        pub(super) auth: Option<super::UsmAuth>,
+        #[serde(rename = "priv", default)]
+        pub(super) privacy: Option<serde::de::IgnoredAny>,
+    }
+
+    /// An `auth:` block: the protocol, and the password as a string only.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct UsmAuth {
+        pub(super) protocol: super::AuthProtocol,
+        #[serde(deserialize_with = "super::password")]
+        pub(super) password: String,
+    }
+}
+
+/// The error for a `users:` item carrying `priv`.
+#[cfg(feature = "config")]
+const PRIV_REFUSED: &str = "snmp_agent users: priv is not supported; SNMPv3 privacy (authPriv) \
+     is not available in this version of sonda, so give the user auth only (authNoPriv)";
+
+/// The error for an `auth:` value that is not a map. It names no part of
+/// the value.
+#[cfg(feature = "config")]
+const AUTH_NOT_A_MAP: &str = "snmp_agent users auth must be a map with protocol and password";
+
+/// Reads a map with `name` and optionally `auth`, refusing `priv` with
+/// [`PRIV_REFUSED`] and any other key.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for UsmUser {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let fields = user_fields::UsmUser::deserialize(deserializer)?;
+        if fields.privacy.is_some() {
+            return Err(D::Error::custom(PRIV_REFUSED));
+        }
+        Ok(UsmUser {
+            name: fields.name,
+            auth: fields.auth,
+        })
+    }
+}
+
+/// Reads a map with `protocol` and `password`, refusing any other key. Any
+/// other value is refused with [`AUTH_NOT_A_MAP`], which does not repeat
+/// the value.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for UsmAuth {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+        use serde::de::{Error, MapAccess, SeqAccess, Visitor};
+
+        struct AuthVisitor;
+        impl AuthVisitor {
+            fn refuse<E: Error>(self) -> Result<UsmAuth, E> {
+                Err(E::custom(AUTH_NOT_A_MAP))
+            }
+        }
+        impl<'de> Visitor<'de> for AuthVisitor {
+            type Value = UsmAuth;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map with protocol and password")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                <user_fields::UsmAuth as serde::Deserialize>::deserialize(
+                    MapAccessDeserializer::new(map),
+                )
+                .map(Into::into)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                <user_fields::UsmAuth as serde::Deserialize>::deserialize(
+                    SeqAccessDeserializer::new(seq),
+                )
+                .map(Into::into)
+            }
+            fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+            fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+                self.refuse()
+            }
+        }
+        // `deserialize_any`, because a buffered sink block answers
+        // `deserialize_struct` for a scalar with an error quoting it.
+        deserializer.deserialize_any(AuthVisitor)
+    }
+}
+
+#[cfg(feature = "config")]
+impl From<user_fields::UsmAuth> for UsmAuth {
+    fn from(fields: user_fields::UsmAuth) -> Self {
+        Self {
+            protocol: fields.protocol,
+            password: fields.password,
+        }
+    }
+}
+
+/// Reads a protocol name, `sha` as `sha1`; any other name or value is an
+/// error naming the field.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for AuthProtocol {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        use crate::config::scalar_text::ScalarText;
+
+        let ScalarText(name) = ScalarText::deserialize(deserializer)?;
+        AuthProtocol::from_name(&name).ok_or_else(|| {
+            D::Error::custom(format!(
+                "snmp_agent users auth.protocol: unknown protocol {name:?}; expected md5, sha1 \
+                 (or sha), sha224, sha256, sha384 or sha512"
+            ))
+        })
+    }
 }
 
 /// An SNMP version an agent can answer: the `versions:` items of an
@@ -136,14 +449,20 @@ pub enum SnmpVersion {
     /// SNMPv2c (RFC 3416), `v2c`.
     #[cfg_attr(feature = "config", serde(rename = "v2c"))]
     V2c,
+    /// SNMPv3 with the User-based Security Model (RFC 3414), `v3`: the
+    /// SNMPv2c operations for the configured `users`, `noAuthNoPriv` or
+    /// `authNoPriv`.
+    #[cfg_attr(feature = "config", serde(rename = "v3"))]
+    V3,
 }
 
 impl SnmpVersion {
-    /// The version's name in a config: `v1` or `v2c`.
+    /// The version's name in a config: `v1`, `v2c` or `v3`.
     pub fn name(self) -> &'static str {
         match self {
             SnmpVersion::V1 => "v1",
             SnmpVersion::V2c => "v2c",
+            SnmpVersion::V3 => "v3",
         }
     }
 }
@@ -243,7 +562,7 @@ fn versions<'de, D: serde::Deserializer<'de>>(
         type Value = Vec<SnmpVersion>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("snmp_agent versions as a list of v1 and v2c, such as [v1, v2c]")
+            f.write_str("snmp_agent versions as a list of v1, v2c and v3, such as [v1, v2c]")
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
@@ -252,9 +571,11 @@ fn versions<'de, D: serde::Deserializer<'de>>(
                 versions.push(match name.as_str() {
                     "v1" => SnmpVersion::V1,
                     "v2c" => SnmpVersion::V2c,
+                    "v3" => SnmpVersion::V3,
                     _ => {
                         return Err(A::Error::custom(format!(
-                            "snmp_agent versions: unknown version {name:?}; expected v1 or v2c"
+                            "snmp_agent versions: unknown version {name:?}; expected v1, v2c \
+                             or v3"
                         )))
                     }
                 });
@@ -264,6 +585,96 @@ fn versions<'de, D: serde::Deserializer<'de>>(
     }
 
     deserializer.deserialize_seq(Versions)
+}
+
+/// `deserialize_with` for `engine_id`: a string only. A YAML number or
+/// boolean is an error naming the field: read as a number, hex such as
+/// `0000000002` would lose its leading zeros.
+#[cfg(feature = "config")]
+fn engine_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    use serde::de::{Error, Visitor};
+
+    struct EngineId;
+    impl EngineId {
+        fn not_text<E: Error>(&self, kind: &str, value: &dyn fmt::Display) -> E {
+            E::custom(format!(
+                "snmp_agent engine_id: an engine ID is written as a hex string, and the YAML \
+                 {kind} {value} is not one; quote it, as in \"80001f8804736f6e6461\""
+            ))
+        }
+    }
+    impl Visitor<'_> for EngineId {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an snmp_agent engine_id as a hex string")
+        }
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+        fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
+            Err(self.not_text("boolean", &v))
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+            Err(self.not_text("number", &v))
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+            Err(self.not_text("number", &v))
+        }
+        fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
+            Err(self.not_text("number", &v))
+        }
+    }
+    deserializer.deserialize_any(EngineId)
+}
+
+/// `deserialize_with` for `auth.password`: a string only. Any other value
+/// is refused with an error that does not repeat it.
+#[cfg(feature = "config")]
+fn password<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    use serde::de::{Error, Visitor};
+
+    const NOT_A_STRING: &str = "snmp_agent users auth.password must be a string; quote it";
+
+    struct Password;
+    impl Visitor<'_> for Password {
+        type Value = String;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an snmp_agent password as a string")
+        }
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(v.to_string())
+        }
+        fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+            Err(E::custom(NOT_A_STRING))
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+            Err(E::custom(NOT_A_STRING))
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+            Err(E::custom(NOT_A_STRING))
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+            Err(E::custom(NOT_A_STRING))
+        }
+        fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+            Err(E::custom(NOT_A_STRING))
+        }
+        fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+            Err(E::custom(NOT_A_STRING))
+        }
+    }
+    deserializer.deserialize_any(Password)
 }
 
 /// `deserialize_with` for `system.object_id`: a string only
@@ -301,6 +712,8 @@ impl fmt::Debug for SnmpAgentConfig {
             .field("max_message_size", &self.max_message_size)
             .field("system", &self.system)
             .field("versions", &self.versions)
+            .field("users", &self.users)
+            .field("engine_id", &self.engine_id)
             .finish()
     }
 }
@@ -314,6 +727,8 @@ impl SnmpAgentConfig {
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             system: SystemGroup::default(),
             versions: vec![SnmpVersion::V2c],
+            users: Vec::new(),
+            engine_id: None,
         }
     }
 
@@ -323,9 +738,13 @@ impl SnmpAgentConfig {
     /// [`SnmpAgentSink::new`] both call it. Returns [`SondaError::Config`]
     /// when `listen` is not a socket address, `max_message_size` is outside
     /// 484 to 65507, `system.object_id` is not an OID, `system.services` is
-    /// above 127, or `versions` is empty or names a version twice. An
-    /// IPv4-mapped `listen` resolves to the IPv4 address it maps; `versions`
-    /// resolves to its versions in ascending order.
+    /// above 127, `versions` is empty or names a version twice, `versions`
+    /// names `v3` and `users` is empty, a user name is empty, longer than 32
+    /// octets or given twice, a password is shorter than 8 octets, or
+    /// `engine_id` is not 5 to 32 octets of hex. An IPv4-mapped `listen`
+    /// resolves to the IPv4 address it maps; `versions` resolves to its
+    /// versions in ascending order, `users` to its users ordered by name, and
+    /// `engine_id` to its octets.
     pub(crate) fn settings(&self) -> Result<AgentSettings, SondaError> {
         let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
         let listen: SocketAddr = self.listen.parse().map_err(|_| {
@@ -363,10 +782,19 @@ impl SnmpAgentConfig {
                 twice[0]
             )));
         }
+        let users = self.resolved_users()?;
+        if versions.contains(&SnmpVersion::V3) && users.is_empty() {
+            return Err(invalid(
+                "snmp_agent versions names v3, which needs at least one user under users"
+                    .to_string(),
+            ));
+        }
+        // An IPv4-mapped address binds the IPv4 socket it maps, so it is
+        // that address everywhere a listen address is compared or keyed.
+        let listen = canonical(listen);
+        let engine_id = self.engine_id.as_deref().map(parse_engine_id).transpose()?;
         Ok(AgentSettings {
-            // An IPv4-mapped address binds the IPv4 socket it maps, so it is
-            // that address everywhere a listen address is compared or keyed.
-            listen: canonical(listen),
+            listen,
             community: self.community.clone(),
             max_message_size: self.max_message_size,
             system: SystemSettings {
@@ -378,8 +806,87 @@ impl SnmpAgentConfig {
                 services: system.services,
             },
             versions,
+            users,
+            engine_id,
         })
     }
+
+    /// `users`, checked and ordered by name.
+    fn resolved_users(&self) -> Result<Vec<UsmUser>, SondaError> {
+        let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
+        let mut users = self.users.clone();
+        users.sort_by(|a, b| a.name.cmp(&b.name));
+        for user in &users {
+            if user.name.is_empty() || user.name.len() > MAX_USER_NAME {
+                return Err(invalid(format!(
+                    "snmp_agent users name {:?} must be 1 to {MAX_USER_NAME} bytes, got {}",
+                    user.name,
+                    user.name.len()
+                )));
+            }
+            if let Some(auth) = &user.auth {
+                if auth.password.len() < MIN_PASSWORD {
+                    return Err(invalid(format!(
+                        "snmp_agent users {:?} auth.password must be at least {MIN_PASSWORD} \
+                         bytes (RFC 3414)",
+                        user.name
+                    )));
+                }
+            }
+        }
+        if let Some(twice) = users.windows(2).find(|pair| pair[0].name == pair[1].name) {
+            return Err(invalid(format!(
+                "snmp_agent users names {:?} more than once",
+                twice[0].name
+            )));
+        }
+        Ok(users)
+    }
+}
+
+/// The octets of an `engine_id` written as hex, with or without a leading
+/// `0x`.
+///
+/// # Errors
+///
+/// [`SondaError::Config`] naming the field when `text` is not an even number
+/// of hex digits, or is not 5 to 32 octets.
+fn parse_engine_id(text: &str) -> Result<Vec<u8>, SondaError> {
+    let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
+    let digits = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .unwrap_or(text);
+    if !digits.len().is_multiple_of(2) || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid(format!(
+            "snmp_agent engine_id {text:?} is not hex, such as \"80001f8804736f6e6461\""
+        )));
+    }
+    let octets: Vec<u8> = digits
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let nibble = |b: u8| (b as char).to_digit(16).unwrap_or(0) as u8;
+            nibble(pair[0]) << 4 | nibble(pair[1])
+        })
+        .collect();
+    if !(MIN_ENGINE_ID..=MAX_ENGINE_ID).contains(&octets.len()) {
+        return Err(invalid(format!(
+            "snmp_agent engine_id must be {MIN_ENGINE_ID} to {MAX_ENGINE_ID} bytes, got {}",
+            octets.len()
+        )));
+    }
+    Ok(octets)
+}
+
+/// The engine ID of an agent bound to `bound` without a configured one:
+/// [`DERIVED_ENGINE_ID_PREFIX`], then `sonda:<bound>` cut to 27 octets.
+pub(crate) fn derived_engine_id(bound: SocketAddr) -> Vec<u8> {
+    let text = format!("sonda:{bound}");
+    let room = MAX_ENGINE_ID - DERIVED_ENGINE_ID_PREFIX.len();
+    let mut id = DERIVED_ENGINE_ID_PREFIX.to_vec();
+    id.extend_from_slice(&text.as_bytes()[..text.len().min(room)]);
+    id
 }
 
 /// An [`SnmpAgentConfig`] with every field resolved and checked.
@@ -394,6 +901,11 @@ pub(crate) struct AgentSettings {
     pub(crate) system: SystemSettings,
     /// The versions answered, ascending, each once.
     pub(crate) versions: Vec<SnmpVersion>,
+    /// The SNMPv3 users, ordered by name, each name once.
+    pub(crate) users: Vec<UsmUser>,
+    /// The configured SNMPv3 engine ID; without one, the agent derives its
+    /// own from the address it binds.
+    pub(crate) engine_id: Option<Vec<u8>>,
 }
 
 /// A [`SystemGroup`] with its OID parsed.
@@ -415,19 +927,58 @@ impl fmt::Debug for AgentSettings {
             .field("max_message_size", &self.max_message_size)
             .field("system", &self.system)
             .field("versions", &self.versions)
+            .field("users", &self.users)
+            .field("engine_id", &self.engine_id.as_deref().map(Hex))
             .finish()
     }
 }
 
+/// Octets displayed as lower-case hex.
+struct Hex<'a>(&'a [u8]);
+
+impl fmt::Debug for Hex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
+    }
+}
+
+/// Whether `a` and `b` are the same users: each pair equal in name and
+/// protocol, the passwords compared in constant time.
+fn same_users(a: &[UsmUser], b: &[UsmUser]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.name == b.name
+                && match (&a.auth, &b.auth) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => {
+                        a.protocol == b.protocol
+                            && crate::util::constant_time_eq(
+                                a.password.as_bytes(),
+                                b.password.as_bytes(),
+                            )
+                    }
+                    _ => false,
+                }
+        })
+}
+
 impl AgentSettings {
     /// Whether an agent running with `self` can also serve `other`: every
-    /// setting but the listen address is equal, the community compared in
-    /// constant time.
+    /// setting but the listen address is equal, the community and the
+    /// passwords compared in constant time.
     pub(crate) fn serves(&self, other: &AgentSettings) -> bool {
         crate::util::constant_time_eq(self.community.as_bytes(), other.community.as_bytes())
             && self.max_message_size == other.max_message_size
             && self.system == other.system
             && self.versions == other.versions
+            && self.engine_id == other.engine_id
+            && same_users(&self.users, &other.users)
     }
 
     /// The settings in which `self` and `other` differ, `self`'s first, for
@@ -476,6 +1027,35 @@ impl AgentSettings {
                 list(&self.versions),
                 list(&other.versions)
             ));
+        }
+        if self.engine_id != other.engine_id {
+            let id = |id: &Option<Vec<u8>>| match id {
+                Some(id) => Hex(id).to_string(),
+                None => "derived".to_string(),
+            };
+            differences.push(format!(
+                "engine_id {} and {}",
+                id(&self.engine_id),
+                id(&other.engine_id)
+            ));
+        }
+        if !same_users(&self.users, &other.users) {
+            let list = |users: &[UsmUser]| {
+                let users: Vec<String> = users
+                    .iter()
+                    .map(|user| match &user.auth {
+                        Some(auth) => format!("{} {}", user.name, auth.protocol),
+                        None => format!("{} without auth", user.name),
+                    })
+                    .collect();
+                format!("[{}]", users.join(", "))
+            };
+            let (a, b) = (list(&self.users), list(&other.users));
+            if a != b {
+                differences.push(format!("users {a} and {b}"));
+            } else {
+                differences.push("users with another password".to_string());
+            }
         }
         differences.join(", ")
     }
@@ -1089,16 +1669,16 @@ mod tests {
         }
     }
 
-    /// A version name other than `v1` and `v2c`, a value that is not a list,
+    /// A version name other than `v1`, `v2c` and `v3`, a value that is not a list,
     /// and a misspelt `version:` key are refused at parse time, naming the
     /// field.
     #[cfg(feature = "config")]
     #[rustfmt::skip]
     #[rstest::rstest]
-    #[case::v3(          "versions: [v3]",       "snmp_agent versions: unknown version \"v3\"; expected v1 or v2c")]
+    #[case::v4(          "versions: [v4]",       "snmp_agent versions: unknown version \"v4\"; expected v1, v2c or v3")]
     #[case::upper_case(  "versions: [V1]",       "snmp_agent versions: unknown version \"V1\"")]
     #[case::a_number(    "versions: [1]",        "snmp_agent versions: unknown version \"1\"")]
-    #[case::not_a_list(  "versions: v1",         "expected snmp_agent versions as a list of v1 and v2c")]
+    #[case::not_a_list(  "versions: v1",         "expected snmp_agent versions as a list of v1, v2c and v3")]
     #[case::misspelt_key("version: [v1]",        "unknown field `version`")]
     fn an_unknown_version_is_refused_naming_the_field(#[case] line: &str, #[case] refused: &str) {
         let parse = |line: &str| {
@@ -1130,6 +1710,276 @@ mod tests {
         let v2c = with(&[SnmpVersion::V2c]);
         assert!(!both.serves(&v2c));
         assert_eq!(both.beside(&v2c), "versions [v1, v2c] and [v2c]");
+    }
+
+    // ---- SNMPv3 config ------------------------------------------------------
+
+    /// A config answering v2c and v3 for `users`.
+    fn with_users(users: Vec<UsmUser>) -> SnmpAgentConfig {
+        SnmpAgentConfig {
+            versions: vec![SnmpVersion::V2c, SnmpVersion::V3],
+            users,
+            ..SnmpAgentConfig::new("127.0.0.1:1161")
+        }
+    }
+
+    fn user(name: &str, protocol: AuthProtocol, password: &str) -> UsmUser {
+        UsmUser {
+            name: name.to_string(),
+            auth: Some(UsmAuth {
+                protocol,
+                password: password.to_string(),
+            }),
+        }
+    }
+
+    /// The YAML sink block with `rest` after `versions: [v2c, v3]`.
+    #[cfg(feature = "config")]
+    fn v3_block(rest: &str) -> String {
+        format!("type: snmp_agent\nlisten: 0.0.0.0:1161\nversions: [v2c, v3]\n{rest}")
+    }
+
+    #[cfg(feature = "config")]
+    fn parse_block(yaml: &str) -> Result<SnmpAgentConfig, String> {
+        match serde_yaml_ng::from_str::<SinkConfig>(yaml) {
+            Ok(SinkConfig::SnmpAgent(cfg)) => Ok(cfg),
+            Ok(other) => panic!("an snmp_agent sink, got {other:?}"),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// A full v3 block parses: each protocol by its name, `sha` as `sha1`, a
+    /// user without auth, the engine ID with and without `0x`; and resolves
+    /// with the users ordered by name.
+    #[cfg(feature = "config")]
+    #[test]
+    fn a_v3_block_parses_every_protocol_and_sha_as_sha1() {
+        let yaml = v3_block(
+            "engine_id: \"0x80001F8804736f6e6461\"\nusers:\n\
+             \x20 - { name: telegraf, auth: { protocol: sha256, password: lab-only-password } }\n\
+             \x20 - { name: a-md5, auth: { protocol: md5, password: lab-only-password } }\n\
+             \x20 - { name: b-sha, auth: { protocol: sha, password: lab-only-password } }\n\
+             \x20 - { name: c-sha1, auth: { protocol: sha1, password: lab-only-password } }\n\
+             \x20 - { name: d-224, auth: { protocol: sha224, password: lab-only-password } }\n\
+             \x20 - { name: e-384, auth: { protocol: sha384, password: lab-only-password } }\n\
+             \x20 - { name: f-512, auth: { protocol: sha512, password: lab-only-password } }\n\
+             \x20 - { name: 12345 }\n",
+        );
+        let cfg = parse_block(&yaml).expect("the block parses");
+        let protocols: Vec<Option<AuthProtocol>> = cfg
+            .users
+            .iter()
+            .map(|user| user.auth.as_ref().map(|auth| auth.protocol))
+            .collect();
+        use AuthProtocol::*;
+        assert_eq!(
+            protocols,
+            [
+                Some(Sha256),
+                Some(Md5),
+                Some(Sha1),
+                Some(Sha1),
+                Some(Sha224),
+                Some(Sha384),
+                Some(Sha512),
+                None
+            ]
+        );
+        assert_eq!(
+            cfg.users[7].name, "12345",
+            "a numeric user name is its text"
+        );
+        let settings = cfg.settings().expect("valid settings");
+        assert_eq!(settings.engine_id, Some(hex("80001f8804736f6e6461")));
+        let names: Vec<&str> = settings.users.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["12345", "a-md5", "b-sha", "c-sha1", "d-224", "e-384", "f-512", "telegraf"]
+        );
+    }
+
+    /// Each refused v3 setting names its field: v3 without users, a user
+    /// named twice, an empty or 33-byte name, a 7-byte password, an engine
+    /// ID of 4 or 33 bytes or not hex. The baseline is valid.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::v3_without_users(   |c: &mut SnmpAgentConfig| c.users.clear(),                                                     "snmp_agent versions names v3, which needs at least one user under users")]
+    #[case::duplicate_user(     |c: &mut SnmpAgentConfig| c.users.push(user("telegraf", AuthProtocol::Md5, "other-password")), "snmp_agent users names \"telegraf\" more than once")]
+    #[case::empty_name(         |c: &mut SnmpAgentConfig| c.users[0].name.clear(),                                             "snmp_agent users name \"\" must be 1 to 32 bytes, got 0")]
+    #[case::name_of_33_bytes(   |c: &mut SnmpAgentConfig| c.users[0].name = "u".repeat(33),                                    "must be 1 to 32 bytes, got 33")]
+    #[case::password_of_7_bytes(|c: &mut SnmpAgentConfig| c.users[0] = user("telegraf", AuthProtocol::Sha256, "1234567"),      "snmp_agent users \"telegraf\" auth.password must be at least 8 bytes")]
+    #[case::engine_id_of_4(     |c: &mut SnmpAgentConfig| c.engine_id = Some("80001f88".to_string()),                          "snmp_agent engine_id must be 5 to 32 bytes, got 4")]
+    #[case::engine_id_of_33(    |c: &mut SnmpAgentConfig| c.engine_id = Some("ab".repeat(33)),                                 "snmp_agent engine_id must be 5 to 32 bytes, got 33")]
+    #[case::engine_id_not_hex(  |c: &mut SnmpAgentConfig| c.engine_id = Some("80001f88zz".to_string()),                        "snmp_agent engine_id \"80001f88zz\" is not hex")]
+    #[case::engine_id_odd(      |c: &mut SnmpAgentConfig| c.engine_id = Some("80001f8804a".to_string()),                       "is not hex")]
+    fn settings_refuse_each_bad_v3_setting_naming_it(
+        #[case] change: fn(&mut SnmpAgentConfig),
+        #[case] refused: &str,
+    ) {
+        let mut cfg = with_users(vec![user("telegraf", AuthProtocol::Sha256, "12345678")]);
+        cfg.engine_id = Some("80001f8804736f6e6461".to_string());
+        cfg.settings().expect("the baseline is valid: an 8-byte password, a 10-byte engine ID");
+        change(&mut cfg);
+        match cfg.settings() {
+            Err(SondaError::Config(e)) => assert!(e.to_string().contains(refused), "{e}"),
+            other => panic!("expected {refused:?}, got {other:?}"),
+        }
+    }
+
+    /// Refused at parse time, naming the field: an unknown protocol, a
+    /// `priv` block, a misspelt key in a user and in its auth, a numeric
+    /// engine ID, and a numeric password or an auth that is not a map, both
+    /// without repeating the value.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::unknown_protocol( "users: [{ name: t, auth: { protocol: sha999, password: lab-only-password } }]", "snmp_agent users auth.protocol: unknown protocol \"sha999\"")]
+    #[case::priv_block(       "users: [{ name: t, auth: { protocol: sha256, password: lab-only-password }, priv: { protocol: aes, password: lab-only-secret } }]", "snmp_agent users: priv is not supported")]
+    #[case::misspelt_user_key("users: [{ nmae: t }]",                                                         "unknown field `nmae`")]
+    #[case::misspelt_auth_key("users: [{ name: t, auth: { protocol: md5, pasword: lab-only-password } }]",    "unknown field `pasword`")]
+    #[case::numeric_engine_id("users: [{ name: t }]\nengine_id: 8000000002",                                  "snmp_agent engine_id: an engine ID is written as a hex string")]
+    #[case::numeric_password( "users: [{ name: t, auth: { protocol: md5, password: 987654321 } }]",           "snmp_agent users auth.password must be a string")]
+    #[case::auth_not_a_map(   "users: [{ name: t, auth: hunter2-secret }]",                                   "snmp_agent users auth must be a map with protocol and password")]
+    fn a_bad_v3_block_is_refused_naming_the_field(#[case] rest: &str, #[case] refused: &str) {
+        parse_block(&v3_block("users: [{ name: t, auth: { protocol: md5, password: lab-only-password } }]"))
+            .expect("the baseline parses");
+        let msg = parse_block(&v3_block(rest)).expect_err("refused");
+        assert!(msg.contains(refused), "{msg}");
+        for secret in ["987654321", "hunter2-secret", "lab-only-secret"] {
+            assert!(!msg.contains(secret), "the error repeats a secret: {msg}");
+        }
+    }
+
+    /// `v3` in `versions` parses; without users it is refused by
+    /// `settings()`, with one it resolves.
+    #[cfg(feature = "config")]
+    #[test]
+    fn v3_without_users_is_refused() {
+        let cfg = parse_block(&v3_block("")).expect("the block parses");
+        assert_eq!(cfg.versions, [SnmpVersion::V2c, SnmpVersion::V3]);
+        let err = cfg.settings().expect_err("refused");
+        assert!(
+            err.to_string()
+                .contains("versions names v3, which needs at least one user"),
+            "{err}"
+        );
+        parse_block(&v3_block("users: [{ name: watcher }]"))
+            .expect("parses")
+            .settings()
+            .expect("one user without auth is enough");
+    }
+
+    /// Debug of a config and of its settings prints no password.
+    #[test]
+    fn debug_prints_no_password() {
+        let cfg = with_users(vec![user(
+            "telegraf",
+            AuthProtocol::Sha256,
+            "s3cret-password",
+        )]);
+        let settings = cfg.settings().expect("valid settings");
+        for debug in [format!("{cfg:?}"), format!("{settings:?}")] {
+            assert!(
+                debug.contains("telegraf") && debug.contains("Sha256"),
+                "{debug}"
+            );
+            assert!(!debug.contains("s3cret-password"), "{debug}");
+        }
+    }
+
+    /// Two configs on one address with different users do not serve each
+    /// other: another user, another protocol, another password. The
+    /// difference never names a password. The same users in another order
+    /// do serve each other.
+    #[test]
+    fn different_users_do_not_serve_each_other() {
+        let settings = |users: Vec<UsmUser>| with_users(users).settings().expect("valid settings");
+        let telegraf = user("telegraf", AuthProtocol::Sha256, "first-password");
+        let watcher = UsmUser {
+            name: "watcher".to_string(),
+            auth: None,
+        };
+        let both = settings(vec![telegraf.clone(), watcher.clone()]);
+        assert!(
+            both.serves(&settings(vec![watcher.clone(), telegraf.clone()])),
+            "users compare as a set"
+        );
+        for (other, difference) in [
+            (vec![telegraf.clone()], "users [telegraf sha256, watcher without auth] and [telegraf sha256]"),
+            (vec![user("telegraf", AuthProtocol::Sha512, "first-password"), watcher.clone()], "users [telegraf sha256, watcher without auth] and [telegraf sha512, watcher without auth]"),
+            (vec![user("telegraf", AuthProtocol::Sha256, "other-password"), watcher.clone()], "users with another password"),
+        ] {
+            let other = settings(other);
+            assert!(!both.serves(&other));
+            let beside = both.beside(&other);
+            assert_eq!(beside, difference);
+            assert!(!beside.contains("password") || beside == "users with another password");
+        }
+    }
+
+    /// Two configs with different engine IDs, or one configured and one
+    /// derived, do not serve each other.
+    #[test]
+    fn different_engine_ids_do_not_serve_each_other() {
+        let with = |engine_id: Option<&str>| {
+            SnmpAgentConfig {
+                engine_id: engine_id.map(str::to_string),
+                ..SnmpAgentConfig::new("127.0.0.1:1161")
+            }
+            .settings()
+            .expect("valid settings")
+        };
+        let a = with(Some("80001f8804616161"));
+        assert!(a.serves(&with(Some("0x80001F8804616161"))));
+        assert_eq!(
+            a.beside(&with(Some("80001f8804626262"))),
+            "engine_id 80001f8804616161 and 80001f8804626262"
+        );
+        assert_eq!(
+            a.beside(&with(None)),
+            "engine_id 80001f8804616161 and derived"
+        );
+    }
+
+    /// An agent configured with an engine ID reports it; one without derives
+    /// its own from the address it bound: net-snmp's enterprise prefix,
+    /// format 4, `sonda:<address>` cut to 27 bytes.
+    #[rstest::rstest]
+    #[case::ipv4("127.0.0.1:1161", b"sonda:127.0.0.1:1161".as_slice())]
+    #[case::wildcard("0.0.0.0:1161", b"sonda:0.0.0.0:1161".as_slice())]
+    #[case::cut_to_27_bytes("[fe80::1234:5678:9abc:def0]:65535", b"sonda:[fe80::1234:5678:9abc".as_slice())]
+    fn the_derived_engine_id_names_the_address(#[case] listen: &str, #[case] text: &[u8]) {
+        let id = derived_engine_id(listen.parse().expect("an address"));
+        assert_eq!(&id[..5], &[0x80, 0x00, 0x1f, 0x88, 0x04]);
+        assert_eq!(&id[5..], text);
+        assert!((MIN_ENGINE_ID..=MAX_ENGINE_ID).contains(&id.len()));
+    }
+
+    #[tokio::test]
+    async fn an_agent_reports_its_engine_id() {
+        let configured = SnmpAgentConfig {
+            engine_id: Some("80001f8804616161".to_string()),
+            ..SnmpAgentConfig::new("127.0.0.1:0")
+        };
+        let agent = SnmpAgent::bind(configured.settings().expect("valid"))
+            .await
+            .expect("binds");
+        assert_eq!(agent.engine_id(), hex("80001f8804616161"));
+        let derived = SnmpAgent::bind(
+            SnmpAgentConfig::new("127.0.0.1:0")
+                .settings()
+                .expect("valid"),
+        )
+        .await
+        .expect("binds");
+        let expected = derived_engine_id(derived.local_addr());
+        assert_eq!(derived.engine_id(), expected.as_slice());
+        assert!(
+            derived
+                .engine_id()
+                .ends_with(derived.local_addr().port().to_string().as_bytes()),
+            "the bound port, not 0"
+        );
     }
 
     // ---- registry -----------------------------------------------------------
@@ -1261,6 +2111,40 @@ mod tests {
             .join(&other)
             .expect("a join compares the community only");
         assert_eq!(joined.versions(), [SnmpVersion::V1, SnmpVersion::V2c]);
+        assert_eq!(registry.len(), 1, "nothing else was bound");
+    }
+
+    /// A second agent on one address with other users is refused by the
+    /// registry, naming the users and never a password.
+    #[tokio::test]
+    async fn differing_users_on_one_address_are_a_config_error() {
+        let registry = SnmpAgentRegistry::new();
+        let with = |listen: &str, password: &str| SnmpAgentConfig {
+            listen: listen.to_string(),
+            ..with_users(vec![user("telegraf", AuthProtocol::Sha256, password)])
+        };
+        let first = registry
+            .acquire(&with("127.0.0.1:0", "first-password"))
+            .await
+            .expect("bind an ephemeral port");
+        let addr = first.local_addr().to_string();
+        let shared = registry
+            .acquire(&with(&addr, "first-password"))
+            .await
+            .expect("the same users share the agent");
+        assert!(Arc::ptr_eq(&first, &shared));
+        let other = with(&addr, "other-password");
+        for result in [
+            registry.acquire(&other).await.map(|_| ()),
+            registry.check(&other),
+        ] {
+            let msg = result.expect_err("other users are refused").to_string();
+            assert!(msg.contains("users with another password"), "{msg}");
+            assert!(
+                !msg.contains("first-password") && !msg.contains("other-password"),
+                "{msg}"
+            );
+        }
         assert_eq!(registry.len(), 1, "nothing else was bound");
     }
 

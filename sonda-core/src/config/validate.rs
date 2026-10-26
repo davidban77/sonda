@@ -5766,6 +5766,73 @@ generator:
         );
     }
 
+    /// Validation refuses an `snmp_agent` sink naming `v3` without users and
+    /// a user's short password through `settings()`, and two entries of one
+    /// file on one address whose users differ, never naming a password.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn validation_checks_the_snmp_agent_users() {
+        use crate::config::ScenarioEntry;
+        use crate::schedule::launch::prepare_entries;
+        use crate::sink::snmp::{AuthProtocol, SnmpVersion, UsmAuth, UsmUser};
+
+        let with = |users: &[(&str, &str)]| {
+            let mut config = snmp_config();
+            let SinkConfig::SnmpAgent(sink) = &mut config.base.sink else {
+                panic!("the baseline is on an snmp_agent sink");
+            };
+            sink.versions = vec![SnmpVersion::V2c, SnmpVersion::V3];
+            sink.users = users
+                .iter()
+                .map(|(name, password)| UsmUser {
+                    name: name.to_string(),
+                    auth: Some(UsmAuth {
+                        protocol: AuthProtocol::Sha256,
+                        password: password.to_string(),
+                    }),
+                })
+                .collect();
+            config
+        };
+        validate_config(&with(&[("telegraf", "lab-password")])).expect("one user validates");
+        let msg = err_msg(validate_config(&with(&[])));
+        assert!(
+            msg.contains("versions names v3, which needs at least one user"),
+            "{msg}"
+        );
+        let msg = err_msg(validate_config(&with(&[("telegraf", "short")])));
+        assert!(
+            msg.contains("auth.password must be at least 8 bytes"),
+            "{msg}"
+        );
+
+        let file = |a: &[(&str, &str)], b: &[(&str, &str)]| {
+            prepare_entries(vec![
+                ScenarioEntry::Metrics(with(a)),
+                ScenarioEntry::Metrics(with(b)),
+            ])
+            .map(|_| ())
+        };
+        file(
+            &[("telegraf", "lab-password")],
+            &[("telegraf", "lab-password")],
+        )
+        .expect("the same users share the address");
+        let msg = err_msg(file(
+            &[("telegraf", "lab-password")],
+            &[("telegraf", "lab-other-1")],
+        ));
+        assert!(
+            msg.contains("snmp_agent 127.0.0.1:1161 with different settings")
+                && msg.contains("users with another password"),
+            "{msg}"
+        );
+        assert!(
+            !msg.contains("lab-password") && !msg.contains("lab-other-1"),
+            "{msg}"
+        );
+    }
+
     #[test]
     fn validate_sink_config_stdout_is_ok() {
         assert!(validate_sink_config(&SinkConfig::Stdout).is_ok());
