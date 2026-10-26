@@ -20,7 +20,10 @@
 use std::ops::Range;
 
 use super::ber::{self, BerError, Message, Reader, Tag};
-use crate::sink::snmp::usm::{self, LocalizedUser, Snapshot, UsmStat, MAX_AUTH_PARAMS};
+use crate::sink::snmp::usm::{
+    self, LocalizedUser, SaltCounter, Snapshot, UsmStat, MAX_AUTH_PARAMS, PRIV_PARAMS,
+};
+use crate::sink::snmp::PrivProtocol;
 
 /// The version field of an SNMPv3 message.
 pub(crate) const VERSION: i64 = 3;
@@ -121,6 +124,8 @@ pub(crate) struct V3Message<'a> {
     pub(crate) auth_range: Range<usize>,
     /// The scoped PDU, or `None` when the privacy flag says it is encrypted.
     pub(crate) scoped: Option<ScopedPdu<'a>>,
+    /// The encrypted scoped PDU, when the privacy flag is set.
+    pub(crate) encrypted: Option<&'a [u8]>,
 }
 
 /// The next TLV of `reader`, an INTEGER, when it is 0 to 2³¹ − 1 and at
@@ -182,11 +187,10 @@ pub(crate) fn decode(datagram: &[u8]) -> Result<V3Message<'_>, BerError> {
     }
     // `auth_params` is a subslice of `datagram`.
     let auth_at = auth_params.as_ptr() as usize - datagram.as_ptr() as usize;
-    let scoped = if flags.privacy {
-        message.octets(Tag::OctetString)?;
-        None
+    let (scoped, encrypted) = if flags.privacy {
+        (None, Some(message.octets(Tag::OctetString)?))
     } else {
-        Some(scoped_pdu(message.expect(Tag::Sequence)?)?)
+        (Some(scoped_pdu(message.expect(Tag::Sequence)?)?), None)
     };
     if !message.is_empty() {
         return Err(BerError::BadLength);
@@ -207,7 +211,27 @@ pub(crate) fn decode(datagram: &[u8]) -> Result<V3Message<'_>, BerError> {
         },
         auth_range: auth_at..auth_at + auth_params.len(),
         scoped,
+        encrypted,
     })
+}
+
+/// Decode a decrypted scoped PDU: a SEQUENCE followed by at most `padding`
+/// octets, which are ignored.
+///
+/// # Errors
+///
+/// [`BerError::BadLength`] when more than `padding` octets follow the
+/// SEQUENCE, and the errors of a plaintext scoped PDU.
+pub(crate) fn decode_scoped_pdu(plain: &[u8], padding: usize) -> Result<ScopedPdu<'_>, BerError> {
+    let mut reader = Reader::new(plain);
+    let body = reader.expect(Tag::Sequence)?;
+    let scoped = scoped_pdu(body)?;
+    // `body` is a subslice of `plain`.
+    let end = body.as_ptr() as usize - plain.as_ptr() as usize + body.len();
+    if plain.len() - end > padding {
+        return Err(BerError::BadLength);
+    }
+    Ok(scoped)
 }
 
 /// Decode the body of a scoped PDU.
@@ -253,14 +277,22 @@ fn auth_len(user: Option<&LocalizedUser>) -> usize {
         .map_or(0, |(protocol, _)| usm::auth_params_len(protocol))
 }
 
+/// The privacy protocol a message to `user` is encrypted with: the user's,
+/// when the message is `private`.
+fn privacy_of(user: Option<&LocalizedUser>, private: bool) -> Option<PrivProtocol> {
+    user.and_then(LocalizedUser::privacy)
+        .filter(|_| private)
+        .map(|(protocol, _)| protocol)
+}
+
 /// Octets the body of the USM security parameters' SEQUENCE takes.
-fn usm_body_len(engine: &Snapshot<'_>, user: &[u8], auth_len: usize) -> usize {
+fn usm_body_len(engine: &Snapshot<'_>, user: &[u8], auth_len: usize, priv_len: usize) -> usize {
     ber::tlv_len(engine.id.len())
         + ber::i64_len(i64::from(engine.boots))
         + ber::i64_len(i64::from(engine.time))
         + ber::tlv_len(user.len())
         + ber::tlv_len(auth_len)
-        + ber::tlv_len(0)
+        + ber::tlv_len(priv_len)
 }
 
 /// Octets the message answering `req` takes whose PDU TLV is `pdu_len`
@@ -272,6 +304,31 @@ pub(crate) fn response_len(
     user: Option<&LocalizedUser>,
     pdu_len: usize,
 ) -> usize {
+    message_len(req, engine, user, false, pdu_len)
+}
+
+/// Octets the message answering `req` takes whose PDU TLV is `pdu_len`
+/// octets, encrypted for `user` and written with `engine`: what
+/// [`write_private_response`] writes, the plaintext's padding included.
+pub(crate) fn private_response_len(
+    req: &V3Message<'_>,
+    engine: &Snapshot<'_>,
+    user: &LocalizedUser,
+    pdu_len: usize,
+) -> usize {
+    message_len(req, engine, Some(user), true, pdu_len)
+}
+
+/// [`response_len`], or [`private_response_len`] when `private`.
+fn message_len(
+    req: &V3Message<'_>,
+    engine: &Snapshot<'_>,
+    user: Option<&LocalizedUser>,
+    private: bool,
+    pdu_len: usize,
+) -> usize {
+    let privacy = privacy_of(user, private);
+    let priv_len = if privacy.is_some() { PRIV_PARAMS } else { 0 };
     let global = ber::tlv_len(
         ber::i64_len(req.msg_id) + ber::i64_len(MSG_MAX_SIZE) + ber::tlv_len(1) + ber::i64_len(USM),
     );
@@ -279,9 +336,14 @@ pub(crate) fn response_len(
         engine,
         req.usm.user,
         auth_len(user),
+        priv_len,
     )));
     let scoped = ber::tlv_len(ber::tlv_len(engine.id.len()) + ber::tlv_len(0) + pdu_len);
-    ber::tlv_len(ber::i64_len(VERSION) + global + security + scoped)
+    let data = match privacy {
+        Some(protocol) => ber::tlv_len(usm::padded_len(protocol, scoped)),
+        None => scoped,
+    };
+    ber::tlv_len(ber::i64_len(VERSION) + global + security + data)
 }
 
 /// Write the message answering `req` whose PDU `scoped_pdu` appends: at
@@ -298,17 +360,50 @@ pub(crate) fn write_response(
     user: Option<&LocalizedUser>,
     scoped_pdu: impl FnOnce(&mut Vec<u8>),
 ) {
+    write_message(out, req, engine, user, None, scoped_pdu);
+}
+
+/// [`write_response`] at `authPriv` for `user`, a user with privacy: the
+/// scoped PDU, padded to its cipher's block, is encrypted with `user`'s
+/// privacy key and the next salt of `salts`, which the privacy parameter
+/// carries, before the HMAC is spliced in.
+pub(crate) fn write_private_response(
+    out: &mut Vec<u8>,
+    req: &V3Message<'_>,
+    engine: &Snapshot<'_>,
+    user: &LocalizedUser,
+    salts: &SaltCounter,
+    scoped_pdu: impl FnOnce(&mut Vec<u8>),
+) {
+    write_message(out, req, engine, Some(user), Some(salts), scoped_pdu);
+}
+
+/// [`write_response`], encrypted as [`write_private_response`] says when
+/// `salts` is given and `user` has privacy.
+fn write_message(
+    out: &mut Vec<u8>,
+    req: &V3Message<'_>,
+    engine: &Snapshot<'_>,
+    user: Option<&LocalizedUser>,
+    salts: Option<&SaltCounter>,
+    scoped_pdu: impl FnOnce(&mut Vec<u8>),
+) {
     let start = out.len();
     let auth_len = auth_len(user);
+    let privacy = privacy_of(user, salts.is_some());
+    let priv_len = if privacy.is_some() { PRIV_PARAMS } else { 0 };
     let flags = Flags {
         auth: auth_len > 0,
-        privacy: false,
+        privacy: privacy.is_some(),
         reportable: false,
     };
-    // Where the authentication parameter is, from the start of the outer
-    // SEQUENCE's body: nothing before it moves once it is written but that
-    // body, as a whole, when its length takes the long form.
-    let mut auth_at = 0;
+    // Where the authentication and privacy parameters are, from the start
+    // of the outer SEQUENCE's body: nothing before them moves once they are
+    // written but that body, as a whole, when its length takes the long
+    // form.
+    let (mut auth_at, mut priv_at) = (0, 0);
+    // The plaintext to encrypt, padded: the message's last octets.
+    let mut plain_len = 0;
     ber::write_tlv(out, Tag::Sequence, |out| {
         let body = out.len();
         ber::write_i64(out, Tag::Integer, VERSION);
@@ -318,7 +413,7 @@ pub(crate) fn write_response(
             ber::write_octets(out, Tag::OctetString, &[flags.octet()]);
             ber::write_i64(out, Tag::Integer, USM);
         });
-        let params = usm_body_len(engine, req.usm.user, auth_len);
+        let params = usm_body_len(engine, req.usm.user, auth_len, priv_len);
         ber::write_header(out, Tag::OctetString, ber::tlv_len(params));
         ber::write_header(out, Tag::Sequence, params);
         ber::write_octets(out, Tag::OctetString, engine.id);
@@ -328,26 +423,47 @@ pub(crate) fn write_response(
         ber::write_header(out, Tag::OctetString, auth_len);
         auth_at = out.len() - body;
         out.resize(out.len() + auth_len, 0);
-        ber::write_octets(out, Tag::OctetString, &[]);
-        ber::write_tlv(out, Tag::Sequence, |out| {
-            ber::write_octets(out, Tag::OctetString, engine.id);
-            ber::write_octets(out, Tag::OctetString, &[]);
-            scoped_pdu(out);
-        });
+        ber::write_header(out, Tag::OctetString, priv_len);
+        priv_at = out.len() - body;
+        out.resize(out.len() + priv_len, 0);
+        let scoped = |out: &mut Vec<u8>| {
+            ber::write_tlv(out, Tag::Sequence, |out| {
+                ber::write_octets(out, Tag::OctetString, engine.id);
+                ber::write_octets(out, Tag::OctetString, &[]);
+                scoped_pdu(out);
+            });
+        };
+        match privacy {
+            Some(protocol) => ber::write_tlv(out, Tag::OctetString, |out| {
+                let at = out.len();
+                scoped(out);
+                // DES pads to its block with arbitrary octets: zeros here.
+                plain_len = usm::padded_len(protocol, out.len() - at);
+                out.resize(at + plain_len, 0);
+            }),
+            None => scoped(out),
+        }
     });
+    let body = body_start(out, start);
+    if let (Some(user), Some(salts)) = (user.filter(|_| privacy.is_some()), salts) {
+        let mut salt = [0u8; PRIV_PARAMS];
+        let plain = out.len() - plain_len;
+        usm::encrypt(user, engine, salts, &mut out[plain..], &mut salt);
+        out[body + priv_at..body + priv_at + PRIV_PARAMS].copy_from_slice(&salt);
+    }
     let Some((protocol, key)) = user.and_then(LocalizedUser::auth) else {
         return;
     };
-    let at = body_start(out, start) + auth_at;
+    let at = body + auth_at;
     let mut digest = [0u8; MAX_AUTH_PARAMS];
     usm::hmac(protocol, key, &out[start..], &mut digest[..auth_len]);
     out[at..at + auth_len].copy_from_slice(&digest[..auth_len]);
 }
 
 /// Write the `Report` answering `req` with the usmStats counter `stat` at
-/// `value`, as [`write_response`] writes a response: one varbind, the
-/// counter's instance as a Counter32; the request-id the request's, or 0
-/// when its scoped PDU is encrypted.
+/// `value`, as [`write_response`] writes a response, never encrypted: one
+/// varbind, the counter's instance as a Counter32; the request-id the
+/// request's, or 0 when its scoped PDU is encrypted.
 pub(crate) fn write_report(
     out: &mut Vec<u8>,
     req: &V3Message<'_>,
@@ -407,9 +523,19 @@ pub(crate) mod tests {
         pub(crate) time: u32,
         pub(crate) user: Vec<u8>,
         pub(crate) key: Option<(AuthProtocol, Vec<u8>)>,
-        /// Set the privacy flag and send the scoped PDU as an OCTET STRING.
+        /// Set the privacy flag and send the scoped PDU as an OCTET STRING:
+        /// encrypted with `cipher`'s privacy key when it is given, as
+        /// plaintext otherwise.
         pub(crate) privacy: bool,
         pub(crate) msg_max_size: i64,
+        /// The user whose privacy key encrypts the scoped PDU.
+        pub(crate) cipher: Option<LocalizedUser>,
+        /// The next salt counter value the client encrypts with.
+        pub(crate) salt: u64,
+        /// The context engine ID, when it is not `engine_id`.
+        pub(crate) context: Option<Vec<u8>>,
+        /// An edit to the encrypted scoped PDU before it is sent.
+        pub(crate) tamper: Option<fn(&mut Vec<u8>)>,
     }
 
     impl Client {
@@ -424,6 +550,30 @@ pub(crate) mod tests {
                 key,
                 privacy: false,
                 msg_max_size: 65_507,
+                cipher: None,
+                salt: 0,
+                context: None,
+                tamper: None,
+            }
+        }
+
+        /// A client of `user`, a configured user, with its keys localized
+        /// to `engine`'s ID and its boots and time: at `user`'s security
+        /// level, encrypting when the user has privacy.
+        pub(crate) fn of(user: &UsmUser, engine: &Snapshot<'_>) -> Self {
+            let localized = LocalizedUser::new(user, engine.id);
+            Self {
+                engine_id: engine.id.to_vec(),
+                boots: engine.boots,
+                time: engine.time,
+                privacy: localized.privacy().is_some(),
+                cipher: Some(localized.clone()),
+                ..Self::new(
+                    &user.name,
+                    localized
+                        .auth()
+                        .map(|(protocol, key)| (protocol, key.to_vec())),
+                )
             }
         }
 
@@ -459,8 +609,12 @@ pub(crate) mod tests {
                 reportable: true,
             };
             let mut scoped = Vec::new();
+            let context = self
+                .context
+                .clone()
+                .unwrap_or_else(|| self.engine_id.clone());
             ber::write_tlv(&mut scoped, Tag::Sequence, |out| {
-                ber::write_octets(out, Tag::OctetString, &self.engine_id);
+                ber::write_octets(out, Tag::OctetString, &context);
                 ber::write_octets(out, Tag::OctetString, &[]);
                 ber::write_tlv(out, pdu, |out| {
                     ber::write_i64(out, Tag::Integer, id);
@@ -476,6 +630,23 @@ pub(crate) mod tests {
                     });
                 });
             });
+            let mut salt = [0u8; PRIV_PARAMS];
+            if let (true, Some(cipher)) = (self.privacy, &self.cipher) {
+                if let Some((protocol, _)) = cipher.privacy() {
+                    scoped.resize(usm::padded_len(protocol, scoped.len()), 0);
+                }
+                let engine = Snapshot {
+                    id: &self.engine_id,
+                    boots: self.boots,
+                    time: self.time,
+                };
+                let salts = SaltCounter::starting_at(self.salt as u32, self.salt);
+                usm::encrypt(cipher, &engine, &salts, &mut scoped, &mut salt);
+                self.salt += 1;
+            }
+            if let (true, Some(tamper)) = (self.privacy, self.tamper) {
+                tamper(&mut scoped);
+            }
             let mut params = Vec::new();
             ber::write_tlv(&mut params, Tag::Sequence, |out| {
                 ber::write_octets(out, Tag::OctetString, &self.engine_id);
@@ -487,7 +658,7 @@ pub(crate) mod tests {
                 ber::write_octets(
                     out,
                     Tag::OctetString,
-                    if self.privacy { &[0; 8] } else { &[] },
+                    if self.privacy { &salt } else { &[] },
                 );
             });
             let mut datagram = Vec::new();
@@ -739,6 +910,7 @@ pub(crate) mod tests {
                         protocol,
                         password: password.to_string(),
                     }),
+                    privacy: None,
                 },
             )
             .collect()
@@ -1088,5 +1260,229 @@ pub(crate) mod tests {
             recomputed(response, AuthProtocol::Sha512, "lab-sha512-pass"),
             reply.usm.auth_params
         );
+    }
+
+    // ---- privacy --------------------------------------------------------------
+
+    use crate::sink::snmp::usm::tests::priv_capture_users;
+
+    /// The privacy capture user `name`, localized to the captures' engine.
+    fn priv_capture_user(name: &str) -> LocalizedUser {
+        let user = priv_capture_users()
+            .into_iter()
+            .find(|user| user.name == name)
+            .expect("a privacy capture user");
+        LocalizedUser::new(&user, &hex(CAPTURE_ENGINE_ID))
+    }
+
+    /// A Response PDU of request-id `id` whose varbind list body is `len`
+    /// octets of NULLs' content.
+    fn response_pdu(id: i64, len: usize) -> impl FnOnce(&mut Vec<u8>) {
+        move |out: &mut Vec<u8>| {
+            ber::write_tlv(out, Tag::Response, |out| {
+                ber::write_i64(out, Tag::Integer, id);
+                ber::write_i64(out, Tag::Integer, 0);
+                ber::write_i64(out, Tag::Integer, 0);
+                ber::write_tlv(out, Tag::Sequence, |out| out.resize(out.len() + len, 0x05));
+            });
+        }
+    }
+
+    /// An encrypted response carries the authentication and privacy flags,
+    /// decrypts with the user's privacy key and the boots, time and salt it
+    /// carries to the scoped PDU written, and carries the HMAC of itself,
+    /// written into a buffer that already holds other bytes. Guard: the
+    /// encrypted octets are not the plaintext ones.
+    #[rstest]
+    #[case::des("des-sha1")]
+    #[case::aes128("aes-sha256")]
+    #[case::aes192c("aes192c-sha1")]
+    #[case::aes256("aes256-sha1")]
+    fn an_encrypted_response_decrypts_and_carries_its_hmac(#[case] name: &str) {
+        let user = priv_capture_user(name);
+        let engine = hex(CAPTURE_ENGINE_ID);
+        let snapshot = Snapshot {
+            id: &engine,
+            boots: 1,
+            time: 300,
+        };
+        let request = Client::of(
+            &priv_capture_users()
+                .into_iter()
+                .find(|u| u.name == name)
+                .expect("a user"),
+            &snapshot,
+        )
+        .get(9, &["1.3.6.1.2.1.1.5.0"]);
+        let msg = decode(&request).expect("decodes");
+        let salts = SaltCounter::starting_at(7, 7);
+        let mut out = vec![0xee; 5];
+        write_private_response(
+            &mut out,
+            &msg,
+            &snapshot,
+            &user,
+            &salts,
+            response_pdu(9, 300),
+        );
+        assert_eq!(&out[..5], &[0xee; 5]);
+        let response = &out[5..];
+        let reply = decode(response).expect("decodes");
+        assert_eq!(
+            reply.flags,
+            Flags {
+                auth: true,
+                privacy: true,
+                reportable: false
+            }
+        );
+        assert_eq!(reply.msg_id, msg.msg_id);
+        let encrypted = reply.encrypted.expect("encrypted");
+        let mut plain = Vec::new();
+        let usm = &reply.usm;
+        let scoped = usm::decrypt(
+            &user,
+            usm.boots,
+            usm.time,
+            usm.priv_params,
+            encrypted,
+            &mut plain,
+        )
+        .expect("decrypts");
+        assert_eq!((scoped.pdu.pdu, scoped.pdu.request_id), (Tag::Response, 9));
+        assert_eq!(scoped.pdu.varbinds, &[0x05; 300][..]);
+        assert_eq!(
+            (scoped.context_engine_id, scoped.context_name),
+            (&engine[..], &b""[..])
+        );
+        // The plaintext response's scoped PDU is its last TLV: the octets
+        // decrypted, before the padding.
+        let mut plaintext = Vec::new();
+        write_response(
+            &mut plaintext,
+            &msg,
+            &snapshot,
+            Some(&user),
+            response_pdu(9, 300),
+        );
+        let body = Reader::new(&plain)
+            .expect(Tag::Sequence)
+            .expect("a SEQUENCE");
+        let scoped_len = body.as_ptr() as usize - plain.as_ptr() as usize + body.len();
+        assert_eq!(
+            &plain[..scoped_len],
+            &plaintext[plaintext.len() - scoped_len..]
+        );
+        assert!(plain.len() - scoped_len < 8 && plain[scoped_len..].iter().all(|&b| b == 0));
+        assert_ne!(&encrypted[..scoped_len], &plain[..scoped_len], "encrypted");
+        let (protocol, _) = user.auth().expect("a key");
+        let password = "lab-auth-pass";
+        assert_eq!(
+            recomputed(response, protocol, password),
+            reply.usm.auth_params
+        );
+    }
+
+    /// [`private_response_len`] is the length [`write_private_response`]
+    /// writes, padding included, for every PDU length from 0 to 263 (every
+    /// DES padding, and the outer length in one, two and three octets).
+    #[rstest]
+    #[case::des("des-sha1")]
+    #[case::aes128("aes-sha256")]
+    fn private_response_len_is_the_length_written(#[case] name: &str) {
+        let request = hex(NET_SNMP_V3_SHA256_GET);
+        let msg = decode(&request).expect("decodes");
+        let engine = hex(CAPTURE_ENGINE_ID);
+        let user = priv_capture_user(name);
+        let salts = SaltCounter::starting_at(0, 0);
+        let mut checked = 0;
+        for time in [0, 128, 32_768] {
+            let snapshot = Snapshot {
+                id: &engine,
+                boots: 1,
+                time,
+            };
+            for pdu_len in (0..264).chain([65_000]) {
+                let mut out = vec![0xee; 3];
+                write_private_response(&mut out, &msg, &snapshot, &user, &salts, |out| {
+                    out.resize(out.len() + pdu_len, 0x55)
+                });
+                assert_eq!(
+                    out.len() - 3,
+                    private_response_len(&msg, &snapshot, &user, pdu_len),
+                    "{time} {pdu_len}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 3 * 265);
+    }
+
+    /// No two of 10 000 encrypted responses carry the same salt; a DES salt
+    /// begins with the engine's boots.
+    #[rstest]
+    #[case::des("des-sha1")]
+    #[case::aes128("aes-sha256")]
+    fn two_responses_never_reuse_a_salt(#[case] name: &str) {
+        let request = hex(NET_SNMP_V3_SHA256_GET);
+        let msg = decode(&request).expect("decodes");
+        let engine = hex(CAPTURE_ENGINE_ID);
+        let snapshot = Snapshot {
+            id: &engine,
+            boots: 1,
+            time: 3,
+        };
+        let user = priv_capture_user(name);
+        let salts = SaltCounter::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for _ in 0..10_000 {
+            out.clear();
+            write_private_response(&mut out, &msg, &snapshot, &user, &salts, response_pdu(1, 0));
+            let reply = decode(&out).expect("decodes");
+            let salt = reply.usm.priv_params;
+            assert_eq!(salt.len(), PRIV_PARAMS);
+            if user.privacy().map(|(p, _)| p) == Some(PrivProtocol::Des) {
+                assert_eq!(&salt[..4], &1u32.to_be_bytes());
+            }
+            seen.insert(salt.to_vec());
+        }
+        assert_eq!(seen.len(), 10_000);
+    }
+
+    /// A report to a user with privacy is authenticated and never
+    /// encrypted.
+    #[test]
+    fn a_report_to_a_private_user_is_not_encrypted() {
+        let request = hex(NET_SNMP_V3_SHA256_GET);
+        let msg = decode(&request).expect("decodes");
+        let engine = hex(CAPTURE_ENGINE_ID);
+        let snapshot = Snapshot {
+            id: &engine,
+            boots: 1,
+            time: 3,
+        };
+        let user = priv_capture_user("aes-sha256");
+        assert!(user.privacy().is_some());
+        let mut out = Vec::new();
+        write_report(
+            &mut out,
+            &msg,
+            &snapshot,
+            UsmStat::DecryptionErrors,
+            1,
+            Some(&user),
+        );
+        let report = decode(&out).expect("decodes");
+        assert_eq!(
+            report.flags,
+            Flags {
+                auth: true,
+                privacy: false,
+                reportable: false
+            }
+        );
+        assert_eq!(report.usm.priv_params, b"");
+        assert_eq!(report.scoped.expect("plaintext").pdu.pdu, Tag::Report);
     }
 }

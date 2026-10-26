@@ -42,3 +42,7 @@ dist/
 # (see examples/gnmi-telegraf-tls.yaml). Never committed: one holds a private
 # key.
 examples/telegraf/certs/
+
+# The live UAT's traced copy of examples/telegraf/telegraf-snmp.conf, written
+# by scripts/live_infra_uat.py before the stack starts.
+examples/telegraf/uat/

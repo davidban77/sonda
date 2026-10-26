@@ -2948,6 +2948,19 @@
         }
       ]
     },
+    "PrivProtocol": {
+      "description": "An SNMPv3 privacy protocol, named as Telegraf names it, in lower case: des (legacy; prefer aes128), aes128 (also read as aes), aes192 and aes256 (the Blumenthal key extension), aes192c and aes256c (the Reeder key extension).",
+      "type": "string",
+      "enum": [
+        "des",
+        "aes",
+        "aes128",
+        "aes192",
+        "aes192c",
+        "aes256",
+        "aes256c"
+      ]
+    },
     "PromMetricType": {
       "description": "Prometheus exposition metric kind for `# TYPE` annotations.",
       "type": "string",
@@ -3666,11 +3679,12 @@
               "default": "public"
             },
             "engine_id": {
-              "description": "The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as\n`\"80001f8804736f6e6461\"`; a leading `0x` is allowed. A string; a YAML\nnumber is an error. Default: derived from the address the agent binds\n(net-snmp's enterprise prefix `80001f88`, format `04`, then the text\n`sonda:<bound address>` cut to 27 octets; a `listen` on port 0 gives\nthe port it was bound to), so an agent on a fixed address has the same\none on every run.",
+              "description": "The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as\n`\"80001f8804736f6e6461\"`; a leading `0x` is allowed. A string; a YAML\nnumber is an error. Default: made from the host name and the address\nthe agent binds (net-snmp's enterprise prefix `80001f88`, format `05`,\nthen the first 16 octets of the SHA-256 of\n`sonda:<host name>:<bound address>`; a `listen` on port 0 gives the\nport it was bound to), so an agent has the same one on every run on\none host and another on every other host.",
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "pattern": "^(0[xX])?([0-9a-fA-F]{2}){5,32}$"
             },
             "listen": {
               "description": "Address to listen on, e.g. `\"0.0.0.0:1161\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`SnmpAgent::local_addr`]. A port below\n1024, such as SNMP's 161, needs `CAP_NET_BIND_SERVICE`.",
@@ -3805,7 +3819,7 @@
           "const": "v2c"
         },
         {
-          "description": "SNMPv3 with the User-based Security Model (RFC 3414), `v3`: the\nSNMPv2c operations for the configured `users`, `noAuthNoPriv` or\n`authNoPriv`.",
+          "description": "SNMPv3 with the User-based Security Model (RFC 3414), `v3`: the\nSNMPv2c operations for the configured `users`, `noAuthNoPriv`,\n`authNoPriv` or `authPriv`.",
           "type": "string",
           "const": "v3"
         }
@@ -3941,6 +3955,8 @@
         "password": {
           "description": "The password the user's key is made from, at least 8 octets. A\nstring; a YAML number is an error.",
           "type": "string",
+          "$comment": "minLength counts characters where sonda counts octets, so the schema is the looser of the two: sonda refuses a password of fewer than 8 octets that the schema may accept.",
+          "minLength": 8,
           "writeOnly": true
         },
         "protocol": {
@@ -3954,8 +3970,30 @@
         "password"
       ]
     },
+    "UsmPriv": {
+      "description": "An SNMPv3 user's privacy: the `priv:` block of a [`UsmUser`].\n\nThe privacy key is made from the password with the user's\nauthentication hash. `Debug` prints `\"***\"` in place of the password.",
+      "type": "object",
+      "properties": {
+        "password": {
+          "description": "The password the user's privacy key is made from, at least 8 octets.\nA string; a YAML number is an error.",
+          "type": "string",
+          "$comment": "minLength counts characters where sonda counts octets, so the schema is the looser of the two: sonda refuses a password of fewer than 8 octets that the schema may accept.",
+          "minLength": 8,
+          "writeOnly": true
+        },
+        "protocol": {
+          "description": "The cipher the user's scoped PDUs are encrypted with.",
+          "$ref": "#/$defs/PrivProtocol"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "password"
+      ]
+    },
     "UsmUser": {
-      "description": "An SNMPv3 user of the User-based Security Model (RFC 3414): an item of\nan [`SnmpAgentConfig`]'s `users:`.\n\nWithout `auth` the user is `noAuthNoPriv`; with it, every request must\nbe authenticated with the user's key (`authNoPriv`). Unknown keys are\nrejected; a `priv` key is refused, because privacy (`authPriv`) is not\nsupported.",
+      "description": "An SNMPv3 user of the User-based Security Model (RFC 3414): an item of\nan [`SnmpAgentConfig`]'s `users:`.\n\nWithout `auth` the user is `noAuthNoPriv`; with it, every request must\nbe authenticated with the user's key (`authNoPriv`); with `priv` as well,\nevery request must also be encrypted with the user's privacy key\n(`authPriv`). A user's level is the only one it is answered at. `priv`\nneeds `auth`. Unknown keys are rejected.",
       "type": "object",
       "properties": {
         "auth": {
@@ -3975,6 +4013,19 @@
             "string",
             "number",
             "boolean"
+          ],
+          "maxLength": 32,
+          "minLength": 1
+        },
+        "priv": {
+          "description": "The user's privacy protocol and password, `priv:` in a config, when\nits requests are encrypted. Needs `auth`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsmPriv"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
