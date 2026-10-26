@@ -1,0 +1,11 @@
+# The live UAT's override of docker-compose-victoriametrics.yml. Only
+# scripts/live_infra_uat.py passes it, after that file, on every docker compose
+# call; the documented stack is that file alone. Relative paths resolve
+# against the first file's directory, examples/.
+services:
+  # Telegraf reads the harness's copy of telegraf-snmp.conf, whose v3 block
+  # logs gosnmp's trace. The harness writes it (gitignored) before the stack
+  # starts; the mount replaces the base file's mount at the same target.
+  telegraf-snmp:
+    volumes:
+      - ./telegraf/uat/telegraf-snmp.conf:/etc/telegraf/telegraf.conf:ro

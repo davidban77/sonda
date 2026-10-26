@@ -50,6 +50,10 @@ from unittest import mock
 # --- Configuration -----------------------------------------------------------
 
 COMPOSE_FILE = Path("examples/docker-compose-victoriametrics.yml")
+# The harness's override of COMPOSE_FILE, passed after it on every call: the
+# telegraf-snmp service reads SNMP_TRACED_CONF. Its relative paths resolve
+# against COMPOSE_FILE's directory.
+COMPOSE_OVERRIDE_FILE = Path("examples/docker-compose-uat-snmp.yml")
 DEFAULT_SONDA_BINARY = Path("target/release/sonda")
 
 # Per-step time budgets. Tuned for healthcheck `start_period` + flush latency.
@@ -405,17 +409,14 @@ SNMP_RESTART_PHASE_S = 1.0
 # Each interface series of each input has a sample this soon after the
 # restart, and an input's errors after it are excused this long at most.
 SNMP_RESUME_WITHIN_S = 30.0
-# What gosnmp logs, at trace level through Telegraf's v3_trace input, when a
+# What gosnmp logs, at trace level through Telegraf's v3 input, when a
 # request is answered usmStatsNotInTimeWindows (it re-synchronizes and asks
 # again), and when one is answered usmStatsUnknownEngineIDs after the first
 # discovery (the engine ID changed).
 SNMP_TIME_WINDOW_LINE = "WARNING detected out-of-time-window ERROR"
 SNMP_REDISCOVERY_LINE = "WARNING detected unknown engine id ERROR"
-# The alias of the one inputs.snmp block of SNMP_TELEGRAF_TRACE_CONF, which
-# reads sysUpTime over SNMPv3 as the v3 block's user, writes nothing, and logs
-# gosnmp's trace; and Telegraf's trace lines of it.
-SNMP_V3_TRACE_INPUT = "v3_trace"
-SNMP_V3_TRACE_LINE = re.compile(rf"T! \[inputs\.snmp::{SNMP_V3_TRACE_INPUT}\]")
+# Telegraf's trace lines of the v3 input, which SNMP_TRACED_CONF logs at.
+SNMP_V3_TRACE_LINE = re.compile(r"T! \[inputs\.snmp::v3\]")
 # Telegraf's startup line naming the inputs it loaded.
 SNMP_LOADED_INPUTS = "Loaded inputs:"
 # Every error Telegraf's inputs.snmp logs begins "E! [inputs.snmp]", or
@@ -459,10 +460,12 @@ SNMP_OPER_STATUS_CODES = {"up": 1.0, "down": 2.0}
 # The conf tags every metric with the agent's host as `source` (agent_host_tag).
 SNMP_EXPORT_MATCH = '{__name__=~"interface_.*|snmp_.*",source="sonda"}'
 SNMP_TELEGRAF_CONF = Path("examples/telegraf/telegraf-snmp.conf")
-# The UAT's addition to it, which only the compose telegraf-snmp service
-# mounts, at SNMP_TELEGRAF_TRACE_MOUNT.
-SNMP_TELEGRAF_TRACE_CONF = Path("examples/telegraf/telegraf-snmp-trace.conf")
-SNMP_TELEGRAF_TRACE_MOUNT = "/etc/telegraf/telegraf.d/trace.conf"
+# The copy of it the telegraf-snmp service reads under the UAT
+# (COMPOSE_OVERRIDE_FILE), gitignored: SNMP_TRACE_SETTING on the line after the
+# v3 block's SNMP_V3_ALIAS_LINE, so gosnmp's trace is logged.
+SNMP_TRACED_CONF = Path("examples/telegraf/uat/telegraf-snmp.conf")
+SNMP_V3_ALIAS_LINE = 'alias = "v3"'
+SNMP_TRACE_SETTING = 'log_level = "trace"'
 # What net-snmp prints walking the example, with SNMP_WALK_MASKS applied.
 SNMP_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf.walk")
 # Run inside the telegraf-snmp service, with MIBS set empty.
@@ -892,8 +895,8 @@ def snmp_findings(
     that had one before sonda stopped; one that had none is named above), a
     SNMP_V3_TRACE_LINE carrying SNMP_TIME_WINDOW_LINE is stamped from a second
     before sonda stopped on (gosnmp answered usmStatsNotInTimeWindows and
-    re-synchronized; when none is, the SNMP_V3_TRACE_INPUT input's first
-    SNMP_ERROR_LINE from then on is named with it), and none carrying
+    re-synchronized; when none is, the v3 input's first SNMP_ERROR_LINE from
+    then on is named with it), and none carrying
     SNMP_REDISCOVERY_LINE is (the engine ID did not change); both uptimes
     are checked for increase before sonda stopped and after it, apart;
     ``walk``, masked, is ``golden``, masked, and ``v1_walk`` is
@@ -1078,22 +1081,21 @@ def snmp_findings(
             errored = ""
             for line in since_stop:
                 error = SNMP_ERROR_LINE.search(line)
-                if error is not None and error.group("alias") == SNMP_V3_TRACE_INPUT:
+                if error is not None and error.group("alias") == SNMP_V3_INPUT:
                     errored = (
                         "; the input errored first, and Telegraf discovers the "
                         f"engine again after an error: {line.strip()}"
                     )
                     break
             findings.append(
-                f"telegraf's {SNMP_V3_TRACE_INPUT} input logged no "
-                f"{SNMP_TIME_WINDOW_LINE!r} after sonda restarted: gosnmp was not "
-                f"answered usmStatsNotInTimeWindows{errored}"
+                f"telegraf's v3 input logged no {SNMP_TIME_WINDOW_LINE!r} after sonda "
+                f"restarted: gosnmp was not answered usmStatsNotInTimeWindows{errored}"
             )
         for line in traced:
             if SNMP_REDISCOVERY_LINE in line:
                 findings.append(
-                    f"telegraf's {SNMP_V3_TRACE_INPUT} input discovered the engine again "
-                    f"after sonda restarted: {line.strip()}"
+                    f"telegraf's v3 input discovered the engine again after sonda "
+                    f"restarted: {line.strip()}"
                 )
                 break
     else:
@@ -1232,9 +1234,46 @@ def make_gnmi_tls_certs(
     return ""
 
 
+# --- The snmp row's traced Telegraf conf ---------------------------------------
+
+
+def traced_snmp_conf(example: str) -> str:
+    """``example`` (SNMP_TELEGRAF_CONF's text) with one line,
+    SNMP_TRACE_SETTING at the alias line's indentation, inserted right after
+    its one SNMP_V3_ALIAS_LINE. Raises ValueError, naming the count, when
+    that line is absent or there is more than one."""
+    lines = example.splitlines(keepends=True)
+    at = [i for i, line in enumerate(lines) if line.strip() == SNMP_V3_ALIAS_LINE]
+    if len(at) != 1:
+        raise ValueError(
+            f"{SNMP_TELEGRAF_CONF} has {len(at)} lines {SNMP_V3_ALIAS_LINE!r}; "
+            "the traced copy needs exactly one"
+        )
+    alias = lines[at[0]]
+    indent = alias[: len(alias) - len(alias.lstrip())]
+    lines.insert(at[0] + 1, f"{indent}{SNMP_TRACE_SETTING}\n")
+    return "".join(lines)
+
+
+def make_snmp_traced_conf(repo_root: Path) -> str:
+    """Write SNMP_TRACED_CONF under ``repo_root``: :func:`traced_snmp_conf`
+    of SNMP_TELEGRAF_CONF. Returns "" when it was written, otherwise why not."""
+    try:
+        traced = traced_snmp_conf((repo_root / SNMP_TELEGRAF_CONF).read_text())
+    except (OSError, ValueError) as e:
+        return f"the snmp row's traced Telegraf conf was not written: {e}"
+    path = repo_root / SNMP_TRACED_CONF
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(traced)
+    # Telegraf reads it as its own user inside the container.
+    path.chmod(0o644)
+    return ""
+
+
 # Files a profile's services read that are made before the stack starts.
 PROFILE_SETUP: dict[str, Callable[[Path], str]] = {
     "gnmi-tls": make_gnmi_tls_certs,
+    "snmp": make_snmp_traced_conf,
 }
 
 
@@ -1651,8 +1690,13 @@ def compose_command(
     *args: str,
     profiles: Sequence[str] = (),
 ) -> list[str]:
-    """Build a ``docker compose`` argv with the given profiles + extra args."""
-    cmd = ["docker", "compose", "-f", str(repo_root / COMPOSE_FILE)]
+    """Build a ``docker compose`` argv over COMPOSE_FILE and
+    COMPOSE_OVERRIDE_FILE with the given profiles + extra args."""
+    cmd = [
+        "docker", "compose",
+        "-f", str(repo_root / COMPOSE_FILE),
+        "-f", str(repo_root / COMPOSE_OVERRIDE_FILE),
+    ]
     for prof in profiles:
         cmd.extend(["--profile", prof])
     cmd.extend(args)
@@ -2345,12 +2389,17 @@ class _ComposeCommandTests(unittest.TestCase):
 
     def test_compose_file_path_in_cmd(self) -> None:
         cmd = compose_command(Path("/repo"), "down")
-        # `-f <repo>/<COMPOSE_FILE>` is present.
-        self.assertIn("-f", cmd)
-        f_idx = cmd.index("-f")
+        # `-f <repo>/<COMPOSE_FILE> -f <repo>/<COMPOSE_OVERRIDE_FILE>`, in
+        # that order, before anything else.
         self.assertEqual(
-            cmd[f_idx + 1], str(Path("/repo") / COMPOSE_FILE)
+            cmd[:6],
+            [
+                "docker", "compose",
+                "-f", str(Path("/repo") / COMPOSE_FILE),
+                "-f", str(Path("/repo") / COMPOSE_OVERRIDE_FILE),
+            ],
         )
+        self.assertEqual(cmd.count("-f"), 2)
 
 
 class _FilterSkippedTests(unittest.TestCase):

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -72,11 +73,6 @@ def refused_v3(at_s: float) -> str:
     )
 
 
-def refused_v3_trace(at_s: float) -> str:
-    """An error of the v3_trace input, as Telegraf 1.40.2 logs it."""
-    return refused_v3(at_s).replace("inputs.snmp::v3]", f"inputs.snmp::{uat.SNMP_V3_TRACE_INPUT}]")
-
-
 def refused_v1(at_s: float) -> str:
     """An error of the v1 input, as Telegraf 1.40.2 logs it."""
     return telegraf_line(
@@ -88,11 +84,10 @@ def refused_v1(at_s: float) -> str:
 
 
 def time_window(at_s: float) -> str:
-    """gosnmp's trace line, through the v3_trace input, for a request
-    answered usmStatsNotInTimeWindows, as Telegraf 1.40.2 logs it."""
+    """gosnmp's trace line, through the v3 input, for a request answered
+    usmStatsNotInTimeWindows, as Telegraf 1.40.2 logs it."""
     return telegraf_line(
-        at_s,
-        f"T! [inputs.snmp::{uat.SNMP_V3_TRACE_INPUT}] agent sonda: {uat.SNMP_TIME_WINDOW_LINE}",
+        at_s, f"T! [inputs.snmp::v3] agent sonda: {uat.SNMP_TIME_WINDOW_LINE}"
     )
 
 
@@ -234,6 +229,14 @@ def good_export(
         )
     )
     return "\n".join(lines).encode()
+
+
+def after_compose(argv: list[str]) -> list[str]:
+    """``argv`` after the ``docker compose`` prefix compose_command builds,
+    which it must begin with."""
+    prefix = uat.compose_command(REPO_ROOT)
+    assert argv[: len(prefix)] == prefix, argv
+    return argv[len(prefix) :]
 
 
 def golden() -> str:
@@ -818,35 +821,31 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         self.assertEqual(
             findings(log=log),
             [
-                f"telegraf's v3_trace input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
                 "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
             ],
         )
 
-    def test_a_v3_trace_error_after_the_stop_is_named_with_the_missing_time_window(self) -> None:
-        error = refused_v3_trace(STOPPED_S + 1)
+    def test_a_v3_error_after_the_stop_is_named_with_the_missing_time_window(self) -> None:
+        error = refused_v3(STOPPED_S + 1)
         log = good_log().replace(time_window(RESTARTED_S), "") + error
         self.assertEqual(
             findings(log=log),
             [
-                f"telegraf's v3_trace input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
                 "restarted: gosnmp was not answered usmStatsNotInTimeWindows; the input "
                 "errored first, and Telegraf discovers the engine again after an error: "
                 f"{error.strip()}"
             ],
         )
-        # Guard: an error of the input from before the run, excused, and one
-        # of the v3 input after the stop are not named with it.
-        for other in (refused_v3_trace(STARTED_S - 600), refused_v3(STOPPED_S + 1)):
-            with self.subTest(other=other):
-                self.assertEqual(
-                    findings(log=good_log().replace(time_window(RESTARTED_S), "") + other),
-                    [
-                        f"telegraf's v3_trace input logged no {uat.SNMP_TIME_WINDOW_LINE!r} "
-                        "after sonda restarted: gosnmp was not answered "
-                        "usmStatsNotInTimeWindows"
-                    ],
-                )
+        # Guard: a v3 error before the run, excused, is not named with it.
+        self.assertEqual(
+            findings(log=good_log().replace(time_window(RESTARTED_S), "") + refused_v3(STARTED_S - 600)),
+            [
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
+            ],
+        )
 
     def test_a_time_window_line_before_the_stop_does_not_count(self) -> None:
         log = good_log().replace(time_window(RESTARTED_S), time_window(STOPPED_S - 10))
@@ -854,19 +853,18 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         self.assertEqual(len(findings(log=log)), 1)
 
     def test_a_time_window_line_of_another_input_does_not_count(self) -> None:
-        other = time_window(RESTARTED_S).replace("inputs.snmp::v3_trace", "inputs.snmp::v3")
+        other = time_window(RESTARTED_S).replace("inputs.snmp::v3", "inputs.snmp::v2c")
         log = good_log().replace(time_window(RESTARTED_S), other)
-        self.assertIn("inputs.snmp::v3] agent sonda: WARNING", log)
+        self.assertIn("inputs.snmp::v2c] agent sonda: WARNING", log)
         self.assertEqual(len(findings(log=log)), 1)
 
     def test_a_rediscovery_after_the_restart_is_named(self) -> None:
         line = telegraf_line(
-            RESTARTED_S + 2,
-            f"T! [inputs.snmp::{uat.SNMP_V3_TRACE_INPUT}] agent sonda: {uat.SNMP_REDISCOVERY_LINE}",
+            RESTARTED_S + 2, f"T! [inputs.snmp::v3] agent sonda: {uat.SNMP_REDISCOVERY_LINE}"
         )
         self.assertEqual(
             findings(log=good_log() + line),
-            [f"telegraf's v3_trace input discovered the engine again after sonda restarted: {line.strip()}"],
+            [f"telegraf's v3 input discovered the engine again after sonda restarted: {line.strip()}"],
         )
 
     def test_a_v2c_or_v1_input_that_does_not_resume_is_named(self) -> None:
@@ -1084,44 +1082,86 @@ class TelegrafConfTests(unittest.TestCase):
             self.assertNotIn("log_level", snmp, snmp["alias"])
         self.assertNotIn("debug", conf["agent"])
 
-    def test_the_trace_conf_adds_one_silent_trace_input_as_the_v3_user(self) -> None:
-        trace = tomllib.loads((REPO_ROOT / uat.SNMP_TELEGRAF_TRACE_CONF).read_text())
-        self.assertEqual(list(trace), ["inputs"])
-        self.assertEqual(list(trace["inputs"]), ["snmp"])
-        (snmp,) = trace["inputs"]["snmp"]
-        _, _, v3 = telegraf_conf()["inputs"]["snmp"]
-        self.assertEqual(snmp["alias"], uat.SNMP_V3_TRACE_INPUT)
-        self.assertEqual(snmp["log_level"], "trace")
-        # It writes nothing: every metric it makes is dropped.
-        self.assertEqual(snmp["namedrop"], ["*"])
-        for key in (
-            "agents", "version", "sec_level", "sec_name", "auth_protocol", "auth_password",
-            "priv_protocol", "priv_password", "timeout", "retries", "agent_host_tag",
-        ):
-            self.assertEqual(snmp[key], v3[key], key)
-        self.assertEqual(snmp["field"], [{"name": "uptime", "oid": ".1.3.6.1.2.1.1.3.0"}])
-        self.assertNotIn("table", snmp)
-        self.assertNotIn("interval", snmp)
+    def test_the_traced_conf_is_the_example_with_one_line_in_its_v3_block(self) -> None:
+        example = (REPO_ROOT / uat.SNMP_TELEGRAF_CONF).read_text()
+        traced = uat.traced_snmp_conf(example)
+        lines, kept = traced.splitlines(keepends=True), example.splitlines(keepends=True)
+        self.assertEqual(len(lines), len(kept) + 1)
+        (at,) = [i for i, line in enumerate(lines) if line.strip() == uat.SNMP_TRACE_SETTING]
+        self.assertEqual(lines[at - 1].strip(), uat.SNMP_V3_ALIAS_LINE)
+        # Removing the inserted line gives the example back, byte for byte.
+        self.assertEqual("".join(lines[:at] + lines[at + 1 :]), example)
+        # The line is inside the v3 block, and only there.
+        inputs = tomllib.loads(traced)["inputs"]["snmp"]
+        self.assertEqual(
+            {snmp["alias"]: snmp.get("log_level") for snmp in inputs},
+            {uat.SNMP_V2C_INPUT: None, uat.SNMP_V1_INPUT: None, uat.SNMP_V3_INPUT: "trace"},
+        )
 
-    def test_only_the_telegraf_snmp_service_mounts_the_trace_conf(self) -> None:
+    def test_the_traced_conf_needs_exactly_one_v3_alias_line(self) -> None:
+        example = (REPO_ROOT / uat.SNMP_TELEGRAF_CONF).read_text()
+        renamed = example.replace(uat.SNMP_V3_ALIAS_LINE, 'alias = "v3-auth"')
+        doubled = example + f"\n  {uat.SNMP_V3_ALIAS_LINE}\n"
+        for name, text, count in (("absent", renamed, 0), ("twice", doubled, 2)):
+            with self.subTest(name):
+                with self.assertRaisesRegex(
+                    ValueError, rf"has {count} lines 'alias = \"v3\"'; the traced copy needs exactly one"
+                ):
+                    uat.traced_snmp_conf(text)
+
+    def test_the_snmp_profile_writes_the_traced_conf_or_says_why_not(self) -> None:
+        self.assertIs(uat.PROFILE_SETUP["snmp"], uat.make_snmp_traced_conf)
+        with tempfile.TemporaryDirectory() as repo:
+            root = Path(repo)
+            conf = root / uat.SNMP_TELEGRAF_CONF
+            conf.parent.mkdir(parents=True)
+            example = (REPO_ROOT / uat.SNMP_TELEGRAF_CONF).read_text()
+            conf.write_text(example)
+            # Readable by Telegraf's user whatever the umask it is written under.
+            umask = os.umask(0o077)
+            try:
+                self.assertEqual(uat.make_snmp_traced_conf(root), "")
+            finally:
+                os.umask(umask)
+            written = root / uat.SNMP_TRACED_CONF
+            self.assertEqual(written.read_text(), uat.traced_snmp_conf(example))
+            self.assertEqual(written.stat().st_mode & 0o777, 0o644)
+            conf.write_text(example.replace(uat.SNMP_V3_ALIAS_LINE, 'alias = "v3-auth"'))
+            written.unlink()
+            failure = uat.make_snmp_traced_conf(root)
+            self.assertIn("the snmp row's traced Telegraf conf was not written", failure)
+            self.assertIn("has 0 lines", failure)
+            self.assertFalse(written.exists())
+
+    def test_only_the_harness_override_mounts_the_traced_conf(self) -> None:
         import yaml
 
-        compose = yaml.safe_load((REPO_ROOT / uat.COMPOSE_FILE).read_text())
-        name = uat.SNMP_TELEGRAF_TRACE_CONF.name
-        mounting = {
-            service: [volume for volume in spec.get("volumes", []) if name in str(volume)]
-            for service, spec in compose["services"].items()
-        }
+        override = yaml.safe_load((REPO_ROOT / uat.COMPOSE_OVERRIDE_FILE).read_text())
+        base = yaml.safe_load((REPO_ROOT / uat.COMPOSE_FILE).read_text())
+        target = "/etc/telegraf/telegraf.conf"
         self.assertEqual(
-            {service: volumes for service, volumes in mounting.items() if volumes},
-            {"telegraf-snmp": [f"./telegraf/{name}:{uat.SNMP_TELEGRAF_TRACE_MOUNT}:ro"]},
+            override,
+            {"services": {"telegraf-snmp": {"volumes": [f"./telegraf/uat/telegraf-snmp.conf:{target}:ro"]}}},
         )
-        self.assertTrue(uat.SNMP_TELEGRAF_TRACE_MOUNT.startswith("/etc/telegraf/telegraf.d/"))
-        self.assertTrue(
-            (REPO_ROOT / uat.COMPOSE_FILE).parent.joinpath("telegraf", name).samefile(
-                REPO_ROOT / uat.SNMP_TELEGRAF_TRACE_CONF
-            )
+        # Relative to COMPOSE_FILE's directory, the source is SNMP_TRACED_CONF;
+        # the base mounts the example at the same target, which it replaces.
+        compose_dir = (REPO_ROOT / uat.COMPOSE_FILE).parent
+        self.assertEqual(
+            (compose_dir / "telegraf/uat/telegraf-snmp.conf").resolve(),
+            (REPO_ROOT / uat.SNMP_TRACED_CONF).resolve(),
         )
+        self.assertIn(
+            f"./telegraf/{uat.SNMP_TELEGRAF_CONF.name}:{target}:ro",
+            base["services"]["telegraf-snmp"]["volumes"],
+        )
+        base_text = (REPO_ROOT / uat.COMPOSE_FILE).read_text()
+        self.assertNotIn(uat.COMPOSE_OVERRIDE_FILE.name, base_text)
+        self.assertNotIn("telegraf/uat/", base_text)
+        # The traced copy is never committed.
+        ignored = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", str(uat.SNMP_TRACED_CONF)]
+        )
+        self.assertEqual(ignored.returncode, 0)
 
     def test_every_oid_is_numeric(self) -> None:
         fields = [
@@ -1441,9 +1481,8 @@ class WalkSnmpAgentTests(unittest.TestCase):
         )
         self.assertEqual(walk, walked())
         (argv,) = argvs
-        self.assertEqual(argv[:3], ["docker", "compose", "-f"])
         self.assertEqual(
-            argv[4:],
+            after_compose(argv),
             [
                 "exec", "-T", "-e", "MIBS=", "telegraf-snmp",
                 "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
@@ -1801,9 +1840,12 @@ class WalkSnmpVersionsTests(unittest.TestCase):
             sleep=clock.sleep,
         )
         self.assertEqual(walks, self.walks())
-        self.assertEqual([argv[4:9] for argv in argvs], [["exec", "-T", "-e", "MIBS=", "telegraf-snmp"]] * 4)
         self.assertEqual(
-            [argv[9:] for argv in argvs],
+            [after_compose(argv)[:5] for argv in argvs],
+            [["exec", "-T", "-e", "MIBS=", "telegraf-snmp"]] * 4,
+        )
+        self.assertEqual(
+            [after_compose(argv)[5:] for argv in argvs],
             [
                 ["snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
                 ["snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
@@ -1864,7 +1906,7 @@ class WalkSnmpVersionsTests(unittest.TestCase):
         )
         self.assertEqual(walks, self.walks())
         self.assertEqual(
-            [(argv[9], argv[12]) for argv in argvs],
+            [(after_compose(argv)[5], after_compose(argv)[8]) for argv in argvs],
             [("snmpbulkwalk", "public"), ("snmpwalk", "public")]
             + [("snmpget", "authNoPriv")] * 3
             + [("snmpget", "authPriv")] * 2,
@@ -1890,7 +1932,8 @@ class WalkSnmpVersionsTests(unittest.TestCase):
         # so the v1 walk and the two v3 gets each have the one-second floor
         # and give up after their first attempt, at 18, 22 and 26 s.
         self.assertEqual(
-            [argv[9] for argv in argvs], ["snmpbulkwalk"] * 3 + ["snmpwalk", "snmpget", "snmpget"]
+            [after_compose(argv)[5] for argv in argvs],
+            ["snmpbulkwalk"] * 3 + ["snmpwalk", "snmpget", "snmpget"],
         )
         self.assertEqual(clock.now_s, 26.0)
 

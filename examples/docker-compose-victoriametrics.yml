@@ -494,8 +494,7 @@ services:
   #   docker compose -f examples/docker-compose-victoriametrics.yml exec \
   #     telegraf-snmp snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
   #
-  # Its health endpoint is on port 8097. telegraf-snmp-trace.conf, which only
-  # this service mounts, adds the live UAT's trace-logging SNMPv3 input.
+  # Its health endpoint is on port 8097.
   #
   # This service is only started with --profile snmp.
   # ---------------------------------------------------------------------------
@@ -506,7 +505,6 @@ services:
       - "8097:8097"
     volumes:
       - ./telegraf/telegraf-snmp.conf:/etc/telegraf/telegraf.conf:ro
-      - ./telegraf/telegraf-snmp-trace.conf:/etc/telegraf/telegraf.d/trace.conf:ro
     extra_hosts:
       - "sonda:host-gateway"
     depends_on:
