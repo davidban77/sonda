@@ -632,3 +632,11 @@ jobs:
         run: |
           python3 scripts/check_compose_features.py --self-test
           python3 scripts/check_compose_features.py
+
+      # The live-UAT harness's checker, Telegraf-conf and compose-override
+      # tests. pytest exits 5 when it collects nothing, which fails the step.
+      - name: Live-UAT harness tests
+        run: python3 -m pytest scripts/tests
+
+      - name: Live-UAT harness self-test
+        run: python3 scripts/live_infra_uat.py --self-test
