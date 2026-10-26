@@ -974,10 +974,10 @@ impl SnmpAgentConfig {
     /// above 127, `versions` is empty or names a version twice, `versions`
     /// names `v3` and `users` is empty, a user name is empty, longer than 32
     /// octets or given twice, a user has `priv` without `auth`, a password is
-    /// shorter than 8 octets, or `engine_id` is not 5 to 32 octets of hex. An IPv4-mapped `listen`
-    /// resolves to the IPv4 address it maps; `versions` resolves to its
-    /// versions in ascending order, `users` to its users ordered by name, and
-    /// `engine_id` to its octets.
+    /// shorter than 8 octets, or `engine_id` is not 5 to 32 octets of hex.
+    /// An IPv4-mapped `listen` resolves to the IPv4 address it maps;
+    /// `versions` resolves to its versions in ascending order, `users` to its
+    /// users ordered by name, and `engine_id` to its octets.
     pub(crate) fn settings(&self) -> Result<AgentSettings, SondaError> {
         let invalid = |msg: String| SondaError::Config(ConfigError::invalid(msg));
         let listen: SocketAddr = self.listen.parse().map_err(|_| {
