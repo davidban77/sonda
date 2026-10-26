@@ -4376,8 +4376,8 @@ mod tests {
     // ---- SNMPv3 privacy ------------------------------------------------------
 
     use crate::sink::snmp::usm::tests::{
-        priv_capture_users, PrivCapture, NET_SNMP_WRONG_PRIV_GET, NET_SNMP_WRONG_PRIV_REPORT,
-        PRIV_CAPTURED,
+        priv_capture_users, PrivCapture, NET_SNMP_AES_RESPONSE, NET_SNMP_DES_RESPONSE,
+        NET_SNMP_WRONG_PRIV_GET, NET_SNMP_WRONG_PRIV_REPORT, PRIV_CAPTURED,
     };
 
     /// An agent on `listen` answering SNMPv2c and SNMPv3 for the privacy
@@ -4501,6 +4501,41 @@ mod tests {
             (10, 10, 1),
             "{requests:?}"
         );
+    }
+
+    /// The responses net-snmp accepted are the ones the agent writes, byte
+    /// for byte: each capture's request answered at the engine time it was
+    /// sent, the salt counter moved to the salt its response carries.
+    #[tokio::test(start_paused = true)]
+    async fn the_responses_net_snmp_accepted_are_written_byte_for_byte() {
+        let agent = priv_agent(1472).await;
+        let mut now = 0;
+        for (capture, response) in [(0, NET_SNMP_DES_RESPONSE), (1, NET_SNMP_AES_RESPONSE)] {
+            let PrivCapture {
+                user,
+                request,
+                time,
+                ..
+            } = PRIV_CAPTURED[capture];
+            tokio::time::advance(Duration::from_secs(u64::from(time - now))).await;
+            now = time;
+            let response = hex(response);
+            let salt: [u8; 8] = v3::decode(&response)
+                .expect("the response decodes")
+                .usm
+                .priv_params
+                .try_into()
+                .expect("an 8-octet salt");
+            let des = u32::from_be_bytes(salt[4..].try_into().expect("4 octets"));
+            agent
+                .usm()
+                .engine()
+                .salts()
+                .set(des, u64::from_be_bytes(salt));
+            let (outcome, out) = answered(&agent, &hex(request), 1472);
+            assert_eq!(outcome, Outcome::Sent, "{user}");
+            assert_eq!(out, response, "{user}");
+        }
     }
 
     /// A GETBULK answered encrypted with DES within a msgMaxSize of 484 is

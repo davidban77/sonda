@@ -100,6 +100,13 @@ impl SaltCounter {
         }
     }
 
+    /// Move the counters to `des` and `aes`.
+    #[cfg(test)]
+    pub(crate) fn set(&self, des: u32, aes: u64) {
+        self.des.store(des, Ordering::Relaxed);
+        self.aes.store(aes, Ordering::Relaxed);
+    }
+
     /// The next DES salt counter value.
     fn next_des(&self) -> u32 {
         self.des.fetch_add(1, Ordering::Relaxed)
