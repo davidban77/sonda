@@ -72,6 +72,11 @@ def refused_v3(at_s: float) -> str:
     )
 
 
+def refused_v3_trace(at_s: float) -> str:
+    """An error of the v3_trace input, as Telegraf 1.40.2 logs it."""
+    return refused_v3(at_s).replace("inputs.snmp::v3]", f"inputs.snmp::{uat.SNMP_V3_TRACE_INPUT}]")
+
+
 def refused_v1(at_s: float) -> str:
     """An error of the v1 input, as Telegraf 1.40.2 logs it."""
     return telegraf_line(
@@ -83,10 +88,11 @@ def refused_v1(at_s: float) -> str:
 
 
 def time_window(at_s: float) -> str:
-    """gosnmp's trace line, through the v3 input, for a request answered
-    usmStatsNotInTimeWindows, as Telegraf 1.40.2 logs it."""
+    """gosnmp's trace line, through the v3_trace input, for a request
+    answered usmStatsNotInTimeWindows, as Telegraf 1.40.2 logs it."""
     return telegraf_line(
-        at_s, f"T! [inputs.snmp::v3] agent sonda: {uat.SNMP_TIME_WINDOW_LINE}"
+        at_s,
+        f"T! [inputs.snmp::{uat.SNMP_V3_TRACE_INPUT}] agent sonda: {uat.SNMP_TIME_WINDOW_LINE}",
     )
 
 
@@ -180,6 +186,8 @@ def good_export(
     v3_uptime=lambda at_s: sys_up_time(at_s) + 1,
     v3_from_s: float = FIRST_POLL_S,
     v3_resumed_s: float = RESTARTED_S,
+    v2c_resumed_s: float = RESTARTED_S,
+    v1_resumed_s: float = RESTARTED_S,
 ) -> bytes:
     """What VictoriaMetrics exports for a run in which Telegraf read every
     poll: each field of each of ``interfaces``, each of ``v1_fields`` of each
@@ -189,13 +197,16 @@ def good_export(
     when given; ``v3_tags``, which ``tags`` does not change, in the
     interface_v3 table), snmp_uptime and snmp_v3_uptime. The v2c input's
     series (interface and snmp_uptime) start at ``v2c_from_s``, the v3
-    input's (interface_v3 and snmp_v3_uptime) at ``v3_from_s`` and, after
-    the restart, at ``v3_resumed_s``."""
-    times = poll_times()
-    v2c_times = poll_times(first_s=v2c_from_s)
-    v3_times = [
-        at for at in poll_times(first_s=v3_from_s) if at < STOPPED_S or at >= v3_resumed_s
-    ]
+    input's (interface_v3 and snmp_v3_uptime) at ``v3_from_s``; after the
+    restart the v2c, v1 and v3 inputs' series start again at
+    ``v2c_resumed_s``, ``v1_resumed_s`` and ``v3_resumed_s``."""
+
+    def resuming(polls: list[float], resumed_s: float) -> list[float]:
+        return [at for at in polls if at < STOPPED_S or at >= resumed_s]
+
+    times = resuming(poll_times(), v1_resumed_s)
+    v2c_times = resuming(poll_times(first_s=v2c_from_s), v2c_resumed_s)
+    v3_times = resuming(poll_times(first_s=v3_from_s), v3_resumed_s)
     lines = []
     for table, indices, fields, polls, tagged in (
         ("interface", interfaces, FIELDS, v2c_times, tags),
@@ -807,31 +818,35 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         self.assertEqual(
             findings(log=log),
             [
-                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                f"telegraf's v3_trace input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
                 "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
             ],
         )
 
-    def test_a_v3_error_after_the_stop_is_named_with_the_missing_time_window(self) -> None:
-        error = refused_v3(STOPPED_S + 1)
+    def test_a_v3_trace_error_after_the_stop_is_named_with_the_missing_time_window(self) -> None:
+        error = refused_v3_trace(STOPPED_S + 1)
         log = good_log().replace(time_window(RESTARTED_S), "") + error
         self.assertEqual(
             findings(log=log),
             [
-                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                f"telegraf's v3_trace input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
                 "restarted: gosnmp was not answered usmStatsNotInTimeWindows; the input "
                 "errored first, and Telegraf discovers the engine again after an error: "
                 f"{error.strip()}"
             ],
         )
-        # Guard: a v3 error before the run, excused, is not named with it.
-        self.assertEqual(
-            findings(log=good_log().replace(time_window(RESTARTED_S), "") + refused_v3(STARTED_S - 600)),
-            [
-                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
-                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
-            ],
-        )
+        # Guard: an error of the input from before the run, excused, and one
+        # of the v3 input after the stop are not named with it.
+        for other in (refused_v3_trace(STARTED_S - 600), refused_v3(STOPPED_S + 1)):
+            with self.subTest(other=other):
+                self.assertEqual(
+                    findings(log=good_log().replace(time_window(RESTARTED_S), "") + other),
+                    [
+                        f"telegraf's v3_trace input logged no {uat.SNMP_TIME_WINDOW_LINE!r} "
+                        "after sonda restarted: gosnmp was not answered "
+                        "usmStatsNotInTimeWindows"
+                    ],
+                )
 
     def test_a_time_window_line_before_the_stop_does_not_count(self) -> None:
         log = good_log().replace(time_window(RESTARTED_S), time_window(STOPPED_S - 10))
@@ -839,19 +854,52 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         self.assertEqual(len(findings(log=log)), 1)
 
     def test_a_time_window_line_of_another_input_does_not_count(self) -> None:
-        other = time_window(RESTARTED_S).replace("inputs.snmp::v3", "inputs.snmp::v2c")
+        other = time_window(RESTARTED_S).replace("inputs.snmp::v3_trace", "inputs.snmp::v3")
         log = good_log().replace(time_window(RESTARTED_S), other)
-        self.assertIn("inputs.snmp::v2c] agent sonda: WARNING", log)
+        self.assertIn("inputs.snmp::v3] agent sonda: WARNING", log)
         self.assertEqual(len(findings(log=log)), 1)
 
     def test_a_rediscovery_after_the_restart_is_named(self) -> None:
         line = telegraf_line(
-            RESTARTED_S + 2, f"T! [inputs.snmp::v3] agent sonda: {uat.SNMP_REDISCOVERY_LINE}"
+            RESTARTED_S + 2,
+            f"T! [inputs.snmp::{uat.SNMP_V3_TRACE_INPUT}] agent sonda: {uat.SNMP_REDISCOVERY_LINE}",
         )
         self.assertEqual(
             findings(log=good_log() + line),
-            [f"telegraf's v3 input discovered the engine again after sonda restarted: {line.strip()}"],
+            [f"telegraf's v3_trace input discovered the engine again after sonda restarted: {line.strip()}"],
         )
+
+    def test_a_v2c_or_v1_input_that_does_not_resume_is_named(self) -> None:
+        # The input is never answered after the restart and logs an error on
+        # every poll to the end of the run: its series are named, and so is
+        # each error past SNMP_RESUME_WITHIN_S after the restart.
+        for alias, series, export, error in (
+            ("v2c", uat.SNMP_INTERFACE_SERIES, good_export(v2c_resumed_s=ENDED_S + 1), refused),
+            ("v1", uat.SNMP_V1_INTERFACE_SERIES, good_export(v1_resumed_s=ENDED_S + 1), refused_v1),
+        ):
+            with self.subTest(input=alias):
+                after = [at for at in poll_times() if at > STOPPED_S]
+                log = good_log() + "".join(error(at) for at in after)
+                late = [at for at in after if at > RESTARTED_S + uat.SNMP_RESUME_WITHIN_S]
+                self.assertTrue(late)
+                self.assertEqual(
+                    findings(log=log, export=export),
+                    [
+                        f"telegraf logged an error while sonda served: {error(at).strip()}"
+                        for at in late
+                    ]
+                    + [
+                        f'{name}{{index="{index}"}}: no sample within 30s of sonda starting again'
+                        for name in series
+                        for index in uat.SNMP_INTERFACES
+                    ],
+                )
+                # Guard: the same errors are excused when the input resumes
+                # at the first poll after the restart and errs no more.
+                self.assertEqual(
+                    findings(log=good_log() + "".join(error(at) for at in after if at < RESTARTED_S + 1)),
+                    [],
+                )
 
     def test_a_failed_restart_is_named_and_excuses_nothing(self) -> None:
         reason = "<the restart failed: sonda exited (0) before the restart>"
@@ -1029,6 +1077,52 @@ class TelegrafConfTests(unittest.TestCase):
         for snmp in conf["inputs"]["snmp"]:
             self.assertNotIn("interval", snmp, snmp["alias"])
 
+    def test_the_example_logs_at_telegrafs_default_level(self) -> None:
+        conf = telegraf_conf()
+        self.assertEqual(len(conf["inputs"]["snmp"]), 3)
+        for snmp in conf["inputs"]["snmp"]:
+            self.assertNotIn("log_level", snmp, snmp["alias"])
+        self.assertNotIn("debug", conf["agent"])
+
+    def test_the_trace_conf_adds_one_silent_trace_input_as_the_v3_user(self) -> None:
+        trace = tomllib.loads((REPO_ROOT / uat.SNMP_TELEGRAF_TRACE_CONF).read_text())
+        self.assertEqual(list(trace), ["inputs"])
+        self.assertEqual(list(trace["inputs"]), ["snmp"])
+        (snmp,) = trace["inputs"]["snmp"]
+        _, _, v3 = telegraf_conf()["inputs"]["snmp"]
+        self.assertEqual(snmp["alias"], uat.SNMP_V3_TRACE_INPUT)
+        self.assertEqual(snmp["log_level"], "trace")
+        # It writes nothing: every metric it makes is dropped.
+        self.assertEqual(snmp["namedrop"], ["*"])
+        for key in (
+            "agents", "version", "sec_level", "sec_name", "auth_protocol", "auth_password",
+            "priv_protocol", "priv_password", "timeout", "retries", "agent_host_tag",
+        ):
+            self.assertEqual(snmp[key], v3[key], key)
+        self.assertEqual(snmp["field"], [{"name": "uptime", "oid": ".1.3.6.1.2.1.1.3.0"}])
+        self.assertNotIn("table", snmp)
+        self.assertNotIn("interval", snmp)
+
+    def test_only_the_telegraf_snmp_service_mounts_the_trace_conf(self) -> None:
+        import yaml
+
+        compose = yaml.safe_load((REPO_ROOT / uat.COMPOSE_FILE).read_text())
+        name = uat.SNMP_TELEGRAF_TRACE_CONF.name
+        mounting = {
+            service: [volume for volume in spec.get("volumes", []) if name in str(volume)]
+            for service, spec in compose["services"].items()
+        }
+        self.assertEqual(
+            {service: volumes for service, volumes in mounting.items() if volumes},
+            {"telegraf-snmp": [f"./telegraf/{name}:{uat.SNMP_TELEGRAF_TRACE_MOUNT}:ro"]},
+        )
+        self.assertTrue(uat.SNMP_TELEGRAF_TRACE_MOUNT.startswith("/etc/telegraf/telegraf.d/"))
+        self.assertTrue(
+            (REPO_ROOT / uat.COMPOSE_FILE).parent.joinpath("telegraf", name).samefile(
+                REPO_ROOT / uat.SNMP_TELEGRAF_TRACE_CONF
+            )
+        )
+
     def test_every_oid_is_numeric(self) -> None:
         fields = [
             field
@@ -1098,8 +1192,6 @@ class TelegrafConfTests(unittest.TestCase):
         self.assertEqual(
             (v3["priv_protocol"], v3["priv_password"]), ("AES", uat.SNMP_V3_PRIV_PASSWORD)
         )
-        # gosnmp's trace is where the restart's evidence is read from.
-        self.assertEqual(v3["log_level"], "trace")
         for key in ("agents", "agent_host_tag", "max_repetitions"):
             self.assertEqual(v3[key], v2c[key], key)
         self.assertNotIn("community", v3)
@@ -1247,8 +1339,12 @@ class VerifySnmpRowTests(unittest.TestCase):
         # Without the hook there is no restart either, so the errors while
         # sonda was stopped and the uptimes starting again are named too.
         self.assertEqual(
-            failure.splitlines()[-5:],
+            failure.splitlines(),
             [
+                f"telegraf logged an error while sonda served: {refused(STOPPED_S + 1).strip()}",
+                f"telegraf logged an error while sonda served: {refused_v1(STOPPED_S + 1).strip()}",
+                "snmp_uptime did not increase: 15900 then 80, 161.0s after sonda started",
+                "snmp_v3_uptime did not increase: 15901 then 81, 161.0s after sonda started",
                 "sonda was not restarted: the during hook reported no restart",
                 "the in-container walk printed nothing",
                 "the in-container v1 walk printed nothing",

@@ -402,16 +402,20 @@ SNMP_POLL_INTERVAL_S = 2.0
 # closes an input's session after any error and discovers the engine again,
 # which would send no request with the stale time.
 SNMP_RESTART_PHASE_S = 1.0
-# Each interface_v3 series has a sample this soon after the restart.
+# Each interface series of each input has a sample this soon after the
+# restart, and an input's errors after it are excused this long at most.
 SNMP_RESUME_WITHIN_S = 30.0
-# What gosnmp logs, at trace level through Telegraf's v3 input, when a
+# What gosnmp logs, at trace level through Telegraf's v3_trace input, when a
 # request is answered usmStatsNotInTimeWindows (it re-synchronizes and asks
 # again), and when one is answered usmStatsUnknownEngineIDs after the first
 # discovery (the engine ID changed).
 SNMP_TIME_WINDOW_LINE = "WARNING detected out-of-time-window ERROR"
 SNMP_REDISCOVERY_LINE = "WARNING detected unknown engine id ERROR"
-# Telegraf's trace lines of the v3 input.
-SNMP_V3_TRACE_LINE = re.compile(r"T! \[inputs\.snmp::v3\]")
+# The alias of the one inputs.snmp block of SNMP_TELEGRAF_TRACE_CONF, which
+# reads sysUpTime over SNMPv3 as the v3 block's user, writes nothing, and logs
+# gosnmp's trace; and Telegraf's trace lines of it.
+SNMP_V3_TRACE_INPUT = "v3_trace"
+SNMP_V3_TRACE_LINE = re.compile(rf"T! \[inputs\.snmp::{SNMP_V3_TRACE_INPUT}\]")
 # Telegraf's startup line naming the inputs it loaded.
 SNMP_LOADED_INPUTS = "Loaded inputs:"
 # Every error Telegraf's inputs.snmp logs begins "E! [inputs.snmp]", or
@@ -455,6 +459,10 @@ SNMP_OPER_STATUS_CODES = {"up": 1.0, "down": 2.0}
 # The conf tags every metric with the agent's host as `source` (agent_host_tag).
 SNMP_EXPORT_MATCH = '{__name__=~"interface_.*|snmp_.*",source="sonda"}'
 SNMP_TELEGRAF_CONF = Path("examples/telegraf/telegraf-snmp.conf")
+# The UAT's addition to it, which only the compose telegraf-snmp service
+# mounts, at SNMP_TELEGRAF_TRACE_MOUNT.
+SNMP_TELEGRAF_TRACE_CONF = Path("examples/telegraf/telegraf-snmp-trace.conf")
+SNMP_TELEGRAF_TRACE_MOUNT = "/etc/telegraf/telegraf.d/trace.conf"
 # What net-snmp prints walking the example, with SNMP_WALK_MASKS applied.
 SNMP_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf.walk")
 # Run inside the telegraf-snmp service, with MIBS set empty.
@@ -855,7 +863,8 @@ def snmp_findings(
     about the other's polls; an error in the second the run ended may be the
     first poll after sonda stopped), nor from a second before ``restart``
     stopped sonda to the second of its input's first sample after it started
-    again (to ended_s when there is none). An error's input is the alias in its
+    again, or of SNMP_RESUME_WITHIN_S after that start when that is sooner
+    or there is no such sample. An error's input is the alias in its
     prefix (SNMP_V2C_INPUT, SNMP_V1_INPUT, SNMP_V3_INPUT); a series' input is
     :func:`snmp_input_of` it. An error naming no known alias is measured
     from the first sample of any input; an input with no sample, from the
@@ -877,13 +886,14 @@ def snmp_findings(
     them tagged with the interface's SNMP_IF_NAMES name as above, and
     SNMP_V3_UPTIME_SERIES has at least SNMP_MIN_SAMPLES samples, each greater
     than the one before; the restart: ``restart`` is an SnmpRestart (a text
-    is the hook's failure, named), each SNMP_V3_INTERFACE_SERIES has a
-    sample for each interface within SNMP_RESUME_WITHIN_S of sonda starting
-    again (each that had one before sonda stopped; one that had none is
-    named above), a SNMP_V3_TRACE_LINE carrying SNMP_TIME_WINDOW_LINE is stamped
-    from a second before sonda stopped on (gosnmp answered
-    usmStatsNotInTimeWindows and re-synchronized; when none is, the v3
-    input's first SNMP_ERROR_LINE from then on is named with it), and none carrying
+    is the hook's failure, named), each SNMP_INTERFACE_SERIES,
+    SNMP_V1_INTERFACE_SERIES and SNMP_V3_INTERFACE_SERIES has a sample for
+    each interface within SNMP_RESUME_WITHIN_S of sonda starting again (each
+    that had one before sonda stopped; one that had none is named above), a
+    SNMP_V3_TRACE_LINE carrying SNMP_TIME_WINDOW_LINE is stamped from a second
+    before sonda stopped on (gosnmp answered usmStatsNotInTimeWindows and
+    re-synchronized; when none is, the SNMP_V3_TRACE_INPUT input's first
+    SNMP_ERROR_LINE from then on is named with it), and none carrying
     SNMP_REDISCOVERY_LINE is (the engine ID did not change); both uptimes
     are checked for increase before sonda stopped and after it, apart;
     ``walk``, masked, is ``golden``, masked, and ``v1_walk`` is
@@ -916,7 +926,8 @@ def snmp_findings(
         return first // 1000 if first is not None else math.floor(started_s) - 1
 
     # The restart's gap: from a second before sonda stopped, per input to
-    # the second of its first sample after sonda started again.
+    # the second of its first sample after sonda started again, and at most
+    # to the second SNMP_RESUME_WITHIN_S after it.
     stopped_ms = restarted_ms = None
     input_resumed_ms: dict[str, int] = {}
     if isinstance(restart, SnmpRestart):
@@ -929,10 +940,11 @@ def snmp_findings(
                 input_resumed_ms[alias] = min(input_resumed_ms.get(alias, after[0]), after[0])
 
     def in_gap(stamp: float, resumed: int | None) -> bool:
-        if stopped_ms is None:
+        if stopped_ms is None or restarted_ms is None:
             return False
-        until_s = resumed // 1000 if resumed is not None else ended_s
-        return stopped_ms // 1000 - 1 <= stamp <= until_s
+        resume_by_ms = restarted_ms + int(SNMP_RESUME_WITHIN_S * 1000)
+        until_ms = resume_by_ms if resumed is None else min(resumed, resume_by_ms)
+        return stopped_ms // 1000 - 1 <= stamp <= until_ms // 1000
 
     for line in telegraf_log.splitlines():
         error = SNMP_ERROR_LINE.search(line)
@@ -1046,7 +1058,7 @@ def snmp_findings(
     if isinstance(restart, SnmpRestart):
         # A series with no sample before sonda stopped is named above.
         resume_by_ms = restarted_ms + int(SNMP_RESUME_WITHIN_S * 1000)
-        for series in SNMP_V3_INTERFACE_SERIES:
+        for series in SNMP_INTERFACE_SERIES + SNMP_V1_INTERFACE_SERIES + SNMP_V3_INTERFACE_SERIES:
             for index in SNMP_INTERFACES:
                 pairs = in_window.get((series, index), [])
                 if not any(ts < stopped_ms for ts, _ in pairs):
@@ -1066,21 +1078,22 @@ def snmp_findings(
             errored = ""
             for line in since_stop:
                 error = SNMP_ERROR_LINE.search(line)
-                if error is not None and error.group("alias") == SNMP_V3_INPUT:
+                if error is not None and error.group("alias") == SNMP_V3_TRACE_INPUT:
                     errored = (
                         "; the input errored first, and Telegraf discovers the "
                         f"engine again after an error: {line.strip()}"
                     )
                     break
             findings.append(
-                f"telegraf's v3 input logged no {SNMP_TIME_WINDOW_LINE!r} after sonda "
-                f"restarted: gosnmp was not answered usmStatsNotInTimeWindows{errored}"
+                f"telegraf's {SNMP_V3_TRACE_INPUT} input logged no "
+                f"{SNMP_TIME_WINDOW_LINE!r} after sonda restarted: gosnmp was not "
+                f"answered usmStatsNotInTimeWindows{errored}"
             )
         for line in traced:
             if SNMP_REDISCOVERY_LINE in line:
                 findings.append(
-                    f"telegraf's v3 input discovered the engine again after sonda "
-                    f"restarted: {line.strip()}"
+                    f"telegraf's {SNMP_V3_TRACE_INPUT} input discovered the engine again "
+                    f"after sonda restarted: {line.strip()}"
                 )
                 break
     else:
