@@ -81,9 +81,11 @@ pub(crate) const MAX_USER_NAME: usize = 32;
 /// The shortest SNMPv3 password, in octets (RFC 3414 §11.2).
 pub(crate) const MIN_PASSWORD: usize = 8;
 
-/// The first five octets of a derived engine ID: net-snmp's enterprise
-/// number 8072 with the high bit set, then format 4, text.
-const DERIVED_ENGINE_ID_PREFIX: [u8; 5] = [0x80, 0x00, 0x1f, 0x88, 0x04];
+/// The schema's note on a password's `minLength`.
+#[cfg(feature = "schema")]
+const PASSWORD_LENGTH_COMMENT: &str = "minLength counts characters where sonda counts \
+     octets, so the schema is the looser of the two: sonda refuses a password of fewer than 8 \
+     octets that the schema may accept.";
 
 /// Configuration for [`SnmpAgentSink`]; the body of
 /// `sink: { type: snmp_agent, ... }`.
@@ -146,11 +148,12 @@ pub struct SnmpAgentConfig {
     pub users: Vec<UsmUser>,
     /// The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as
     /// `"80001f8804736f6e6461"`; a leading `0x` is allowed. A string; a YAML
-    /// number is an error. Default: derived from the address the agent binds
-    /// (net-snmp's enterprise prefix `80001f88`, format `04`, then the text
-    /// `sonda:<bound address>` cut to 27 octets; a `listen` on port 0 gives
-    /// the port it was bound to), so an agent on a fixed address has the same
-    /// one on every run.
+    /// number is an error. Default: made from the host name and the address
+    /// the agent binds (net-snmp's enterprise prefix `80001f88`, format `05`,
+    /// then the first 16 octets of the SHA-256 of
+    /// `sonda:<host name>:<bound address>`; a `listen` on port 0 gives the
+    /// port it was bound to), so an agent has the same one on every run on
+    /// one host and another on every other host.
     #[cfg_attr(
         feature = "config",
         serde(
@@ -159,7 +162,13 @@ pub struct SnmpAgentConfig {
             skip_serializing_if = "Option::is_none"
         )
     )]
-    #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            regex(pattern = r"^(0[xX])?([0-9a-fA-F]{2}){5,32}$"),
+            extend("x-sonda-no-widening" = true)
+        )
+    )]
     pub engine_id: Option<String>,
 }
 
@@ -167,20 +176,29 @@ pub struct SnmpAgentConfig {
 /// an [`SnmpAgentConfig`]'s `users:`.
 ///
 /// Without `auth` the user is `noAuthNoPriv`; with it, every request must
-/// be authenticated with the user's key (`authNoPriv`). Unknown keys are
-/// rejected; a `priv` key is refused, because privacy (`authPriv`) is not
-/// supported.
+/// be authenticated with the user's key (`authNoPriv`); with `priv` as well,
+/// every request must also be encrypted with the user's privacy key
+/// (`authPriv`). A user's level is the only one it is answered at. `priv`
+/// needs `auth`. Unknown keys are rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
 #[cfg_attr(feature = "config", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UsmUser {
     /// The user name (`securityName`), 1 to 32 octets.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_USER_NAME)))]
     pub name: String,
     /// The user's authentication protocol and password, when its requests
     /// are authenticated.
     #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
     pub auth: Option<UsmAuth>,
+    /// The user's privacy protocol and password, `priv:` in a config, when
+    /// its requests are encrypted. Needs `auth`.
+    #[cfg_attr(
+        feature = "config",
+        serde(rename = "priv", skip_serializing_if = "Option::is_none")
+    )]
+    pub privacy: Option<UsmPriv>,
 }
 
 /// An SNMPv3 user's authentication: the `auth:` block of a [`UsmUser`].
@@ -197,7 +215,41 @@ pub struct UsmAuth {
     /// string; a YAML number is an error.
     #[cfg_attr(
         feature = "schema",
-        schemars(extend("writeOnly" = true, "x-sonda-no-widening" = true))
+        schemars(
+            length(min = MIN_PASSWORD),
+            extend(
+                "writeOnly" = true,
+                "x-sonda-no-widening" = true,
+                "$comment" = PASSWORD_LENGTH_COMMENT
+            )
+        )
+    )]
+    pub password: String,
+}
+
+/// An SNMPv3 user's privacy: the `priv:` block of a [`UsmUser`].
+///
+/// The privacy key is made from the password with the user's
+/// authentication hash. `Debug` prints `"***"` in place of the password.
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(deny_unknown_fields))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsmPriv {
+    /// The cipher the user's scoped PDUs are encrypted with.
+    pub protocol: PrivProtocol,
+    /// The password the user's privacy key is made from, at least 8 octets.
+    /// A string; a YAML number is an error.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            length(min = MIN_PASSWORD),
+            extend(
+                "writeOnly" = true,
+                "x-sonda-no-widening" = true,
+                "$comment" = PASSWORD_LENGTH_COMMENT
+            )
+        )
     )]
     pub password: String,
 }
@@ -285,6 +337,97 @@ impl fmt::Display for AuthProtocol {
     }
 }
 
+/// An SNMPv3 privacy protocol, named as Telegraf names it, in lower case.
+///
+/// AES-192 and AES-256 need a longer key than SHA-1 and MD5 localize, and
+/// two incompatible ways of extending it are in use: `aes192` and `aes256`
+/// extend it as draft-blumenthal-aes-usm-04 does (Telegraf's `AES192` and
+/// `AES256`), `aes192c` and `aes256c` as draft-reeder-snmpv3-usm-3desede-00
+/// does (Telegraf's `AES192C` and `AES256C`, the extension Cisco devices
+/// use). With an authentication hash at least as long as the key (SHA-256
+/// and longer for AES-256) the two give the same key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum PrivProtocol {
+    /// DES-CBC (RFC 3414 §8), `des`. Legacy; prefer AES-128.
+    #[cfg_attr(feature = "config", serde(rename = "des"))]
+    Des,
+    /// AES-128-CFB (RFC 3826), `aes128`, also read as `aes`.
+    #[cfg_attr(feature = "config", serde(rename = "aes128"))]
+    Aes128,
+    /// AES-192-CFB with the Blumenthal key extension, `aes192`.
+    #[cfg_attr(feature = "config", serde(rename = "aes192"))]
+    Aes192,
+    /// AES-192-CFB with the Reeder key extension, `aes192c`.
+    #[cfg_attr(feature = "config", serde(rename = "aes192c"))]
+    Aes192c,
+    /// AES-256-CFB with the Blumenthal key extension, `aes256`.
+    #[cfg_attr(feature = "config", serde(rename = "aes256"))]
+    Aes256,
+    /// AES-256-CFB with the Reeder key extension, `aes256c`.
+    #[cfg_attr(feature = "config", serde(rename = "aes256c"))]
+    Aes256c,
+}
+
+impl PrivProtocol {
+    /// The protocol's name in a config: `des`, `aes128`, `aes192`,
+    /// `aes192c`, `aes256` or `aes256c`.
+    pub fn name(self) -> &'static str {
+        match self {
+            PrivProtocol::Des => "des",
+            PrivProtocol::Aes128 => "aes128",
+            PrivProtocol::Aes192 => "aes192",
+            PrivProtocol::Aes192c => "aes192c",
+            PrivProtocol::Aes256 => "aes256",
+            PrivProtocol::Aes256c => "aes256c",
+        }
+    }
+
+    /// The protocol a config name reads as, `aes` as `aes128`.
+    #[cfg(feature = "config")]
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "des" => PrivProtocol::Des,
+            "aes" | "aes128" => PrivProtocol::Aes128,
+            "aes192" => PrivProtocol::Aes192,
+            "aes192c" => PrivProtocol::Aes192c,
+            "aes256" => PrivProtocol::Aes256,
+            "aes256c" => PrivProtocol::Aes256c,
+            _ => return None,
+        })
+    }
+}
+
+// Not a derive: the parser also reads `aes`, which no variant is named.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for PrivProtocol {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "PrivProtocol".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        "sonda_core::sink::snmp::PrivProtocol".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "An SNMPv3 privacy protocol, named as Telegraf names it, in lower \
+                            case: des (legacy; prefer aes128), aes128 (also read as aes), \
+                            aes192 and aes256 (the Blumenthal key extension), aes192c and \
+                            aes256c (the Reeder key extension).",
+            "type": "string",
+            "enum": ["des", "aes", "aes128", "aes192", "aes192c", "aes256", "aes256c"],
+        })
+    }
+}
+
+impl fmt::Display for PrivProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// Prints `"***"` in place of the password.
 impl fmt::Debug for UsmAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -295,12 +438,22 @@ impl fmt::Debug for UsmAuth {
     }
 }
 
-/// The fields of a `users:` item and its `auth:` block as written. The
-/// derives' errors name these structs, `UsmUser` and `UsmAuth`.
+/// Prints `"***"` in place of the password.
+impl fmt::Debug for UsmPriv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UsmPriv")
+            .field("protocol", &self.protocol)
+            .field("password", &"***")
+            .finish()
+    }
+}
+
+/// The fields of a `users:` item and its `auth:` and `priv:` blocks as
+/// written. The derives' errors name these structs, `UsmUser`, `UsmAuth`
+/// and `UsmPriv`.
 #[cfg(feature = "config")]
 mod user_fields {
-    /// A user: its name read as text, its `auth`, and a `priv` key, which
-    /// is read only to be refused.
+    /// A user: its name read as text, its `auth` and its `priv`.
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct UsmUser {
@@ -309,7 +462,7 @@ mod user_fields {
         #[serde(default)]
         pub(super) auth: Option<super::UsmAuth>,
         #[serde(rename = "priv", default)]
-        pub(super) privacy: Option<serde::de::IgnoredAny>,
+        pub(super) privacy: Option<super::UsmPriv>,
     }
 
     /// An `auth:` block: the protocol, and the password as a string only.
@@ -317,34 +470,40 @@ mod user_fields {
     #[serde(deny_unknown_fields)]
     pub(super) struct UsmAuth {
         pub(super) protocol: super::AuthProtocol,
-        #[serde(deserialize_with = "super::password")]
+        #[serde(deserialize_with = "super::auth_password")]
+        pub(super) password: String,
+    }
+
+    /// A `priv:` block: the protocol, and the password as a string only.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct UsmPriv {
+        pub(super) protocol: super::PrivProtocol,
+        #[serde(deserialize_with = "super::priv_password")]
         pub(super) password: String,
     }
 }
-
-/// The error for a `users:` item carrying `priv`.
-#[cfg(feature = "config")]
-const PRIV_REFUSED: &str = "snmp_agent users: priv is not supported; SNMPv3 privacy (authPriv) \
-     is not available in this version of sonda, so give the user auth only (authNoPriv)";
 
 /// The error for an `auth:` value that is not a map. It names no part of
 /// the value.
 #[cfg(feature = "config")]
 const AUTH_NOT_A_MAP: &str = "snmp_agent users auth must be a map with protocol and password";
 
-/// Reads a map with `name` and optionally `auth`, refusing `priv` with
-/// [`PRIV_REFUSED`] and any other key.
+/// The error for a `priv:` value that is not a map. It names no part of
+/// the value.
+#[cfg(feature = "config")]
+const PRIV_NOT_A_MAP: &str = "snmp_agent users priv must be a map with protocol and password";
+
+/// Reads a map with `name` and optionally `auth` and `priv`, refusing any
+/// other key.
 #[cfg(feature = "config")]
 impl<'de> serde::Deserialize<'de> for UsmUser {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
         let fields = user_fields::UsmUser::deserialize(deserializer)?;
-        if fields.privacy.is_some() {
-            return Err(D::Error::custom(PRIV_REFUSED));
-        }
         Ok(UsmUser {
             name: fields.name,
             auth: fields.auth,
+            privacy: fields.privacy,
         })
     }
 }
@@ -355,60 +514,96 @@ impl<'de> serde::Deserialize<'de> for UsmUser {
 #[cfg(feature = "config")]
 impl<'de> serde::Deserialize<'de> for UsmAuth {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
-        use serde::de::{Error, MapAccess, SeqAccess, Visitor};
-
-        struct AuthVisitor;
-        impl AuthVisitor {
-            fn refuse<E: Error>(self) -> Result<UsmAuth, E> {
-                Err(E::custom(AUTH_NOT_A_MAP))
-            }
-        }
-        impl<'de> Visitor<'de> for AuthVisitor {
-            type Value = UsmAuth;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a map with protocol and password")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                <user_fields::UsmAuth as serde::Deserialize>::deserialize(
-                    MapAccessDeserializer::new(map),
-                )
-                .map(Into::into)
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
-                <user_fields::UsmAuth as serde::Deserialize>::deserialize(
-                    SeqAccessDeserializer::new(seq),
-                )
-                .map(Into::into)
-            }
-            fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
-                self.refuse()
-            }
-            fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
-                self.refuse()
-            }
-            fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
-                self.refuse()
-            }
-            fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
-                self.refuse()
-            }
-            fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
-                self.refuse()
-            }
-            fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
-                self.refuse()
-            }
-        }
-        // `deserialize_any`, because a buffered sink block answers
-        // `deserialize_struct` for a scalar with an error quoting it.
-        deserializer.deserialize_any(AuthVisitor)
+        map_only::<D, user_fields::UsmAuth, UsmAuth>(deserializer, AUTH_NOT_A_MAP)
     }
+}
+
+/// Reads a map with `protocol` and `password`, refusing any other key. Any
+/// other value is refused with [`PRIV_NOT_A_MAP`], which does not repeat
+/// the value.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for UsmPriv {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        map_only::<D, user_fields::UsmPriv, UsmPriv>(deserializer, PRIV_NOT_A_MAP)
+    }
+}
+
+/// A `Fields` map read into a `T`; any value that is not a map is refused
+/// with `refused`, which does not repeat the value.
+#[cfg(feature = "config")]
+fn map_only<'de, D, Fields, T>(deserializer: D, refused: &'static str) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    Fields: serde::Deserialize<'de> + Into<T>,
+{
+    use std::marker::PhantomData;
+
+    use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+    use serde::de::{Error, MapAccess, SeqAccess, Visitor};
+
+    struct MapOnly<Fields, T> {
+        refused: &'static str,
+        read: PhantomData<fn() -> (Fields, T)>,
+    }
+    impl<Fields, T> MapOnly<Fields, T> {
+        fn refuse<E: Error>(self) -> Result<T, E> {
+            Err(E::custom(self.refused))
+        }
+    }
+    impl<'de, Fields, T> Visitor<'de> for MapOnly<Fields, T>
+    where
+        Fields: serde::Deserialize<'de> + Into<T>,
+    {
+        type Value = T;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map with protocol and password")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            Fields::deserialize(MapAccessDeserializer::new(map)).map(Into::into)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+            Fields::deserialize(SeqAccessDeserializer::new(seq)).map(Into::into)
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+            self.refuse()
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+            self.refuse()
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+            self.refuse()
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+            self.refuse()
+        }
+        fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+            self.refuse()
+        }
+        fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+            self.refuse()
+        }
+    }
+    // `deserialize_any`, because a buffered sink block answers
+    // `deserialize_struct` for a scalar with an error quoting it.
+    deserializer.deserialize_any(MapOnly::<Fields, T> {
+        refused,
+        read: PhantomData,
+    })
 }
 
 #[cfg(feature = "config")]
 impl From<user_fields::UsmAuth> for UsmAuth {
     fn from(fields: user_fields::UsmAuth) -> Self {
+        Self {
+            protocol: fields.protocol,
+            password: fields.password,
+        }
+    }
+}
+
+#[cfg(feature = "config")]
+impl From<user_fields::UsmPriv> for UsmPriv {
+    fn from(fields: user_fields::UsmPriv) -> Self {
         Self {
             protocol: fields.protocol,
             password: fields.password,
@@ -435,6 +630,25 @@ impl<'de> serde::Deserialize<'de> for AuthProtocol {
     }
 }
 
+/// Reads a protocol name, `aes` as `aes128`; any other name or value is an
+/// error naming the field.
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for PrivProtocol {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        use crate::config::scalar_text::ScalarText;
+
+        let ScalarText(name) = ScalarText::deserialize(deserializer)?;
+        PrivProtocol::from_name(&name).ok_or_else(|| {
+            D::Error::custom(format!(
+                "snmp_agent users priv.protocol: unknown protocol {name:?}; expected des, aes128 \
+                 (or aes), aes192, aes192c, aes256 or aes256c"
+            ))
+        })
+    }
+}
+
 /// An SNMP version an agent can answer: the `versions:` items of an
 /// [`SnmpAgentConfig`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -450,8 +664,8 @@ pub enum SnmpVersion {
     #[cfg_attr(feature = "config", serde(rename = "v2c"))]
     V2c,
     /// SNMPv3 with the User-based Security Model (RFC 3414), `v3`: the
-    /// SNMPv2c operations for the configured `users`, `noAuthNoPriv` or
-    /// `authNoPriv`.
+    /// SNMPv2c operations for the configured `users`, `noAuthNoPriv`,
+    /// `authNoPriv` or `authPriv`.
     #[cfg_attr(feature = "config", serde(rename = "v3"))]
     V3,
 }
@@ -635,15 +849,34 @@ fn engine_id<'de, D: serde::Deserializer<'de>>(
     deserializer.deserialize_any(EngineId)
 }
 
-/// `deserialize_with` for `auth.password`: a string only. Any other value
-/// is refused with an error that does not repeat it.
+/// `deserialize_with` for `auth.password`: [`password`] of that field.
 #[cfg(feature = "config")]
-fn password<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+fn auth_password<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    password(
+        deserializer,
+        "snmp_agent users auth.password must be a string; quote it",
+    )
+}
+
+/// `deserialize_with` for `priv.password`: [`password`] of that field.
+#[cfg(feature = "config")]
+fn priv_password<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    password(
+        deserializer,
+        "snmp_agent users priv.password must be a string; quote it",
+    )
+}
+
+/// A password: a string only. Any other value is refused with
+/// `not_a_string`, which does not repeat it.
+#[cfg(feature = "config")]
+fn password<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    not_a_string: &'static str,
+) -> Result<String, D::Error> {
     use serde::de::{Error, Visitor};
 
-    const NOT_A_STRING: &str = "snmp_agent users auth.password must be a string; quote it";
-
-    struct Password;
+    struct Password(&'static str);
     impl Visitor<'_> for Password {
         type Value = String;
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -656,25 +889,25 @@ fn password<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String,
             Ok(v)
         }
         fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
-            Err(E::custom(NOT_A_STRING))
+            Err(E::custom(self.0))
         }
         fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
-            Err(E::custom(NOT_A_STRING))
+            Err(E::custom(self.0))
         }
         fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
-            Err(E::custom(NOT_A_STRING))
+            Err(E::custom(self.0))
         }
         fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
-            Err(E::custom(NOT_A_STRING))
+            Err(E::custom(self.0))
         }
         fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
-            Err(E::custom(NOT_A_STRING))
+            Err(E::custom(self.0))
         }
         fn visit_bytes<E: Error>(self, _: &[u8]) -> Result<Self::Value, E> {
-            Err(E::custom(NOT_A_STRING))
+            Err(E::custom(self.0))
         }
     }
-    deserializer.deserialize_any(Password)
+    deserializer.deserialize_any(Password(not_a_string))
 }
 
 /// `deserialize_with` for `system.object_id`: a string only
@@ -740,8 +973,8 @@ impl SnmpAgentConfig {
     /// 484 to 65507, `system.object_id` is not an OID, `system.services` is
     /// above 127, `versions` is empty or names a version twice, `versions`
     /// names `v3` and `users` is empty, a user name is empty, longer than 32
-    /// octets or given twice, a password is shorter than 8 octets, or
-    /// `engine_id` is not 5 to 32 octets of hex. An IPv4-mapped `listen`
+    /// octets or given twice, a user has `priv` without `auth`, a password is
+    /// shorter than 8 octets, or `engine_id` is not 5 to 32 octets of hex. An IPv4-mapped `listen`
     /// resolves to the IPv4 address it maps; `versions` resolves to its
     /// versions in ascending order, `users` to its users ordered by name, and
     /// `engine_id` to its octets.
@@ -833,6 +1066,22 @@ impl SnmpAgentConfig {
                     )));
                 }
             }
+            if let Some(privacy) = &user.privacy {
+                if user.auth.is_none() {
+                    return Err(invalid(format!(
+                        "snmp_agent users {:?} has priv without auth; privacy (authPriv) needs \
+                         auth as well",
+                        user.name
+                    )));
+                }
+                if privacy.password.len() < MIN_PASSWORD {
+                    return Err(invalid(format!(
+                        "snmp_agent users {:?} priv.password must be at least {MIN_PASSWORD} \
+                         bytes (RFC 3414)",
+                        user.name
+                    )));
+                }
+            }
         }
         if let Some(twice) = users.windows(2).find(|pair| pair[0].name == pair[1].name) {
             return Err(invalid(format!(
@@ -879,16 +1128,6 @@ fn parse_engine_id(text: &str) -> Result<Vec<u8>, SondaError> {
     Ok(octets)
 }
 
-/// The engine ID of an agent bound to `bound` without a configured one:
-/// [`DERIVED_ENGINE_ID_PREFIX`], then `sonda:<bound>` cut to 27 octets.
-pub(crate) fn derived_engine_id(bound: SocketAddr) -> Vec<u8> {
-    let text = format!("sonda:{bound}");
-    let room = MAX_ENGINE_ID - DERIVED_ENGINE_ID_PREFIX.len();
-    let mut id = DERIVED_ENGINE_ID_PREFIX.to_vec();
-    id.extend_from_slice(&text.as_bytes()[..text.len().min(room)]);
-    id
-}
-
 /// An [`SnmpAgentConfig`] with every field resolved and checked.
 ///
 /// `Debug` prints `"***"` in place of the community.
@@ -903,8 +1142,8 @@ pub(crate) struct AgentSettings {
     pub(crate) versions: Vec<SnmpVersion>,
     /// The SNMPv3 users, ordered by name, each name once.
     pub(crate) users: Vec<UsmUser>,
-    /// The configured SNMPv3 engine ID; without one, the agent derives its
-    /// own from the address it binds.
+    /// The configured SNMPv3 engine ID; without one, the agent makes its
+    /// own from the host name and the address it binds.
     pub(crate) engine_id: Option<Vec<u8>>,
 }
 
@@ -948,23 +1187,32 @@ impl fmt::Display for Hex<'_> {
     }
 }
 
-/// Whether `a` and `b` are the same users: each pair equal in name and
-/// protocol, the passwords compared in constant time.
+/// Whether `a` and `b` are the same users: each pair equal in name and in
+/// both protocols, the passwords compared in constant time.
 fn same_users(a: &[UsmUser], b: &[UsmUser]) -> bool {
+    fn same_secret<P: PartialEq>(a: Option<(P, &str)>, b: Option<(P, &str)>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some((a, a_password)), Some((b, b_password))) => {
+                a == b
+                    && crate::util::constant_time_eq(a_password.as_bytes(), b_password.as_bytes())
+            }
+            _ => false,
+        }
+    }
+    fn auth(user: &UsmUser) -> Option<(AuthProtocol, &str)> {
+        user.auth
+            .as_ref()
+            .map(|auth| (auth.protocol, auth.password.as_str()))
+    }
+    fn privacy(user: &UsmUser) -> Option<(PrivProtocol, &str)> {
+        user.privacy
+            .as_ref()
+            .map(|privacy| (privacy.protocol, privacy.password.as_str()))
+    }
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| {
-            a.name == b.name
-                && match (&a.auth, &b.auth) {
-                    (None, None) => true,
-                    (Some(a), Some(b)) => {
-                        a.protocol == b.protocol
-                            && crate::util::constant_time_eq(
-                                a.password.as_bytes(),
-                                b.password.as_bytes(),
-                            )
-                    }
-                    _ => false,
-                }
+            a.name == b.name && same_secret(auth(a), auth(b)) && same_secret(privacy(a), privacy(b))
         })
 }
 
@@ -1043,9 +1291,12 @@ impl AgentSettings {
             let list = |users: &[UsmUser]| {
                 let users: Vec<String> = users
                     .iter()
-                    .map(|user| match &user.auth {
-                        Some(auth) => format!("{} {}", user.name, auth.protocol),
-                        None => format!("{} without auth", user.name),
+                    .map(|user| match (&user.auth, &user.privacy) {
+                        (Some(auth), Some(privacy)) => {
+                            format!("{} {} {}", user.name, auth.protocol, privacy.protocol)
+                        }
+                        (Some(auth), None) => format!("{} {}", user.name, auth.protocol),
+                        (None, _) => format!("{} without auth", user.name),
                     })
                     .collect();
                 format!("[{}]", users.join(", "))
@@ -1730,6 +1981,7 @@ mod tests {
                 protocol,
                 password: password.to_string(),
             }),
+            privacy: None,
         }
     }
 
@@ -1827,14 +2079,14 @@ mod tests {
     }
 
     /// Refused at parse time, naming the field: an unknown protocol, a
-    /// `priv` block, a misspelt key in a user and in its auth, a numeric
-    /// engine ID, and a numeric password or an auth that is not a map, both
-    /// without repeating the value.
+    /// `priv` that is not a map, a misspelt key in a user and in its auth, a
+    /// numeric engine ID, and a numeric password or an auth that is not a
+    /// map, both without repeating the value.
     #[cfg(feature = "config")]
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::unknown_protocol( "users: [{ name: t, auth: { protocol: sha999, password: lab-only-password } }]", "snmp_agent users auth.protocol: unknown protocol \"sha999\"")]
-    #[case::priv_block(       "users: [{ name: t, auth: { protocol: sha256, password: lab-only-password }, priv: { protocol: aes, password: lab-only-secret } }]", "snmp_agent users: priv is not supported")]
+    #[case::priv_not_a_map(   "users: [{ name: t, auth: { protocol: sha256, password: lab-only-password }, priv: lab-only-secret }]", "snmp_agent users priv must be a map with protocol and password")]
     #[case::misspelt_user_key("users: [{ nmae: t }]",                                                         "unknown field `nmae`")]
     #[case::misspelt_auth_key("users: [{ name: t, auth: { protocol: md5, pasword: lab-only-password } }]",    "unknown field `pasword`")]
     #[case::numeric_engine_id("users: [{ name: t }]\nengine_id: 8000000002",                                  "snmp_agent engine_id: an engine ID is written as a hex string")]
@@ -1898,6 +2150,7 @@ mod tests {
         let watcher = UsmUser {
             name: "watcher".to_string(),
             auth: None,
+            privacy: None,
         };
         let both = settings(vec![telegraf.clone(), watcher.clone()]);
         assert!(
@@ -1941,20 +2194,9 @@ mod tests {
         );
     }
 
-    /// An agent configured with an engine ID reports it; one without derives
-    /// its own from the address it bound: net-snmp's enterprise prefix,
-    /// format 4, `sonda:<address>` cut to 27 bytes.
-    #[rstest::rstest]
-    #[case::ipv4("127.0.0.1:1161", b"sonda:127.0.0.1:1161".as_slice())]
-    #[case::wildcard("0.0.0.0:1161", b"sonda:0.0.0.0:1161".as_slice())]
-    #[case::cut_to_27_bytes("[fe80::1234:5678:9abc:def0]:65535", b"sonda:[fe80::1234:5678:9abc".as_slice())]
-    fn the_derived_engine_id_names_the_address(#[case] listen: &str, #[case] text: &[u8]) {
-        let id = derived_engine_id(listen.parse().expect("an address"));
-        assert_eq!(&id[..5], &[0x80, 0x00, 0x1f, 0x88, 0x04]);
-        assert_eq!(&id[5..], text);
-        assert!((MIN_ENGINE_ID..=MAX_ENGINE_ID).contains(&id.len()));
-    }
-
+    /// An agent configured with an engine ID reports it; one without makes
+    /// its own from this host's name and the address it bound, the port it
+    /// was given rather than 0.
     #[tokio::test]
     async fn an_agent_reports_its_engine_id() {
         let configured = SnmpAgentConfig {
@@ -1972,14 +2214,165 @@ mod tests {
         )
         .await
         .expect("binds");
-        let expected = derived_engine_id(derived.local_addr());
+        let expected = usm::default_engine_id(&usm::hostname(), derived.local_addr());
         assert_eq!(derived.engine_id(), expected.as_slice());
-        assert!(
-            derived
-                .engine_id()
-                .ends_with(derived.local_addr().port().to_string().as_bytes()),
+        let unbound =
+            usm::default_engine_id(&usm::hostname(), "127.0.0.1:0".parse().expect("an address"));
+        assert_ne!(
+            derived.engine_id(),
+            unbound.as_slice(),
             "the bound port, not 0"
         );
+    }
+
+    // ---- SNMPv3 privacy config ----------------------------------------------
+
+    fn private_user(name: &str, protocol: PrivProtocol, password: &str) -> UsmUser {
+        UsmUser {
+            privacy: Some(UsmPriv {
+                protocol,
+                password: password.to_string(),
+            }),
+            ..user(name, AuthProtocol::Sha256, "lab-auth-password")
+        }
+    }
+
+    /// A `priv` block parses with each protocol by its name, `aes` as
+    /// `aes128`, and resolves.
+    #[cfg(feature = "config")]
+    #[test]
+    fn a_priv_block_parses_every_protocol_and_aes_as_aes128() {
+        let yaml = v3_block(
+            "users:\n\
+             \x20 - { name: a, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: des, password: lab-priv-pass } }\n\
+             \x20 - { name: b, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: aes, password: lab-priv-pass } }\n\
+             \x20 - { name: c, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: aes128, password: lab-priv-pass } }\n\
+             \x20 - { name: d, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: aes192, password: lab-priv-pass } }\n\
+             \x20 - { name: e, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: aes192c, password: lab-priv-pass } }\n\
+             \x20 - { name: f, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: aes256, password: lab-priv-pass } }\n\
+             \x20 - { name: g, auth: { protocol: sha1, password: lab-auth-pass }, priv: { protocol: aes256c, password: lab-priv-pass } }\n\
+             \x20 - { name: h, auth: { protocol: sha1, password: lab-auth-pass } }\n",
+        );
+        let cfg = parse_block(&yaml).expect("the block parses");
+        let protocols: Vec<Option<PrivProtocol>> = cfg
+            .users
+            .iter()
+            .map(|user| user.privacy.as_ref().map(|privacy| privacy.protocol))
+            .collect();
+        use PrivProtocol::*;
+        assert_eq!(
+            protocols,
+            [
+                Some(Des),
+                Some(Aes128),
+                Some(Aes128),
+                Some(Aes192),
+                Some(Aes192c),
+                Some(Aes256),
+                Some(Aes256c),
+                None
+            ]
+        );
+        cfg.settings().expect("valid settings");
+    }
+
+    /// Each refused privacy setting names its field: `priv` without `auth`
+    /// names both, a 7-byte privacy password names `priv.password`. The
+    /// baseline, an 8-byte privacy password, is valid.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::priv_without_auth(  |c: &mut SnmpAgentConfig| c.users[0].auth = None,                                            "snmp_agent users \"telegraf\" has priv without auth; privacy (authPriv) needs auth as well")]
+    #[case::password_of_7_bytes(|c: &mut SnmpAgentConfig| c.users[0] = private_user("telegraf", PrivProtocol::Aes128, "1234567"), "snmp_agent users \"telegraf\" priv.password must be at least 8 bytes")]
+    fn settings_refuse_each_bad_priv_setting_naming_it(
+        #[case] change: fn(&mut SnmpAgentConfig),
+        #[case] refused: &str,
+    ) {
+        let mut cfg = with_users(vec![private_user("telegraf", PrivProtocol::Aes128, "12345678")]);
+        cfg.settings().expect("the baseline is valid: an 8-byte privacy password");
+        change(&mut cfg);
+        match cfg.settings() {
+            Err(SondaError::Config(e)) => assert!(e.to_string().contains(refused), "{e}"),
+            other => panic!("expected {refused:?}, got {other:?}"),
+        }
+    }
+
+    /// Refused at parse time, naming the field: an unknown privacy protocol,
+    /// a misspelt key in `priv`, and a numeric privacy password, without
+    /// repeating the value.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::unknown_protocol( "priv: { protocol: aes512, password: lab-only-secret }", "snmp_agent users priv.protocol: unknown protocol \"aes512\"; expected des, aes128 (or aes), aes192, aes192c, aes256 or aes256c")]
+    #[case::misspelt_key(     "priv: { protocol: aes, pasword: lab-only-secret }",    "unknown field `pasword`")]
+    #[case::numeric_password( "priv: { protocol: aes, password: 987654321 }",          "snmp_agent users priv.password must be a string")]
+    fn a_bad_priv_block_is_refused_naming_the_field(#[case] block: &str, #[case] refused: &str) {
+        let with = |block: &str| {
+            v3_block(&format!(
+                "users: [{{ name: t, auth: {{ protocol: sha256, password: lab-only-password }}, {block} }}]"
+            ))
+        };
+        parse_block(&with("priv: { protocol: aes, password: lab-only-secret }")).expect("the baseline parses");
+        let msg = parse_block(&with(block)).expect_err("refused");
+        assert!(msg.contains(refused), "{msg}");
+        for secret in ["987654321", "lab-only-secret"] {
+            assert!(!msg.contains(secret), "the error repeats a secret: {msg}");
+        }
+    }
+
+    /// Debug of a config and of its settings prints neither password.
+    #[test]
+    fn debug_prints_neither_password() {
+        let cfg = with_users(vec![UsmUser {
+            privacy: Some(UsmPriv {
+                protocol: PrivProtocol::Aes256c,
+                password: "s3cret-privacy".to_string(),
+            }),
+            ..user("telegraf", AuthProtocol::Sha256, "s3cret-password")
+        }]);
+        let settings = cfg.settings().expect("valid settings");
+        for debug in [format!("{cfg:?}"), format!("{settings:?}")] {
+            assert!(debug.contains("Aes256c"), "{debug}");
+            assert!(
+                !debug.contains("s3cret-password") && !debug.contains("s3cret-privacy"),
+                "{debug}"
+            );
+        }
+    }
+
+    /// Two configs on one address whose users differ only in privacy do
+    /// not serve each other: another protocol, another password, none. The
+    /// difference never names a password.
+    #[test]
+    fn different_privacy_does_not_serve() {
+        let settings = |users: Vec<UsmUser>| with_users(users).settings().expect("valid settings");
+        let aes = settings(vec![private_user(
+            "telegraf",
+            PrivProtocol::Aes128,
+            "first-privacy",
+        )]);
+        assert!(aes.serves(&settings(vec![private_user(
+            "telegraf",
+            PrivProtocol::Aes128,
+            "first-privacy"
+        )])));
+        for (other, difference) in [
+            (
+                private_user("telegraf", PrivProtocol::Des, "first-privacy"),
+                "users [telegraf sha256 aes128] and [telegraf sha256 des]",
+            ),
+            (
+                private_user("telegraf", PrivProtocol::Aes128, "other-privacy"),
+                "users with another password",
+            ),
+            (
+                user("telegraf", AuthProtocol::Sha256, "lab-auth-password"),
+                "users [telegraf sha256 aes128] and [telegraf sha256]",
+            ),
+        ] {
+            let other = settings(vec![other]);
+            assert!(!aes.serves(&other));
+            assert_eq!(aes.beside(&other), difference);
+        }
     }
 
     // ---- registry -----------------------------------------------------------

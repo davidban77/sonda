@@ -35,16 +35,17 @@
 //! |---|---|
 //! | the security model is not the USM | none: dropped as malformed |
 //! | the engine ID is empty (discovery) or not the agent's | `usmStatsUnknownEngineIDs`, unauthenticated, carrying the agent's engine ID, boots and time |
-//! | the privacy flag is set | `usmStatsUnsupportedSecLevels` |
 //! | no user has the name | `usmStatsUnknownUserNames` |
-//! | the authentication flag is set for a user without `auth`, or clear for one with it | `usmStatsUnsupportedSecLevels` |
+//! | the authentication flag is set for a user without `auth` or clear for one with it, or the privacy flag set for a user without `priv` or clear for one with it | `usmStatsUnsupportedSecLevels` |
 //! | the HMAC is not the one the user's key makes | `usmStatsWrongDigests`, unauthenticated |
 //! | the boots are not the agent's, or the time is more than 150 s from the agent's | `usmStatsNotInTimeWindows`, authenticated |
+//! | under the privacy flag, the scoped PDU does not decrypt to a scoped PDU for the agent's engine | `usmStatsDecryptionErrors`, authenticated |
 //!
-//! A report is sent only when the message's reportable flag is set. A
-//! message that passes every check is answered as an SNMPv2c request, at its
-//! security level, its `msgID` echoed, within the smaller of
-//! `max_message_size` and its `msgMaxSize`.
+//! A report is sent only when the message's reportable flag is set, and is
+//! never encrypted. A message that passes every check is answered as an
+//! SNMPv2c request, at its security level (an `authPriv` response encrypted
+//! with a fresh salt, then authenticated), its `msgID` echoed, within the
+//! smaller of `max_message_size` and its `msgMaxSize`, padding included.
 //!
 //! Every response fits `max_message_size`. The first varbind that would
 //! not fit ends a `GetBulkRequest` response, which is sent with the
@@ -66,7 +67,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::agent::{self, warn_due, Counter, Found, SnmpAgent};
-use super::usm::{self, LocalizedUser, Snapshot, UsmStat, UsmVerdict};
+use super::usm::{self, LocalizedUser, SaltCounter, Snapshot, UsmStat, UsmVerdict};
 use super::SnmpVersion;
 use crate::encoder::snmp::ber::{self, BerError, Message, Reader, Tag, VarBind};
 use crate::encoder::snmp::oid::{self, Oid};
@@ -214,6 +215,8 @@ pub(crate) struct Scratch {
     name: Vec<u32>,
     /// Where each `GetBulk` repeater stands.
     cursors: Vec<Cursor>,
+    /// An encrypted SNMPv3 request's scoped PDU, decrypted.
+    plain: Vec<u8>,
 }
 
 /// A `GetBulk` repeater's last varbind in the response.
@@ -463,10 +466,11 @@ pub(crate) fn respond_noting(
 /// Answer the SNMPv3 message `datagram` from `agent` into `out`, which is
 /// cleared first, within the smaller of `budget` and its `msgMaxSize`: a
 /// `Report` when the User-based Security Model refuses it ([`usm::verify`]),
-/// otherwise its scoped PDU answered as SNMPv2c answers it, at its security
-/// level. A message that does not decode, or whose security model is not
-/// the USM, is malformed; a report is sent only when the message is
-/// reportable. Calls `refused` for an unknown user or a wrong digest.
+/// otherwise its scoped PDU, decrypted when it is encrypted, answered as
+/// SNMPv2c answers it, at its security level. A message that does not
+/// decode, or whose security model is not the USM, is malformed; a report
+/// is sent only when the message is reportable. Calls `refused` for an
+/// unknown user or a wrong digest.
 fn answer_v3(
     datagram: &[u8],
     agent: &SnmpAgent,
@@ -485,7 +489,10 @@ fn answer_v3(
         _ => return malformed(),
     };
     let usm = agent.usm();
-    match usm::verify(&request, datagram, usm.engine(), usm.users()) {
+    // Taken for the request, so the decrypted scoped PDU can borrow it while
+    // `scratch` answers it; put back, allocation and all, before returning.
+    let mut plain = std::mem::take(&mut scratch.plain);
+    let outcome = match usm::verify(&request, datagram, usm.engine(), usm.users(), &mut plain) {
         UsmVerdict::Report {
             stat,
             authenticated,
@@ -497,34 +504,42 @@ fn answer_v3(
                 UsmStat::WrongDigests => refused(Refusal::WrongDigest(request.usm.user)),
                 _ => {}
             }
-            if !request.flags.reportable {
-                return Outcome::DroppedOther;
-            }
-            let user = if authenticated {
-                usm::user(usm.users(), request.usm.user)
+            if request.flags.reportable {
+                let user = if authenticated {
+                    usm::user(usm.users(), request.usm.user)
+                } else {
+                    None
+                };
+                let engine = usm.engine().snapshot();
+                v3::write_report(out, &request, &engine, stat, value, user);
+                Outcome::Sent
             } else {
-                None
-            };
-            let engine = usm.engine().snapshot();
-            v3::write_report(out, &request, &engine, stat, value, user);
-            Outcome::Sent
+                Outcome::DroppedOther
+            }
         }
         UsmVerdict::Answer {
             user,
             authenticated,
-        } => {
-            let Some(pdu) = request.scoped.and_then(|scoped| classify(scoped.pdu).ok()) else {
-                return malformed();
-            };
-            let envelope = Envelope::V3 {
-                request: &request,
-                engine: usm.engine().snapshot(),
-                user: authenticated.then_some(user),
-            };
-            let budget = budget.min(request.msg_max_size);
-            answer_pdu(pdu, envelope, agent, budget, scratch, out)
-        }
-    }
+            scoped,
+        } => match scoped
+            .or(request.scoped)
+            .and_then(|scoped| classify(scoped.pdu).ok())
+        {
+            Some(pdu) => {
+                let envelope = Envelope::V3 {
+                    request: &request,
+                    engine: usm.engine().snapshot(),
+                    user: authenticated.then_some(user),
+                    salts: request.flags.privacy.then(|| usm.engine().salts()),
+                };
+                let budget = budget.min(request.msg_max_size);
+                answer_pdu(pdu, envelope, agent, budget, scratch, out)
+            }
+            None => malformed(),
+        },
+    };
+    scratch.plain = plain;
+    outcome
 }
 
 /// Count a datagram that did not decode with `e`: an SNMPv3 message here is
@@ -1008,11 +1023,13 @@ enum Envelope<'a> {
     /// the agent's community.
     Community { version: i64, community: &'a [u8] },
     /// An SNMPv3 message answering `request`, with the engine's ID, boots
-    /// and time read once, authenticated by `user` when it is given.
+    /// and time read once, authenticated by `user` when it is given, and
+    /// encrypted for it with a salt of `salts` when they are given.
     V3 {
         request: &'a V3Message<'a>,
         engine: Snapshot<'a>,
         user: Option<&'a LocalizedUser>,
+        salts: Option<&'a SaltCounter>,
     },
 }
 
@@ -1033,6 +1050,7 @@ impl Envelope<'_> {
                 request,
                 engine,
                 user,
+                salts,
             } => {
                 let pdu = ber::tlv_len(
                     ber::i64_len(id)
@@ -1040,7 +1058,10 @@ impl Envelope<'_> {
                         + ber::i64_len(index)
                         + ber::tlv_len(varbinds_len),
                 );
-                v3::response_len(request, &engine, user, pdu)
+                match (user, salts) {
+                    (Some(user), Some(_)) => v3::private_response_len(request, &engine, user, pdu),
+                    _ => v3::response_len(request, &engine, user, pdu),
+                }
             }
         }
     }
@@ -1069,14 +1090,23 @@ impl Envelope<'_> {
                 request,
                 engine,
                 user,
-            } => v3::write_response(out, request, &engine, user, |out| {
-                ber::write_tlv(out, Tag::Response, |out| {
-                    ber::write_i64(out, Tag::Integer, id);
-                    ber::write_i64(out, Tag::Integer, status);
-                    ber::write_i64(out, Tag::Integer, index);
-                    ber::write_tlv(out, Tag::Sequence, varbinds);
-                });
-            }),
+                salts,
+            } => {
+                let pdu = |out: &mut Vec<u8>| {
+                    ber::write_tlv(out, Tag::Response, |out| {
+                        ber::write_i64(out, Tag::Integer, id);
+                        ber::write_i64(out, Tag::Integer, status);
+                        ber::write_i64(out, Tag::Integer, index);
+                        ber::write_tlv(out, Tag::Sequence, varbinds);
+                    });
+                };
+                match (user, salts) {
+                    (Some(user), Some(salts)) => {
+                        v3::write_private_response(out, request, &engine, user, salts, pdu)
+                    }
+                    _ => v3::write_response(out, request, &engine, user, pdu),
+                }
+            }
         }
     }
 }
@@ -3940,6 +3970,7 @@ mod tests {
             UsmStat::UnsupportedSecLevels => requests.usm_unsupported_sec_levels,
             UsmStat::WrongDigests => requests.usm_wrong_digests,
             UsmStat::NotInTimeWindows => requests.usm_not_in_time_windows,
+            UsmStat::DecryptionErrors => requests.usm_decryption_errors,
         };
         assert_eq!(counted, 2, "{requests:?}");
         assert_eq!((requests.get, requests.v3), (1, 1), "a report is not an answer");
@@ -4338,6 +4369,391 @@ mod tests {
         assert_eq!(
             (requests.get, requests.usm_wrong_digests),
             (3, 1),
+            "{requests:?}"
+        );
+    }
+
+    // ---- SNMPv3 privacy ------------------------------------------------------
+
+    use crate::sink::snmp::usm::tests::{
+        priv_capture_users, PrivCapture, NET_SNMP_WRONG_PRIV_GET, NET_SNMP_WRONG_PRIV_REPORT,
+        PRIV_CAPTURED,
+    };
+
+    /// An agent on `listen` answering SNMPv2c and SNMPv3 for the privacy
+    /// captures' users, as `engine_id` (the default one without), within
+    /// `max_message_size`.
+    async fn priv_agent_on(
+        listen: &str,
+        engine_id: Option<&str>,
+        max_message_size: usize,
+    ) -> Arc<SnmpAgent> {
+        let cfg = SnmpAgentConfig {
+            system: system(),
+            versions: vec![SnmpVersion::V2c, SnmpVersion::V3],
+            users: priv_capture_users(),
+            engine_id: engine_id.map(str::to_string),
+            max_message_size,
+            ..SnmpAgentConfig::new(listen)
+        };
+        SnmpAgent::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("binds")
+    }
+
+    /// An agent on an ephemeral port as the privacy captures' engine.
+    async fn priv_agent(max_message_size: usize) -> Arc<SnmpAgent> {
+        priv_agent_on("127.0.0.1:0", Some(CAPTURE_ENGINE_ID), max_message_size).await
+    }
+
+    /// A client of the privacy capture user `name`, synchronized with
+    /// `agent`'s engine as it stands now.
+    fn priv_client_of(agent: &SnmpAgent, name: &str) -> Client {
+        let user = priv_capture_users()
+            .into_iter()
+            .find(|user| user.name == name)
+            .expect("a privacy capture user");
+        Client::of(&user, &agent.usm().engine().snapshot())
+    }
+
+    /// The flags, PDU type and response of an encrypted SNMPv3 message,
+    /// decrypted with `name`'s privacy key at `agent`.
+    fn private_pdu(agent: &SnmpAgent, name: &str, datagram: &[u8]) -> (v3::Flags, Tag, Response) {
+        let msg = v3::decode(datagram).expect("an SNMPv3 message");
+        let user = usm::user(agent.usm().users(), name.as_bytes()).expect("a user");
+        let usm = &msg.usm;
+        let mut plain = Vec::new();
+        let encrypted = msg.encrypted.expect("encrypted");
+        let pdu = usm::decrypt(
+            user,
+            usm.boots,
+            usm.time,
+            usm.priv_params,
+            encrypted,
+            &mut plain,
+        )
+        .expect("decrypts")
+        .pdu;
+        let response = Response {
+            id: pdu.request_id,
+            status: pdu.error_status,
+            index: pdu.error_index,
+            varbinds: pdu
+                .varbinds()
+                .map(|var| text(&var.expect("a complete VarBind")))
+                .collect(),
+        };
+        (msg.flags, pdu.pdu, response)
+    }
+
+    /// Every captured encrypted request, at the engine time it was sent, is
+    /// answered with an encrypted response of sysName; the wrong privacy
+    /// password's request is answered with the authenticated report
+    /// snmpget printed as a decryption error, byte for byte.
+    #[tokio::test(start_paused = true)]
+    async fn captured_encrypted_requests_are_answered() {
+        let agent = priv_agent(1472).await;
+        let mut now = 0;
+        let mut at = |time: u32| {
+            assert!(time >= now, "the captures in the order they were made");
+            let step = u64::from(time - now);
+            now = time;
+            tokio::time::advance(Duration::from_secs(step))
+        };
+        for PrivCapture {
+            user,
+            request,
+            time,
+            ..
+        } in PRIV_CAPTURED[..6].iter().copied()
+        {
+            at(time).await;
+            let (outcome, out) = answered(&agent, &hex(request), 1472);
+            assert_eq!(outcome, Outcome::Sent, "{user} at {time} s");
+            let (flags, tag, reply) = private_pdu(&agent, user, &out);
+            assert!(flags.auth && flags.privacy && !flags.reportable, "{user}");
+            assert_eq!(tag, Tag::Response);
+            assert_eq!(
+                reply.varbinds,
+                ["1.3.6.1.2.1.1.5.0 = STRING \"rtr-core-01\""],
+                "{user}"
+            );
+        }
+        at(9).await;
+        let (outcome, out) = answered(&agent, &hex(NET_SNMP_WRONG_PRIV_GET), 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert_eq!(out, hex(NET_SNMP_WRONG_PRIV_REPORT));
+        for PrivCapture {
+            user,
+            request,
+            time,
+            ..
+        } in PRIV_CAPTURED[6..].iter().copied()
+        {
+            at(time).await;
+            let (outcome, out) = answered(&agent, &hex(request), 1472);
+            assert_eq!(outcome, Outcome::Sent, "{user} at {time} s");
+            assert_eq!(private_pdu(&agent, user, &out).1, Tag::Response, "{user}");
+        }
+        let requests = agent.requests();
+        assert_eq!(
+            (requests.get, requests.v3, requests.usm_decryption_errors),
+            (10, 10, 1),
+            "{requests:?}"
+        );
+    }
+
+    /// A GETBULK answered encrypted with DES within a msgMaxSize of 484 is
+    /// trimmed so the reply, padded to DES's block, still fits it, and the
+    /// next instance would not have. Guard: within 1472 the same request's
+    /// reply is longer than 484.
+    #[tokio::test]
+    async fn a_trimmed_getbulk_fits_msg_max_size_after_des_padding() {
+        let agent = priv_agent(1472).await;
+        interface_table(&agent);
+        let mut client = priv_client_of(&agent, "des-sha1");
+        let bulk = |client: &mut Client| {
+            client.request(Tag::GetBulkRequest, 7, (0, 1000), &[COLUMNS[0]], 12)
+        };
+        let (outcome, full) = answered(&agent, &bulk(&mut client), 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert!(full.len() > 484, "{} bytes", full.len());
+        let full = private_pdu(&agent, "des-sha1", &full).2.varbinds.len();
+
+        client.msg_max_size = 484;
+        let request = bulk(&mut client);
+        let (outcome, trimmed) = answered(&agent, &request, 1472);
+        assert_eq!(outcome, Outcome::Sent);
+        assert!(trimmed.len() <= 484, "{} bytes", trimmed.len());
+        let reply_msg = v3::decode(&trimmed).expect("decodes");
+        let encrypted = reply_msg.encrypted.expect("encrypted");
+        assert_eq!(encrypted.len() % 8, 0, "padded to DES's block");
+        let (_, tag, reply) = private_pdu(&agent, "des-sha1", &trimmed);
+        assert_eq!((tag, reply.status), (Tag::Response, 0));
+        assert!(
+            !reply.varbinds.is_empty() && reply.varbinds.len() < full,
+            "{} of {full}",
+            reply.varbinds.len()
+        );
+        // The reply is the length the agent computes for its varbinds, and
+        // one more instance, padding included, would not have fitted.
+        let user = usm::user(agent.usm().users(), b"des-sha1").expect("a user");
+        let usm = &reply_msg.usm;
+        let mut plain = Vec::new();
+        let varbinds_len = usm::decrypt(
+            user,
+            usm.boots,
+            usm.time,
+            usm.priv_params,
+            encrypted,
+            &mut plain,
+        )
+        .expect("decrypts")
+        .pdu
+        .varbinds
+        .len();
+        let engine = Snapshot {
+            id: usm.engine_id,
+            boots: usm.boots,
+            time: usm.time,
+        };
+        let request = v3::decode(&request).expect("decodes");
+        let with = |more: usize| {
+            let pdu = ber::tlv_len(
+                ber::i64_len(7)
+                    + ber::i64_len(0)
+                    + ber::i64_len(0)
+                    + ber::tlv_len(varbinds_len + more),
+            );
+            v3::private_response_len(&request, &engine, user, pdu)
+        };
+        assert_eq!(with(0), trimmed.len());
+        let last = reply.varbinds.last().expect("a varbind");
+        let (last, _) = last.split_once(" = ").expect("name = value");
+        let (next, varbind) = agent.next_after(&oid(last)).expect("an instance after it");
+        assert!(
+            with(varbind.len()) > 484,
+            "{next} in {} more",
+            varbind.len()
+        );
+    }
+
+    /// A client reads sysUpTime at authPriv over the socket, as every client
+    /// library does: discovery, then an encrypted GET it decrypts. The agent
+    /// is then dropped and another bound on the same port, without an
+    /// engine ID configured: it has the same engine ID, so the client's
+    /// request, whose time is 200 s from the new clock, gets an
+    /// authenticated NotInTimeWindows report it can trust and then, re-synced
+    /// from it, an encrypted answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_reads_through_privacy_and_an_agent_restart() {
+        let first = priv_agent_on("127.0.0.1:0", None, 1472).await;
+        let addr = first.local_addr();
+        let engine_id = first.engine_id().to_vec();
+        let socket = blocking_client();
+        tokio::time::advance(Duration::from_secs(200)).await;
+
+        let mut discovery = Client::new("", None);
+        let report = blocking_exchange(&socket, addr, discovery.get(1, &[])).await;
+        assert_eq!(v3_pdu(&report).1, Tag::Report);
+        let mut client = priv_client_of(&first, "aes-sha256");
+        client.engine_id.clear();
+        client.synchronize(&report);
+        assert_eq!(
+            (client.engine_id.as_slice(), client.time),
+            (engine_id.as_slice(), 200)
+        );
+        let get = |client: &mut Client, id| client.get(id, &[SYSTEM[2]]);
+        let answer = blocking_exchange(&socket, addr, get(&mut client, 2)).await;
+        let (flags, tag, reply) = private_pdu(&first, "aes-sha256", &answer);
+        assert_eq!((flags.privacy, tag, reply.id), (true, Tag::Response, 2));
+        assert!(
+            reply.varbinds[0].starts_with("1.3.6.1.2.1.1.3.0 = Timeticks"),
+            "{reply:?}"
+        );
+
+        let closed = first.wait();
+        drop(first);
+        closed.await;
+        let second = priv_agent_on(&addr.to_string(), None, 1472).await;
+        assert_eq!(second.local_addr(), addr);
+        assert_eq!(
+            second.engine_id(),
+            engine_id.as_slice(),
+            "the engine ID survives the restart"
+        );
+        let stale = blocking_exchange(&socket, addr, get(&mut client, 3)).await;
+        let (flags, tag, reply) = v3_pdu(&stale);
+        assert_eq!((flags.auth, flags.privacy, tag), (true, false, Tag::Report));
+        assert_eq!(reply.varbinds, ["1.3.6.1.6.3.15.1.1.2.0 = Counter32 1"]);
+        let msg = v3::decode(&stale).expect("decodes");
+        assert_eq!((msg.usm.boots, msg.usm.time), (1, 0));
+
+        client.synchronize(&stale);
+        let answer = blocking_exchange(&socket, addr, get(&mut client, 4)).await;
+        let (_, tag, reply) = private_pdu(&second, "aes-sha256", &answer);
+        assert_eq!((tag, reply.id), (Tag::Response, 4));
+        let requests = second.requests();
+        assert_eq!(
+            (requests.usm_not_in_time_windows, requests.get, requests.v3),
+            (1, 1, 1)
+        );
+    }
+
+    /// One encrypted SNMPv3 GET allocates nothing once its buffers have
+    /// answered one like it: the decrypted scoped PDU reuses the scratch
+    /// buffer, and both ciphers work in place on the stack.
+    #[rstest]
+    #[case::des("des-sha1")]
+    #[case::aes128("aes-sha256")]
+    #[case::aes256c("aes256c-sha1")]
+    #[tokio::test]
+    async fn a_v3_encrypted_get_allocates_nothing(#[case] name: &str) {
+        let agent = priv_agent(1472).await;
+        interface_table(&agent);
+        let names: Vec<String> = (1..=10)
+            .map(|index| format!("{}.{index}", COLUMNS[2]))
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let datagram = priv_client_of(&agent, name).get(0x1234, &names);
+        let mut scratch = Scratch::default();
+        let mut out = Vec::with_capacity(1472);
+        let respond = |scratch: &mut Scratch, out: &mut Vec<u8>| {
+            respond_noting(&datagram, &agent, 1472, scratch, out, |_| {})
+        };
+        assert_eq!(respond(&mut scratch, &mut out), Outcome::Sent);
+        counting::assert_count_allocations_counts();
+        let (outcome, allocations) =
+            counting::count_allocations(|| respond(&mut scratch, &mut out));
+        assert_eq!(outcome, Outcome::Sent);
+        let (flags, _, reply) = private_pdu(&agent, name, &out);
+        assert!(flags.auth && flags.privacy);
+        assert_eq!((reply.status, reply.varbinds.len()), (0, 10));
+        assert_eq!(allocations, 0);
+    }
+
+    /// net-snmp reads sysName over SNMPv3 authPriv with each of its privacy
+    /// names: DES (with SHA-1 and SHA-256), AES, and AES-192, AES-192-C,
+    /// AES-256 and AES-256-C, each against the variant it was found to be; a
+    /// wrong privacy password gets its decryption error.
+    #[tokio::test]
+    #[ignore = "needs net-snmp's snmpget on PATH; run with --ignored"]
+    async fn net_snmp_reads_the_agent_over_v3_with_privacy() {
+        let mut users = priv_capture_users();
+        users.push(crate::sink::snmp::usm::tests::priv_user(
+            "des-sha256",
+            crate::sink::snmp::AuthProtocol::Sha256,
+            crate::sink::snmp::PrivProtocol::Des,
+        ));
+        let cfg = SnmpAgentConfig {
+            system: system(),
+            versions: vec![SnmpVersion::V3],
+            users,
+            ..SnmpAgentConfig::new("127.0.0.1:0")
+        };
+        let agent = SnmpAgent::bind(cfg.settings().expect("valid settings"))
+            .await
+            .expect("binds");
+        let target = format!("127.0.0.1:{}", agent.local_addr().port());
+        let get = |user: &str, auth: &str, privacy: &str, password: &str| {
+            [
+                "-v3",
+                "-l",
+                "authPriv",
+                "-u",
+                user,
+                "-a",
+                auth,
+                "-A",
+                "lab-auth-pass",
+                "-x",
+                privacy,
+                "-X",
+                password,
+                "-On",
+                "-r",
+                "0",
+                "-t",
+                "2",
+                &target,
+                "1.3.6.1.2.1.1.5.0",
+            ]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>()
+        };
+        for (user, auth, privacy) in [
+            ("des-sha1", "SHA", "DES"),
+            ("des-sha256", "SHA-256", "DES"),
+            ("aes-sha256", "SHA-256", "AES"),
+            ("aes192-sha1", "SHA", "AES-192"),
+            ("aes192c-sha1", "SHA", "AES-192-C"),
+            ("aes256-sha1", "SHA", "AES-256"),
+            ("aes256c-sha1", "SHA", "AES-256-C"),
+        ] {
+            let output = net_snmp("snmpget", get(user, auth, privacy, "lab-priv-pass")).await;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            println!("{privacy}: {stdout}");
+            assert!(
+                output.status.success(),
+                "{privacy}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(stdout, ".1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"\n");
+        }
+        let output = net_snmp(
+            "snmpget",
+            get("aes-sha256", "SHA-256", "AES", "wrong-priv-pass"),
+        )
+        .await;
+        let printed = String::from_utf8_lossy(&output.stderr).to_string()
+            + &String::from_utf8_lossy(&output.stdout);
+        println!("wrong privacy password: {printed}");
+        assert!(printed.contains("Decryption error"), "{printed}");
+        let requests = agent.requests();
+        assert_eq!(
+            (requests.get, requests.usm_decryption_errors),
+            (7, 1),
             "{requests:?}"
         );
     }

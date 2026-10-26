@@ -5790,6 +5790,7 @@ generator:
                         protocol: AuthProtocol::Sha256,
                         password: password.to_string(),
                     }),
+                    privacy: None,
                 })
                 .collect();
             config

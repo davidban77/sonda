@@ -1089,8 +1089,8 @@ fn the_schema_bounds_snmp_agent_settings_like_validation(
 }
 
 /// The schema and the parser agree on the SNMPv3 settings: both take every
-/// protocol name, `sha` included, a user without auth and a hex engine ID;
-/// both refuse a `priv` block, a misspelt user key, a numeric password and a
+/// protocol name, `sha` included, a user without auth, a `priv` block and a
+/// hex engine ID; both refuse a misspelt user key, a numeric password and a
 /// numeric engine ID.
 #[cfg(feature = "snmp")]
 #[rstest::rstest]
@@ -1107,7 +1107,7 @@ fn the_schema_bounds_snmp_agent_settings_like_validation(
     "versions: [v3]\n    users: [{name: t}]\n    engine_id: \"80001f8804616161\"",
     true
 )]
-#[case::priv_block("versions: [v3]\n    users: [{name: t, auth: {protocol: md5, password: lab-password}, priv: {protocol: aes, password: lab-password}}]", false)]
+#[case::priv_block("versions: [v3]\n    users: [{name: t, auth: {protocol: md5, password: lab-password}, priv: {protocol: aes, password: lab-password}}]", true)]
 #[case::misspelt_user_key("versions: [v3]\n    users: [{nmae: t}]", false)]
 #[case::numeric_password(
     "versions: [v3]\n    users: [{name: t, auth: {protocol: md5, password: 123456789}}]",
@@ -1125,6 +1125,71 @@ fn the_schema_and_the_parser_agree_on_snmp_v3_settings(#[case] extra: &str, #[ca
     let yaml = snmp_agent_document(extra);
     let parsed = sonda_core::compiler::parse::parse(&yaml);
     assert_eq!(parsed.is_ok(), valid, "the parser on `{extra}`: {parsed:?}");
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        assert!(
+            validator().is_valid(&yaml_to_json(value)),
+            "the schema refuses `{extra}`"
+        );
+    } else {
+        assert_rejected(extra, &yaml);
+    }
+}
+
+/// The schema bounds the SNMPv3 settings validation bounds, so an editor
+/// flags what `sonda` refuses and accepts what it takes: the engine ID's
+/// exact pattern (5 to 32 octets of hex, `0x` allowed), a user name of 1 to
+/// 32 characters, and both passwords of at least 8. Validation runs on the
+/// same block, parsed.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::engine_id_of_5_with_0x("engine_id: \"0x80001f8804\"", true)]
+#[case::engine_id_of_5_bare("engine_id: \"80001F8804\"", true)]
+#[case::engine_id_of_32(
+    "engine_id: \"abababababababababababababababababababababababababababababababab\"",
+    true
+)]
+#[case::engine_id_of_4("engine_id: \"80001f88\"", false)]
+#[case::engine_id_of_33(
+    "engine_id: \"ababababababababababababababababababababababababababababababababab\"",
+    false
+)]
+#[case::engine_id_of_odd_digits("engine_id: \"80001f8804a\"", false)]
+#[case::engine_id_not_hex("engine_id: \"80001f88zz\"", false)]
+#[case::name_of_32("users: [{name: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu}]", true)]
+#[case::name_of_33("users: [{name: uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu}]", false)]
+#[case::empty_name("users: [{name: \"\"}]", false)]
+#[case::auth_password_of_8(
+    "users: [{name: t, auth: {protocol: sha256, password: \"12345678\"}}]",
+    true
+)]
+#[case::auth_password_of_7(
+    "users: [{name: t, auth: {protocol: sha256, password: \"1234567\"}}]",
+    false
+)]
+#[case::priv_password_of_8("users: [{name: t, auth: {protocol: sha256, password: lab-password}, priv: {protocol: des, password: \"12345678\"}}]", true)]
+#[case::priv_password_of_7("users: [{name: t, auth: {protocol: sha256, password: lab-password}, priv: {protocol: des, password: \"1234567\"}}]", false)]
+fn the_schema_bounds_snmp_v3_settings_like_validation(#[case] extra: &str, #[case] valid: bool) {
+    use sonda_core::sink::SinkConfig;
+
+    let users = if extra.starts_with("users") {
+        String::new()
+    } else {
+        "users: [{name: t}]\n".to_string()
+    };
+    let block = format!("type: snmp_agent\nlisten: 0.0.0.0:1161\nversions: [v3]\n{users}{extra}\n");
+    let sink: SinkConfig = serde_yaml_ng::from_str(&block).expect("the block parses");
+    let validated = sonda_core::config::validate::validate_sink_config(&sink);
+    assert_eq!(
+        validated.is_ok(),
+        valid,
+        "validation of `{extra}`: {validated:?}"
+    );
+
+    let yaml = snmp_agent_document(&format!(
+        "versions: [v3]\n    {}{extra}",
+        users.replace('\n', "\n    ")
+    ));
     if valid {
         let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
         assert!(
