@@ -887,7 +887,7 @@ class SnmpRestartFindingsTests(unittest.TestCase):
                         for at in late
                     ]
                     + [
-                        f'{name}{{index="{index}"}}: no sample within 30s of sonda starting again'
+                        f'{name}{{index="{index}"}}: no sample within 31s of sonda starting again'
                         for name in series
                         for index in uat.SNMP_INTERFACES
                     ],
