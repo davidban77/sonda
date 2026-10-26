@@ -263,11 +263,23 @@ src/
 │   │   │                   SEQUENCE's body, the only thing that moves); msgID and user
 │   │   │                   echoed, reportable clear, context engine ID ours, context name
 │   │   │                   empty, msgMaxSize 65507. response_len is the ONE size of what
-│   │   │                   write_response writes (the budget). write_report: one varbind,
-│   │   │                   the usmStats instance as a Counter32, the request's request-id
-│   │   │                   or 0. Its tests hold the captured net-snmp 5.9.4.pre2 v3
-│   │   │                   exchanges (every protocol, noAuthNoPriv, a wrong password) and
-│   │   │                   Client, the test-only manager that builds and signs requests.
+│   │   │                   write_response writes (the budget). write_private_response(out,
+│   │   │                   req, &Snapshot, user, &SaltCounter, scoped_pdu) writes the same
+│   │   │                   message at authPriv: the scoped PDU written in place inside the
+│   │   │                   msgData OCTET STRING, padded to usm::padded_len (DES: zeros to
+│   │   │                   8), encrypted in place (usm::encrypt, which draws the salt),
+│   │   │                   the salt spliced into the privacy parameter, then the HMAC;
+│   │   │                   private_response_len is its ONE size, padding included.
+│   │   │                   V3Message.encrypted holds the msgData OCTET STRING under the
+│   │   │                   privacy flag; decode_scoped_pdu(plain, padding) reads a
+│   │   │                   decrypted one (a SEQUENCE, then at most `padding` octets).
+│   │   │                   write_report: one varbind, the usmStats instance as a
+│   │   │                   Counter32, the request's request-id or 0; never encrypted. Its
+│   │   │                   tests hold the captured net-snmp 5.9.4.pre2 v3 exchanges (every
+│   │   │                   protocol, noAuthNoPriv, a wrong password) and Client, the
+│   │   │                   test-only manager that builds, signs and (with `cipher`)
+│   │   │                   encrypts requests; Client::of(user, &Snapshot) is one at the
+│   │   │                   user's level.
 │   │   ├── oid.rs      ←   Oid (Vec<u32>, lexicographic Ord = walk order, ≥ 2 arcs and an
 │   │   │                   encodable first pair, Borrow<[u32]>, BER body helpers);
 │   │   │                   index_arc() is the ONE label-value → arc rule (canonical
@@ -614,19 +626,25 @@ src/
 │   │   │                   users: Vec<UsmUser> [], engine_id: Option<String> }
 │   │   │                   (SnmpVersion: V1 "v1" | V2c "v2c" | V3 "v3", non_exhaustive;
 │   │   │                   versions deserialize_with names the field for an unknown name
-│   │   │                   or a non-list). UsmUser { name (scalar_text), auth:
-│   │   │                   Option<UsmAuth> } and UsmAuth { protocol: AuthProtocol,
-│   │   │                   password } have hand-written Deserialize over private derives
-│   │   │                   (user_fields), deny_unknown_fields: a `priv` key is refused
-│   │   │                   (PRIV_REFUSED); an auth that is not a map, and a password that
-│   │   │                   is not a string, are refused with fixed messages that never
-│   │   │                   repeat the value. The password is writeOnly and
-│   │   │                   x-sonda-no-widening in the schema; UsmAuth's Debug prints "***".
-│   │   │                   AuthProtocol (md5, sha1, sha224, sha256, sha384, sha512; "sha"
-│   │   │                   read as sha1; non_exhaustive) deserializes by name, naming the
-│   │   │                   field, and has a hand-written JsonSchema whose enum lists "sha".
+│   │   │                   or a non-list). UsmUser { name (scalar_text; schema 1–32),
+│   │   │                   auth: Option<UsmAuth>, privacy: Option<UsmPriv> ("priv" on the
+│   │   │                   wire) }, UsmAuth { protocol: AuthProtocol, password } and
+│   │   │                   UsmPriv { protocol: PrivProtocol, password } have hand-written
+│   │   │                   Deserialize over private derives (user_fields),
+│   │   │                   deny_unknown_fields; an auth or priv that is not a map
+│   │   │                   (map_only), and a password that is not a string, are refused
+│   │   │                   with fixed messages that never repeat the value. Both passwords
+│   │   │                   are writeOnly, x-sonda-no-widening, minLength 8 with a $comment
+│   │   │                   (characters, where validation counts bytes) in the schema; Debug
+│   │   │                   prints "***". AuthProtocol (md5, sha1, sha224, sha256, sha384,
+│   │   │                   sha512; "sha" read as sha1) and PrivProtocol (des, aes128,
+│   │   │                   aes192, aes192c, aes256, aes256c; "aes" read as aes128; the c
+│   │   │                   variants the Reeder key extension, the others Blumenthal), both
+│   │   │                   non_exhaustive, deserialize by name, naming the field, and have
+│   │   │                   hand-written JsonSchemas whose enums list the aliases.
 │   │   │                   engine_id is hex, a string only (a YAML number names the
-│   │   │                   field), "0x" allowed. SystemGroup { name, descr,
+│   │   │                   field), "0x" allowed; the schema carries its exact pattern
+│   │   │                   ^(0[xX])?([0-9a-fA-F]{2}){5,32}$. SystemGroup { name, descr,
 │   │   │                   contact, location ("" each), object_id "1.3.6.1.4.1.8072.3.2.10"
 │   │   │                   (OidText: a string only; x-sonda-no-widening), services 72 },
 │   │   │                   both deny_unknown_fields; listen, community and the text fields
@@ -636,18 +654,18 @@ src/
 │   │   │                   IPv4), max_message_size 484..=65507, object_id an Oid, services
 │   │   │                   ≤ 127, versions non-empty with no repeat (resolved ascending,
 │   │   │                   so equality is set equality), v3 in versions needs ≥ 1 user,
-│   │   │                   user names 1–32 bytes and unique, passwords ≥ 8 bytes (users
-│   │   │                   resolved ordered by name), engine_id 5–32 bytes of hex, kept as
-│   │   │                   an Option: without one the AGENT derives its ID at bind from the
-│   │   │                   address it bound (derived_engine_id: 80 00 1f 88 04, then
-│   │   │                   "sonda:<addr>" cut to 27 bytes, so port 0 gets the real port)
+│   │   │                   user names 1–32 bytes and unique, priv only with auth (naming
+│   │   │                   both), passwords ≥ 8 bytes (users resolved ordered by name),
+│   │   │                   engine_id 5–32 bytes of hex, kept as an Option: without one the
+│   │   │                   AGENT makes its ID at bind (usm::default_engine_id of the host
+│   │   │                   name and the address it bound, so port 0 gets the real port)
 │   │   │                   -> AgentSettings. serves() compares every setting but the listen
 │   │   │                   address, the community and the passwords in constant time
-│   │   │                   (same_users); beside() names the ones that differ and never a
-│   │   │                   community or a password ("community and another community",
-│   │   │                   "versions [v1, v2c] and [v2c]", "users [telegraf sha256] and
-│   │   │                   [telegraf sha512]", "users with another password", "engine_id …
-│   │   │                   and derived").
+│   │   │                   (same_users: names, both protocols, both passwords); beside()
+│   │   │                   names the ones that differ and never a community or a password
+│   │   │                   ("community and another community", "versions [v1, v2c] and
+│   │   │                   [v2c]", "users [telegraf sha256 aes128] and [telegraf sha256]",
+│   │   │                   "users with another password", "engine_id … and derived").
 │   │   │                   registry(): the snmp instance of ListenerRegistry<SnmpAgent>
 │   │   │                   behind SnmpAgentRegistry (acquire, check, join, len, is_empty,
 │   │   │                   targets, as gnmi's). join() never binds and compares the
@@ -703,7 +721,8 @@ src/
 │   │   │                   unsupported_version, send_errors, v1 (answered as SNMPv1, also
 │   │   │                   counted under the PDU), v3 (likewise), usm_unknown_engine_ids,
 │   │   │                   usm_unknown_user_names, usm_unsupported_sec_levels,
-│   │   │                   usm_wrong_digests, usm_not_in_time_windows (one per report);
+│   │   │                   usm_wrong_digests, usm_not_in_time_windows,
+│   │   │                   usm_decryption_errors (one per report);
 │   │   │                   count(Counter) adds one, count_and_read returns the new value
 │   │   │                   (a report carries it as a Counter32).
 │   │   │                   warn_too_big() logs at most once per WARN_INTERVAL (60 s, tokio
@@ -719,25 +738,47 @@ src/
 │   │   │                   wait() resolves once the socket is closed. Its ListenerTarget
 │   │   │                   SocketState is a watch::Receiver<bool> (true while it is open).
 │   │   ├── usm.rs      ←   pub(crate) User-based Security Model (RFC 3414). Engine { id,
-│   │   │                   boots = 1, bound_at }: time() whole seconds since bind (≤ 2³¹−1),
-│   │   │                   in_window(boots, time) (boots below 2³¹−1, equal, |Δt| ≤ 150),
-│   │   │                   snapshot() -> Snapshot { id, boots, time }, read once per answer
-│   │   │                   so the size computed is the size written. LocalizedUser { name,
-│   │   │                   auth: Option<(AuthProtocol, Kul)> } (Debug hides the key); Usm {
-│   │   │                   engine, users } built at bind. localize() is the ONE RFC 3414
-│   │   │                   A.2 localization (the password stretched to 1 MiB and hashed,
-│   │   │                   then H(Ku ‖ engineID ‖ Ku)), tested against A.3.1/A.3.2; hmac()
-│   │   │                   truncated per RFC 7860 to auth_params_len (12/12/16/24/32/48),
-│   │   │                   on the stack (no allocation). verify(msg, raw, engine, users) ->
-│   │   │                   UsmVerdict::{Answer { user, authenticated }, Report { stat,
-│   │   │                   authenticated }} is pure and decides in this order: empty or
-│   │   │                   foreign engine ID (UnknownEngineIds), privacy flag
-│   │   │                   (UnsupportedSecLevels), unknown user (UnknownUserNames), auth
-│   │   │                   flag not the user's level (UnsupportedSecLevels), HMAC over the
-│   │   │                   datagram with auth_params zeroed, constant_time_eq, a wrong
-│   │   │                   length included (WrongDigests), time window (NotInTimeWindows,
-│   │   │                   the one authenticated report). UsmStat knows its OID body and
-│   │   │                   its Counter.
+│   │   │                   boots = 1, bound_at, salts: SaltCounter }: time() whole seconds
+│   │   │                   since bind (≤ 2³¹−1), in_window(boots, time) (boots below 2³¹−1,
+│   │   │                   equal, |Δt| ≤ 150), snapshot() -> Snapshot { id, boots, time },
+│   │   │                   read once per answer so the size computed is the size written.
+│   │   │                   SaltCounter: a 32-bit DES and a 64-bit AES counter (atomics),
+│   │   │                   started at random (std's RandomState, OS-seeded), +1 per
+│   │   │                   encrypted message. default_engine_id(hostname, bound) is the ONE
+│   │   │                   default: 80 00 1f 88 05 + SHA-256("sonda:<host>:<bound>")[..16],
+│   │   │                   21 bytes; hostname() through nix (Linux, macOS), else
+│   │   │                   COMPUTERNAME/HOSTNAME. LocalizedUser { name, auth: Option<(
+│   │   │                   AuthProtocol, Kul)>, privacy: Option<(PrivProtocol, key)> }
+│   │   │                   (Debug hides the keys); Usm { engine, users } built at bind.
+│   │   │                   localize() is the ONE RFC 3414 A.2 localization (the password
+│   │   │                   stretched to 1 MiB and hashed, then H(Ku ‖ engineID ‖ Ku)),
+│   │   │                   tested against A.3.1/A.3.2; the privacy key is the privacy
+│   │   │                   password localized with the AUTH protocol, then extend_key (the
+│   │   │                   ONE extension: key_len 16/16/24/32; aes192/aes256 append the
+│   │   │                   hash of the key so far (Blumenthal), the c variants the previous
+│   │   │                   part localized (Reeder); DES's 16 are its key and pre-IV).
+│   │   │                   encrypt(user, &Snapshot, &SaltCounter, data, &mut priv_params)
+│   │   │                   works in place: DES-CBC (RFC 3414 §8: salt boots ‖ counter, IV
+│   │   │                   pre-IV XOR salt, data already padded) or AES-CFB-128 (RFC 3826:
+│   │   │                   salt the counter, IV boots ‖ time ‖ salt); decrypt(user, boots,
+│   │   │                   time, priv_params, cipher_text, out) -> Result<ScopedPdu,
+│   │   │                   PrivError> decrypts into `out` and decodes it (NoKey, BadSalt,
+│   │   │                   BadLength for DES not whole blocks, Garbled for plaintext that is
+│   │   │                   not a scoped PDU: another key). Ciphers on the stack (cbc,
+│   │   │                   cfb-mode, aes, des). hmac() truncated per RFC 7860 to
+│   │   │                   auth_params_len (12/12/16/24/32/48), on the stack (no
+│   │   │                   allocation). verify(msg, raw, engine, users, plain) ->
+│   │   │                   UsmVerdict::{Answer { user, authenticated, scoped: decrypted
+│   │   │                   scoped PDU when private }, Report { stat, authenticated }} is
+│   │   │                   pure and decides in this order: empty or foreign engine ID
+│   │   │                   (UnknownEngineIds), unknown user (UnknownUserNames), the auth
+│   │   │                   and privacy flags not the user's level (UnsupportedSecLevels),
+│   │   │                   HMAC over the datagram with auth_params zeroed,
+│   │   │                   constant_time_eq, a wrong length included (WrongDigests), time
+│   │   │                   window (NotInTimeWindows, authenticated), then under the privacy
+│   │   │                   flag decrypt into `plain` and the context engine ID must be the
+│   │   │                   engine's (DecryptionErrors, authenticated). UsmStat knows its
+│   │   │                   OID body and its Counter.
 │   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
 │   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
 │   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every
@@ -776,11 +817,17 @@ src/
 │   │                       through the same answer_pdu as v1/v2c in an Envelope::V3 (the
 │   │                       v1/v2c one is Envelope::Community; Envelope::len/write is the ONE
 │   │                       size and writer every arm and error response uses), the budget
-│   │                       min(max_message_size, msg_max_size). Refusal::{WrongCommunity,
+│   │                       min(max_message_size, msg_max_size). The decrypted scoped PDU
+│   │                       lives in Scratch.plain, taken (mem::take) for the request and put
+│   │                       back; an encrypted request is answered in an Envelope::V3 whose
+│   │                       `salts` are the engine's (private_response_len /
+│   │                       write_private_response), so a trimmed GETBULK fits after DES
+│   │                       padding. Refusal::{WrongCommunity,
 │   │                       UnknownUser, WrongDigest} feeds three PeerWarnings in serve (each
 │   │                       once per peer IP per minute, never a key). respond() (test-only)
 │   │                       is respond_noting with a wrong-community callback. A v3
-│   │                       authenticated GET allocates nothing (asserted). serve(socket,
+│   │                       authenticated GET and an encrypted one (DES, AES) allocate
+│   │                       nothing (asserted). serve(socket,
 │   │                       Weak<SnmpAgent>, cancel): recv buffer 65 535, one out buffer
 │   │                       reserved to max_message_size, sends to the datagram's source,
 │   │                       counts send errors. When the socket reports packet info
@@ -937,7 +984,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv and authNoPriv) responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication), `aes`, `cfb-mode`, `des` and `cbc` (SNMPv3 privacy, default features off) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info; `hostname`: the default engine ID) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv, authNoPriv and authPriv) responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

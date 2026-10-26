@@ -41,7 +41,7 @@ kafka = ["dep:rskafka", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-
 remote-write = ["dep:prost", "dep:snap", "dep:ureq", "runtime"]
 otlp = ["dep:tonic", "dep:prost", "dep:bytes", "dep:http", "runtime"]
 gnmi = ["dep:prost", "dep:tonic", "dep:bytes", "dep:http", "dep:tower", "dep:tokio-stream", "dep:rustls", "dep:rustls-pki-types", "runtime"]
-snmp = ["dep:bytes", "dep:nix", "dep:hmac", "dep:md-5", "dep:sha1", "dep:sha2", "runtime"]
+snmp = ["dep:bytes", "dep:nix", "dep:hmac", "dep:md-5", "dep:sha1", "dep:sha2", "dep:aes", "dep:cfb-mode", "dep:des", "dep:cbc", "runtime"]
 # JSON Schema for the scenario config types. Implies `config`: schemars
 # reads the `#[serde(...)]` attributes to know the WIRE shape, and those
 # attributes are themselves behind the config feature.
@@ -76,11 +76,17 @@ hmac = { version = "0.12", optional = true }
 md-5 = { version = "0.10", default-features = false, optional = true }
 sha1 = { version = "0.10", default-features = false, optional = true }
 sha2 = { version = "0.10", default-features = false, optional = true }
+# SNMPv3 USM: privacy, DES-CBC and AES-CFB-128 (snmp).
+aes = { version = "0.8", default-features = false, optional = true }
+cfb-mode = { version = "0.8", default-features = false, optional = true }
+des = { version = "0.8", default-features = false, optional = true }
+cbc = { version = "0.1", default-features = false, optional = true }
 
 # The snmp_agent responder's recvmsg/sendmsg with packet info, on the targets
-# where it pins a wildcard bind's reply source.
+# where it pins a wildcard bind's reply source, and the hostname its default
+# SNMPv3 engine ID is made from.
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["socket", "net", "uio"], optional = true }
+nix = { version = "0.31", default-features = false, features = ["socket", "net", "uio", "hostname"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

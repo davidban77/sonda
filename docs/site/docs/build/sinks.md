@@ -726,7 +726,7 @@ Pair this sink with the [`snmp` encoder](encoders.md#snmp), which renders each s
 | `system` | object | no | see below | The values of the system group, `1.3.6.1.2.1.1`. |
 | `versions` | list | no | `[v2c]` | The SNMP versions the agent answers: any of `v1`, `v2c` and `v3`, each once. See [SNMPv1](#snmp-v1) and [SNMPv3](#snmp-v3). |
 | `users` | list | no | none | The SNMPv3 users, each name once. `v3` in `versions` needs at least one. See [SNMPv3](#snmp-v3). |
-| `engine_id` | string | no | derived | The agent's SNMPv3 engine ID: 5 to 32 bytes written as hex, such as `"80001f8804736f6e6461"`, a leading `0x` allowed. A string: an unquoted value YAML reads as a number is refused with the field named. See [SNMPv3](#snmp-v3). |
+| `engine_id` | string | no | per host | The agent's SNMPv3 engine ID: 5 to 32 bytes written as hex, such as `"80001f8804736f6e6461"`, a leading `0x` allowed. A string: an unquoted value YAML reads as a number is refused with the field named. See [SNMPv3](#snmp-v3). |
 
 | `system` field | MIB object | Default | Description |
 |----------------|------------|---------|-------------|
@@ -799,7 +799,7 @@ A walk over SNMPv1 therefore reads every instance but the `counter64` ones: `ifI
 
 ### SNMPv3 { #snmp-v3 }
 
-With `v3` in `versions`, the agent also answers SNMPv3 with the User-based Security Model (RFC 3414), for the users it is given. SNMPv3 adds users in place of the community, and authentication: each request of a user with `auth` carries an HMAC of the whole message made with a key derived from the user's password, so the agent knows who asked and that nothing changed on the way. The operations and their answers are SNMPv2c's.
+With `v3` in `versions`, the agent also answers SNMPv3 with the User-based Security Model (RFC 3414), for the users it is given. SNMPv3 adds users in place of the community, authentication and privacy: each request of a user with `auth` carries an HMAC of the whole message made with a key derived from the user's password, so the agent knows who asked and that nothing changed on the way, and each request of a user with `priv` as well carries its operation encrypted with a second key, derived from the privacy password. The operations and their answers are SNMPv2c's.
 
 ```yaml title="An snmp_agent sink answering SNMPv3"
 sink:
@@ -807,7 +807,10 @@ sink:
   listen: 0.0.0.0:1161
   versions: [v2c, v3]
   users:
-    - name: telegraf
+    - name: telegraf           # authPriv
+      auth: { protocol: sha256, password: lab-only-v3-password }
+      priv: { protocol: aes128, password: lab-only-v3-privacy }
+    - name: monitor            # authNoPriv
       auth: { protocol: sha256, password: lab-only-v3-password }
     - name: watcher            # noAuthNoPriv: no auth block
 ```
@@ -815,12 +818,27 @@ sink:
 | `users` field | Required | Description |
 |---------------|----------|-------------|
 | `name` | yes | The user name, 1 to 32 bytes. |
-| `auth.protocol` | with `auth` | `md5`, `sha1` (also read as `sha`), `sha224`, `sha256`, `sha384` or `sha512`, as Telegraf names them in lower case. MD5 is legacy and SHA-1 is weak; prefer a SHA-2 protocol where the poller has one. |
+| `auth.protocol` | with `auth` | `md5`, `sha1` (also read as `sha`), `sha224`, `sha256`, `sha384` or `sha512`, as Telegraf names them in lower case. |
 | `auth.password` | with `auth` | At least 8 bytes (RFC 3414). A string: a YAML number is refused. Never printed: a config shown for debugging prints `***` in its place. |
+| `priv.protocol` | with `priv` | One of the privacy protocols below. `priv` needs `auth`. |
+| `priv.password` | with `priv` | At least 8 bytes, a string, never printed, as `auth.password`. |
 
-A user without `auth` is `noAuthNoPriv`: its requests carry no HMAC. A user with `auth` is `authNoPriv`, and that is its minimum: an unauthenticated request in its name is refused. Privacy (`authPriv`, an encrypted PDU) is not supported; a user with a `priv` block is refused when the file is read, and a request that asks for privacy is answered `usmStatsUnsupportedSecLevels`.
+A user without `auth` is `noAuthNoPriv`: its requests carry no HMAC. A user with `auth` is `authNoPriv`, and with `priv` as well `authPriv`. That level is the user's minimum and the only one its requests are answered at: an unauthenticated request in the name of a user with `auth`, or an unencrypted one in the name of a user with `priv`, is refused, and so is an encrypted request for a user without `priv`.
 
-The agent is the SNMPv3 engine the poller talks to. Its engine ID is `engine_id`, or, without one, derived from the address the agent bound: net-snmp's enterprise prefix `80001f88`, format `04` (text), then `sonda:` and that address, cut to 27 bytes (a `listen` on port 0 gives the port it was bound to), so it differs per agent and an agent on a fixed address has the same one on every run. Its engine boots are 1 every time it starts listening (boots are not kept between runs, so a poller that cached a higher value discovers the engine again) and its engine time counts whole seconds from then. Each user's key is derived from its password and the engine ID once, when the agent starts listening.
+| `priv.protocol` | Cipher | Key extension | Telegraf `priv_protocol` | net-snmp `-x` |
+|-----------------|--------|---------------|--------------------------|---------------|
+| `des` | DES-CBC (RFC 3414) | none | `DES` | `DES` |
+| `aes128`, also read as `aes` | AES-128-CFB (RFC 3826) | none | `AES` | `AES` |
+| `aes192` | AES-192-CFB | Blumenthal | `AES192` | `AES-192` or `AES192` |
+| `aes192c` | AES-192-CFB | Reeder | `AES192C` | `AES-192-C` or `AES192C` |
+| `aes256` | AES-256-CFB | Blumenthal | `AES256` | `AES-256` or `AES256` |
+| `aes256c` | AES-256-CFB | Reeder | `AES256C` | `AES-256-C` or `AES256C` |
+
+The privacy key is made from `priv.password` with the user's authentication hash, so it is as long as that hash. AES-192 and AES-256 need more than MD5 (16 bytes) or SHA-1 (20 bytes) gives, and two ways of extending the key are in use: the Blumenthal extension (draft-blumenthal-aes-usm-04) and the Reeder extension (draft-reeder-snmpv3-usm-3desede-00), which Cisco devices use and which gosnmp and Telegraf call the `C` variants. They give different keys, so a poller and an agent that disagree fail with a decryption error. With a hash at least as long as the key, such as SHA-256 with AES-256, there is nothing to extend and both give the same key.
+
+MD5 and DES are legacy: MD5 is broken and DES's key is 56 bits. Use `sha256` and `aes128` where the poller has them. A DES salt is the engine boots and a 32-bit counter, and the boots are 1 on every start under the same key, so a salt is unique within a run but across runs only because each run's counter starts at a random value: a run that encrypts N messages with DES repeats one of the previous run's salts with odds on the order of N in 2³².
+
+The agent is the SNMPv3 engine the poller talks to. Its engine ID is `engine_id`, or, without one, made from the host's name and the address the agent bound: net-snmp's enterprise prefix `80001f88`, format `05` (administratively assigned), then the first 16 bytes of the SHA-256 of `sonda:<host name>:<address>`, 21 bytes in all (a `listen` on port 0 gives the port it was bound to). It is the same every time the agent starts on one host and address, so a poller keeps its engine across a restart of sonda, and it differs between hosts, so agents in several containers behind one poller are separate engines. Set `engine_id` by hand when two agents on different hosts must present as one device across restarts, or when the poller is already configured with an engine ID. Its engine boots are 1 every time it starts listening (boots are not kept between runs) and its engine time counts whole seconds from then. A poller whose cached engine time is more than 150 seconds from the restarted clock gets a `usmStatsNotInTimeWindows` report and takes the new time from it. Each user's keys are derived from its passwords and the engine ID once, when the agent starts listening.
 
 A poller first learns the engine ID, boots and time from the agent: it sends a request with an empty engine ID and gets a report back. An SNMPv3 message is checked in this order, and the first check it fails is answered with a `Report` carrying that `usmStats` counter (`1.3.6.1.6.3.15.1.1`), counted, and not answered further:
 
@@ -828,13 +846,13 @@ A poller first learns the engine ID, boots and time from the agent: it sends a r
 |-------|--------|
 | The security model is not the User-based Security Model | Dropped as malformed. |
 | The engine ID is empty, or another engine's | `usmStatsUnknownEngineIDs`, unauthenticated, carrying the agent's engine ID, boots and time. This is discovery. |
-| The request asks for privacy | `usmStatsUnsupportedSecLevels` |
 | No user has the name | `usmStatsUnknownUserNames`. Logged at warn at most once a minute per sender IP, naming the user. |
-| The request is authenticated for a user without `auth`, or unauthenticated for a user with it | `usmStatsUnsupportedSecLevels` |
+| The request is not at the user's level: authenticated for a user without `auth` or not for one with it, encrypted for a user without `priv` or not for one with it | `usmStatsUnsupportedSecLevels` |
 | The HMAC is not the one the user's key makes, or not as long as the protocol's | `usmStatsWrongDigests`, unauthenticated. Logged at warn at most once a minute per sender IP, naming the user and never a key. net-snmp prints it as an authentication failure. |
 | The boots are not the agent's, or the time is more than 150 seconds from the agent's | `usmStatsNotInTimeWindows`, authenticated with the user's key, carrying the agent's boots and time. A poller takes them and asks again. |
+| The request is encrypted and does not decrypt, with the user's privacy key, to an operation for this engine: another privacy password or protocol, a DES ciphertext that is not whole 8-byte blocks | `usmStatsDecryptionErrors`, authenticated. net-snmp prints it as a decryption error. |
 
-A report is sent only when the request asks for one (its reportable flag), as pollers' requests do. A request that passes every check is answered as SNMPv2c answers it, at its security level, authenticated with the user's key when it was, and fits in the smaller of `max_message_size` and the message size the request says the poller accepts. SNMPv3 has no views here: every user reads everything the agent serves, and `SET` is still refused `notWritable`.
+A report is sent only when the request asks for one (its reportable flag), as pollers' requests do, and is never encrypted. A request that passes every check is answered as SNMPv2c answers it, at its security level: authenticated with the user's key when it was, and encrypted, with a salt no other answer of the run has used, when it was. The answer fits in the smaller of `max_message_size` and the message size the request says the poller accepts, DES's padding included. SNMPv3 has no views here: every user reads everything the agent serves, and `SET` is still refused `notWritable`.
 
 ### Ports { #snmp-ports }
 
@@ -848,8 +866,8 @@ With the agent running, net-snmp's tools read it directly:
 snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
 snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
 snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1    # when versions lists v1
-snmpget -v3 -l authNoPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
-  -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0                    # when versions lists v3
+snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
+  -x AES -X lab-only-v3-privacy -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0   # when versions lists v3
 ```
 
 ### Telegraf { #snmp-telegraf }
@@ -874,6 +892,9 @@ defaults:
     users:
       - name: telegraf
         auth: { protocol: sha256, password: lab-only-v3-password }
+        priv: { protocol: aes128, password: lab-only-v3-privacy }
+      - name: monitor
+        auth: { protocol: sha256, password: lab-only-v3-password }
     system:
       name: rtr-core-01
       descr: Sonda synthetic router
@@ -893,7 +914,7 @@ scenarios:
           enum: oper_state
 ```
 
-Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` is the agent label, `ifName` and `ifAlias` are served at `ifName.1` and `ifAlias.1`, and the agent serves no OID for `job`, so the encoder drops it. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1, SNMPv2c, and SNMPv3 for the user `telegraf`, whose password is a lab value.
+Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` is the agent label, `ifName` and `ifAlias` are served at `ifName.1` and `ifAlias.1`, and the agent serves no OID for `job`, so the encoder drops it. Interface 1's `ifOperStatus` is up for 60 seconds and down for 5. The agent answers SNMPv1, SNMPv2c, and SNMPv3 for the user `telegraf` at `authPriv` and the user `monitor` at `authNoPriv`, whose passwords are lab values.
 
 Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the interface table with `GETBULK` over SNMPv2c, tagging each interface with its `ifName` and `ifAlias`. Every OID is numeric, so Telegraf loads no MIB:
 
@@ -954,17 +975,19 @@ The table's `name` becomes the measurement, each row's index the `index` tag and
       oid = ".1.3.6.1.2.1.2.2.1.8"
 ```
 
-A third block reads `sysUpTime` and walks the same table over SNMPv3 at `authNoPriv`, as the user `telegraf` with HMAC-SHA-256, writing `interface_v3` and, through its own measurement name, `snmp_v3_uptime`:
+A third block reads `sysUpTime` and walks the same table over SNMPv3 at `authPriv`, as the user `telegraf` with HMAC-SHA-256 and AES-128, writing `interface_v3` and, through its own measurement name, `snmp_v3_uptime`:
 
 ```toml title="examples/telegraf/telegraf-snmp.conf (the SNMPv3 block, excerpt)"
 [[inputs.snmp]]
   name = "snmp_v3"
   agents = ["udp://sonda:1161"]
   version = 3
-  sec_level = "authNoPriv"
+  sec_level = "authPriv"
   sec_name = "telegraf"
   auth_protocol = "SHA256"
   auth_password = "lab-only-v3-password"
+  priv_protocol = "AES"
+  priv_password = "lab-only-v3-privacy"
   agent_host_tag = "source"
 
   [[inputs.snmp.field]]
@@ -1000,7 +1023,10 @@ docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
   snmpwalk -v1 -c public -On sonda:1161 1.3.6.1.2.1
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
-  snmpget -v3 -l authNoPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
+  snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
+  -x AES -X lab-only-v3-privacy -On sonda:1161 1.3.6.1.2.1.1.5.0
+docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
+  snmpget -v3 -l authNoPriv -u monitor -a SHA-256 -A lab-only-v3-password \
   -On sonda:1161 1.3.6.1.2.1.1.5.0
 ```
 

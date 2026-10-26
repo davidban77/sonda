@@ -136,8 +136,8 @@ pub struct RequestCounters {
     /// SNMPv3 messages from a user the agent does not have. A reportable one
     /// is answered with a `usmStatsUnknownUserNames` report.
     pub usm_unknown_user_names: u64,
-    /// SNMPv3 messages asking for privacy, or for a security level other
-    /// than their user's. A reportable one is answered with a
+    /// SNMPv3 messages asking for a security level other than their
+    /// user's. A reportable one is answered with a
     /// `usmStatsUnsupportedSecLevels` report.
     pub usm_unsupported_sec_levels: u64,
     /// SNMPv3 messages whose digest was not their user's. A reportable one
@@ -146,6 +146,10 @@ pub struct RequestCounters {
     /// Authenticated SNMPv3 messages outside the agent's time window. A
     /// reportable one is answered with a `usmStatsNotInTimeWindows` report.
     pub usm_not_in_time_windows: u64,
+    /// Authenticated SNMPv3 messages whose scoped PDU did not decrypt with
+    /// their user's privacy key. A reportable one is answered with a
+    /// `usmStatsDecryptionErrors` report.
+    pub usm_decryption_errors: u64,
 }
 
 /// One of the counters [`RequestCounters`] reports.
@@ -167,6 +171,7 @@ pub(crate) enum Counter {
     UsmUnsupportedSecLevels,
     UsmWrongDigests,
     UsmNotInTimeWindows,
+    UsmDecryptionErrors,
 }
 
 /// The live counters behind [`RequestCounters`].
@@ -188,6 +193,7 @@ struct Counters {
     usm_unsupported_sec_levels: AtomicU64,
     usm_wrong_digests: AtomicU64,
     usm_not_in_time_windows: AtomicU64,
+    usm_decryption_errors: AtomicU64,
 }
 
 impl Counters {
@@ -209,6 +215,7 @@ impl Counters {
             Counter::UsmUnsupportedSecLevels => &self.usm_unsupported_sec_levels,
             Counter::UsmWrongDigests => &self.usm_wrong_digests,
             Counter::UsmNotInTimeWindows => &self.usm_not_in_time_windows,
+            Counter::UsmDecryptionErrors => &self.usm_decryption_errors,
         }
     }
 
@@ -231,6 +238,7 @@ impl Counters {
             usm_unsupported_sec_levels: read(&self.usm_unsupported_sec_levels),
             usm_wrong_digests: read(&self.usm_wrong_digests),
             usm_not_in_time_windows: read(&self.usm_not_in_time_windows),
+            usm_decryption_errors: read(&self.usm_decryption_errors),
         }
     }
 }

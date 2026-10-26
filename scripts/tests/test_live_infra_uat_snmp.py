@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -33,6 +34,11 @@ ENDED_S = STARTED_S + uat.SNMP_RUN_S
 # Telegraf polls every 2 s; the first poll that sonda answers lands 1 s in.
 POLL_S = 2.0
 FIRST_POLL_S = STARTED_S + 1.0
+# When the during hook stopped sonda and started it again: at once, between
+# two polls.
+STOPPED_S = STARTED_S + uat.SNMP_RESTART_AT_S
+RESTARTED_S = STOPPED_S + 0.2
+RESTART = uat.SnmpRestart(stopped_s=STOPPED_S, restarted_s=RESTARTED_S)
 # Every interface table field examples/telegraf/telegraf-snmp.conf names.
 FIELDS = ("ifOperStatus", "ifInErrors", "ifOutErrors", "ifHCInOctets", "ifHCOutOctets")
 # The fields Telegraf writes for the interface_v1 table: SNMPv1 carries no
@@ -77,6 +83,14 @@ def refused_v1(at_s: float) -> str:
     )
 
 
+def time_window(at_s: float) -> str:
+    """gosnmp's trace line, through the v3 input, for a request answered
+    usmStatsNotInTimeWindows, as Telegraf 1.40.2 logs it."""
+    return telegraf_line(
+        at_s, f"T! [inputs.snmp::v3] agent sonda: {uat.SNMP_TIME_WINDOW_LINE}"
+    )
+
+
 def timed_out(at_s: float) -> str:
     """The v2c input's error for a poll whose retries ran out, as CI logged it."""
     return telegraf_line(
@@ -89,8 +103,11 @@ def timed_out(at_s: float) -> str:
 
 def good_log() -> str:
     """Telegraf's startup, errors from polls sonda was not listening for (ten
-    minutes before the run, in the second of the first sample, and in the
-    second the run ended), and nothing else."""
+    minutes before the run, in the second of the first sample, in the second
+    of the first poll after the restart, and in the second the run ended),
+    gosnmp's time-window line after the restart, and nothing else. The v3
+    input has no error at the restart: Telegraf would have discovered the
+    engine again after one, and logged no time-window line."""
     return (
         telegraf_line(STARTED_S - 600, "I! Loading config: /etc/telegraf/telegraf.conf")
         + telegraf_line(STARTED_S - 600, "I! Loaded inputs: snmp (2x)")
@@ -99,6 +116,9 @@ def good_log() -> str:
         + refused_v1(STARTED_S - 600)
         + refused(FIRST_POLL_S)
         + refused_v1(FIRST_POLL_S)
+        + refused(STOPPED_S + 1)
+        + refused_v1(STOPPED_S + 1)
+        + time_window(RESTARTED_S)
         + refused(ENDED_S)
         + refused_v1(ENDED_S)
     )
@@ -107,11 +127,21 @@ def good_log() -> str:
 def poll_times(
     first_s: float = FIRST_POLL_S, last_s: float = ENDED_S - 1
 ) -> list[float]:
+    """Telegraf's polls every POLL_S from ``first_s`` to ``last_s`` that sonda
+    answered: none while it was stopped for the restart."""
     times, at = [], first_s
     while at <= last_s:
-        times.append(at)
+        if not STOPPED_S <= at < RESTARTED_S:
+            times.append(at)
         at += POLL_S
     return times
+
+
+def sys_up_time(at_s: float) -> int:
+    """sysUpTime at ``at_s``: hundredths of a second since sonda last
+    started."""
+    since = RESTARTED_S if at_s >= STOPPED_S else STARTED_S
+    return round((at_s - since) * 100)
 
 
 def export_line(name: str, labels: dict[str, str], samples: list[tuple[float, float]]) -> str:
@@ -138,7 +168,7 @@ def if_name_tag(index: str) -> dict[str, str]:
 
 def good_export(
     interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
-    uptime=lambda at_s: round((at_s - STARTED_S) * 100),
+    uptime=sys_up_time,
     status=oper_status,
     v1_interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
     v1_fields: tuple[str, ...] = V1_FIELDS,
@@ -148,8 +178,11 @@ def good_export(
     v3_interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
     v3_fields: tuple[str, ...] = FIELDS,
     v3_tags=if_name_tag,
-    v3_uptime=lambda at_s: round((at_s - STARTED_S) * 100) + 1,
+    v3_uptime=lambda at_s: sys_up_time(at_s) + 1,
     v3_from_s: float = FIRST_POLL_S,
+    v3_resumed_s: float = RESTARTED_S,
+    v2c_resumed_s: float = RESTARTED_S,
+    v1_resumed_s: float = RESTARTED_S,
 ) -> bytes:
     """What VictoriaMetrics exports for a run in which Telegraf read every
     poll: each field of each of ``interfaces``, each of ``v1_fields`` of each
@@ -159,10 +192,16 @@ def good_export(
     when given; ``v3_tags``, which ``tags`` does not change, in the
     interface_v3 table), snmp_uptime and snmp_v3_uptime. The v2c input's
     series (interface and snmp_uptime) start at ``v2c_from_s``, the v3
-    input's (interface_v3 and snmp_v3_uptime) at ``v3_from_s``."""
-    times = poll_times()
-    v2c_times = poll_times(first_s=v2c_from_s)
-    v3_times = poll_times(first_s=v3_from_s)
+    input's (interface_v3 and snmp_v3_uptime) at ``v3_from_s``; after the
+    restart the v2c, v1 and v3 inputs' series start again at
+    ``v2c_resumed_s``, ``v1_resumed_s`` and ``v3_resumed_s``."""
+
+    def resuming(polls: list[float], resumed_s: float) -> list[float]:
+        return [at for at in polls if at < STOPPED_S or at >= resumed_s]
+
+    times = resuming(poll_times(), v1_resumed_s)
+    v2c_times = resuming(poll_times(first_s=v2c_from_s), v2c_resumed_s)
+    v3_times = resuming(poll_times(first_s=v3_from_s), v3_resumed_s)
     lines = []
     for table, indices, fields, polls, tagged in (
         ("interface", interfaces, FIELDS, v2c_times, tags),
@@ -192,6 +231,14 @@ def good_export(
     return "\n".join(lines).encode()
 
 
+def after_compose(argv: list[str]) -> list[str]:
+    """``argv`` after the ``docker compose`` prefix compose_command builds,
+    which it must begin with."""
+    prefix = uat.compose_command(REPO_ROOT)
+    assert argv[: len(prefix)] == prefix, argv
+    return argv[len(prefix) :]
+
+
 def golden() -> str:
     return (REPO_ROOT / uat.SNMP_WALK_GOLDEN).read_text()
 
@@ -217,6 +264,8 @@ def findings(
     walk: str | None = None,
     v1_walk: str | None = None,
     v3_get: str = uat.SNMP_V3_GET_EXPECTED,
+    v3_priv_get: str = uat.SNMP_V3_GET_EXPECTED,
+    restart: uat.SnmpRestart | str = RESTART,
 ) -> list[str]:
     export = good_export() if export is None else export
     return uat.snmp_findings(
@@ -230,6 +279,8 @@ def findings(
         v1_walk=v1_walked() if v1_walk is None else v1_walk,
         v1_golden=v1_golden(),
         v3_get=v3_get,
+        v3_priv_get=v3_priv_get,
+        restart=restart,
     )
 
 
@@ -419,6 +470,8 @@ class SnmpFindingsTests(unittest.TestCase):
             v1_walk=v1_walked(),
             v1_golden=v1_golden(),
             v3_get=uat.SNMP_V3_GET_EXPECTED,
+            v3_priv_get=uat.SNMP_V3_GET_EXPECTED,
+            restart=RESTART,
         )
         self.assertEqual(
             outside[-1],
@@ -493,6 +546,8 @@ class SnmpFindingsTests(unittest.TestCase):
             v1_walk=v1_walked(),
             v1_golden=v1_golden(),
             v3_get=uat.SNMP_V3_GET_EXPECTED,
+            v3_priv_get=uat.SNMP_V3_GET_EXPECTED,
+            restart=RESTART,
         )
         tagged_series = (
             uat.SNMP_INTERFACE_SERIES + uat.SNMP_V1_INTERFACE_SERIES + uat.SNMP_V3_INTERFACE_SERIES
@@ -721,6 +776,172 @@ class SnmpV3FindingsTests(unittest.TestCase):
             ],
         )
 
+class SnmpRestartFindingsTests(unittest.TestCase):
+    """The restart's evidence: the series resuming, gosnmp's time-window
+    line, no re-discovery, the gap's errors excused and both uptimes
+    starting again. Each red case runs beside the good run, which has none."""
+
+    def test_the_good_run_restarts_and_resumes(self) -> None:
+        samples = uat.parse_vm_export(good_export(), label="index")
+        stopped_ms, restarted_ms = int(STOPPED_S * 1000), int(RESTARTED_S * 1000)
+        for (series, index), pairs in samples.items():
+            self.assertFalse(
+                [ts for ts, _ in pairs if stopped_ms <= ts < restarted_ms], (series, index)
+            )
+            self.assertTrue([ts for ts, _ in pairs if ts >= restarted_ms], (series, index))
+        uptime = dict(samples[(uat.SNMP_V3_UPTIME_SERIES, "")])
+        # The polls a second either side of the restart.
+        self.assertLess(uptime[stopped_ms + 1000], uptime[stopped_ms - 1000], "it starts again")
+        self.assertIn(time_window(RESTARTED_S), good_log())
+        self.assertIn(refused(STOPPED_S + 1), good_log())
+        self.assertEqual(findings(), [])
+
+    def test_a_v3_series_that_does_not_resume_is_named(self) -> None:
+        found = findings(export=good_export(v3_resumed_s=ENDED_S + 1))
+        self.assertEqual(
+            found,
+            [
+                f'{series}{{index="{index}"}}: no sample within 30s of sonda starting again'
+                for series in uat.SNMP_V3_INTERFACE_SERIES
+                for index in uat.SNMP_INTERFACES
+            ],
+        )
+
+    def test_a_v3_series_resuming_late_is_named(self) -> None:
+        # The first poll from here is 30.8 s after the restart.
+        found = findings(export=good_export(v3_resumed_s=RESTARTED_S + 30))
+        self.assertEqual(len(found), len(uat.SNMP_V3_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES))
+        self.assertTrue(all("no sample within 30s of sonda starting again" in line for line in found), found)
+        # Guard: resuming at the last poll inside the window, 28.8 s after the
+        # restart, is in time.
+        self.assertEqual(findings(export=good_export(v3_resumed_s=RESTARTED_S + 28)), [])
+
+    def test_no_time_window_line_is_named(self) -> None:
+        log = good_log().replace(time_window(RESTARTED_S), "")
+        self.assertEqual(
+            findings(log=log),
+            [
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
+            ],
+        )
+
+    def test_a_v3_error_after_the_stop_is_named_with_the_missing_time_window(self) -> None:
+        error = refused_v3(STOPPED_S + 1)
+        log = good_log().replace(time_window(RESTARTED_S), "") + error
+        self.assertEqual(
+            findings(log=log),
+            [
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows; the input "
+                "errored first, and Telegraf discovers the engine again after an error: "
+                f"{error.strip()}"
+            ],
+        )
+        # Guard: a v3 error before the run, excused, is not named with it.
+        self.assertEqual(
+            findings(log=good_log().replace(time_window(RESTARTED_S), "") + refused_v3(STARTED_S - 600)),
+            [
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
+            ],
+        )
+
+    def test_a_time_window_line_before_the_stop_does_not_count(self) -> None:
+        log = good_log().replace(time_window(RESTARTED_S), time_window(STOPPED_S - 10))
+        self.assertIn(time_window(STOPPED_S - 10), log)
+        self.assertEqual(len(findings(log=log)), 1)
+
+    def test_a_time_window_line_of_another_input_does_not_count(self) -> None:
+        other = time_window(RESTARTED_S).replace("inputs.snmp::v3", "inputs.snmp::v2c")
+        log = good_log().replace(time_window(RESTARTED_S), other)
+        self.assertIn("inputs.snmp::v2c] agent sonda: WARNING", log)
+        self.assertEqual(len(findings(log=log)), 1)
+
+    def test_a_rediscovery_after_the_restart_is_named(self) -> None:
+        line = telegraf_line(
+            RESTARTED_S + 2, f"T! [inputs.snmp::v3] agent sonda: {uat.SNMP_REDISCOVERY_LINE}"
+        )
+        self.assertEqual(
+            findings(log=good_log() + line),
+            [f"telegraf's v3 input discovered the engine again after sonda restarted: {line.strip()}"],
+        )
+
+    def test_a_v2c_or_v1_input_that_does_not_resume_is_named(self) -> None:
+        # The input is never answered after the restart and logs an error on
+        # every poll to the end of the run: its series are named, and so is
+        # each error past SNMP_RESUME_WITHIN_S after the restart.
+        for alias, series, export, error in (
+            ("v2c", uat.SNMP_INTERFACE_SERIES, good_export(v2c_resumed_s=ENDED_S + 1), refused),
+            ("v1", uat.SNMP_V1_INTERFACE_SERIES, good_export(v1_resumed_s=ENDED_S + 1), refused_v1),
+        ):
+            with self.subTest(input=alias):
+                after = [at for at in poll_times() if at > STOPPED_S]
+                log = good_log() + "".join(error(at) for at in after)
+                late = [at for at in after if at > RESTARTED_S + uat.SNMP_RESUME_WITHIN_S]
+                self.assertTrue(late)
+                self.assertEqual(
+                    findings(log=log, export=export),
+                    [
+                        f"telegraf logged an error while sonda served: {error(at).strip()}"
+                        for at in late
+                    ]
+                    + [
+                        f'{name}{{index="{index}"}}: no sample within 30s of sonda starting again'
+                        for name in series
+                        for index in uat.SNMP_INTERFACES
+                    ],
+                )
+                # Guard: the same errors are excused when the input resumes
+                # at the first poll after the restart and errs no more.
+                self.assertEqual(
+                    findings(log=good_log() + "".join(error(at) for at in after if at < RESTARTED_S + 1)),
+                    [],
+                )
+
+    def test_a_failed_restart_is_named_and_excuses_nothing(self) -> None:
+        reason = "<the restart failed: sonda exited (0) before the restart>"
+        found = findings(restart=reason)
+        self.assertIn(f"sonda was not restarted: {reason}", found)
+        for error in (refused(STOPPED_S + 1), refused_v1(STOPPED_S + 1)):
+            self.assertIn(f"telegraf logged an error while sonda served: {error.strip()}", found)
+
+    def test_an_error_after_its_input_resumed_is_named(self) -> None:
+        # The v2c input's first sample after the restart is at STOPPED_S + 1.
+        self.assertEqual(findings(log=good_log() + refused(STOPPED_S + 1)), [])
+        error = refused(RESTARTED_S + 4)
+        self.assertEqual(
+            findings(log=good_log() + error),
+            [f"telegraf logged an error while sonda served: {error.strip()}"],
+        )
+
+    def test_an_error_before_sonda_stopped_is_named(self) -> None:
+        self.assertEqual(findings(log=good_log() + refused(STOPPED_S - 1)), [])
+        error = refused(STOPPED_S - 2)
+        self.assertEqual(
+            findings(log=good_log() + error),
+            [f"telegraf logged an error while sonda served: {error.strip()}"],
+        )
+
+    def test_an_uptime_that_falls_within_one_run_is_named(self) -> None:
+        # A poll 13 s after the stop; the one before it read 10.8 s of uptime.
+        fallen = STOPPED_S + 13
+        found = findings(
+            export=good_export(uptime=lambda at: 0 if at == fallen else sys_up_time(at))
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].startswith("snmp_uptime did not increase: 1080 then 0"), found)
+
+    def test_a_failed_priv_get_is_named(self) -> None:
+        self.assertEqual(
+            findings(v3_priv_get="snmpget: Decryption error\n"),
+            [
+                "the in-container snmpget -v3 -l authPriv printed 'snmpget: Decryption error', "
+                "want '.1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"'"
+            ],
+        )
+
+
 class MaskTests(unittest.TestCase):
     def test_moving_values_are_masked_and_the_rest_kept(self) -> None:
         walk = (
@@ -841,6 +1062,107 @@ class TelegrafConfTests(unittest.TestCase):
         self.assertNotIn("translator", snmp)
         self.assertEqual(conf["agent"]["interval"], "2s")
 
+    def test_the_inputs_poll_on_the_clocks_multiples_of_the_restarts_interval(self) -> None:
+        conf = telegraf_conf()
+        agent = conf["agent"]
+        self.assertEqual(agent["interval"], f"{uat.SNMP_POLL_INTERVAL_S:g}s")
+        # round_interval is Telegraf's default, and no jitter or offset moves
+        # a poll off the multiple.
+        self.assertTrue(agent.get("round_interval", True))
+        for key in ("collection_jitter", "collection_offset"):
+            self.assertEqual(agent.get(key, "0s"), "0s", key)
+        self.assertEqual(len(conf["inputs"]["snmp"]), 3)
+        for snmp in conf["inputs"]["snmp"]:
+            self.assertNotIn("interval", snmp, snmp["alias"])
+
+    def test_the_example_logs_at_telegrafs_default_level(self) -> None:
+        conf = telegraf_conf()
+        self.assertEqual(len(conf["inputs"]["snmp"]), 3)
+        for snmp in conf["inputs"]["snmp"]:
+            self.assertNotIn("log_level", snmp, snmp["alias"])
+        self.assertNotIn("debug", conf["agent"])
+
+    def test_the_traced_conf_is_the_example_with_one_line_in_its_v3_block(self) -> None:
+        example = (REPO_ROOT / uat.SNMP_TELEGRAF_CONF).read_text()
+        traced = uat.traced_snmp_conf(example)
+        lines, kept = traced.splitlines(keepends=True), example.splitlines(keepends=True)
+        self.assertEqual(len(lines), len(kept) + 1)
+        (at,) = [i for i, line in enumerate(lines) if line.strip() == uat.SNMP_TRACE_SETTING]
+        self.assertEqual(lines[at - 1].strip(), uat.SNMP_V3_ALIAS_LINE)
+        # Removing the inserted line gives the example back, byte for byte.
+        self.assertEqual("".join(lines[:at] + lines[at + 1 :]), example)
+        # The line is inside the v3 block, and only there.
+        inputs = tomllib.loads(traced)["inputs"]["snmp"]
+        self.assertEqual(
+            {snmp["alias"]: snmp.get("log_level") for snmp in inputs},
+            {uat.SNMP_V2C_INPUT: None, uat.SNMP_V1_INPUT: None, uat.SNMP_V3_INPUT: "trace"},
+        )
+
+    def test_the_traced_conf_needs_exactly_one_v3_alias_line(self) -> None:
+        example = (REPO_ROOT / uat.SNMP_TELEGRAF_CONF).read_text()
+        renamed = example.replace(uat.SNMP_V3_ALIAS_LINE, 'alias = "v3-auth"')
+        doubled = example + f"\n  {uat.SNMP_V3_ALIAS_LINE}\n"
+        for name, text, count in (("absent", renamed, 0), ("twice", doubled, 2)):
+            with self.subTest(name):
+                with self.assertRaisesRegex(
+                    ValueError, rf"has {count} lines 'alias = \"v3\"'; the traced copy needs exactly one"
+                ):
+                    uat.traced_snmp_conf(text)
+
+    def test_the_snmp_profile_writes_the_traced_conf_or_says_why_not(self) -> None:
+        self.assertIs(uat.PROFILE_SETUP["snmp"], uat.make_snmp_traced_conf)
+        with tempfile.TemporaryDirectory() as repo:
+            root = Path(repo)
+            conf = root / uat.SNMP_TELEGRAF_CONF
+            conf.parent.mkdir(parents=True)
+            example = (REPO_ROOT / uat.SNMP_TELEGRAF_CONF).read_text()
+            conf.write_text(example)
+            # Readable by Telegraf's user whatever the umask it is written under.
+            umask = os.umask(0o077)
+            try:
+                self.assertEqual(uat.make_snmp_traced_conf(root), "")
+            finally:
+                os.umask(umask)
+            written = root / uat.SNMP_TRACED_CONF
+            self.assertEqual(written.read_text(), uat.traced_snmp_conf(example))
+            self.assertEqual(written.stat().st_mode & 0o777, 0o644)
+            conf.write_text(example.replace(uat.SNMP_V3_ALIAS_LINE, 'alias = "v3-auth"'))
+            written.unlink()
+            failure = uat.make_snmp_traced_conf(root)
+            self.assertIn("the snmp row's traced Telegraf conf was not written", failure)
+            self.assertIn("has 0 lines", failure)
+            self.assertFalse(written.exists())
+
+    def test_only_the_harness_override_mounts_the_traced_conf(self) -> None:
+        import yaml
+
+        override = yaml.safe_load((REPO_ROOT / uat.COMPOSE_OVERRIDE_FILE).read_text())
+        base = yaml.safe_load((REPO_ROOT / uat.COMPOSE_FILE).read_text())
+        target = "/etc/telegraf/telegraf.conf"
+        self.assertEqual(
+            override,
+            {"services": {"telegraf-snmp": {"volumes": [f"./telegraf/uat/telegraf-snmp.conf:{target}:ro"]}}},
+        )
+        # Relative to COMPOSE_FILE's directory, the source is SNMP_TRACED_CONF;
+        # the base mounts the example at the same target, which it replaces.
+        compose_dir = (REPO_ROOT / uat.COMPOSE_FILE).parent
+        self.assertEqual(
+            (compose_dir / "telegraf/uat/telegraf-snmp.conf").resolve(),
+            (REPO_ROOT / uat.SNMP_TRACED_CONF).resolve(),
+        )
+        self.assertIn(
+            f"./telegraf/{uat.SNMP_TELEGRAF_CONF.name}:{target}:ro",
+            base["services"]["telegraf-snmp"]["volumes"],
+        )
+        base_text = (REPO_ROOT / uat.COMPOSE_FILE).read_text()
+        self.assertNotIn(uat.COMPOSE_OVERRIDE_FILE.name, base_text)
+        self.assertNotIn("telegraf/uat/", base_text)
+        # The traced copy is never committed.
+        ignored = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", str(uat.SNMP_TRACED_CONF)]
+        )
+        self.assertEqual(ignored.returncode, 0)
+
     def test_every_oid_is_numeric(self) -> None:
         fields = [
             field
@@ -905,12 +1227,14 @@ class TelegrafConfTests(unittest.TestCase):
         self.assertEqual(v3["version"], 3)
         self.assertEqual(
             (v3["sec_level"], v3["sec_name"], v3["auth_protocol"], v3["auth_password"]),
-            ("authNoPriv", uat.SNMP_V3_USER, "SHA256", uat.SNMP_V3_AUTH_PASSWORD),
+            ("authPriv", uat.SNMP_V3_USER, "SHA256", uat.SNMP_V3_AUTH_PASSWORD),
+        )
+        self.assertEqual(
+            (v3["priv_protocol"], v3["priv_password"]), ("AES", uat.SNMP_V3_PRIV_PASSWORD)
         )
         for key in ("agents", "agent_host_tag", "max_repetitions"):
             self.assertEqual(v3[key], v2c[key], key)
         self.assertNotIn("community", v3)
-        self.assertNotIn("priv_protocol", v3)
         self.assertEqual(f"{v3['name']}_uptime", uat.SNMP_V3_UPTIME_SERIES)
         self.assertEqual({f["name"]: f["oid"] for f in v3["field"]}, {"uptime": ".1.3.6.1.2.1.1.3.0"})
         (table,) = v3["table"]
@@ -922,28 +1246,55 @@ class TelegrafConfTests(unittest.TestCase):
         for series in uat.SNMP_V3_INTERFACE_SERIES:
             self.assertIn(series.removeprefix(uat.SNMP_V3_SERIES_PREFIX), polled)
 
-    def test_the_example_serves_the_v3_user_the_conf_and_the_get_use(self) -> None:
+    def test_the_example_serves_the_v3_users_the_conf_and_the_gets_use(self) -> None:
         import yaml
 
         example = yaml.safe_load((REPO_ROOT / "examples/snmp-telegraf.yaml").read_text())
         sink = example["defaults"]["sink"]
         self.assertEqual(sink["versions"], ["v1", "v2c", "v3"])
-        (user,) = sink["users"]
+        private, auth_only = sink["users"]
+        auth = {"protocol": "sha256", "password": uat.SNMP_V3_AUTH_PASSWORD}
         self.assertEqual(
-            user,
+            private,
             {
                 "name": uat.SNMP_V3_USER,
-                "auth": {"protocol": "sha256", "password": uat.SNMP_V3_AUTH_PASSWORD},
+                "auth": auth,
+                "priv": {"protocol": "aes128", "password": uat.SNMP_V3_PRIV_PASSWORD},
             },
         )
+        self.assertEqual(auth_only, {"name": uat.SNMP_V3_AUTH_ONLY_USER, "auth": auth})
         self.assertEqual(sink["system"]["name"], "rtr-core-01")
         self.assertIn('STRING: "rtr-core-01"', uat.SNMP_V3_GET_EXPECTED)
         command = uat.SNMP_V3_GET_COMMAND
         self.assertEqual(
-            (command[command.index("-u") + 1], command[command.index("-A") + 1]),
-            (uat.SNMP_V3_USER, uat.SNMP_V3_AUTH_PASSWORD),
+            (
+                command[command.index("-l") + 1],
+                command[command.index("-u") + 1],
+                command[command.index("-a") + 1],
+                command[command.index("-A") + 1],
+            ),
+            ("authNoPriv", uat.SNMP_V3_AUTH_ONLY_USER, "SHA-256", uat.SNMP_V3_AUTH_PASSWORD),
         )
-        self.assertEqual(command[command.index("-a") + 1], "SHA-256")
+        self.assertNotIn("-x", command)
+        command = uat.SNMP_V3_PRIV_GET_COMMAND
+        self.assertEqual(
+            (
+                command[command.index("-l") + 1],
+                command[command.index("-u") + 1],
+                command[command.index("-a") + 1],
+                command[command.index("-A") + 1],
+                command[command.index("-x") + 1],
+                command[command.index("-X") + 1],
+            ),
+            (
+                "authPriv",
+                uat.SNMP_V3_USER,
+                "SHA-256",
+                uat.SNMP_V3_AUTH_PASSWORD,
+                "AES",
+                uat.SNMP_V3_PRIV_PASSWORD,
+            ),
+        )
 
     def test_the_health_output_is_the_backend_the_harness_waits_for(self) -> None:
         (health,) = telegraf_conf()["outputs"]["health"]
@@ -960,10 +1311,23 @@ class MatrixRowTests(unittest.TestCase):
         self.assertEqual(row.profiles, ("snmp",))
         self.assertTrue((REPO_ROOT / row.scenario).is_file())
         self.assertEqual(row.scenario, Path("examples/snmp-telegraf.yaml"))
-        self.assertIs(row.during, uat.walk_snmp_versions)
+        self.assertIs(row.during, uat.snmp_during)
+        self.assertTrue(row.during_gets_sonda)
         self.assertIs(row.post_verify, uat.verify_snmp_row)
         self.assertEqual(row.failure_log_containers[0], "telegraf-snmp")
-        self.assertEqual(row.extra_args, ("--duration", "90s"))
+        self.assertEqual(row.extra_args, ("--duration", "210s"))
+        # The restart is past the 150 s time window by more than two polls
+        # (the engine time gosnmp keeps is up to a poll old at the stop, and
+        # the restarted agent's clock up to a poll on at its first request);
+        # it lands between two polls; it leaves the series time to resume
+        # before the run ends.
+        self.assertGreater(uat.SNMP_RESTART_AT_S - 2 * uat.SNMP_POLL_INTERVAL_S, 150.0)
+        self.assertLess(0.0, uat.SNMP_RESTART_PHASE_S)
+        self.assertLess(uat.SNMP_RESTART_PHASE_S, uat.SNMP_POLL_INTERVAL_S)
+        self.assertGreaterEqual(
+            uat.SNMP_RUN_S,
+            uat.SNMP_RESTART_AT_S + uat.SNMP_POLL_INTERVAL_S + uat.SNMP_RESUME_WITHIN_S,
+        )
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(row.verify_url).query)
         self.assertEqual(query["query"], [uat.SNMP_EXPORT_MATCH])
 
@@ -987,8 +1351,14 @@ class VerifySnmpRowTests(unittest.TestCase):
                     REPO_ROOT,
                     STARTED_S,
                     ENDED_S,
-                    during=uat.SnmpWalks(
-                        v2c=walked(), v1=v1_walked(), v3_get=uat.SNMP_V3_GET_EXPECTED
+                    during=uat.SnmpEvidence(
+                        walks=uat.SnmpWalks(
+                            v2c=walked(),
+                            v1=v1_walked(),
+                            v3_get=uat.SNMP_V3_GET_EXPECTED,
+                            v3_priv_get=uat.SNMP_V3_GET_EXPECTED,
+                        ),
+                        restart=RESTART,
                     ),
                 ),
                 "",
@@ -1005,14 +1375,25 @@ class VerifySnmpRowTests(unittest.TestCase):
         with mock.patch.object(uat, "http_get", return_value=(200, good_export())), mock.patch.object(
             uat, "compose_logs_tail", return_value=good_log()
         ):
-            self.assertEqual(
-                uat.verify_snmp_row(REPO_ROOT, STARTED_S, ENDED_S),
-                "the in-container walk printed nothing\n"
-                "the in-container v1 walk printed nothing\n"
+            failure = uat.verify_snmp_row(REPO_ROOT, STARTED_S, ENDED_S)
+        # Without the hook there is no restart either, so the errors while
+        # sonda was stopped and the uptimes starting again are named too.
+        self.assertEqual(
+            failure.splitlines(),
+            [
+                f"telegraf logged an error while sonda served: {refused(STOPPED_S + 1).strip()}",
+                f"telegraf logged an error while sonda served: {refused_v1(STOPPED_S + 1).strip()}",
+                "snmp_uptime did not increase: 15900 then 80, 161.0s after sonda started",
+                "snmp_v3_uptime did not increase: 15901 then 81, 161.0s after sonda started",
+                "sonda was not restarted: the during hook reported no restart",
+                "the in-container walk printed nothing",
+                "the in-container v1 walk printed nothing",
                 "the in-container snmpget -v3 printed nothing",
-            )
+                "the in-container snmpget -v3 -l authPriv printed nothing",
+            ],
+        )
 
-    def test_a_failed_hook_stands_for_both_walks_and_the_get(self) -> None:
+    def test_a_failed_hook_stands_for_the_walks_the_gets_and_the_restart(self) -> None:
         with mock.patch.object(uat, "http_get", return_value=(200, good_export())), mock.patch.object(
             uat, "compose_logs_tail", return_value=good_log()
         ):
@@ -1026,14 +1407,16 @@ class VerifySnmpRowTests(unittest.TestCase):
                 "the in-container walk differs",
                 "the in-container v1 walk differs",
                 "the in-container snmpget -v3",
+                "the in-container snmpget -v3 -l authPriv",
             ],
             failure,
         )
         self.assertIn("+<the during hook raised boom>", failure)
+        self.assertIn("sonda was not restarted: <the during hook raised boom>", failure.splitlines())
         self.assertEqual(
             failure.splitlines()[-1],
-            "the in-container snmpget -v3 printed '<the during hook raised boom>', want "
-            "'.1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"'",
+            "the in-container snmpget -v3 -l authPriv printed '<the during hook raised boom>', "
+            "want '.1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"'",
         )
 
     def test_an_export_error_is_reported(self) -> None:
@@ -1098,9 +1481,8 @@ class WalkSnmpAgentTests(unittest.TestCase):
         )
         self.assertEqual(walk, walked())
         (argv,) = argvs
-        self.assertEqual(argv[:3], ["docker", "compose", "-f"])
         self.assertEqual(
-            argv[4:],
+            after_compose(argv),
             [
                 "exec", "-T", "-e", "MIBS=", "telegraf-snmp",
                 "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
@@ -1218,6 +1600,206 @@ class RunRowDuringTests(unittest.TestCase):
         self.assertEqual(len(calls[0]), 3)
 
 
+# A stand-in for `sonda run`: prints its argv, then sleeps for its
+# --duration, or exits FAKE_SIGINT_EXIT (0) on SIGINT.
+FAKE_SONDA = f"""#!{sys.executable}
+import os, signal, sys, time
+print("argv", " ".join(sys.argv[1:]), flush=True)
+duration = float(sys.argv[sys.argv.index("--duration") + 1].rstrip("s"))
+def stop(*_):
+    print("stopped", flush=True)
+    sys.exit(int(os.environ.get("FAKE_SIGINT_EXIT", "0")))
+signal.signal(signal.SIGINT, stop)
+time.sleep(duration)
+print("done", flush=True)
+"""
+
+
+class FakeSondaCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.sonda = self.root / "sonda"
+        self.sonda.write_text(FAKE_SONDA)
+        self.sonda.chmod(0o755)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.root)
+
+    def run_of(self, duration_s: str) -> uat.SondaRun:
+        return uat.SondaRun(
+            [str(self.sonda), "run", "scenario.yaml", "--duration", duration_s], self.root
+        )
+
+
+class SondaRunTests(FakeSondaCase):
+    def test_a_run_without_a_restart_is_waited_for(self) -> None:
+        run = self.run_of("1s")
+        run.start()
+        done = run.wait(10.0)
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.stdout, "argv run scenario.yaml --duration 1s\ndone\n")
+
+    def test_a_restart_stops_the_run_and_runs_what_is_left(self) -> None:
+        run = self.run_of("4s")
+        run.start()
+        time.sleep(0.5)
+        wall = time.time()
+        restart = run.restart(0.2, 4.0)
+        self.assertLessEqual(wall, restart.stopped_s)
+        self.assertGreaterEqual(restart.restarted_s - restart.stopped_s, 0.2)
+        done = run.wait(10.0)
+        self.assertEqual(done.returncode, 0)
+        # 4 s less the 0.7 s before the second run: 3.3 s, printed whole.
+        self.assertEqual(
+            done.stdout,
+            "argv run scenario.yaml --duration 4s\nstopped\n"
+            "argv run scenario.yaml --duration 3s\ndone\n",
+        )
+
+    def test_a_restart_after_the_run_exited_raises_and_starts_nothing(self) -> None:
+        run = self.run_of("0.1s")
+        run.start()
+        run.wait(10.0)
+        with self.assertRaisesRegex(RuntimeError, r"sonda exited \(0\) before the restart"):
+            run.restart(0.0, 10.0)
+        self.assertEqual(run.wait(1.0).stdout, "argv run scenario.yaml --duration 0.1s\ndone\n")
+
+    def test_a_run_that_does_not_exit_0_on_sigint_fails_the_restart(self) -> None:
+        run = self.run_of("10s")
+        with mock.patch.dict("os.environ", {"FAKE_SIGINT_EXIT": "3"}):
+            run.start()
+        time.sleep(0.3)
+        with self.assertRaisesRegex(RuntimeError, "sonda exited 3 on SIGINT"):
+            run.restart(0.0, 10.0)
+
+    def test_a_run_past_its_timeout_is_killed(self) -> None:
+        run = self.run_of("30s")
+        run.start()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run.wait(0.5)
+        self.assertIsNotNone(run._proc.poll(), "killed")
+
+
+class FakeRun:
+    """A SondaRun stand-in that records its restart on a fake clock."""
+
+    def __init__(self, clock: "Clock", fails: str = "") -> None:
+        self.started = 0.0
+        self.clock = clock
+        self.fails = fails
+        self.restarts: list[tuple[float, float, float]] = []
+
+    def restart(self, down_s: float, run_s: float) -> uat.SnmpRestart:
+        if self.fails:
+            raise RuntimeError(self.fails)
+        self.restarts.append((self.clock.now_s, down_s, run_s))
+        return RESTART
+
+
+class SnmpDuringTests(unittest.TestCase):
+    def runner(self):
+        results = [
+            (0, walked(), ""),
+            (0, v1_walked(), ""),
+            (0, uat.SNMP_V3_GET_EXPECTED, ""),
+            (0, uat.SNMP_V3_GET_EXPECTED, ""),
+        ]
+
+        def run(argv, **_):
+            code, out, err = results.pop(0)
+            return subprocess.CompletedProcess(argv, code, out, err)
+
+        return run
+
+    def test_it_walks_then_restarts_sonda_between_two_polls_at_its_time(self) -> None:
+        # Where the wall clock is in the poll cycle when restart_at_s have
+        # passed, and how long the hook then waits to restart sonda at once.
+        for phase_s, wait_s in ((0.25, 0.75), (1.0, 0.0), (1.5, 1.5)):
+            with self.subTest(phase_s=phase_s):
+                clock = Clock()
+                sonda = FakeRun(clock)
+                evidence = uat.snmp_during(
+                    REPO_ROOT,
+                    sonda=sonda,
+                    run=self.runner(),
+                    now=clock.now,
+                    wall=lambda: STARTED_S - uat.SNMP_RESTART_AT_S + phase_s + clock.now_s,
+                    sleep=clock.sleep,
+                )
+                self.assertEqual(evidence.walks.v3_priv_get, uat.SNMP_V3_GET_EXPECTED)
+                self.assertEqual(evidence.restart, RESTART)
+                at_s = uat.SNMP_RESTART_AT_S + wait_s
+                self.assertEqual(sonda.restarts, [(at_s, 0.0, uat.SNMP_RUN_S)])
+                wall_s = STARTED_S - uat.SNMP_RESTART_AT_S + phase_s + at_s
+                self.assertEqual(wall_s % uat.SNMP_POLL_INTERVAL_S, uat.SNMP_RESTART_PHASE_S)
+
+    def test_a_failed_restart_is_returned_as_its_reason(self) -> None:
+        clock = Clock()
+        evidence = uat.snmp_during(
+            REPO_ROOT,
+            sonda=FakeRun(clock, fails="sonda exited 3 on SIGINT"),
+            run=self.runner(),
+            now=clock.now,
+            sleep=clock.sleep,
+        )
+        self.assertEqual(evidence.restart, "<the restart failed: sonda exited 3 on SIGINT>")
+        self.assertEqual(evidence.walks.v2c, walked())
+
+
+class RunRowRestartTests(FakeSondaCase):
+    def test_the_hook_gets_the_running_sonda_and_the_window_spans_both_runs(self) -> None:
+        seen: dict = {}
+
+        def during(_root: Path, *, sonda: uat.SondaRun) -> uat.SnmpRestart:
+            time.sleep(0.3)
+            return sonda.restart(0.2, 1.5)
+
+        def post_verify(_root, started_s, ended_s, during):
+            seen.update(started_s=started_s, ended_s=ended_s, during=during)
+            return ""
+
+        (self.root / "scenario.yaml").write_text("")
+        row = uat.MatrixRow(
+            name="t",
+            profiles=(),
+            subcommand="metrics",
+            scenario=Path("scenario.yaml"),
+            verify_url="",
+            failure_log_containers=("x",),
+            extra_args=("--duration", "1.5s"),
+            during=during,
+            during_gets_sonda=True,
+            post_verify=post_verify,
+        )
+        result = uat.run_row(row, self.sonda, self.root)
+        self.assertTrue(result.ok, result.message)
+        restart = seen["during"]
+        self.assertIsInstance(restart, uat.SnmpRestart)
+        self.assertLess(seen["started_s"], restart.stopped_s)
+        # The window ends when the second run does: 1.5 s after the first
+        # began, give or take the integer --duration of the second.
+        self.assertGreater(seen["ended_s"], restart.restarted_s)
+
+    def test_a_row_whose_sonda_cannot_start_is_reported(self) -> None:
+        (self.root / "scenario.yaml").write_text("")
+        row = uat.MatrixRow(
+            name="t",
+            profiles=(),
+            subcommand="metrics",
+            scenario=Path("scenario.yaml"),
+            verify_url="",
+            failure_log_containers=("x",),
+            extra_args=("--duration", "1s"),
+            during=lambda _root, *, sonda: None,
+            during_gets_sonda=True,
+        )
+        result = uat.run_row(row, self.root / "missing", self.root)
+        self.assertFalse(result.ok)
+        self.assertIn("sonda binary not found", result.message)
+
+
 class WalkSnmpVersionsTests(unittest.TestCase):
     def runner(self, results: list[tuple[int, str, str]], argvs: list[list[str]], clock=None):
         def run(argv, **_):
@@ -1229,29 +1811,52 @@ class WalkSnmpVersionsTests(unittest.TestCase):
 
         return run
 
+    def walks(self, **kwargs) -> uat.SnmpWalks:
+        return uat.SnmpWalks(
+            **{
+                "v2c": walked(),
+                "v1": v1_walked(),
+                "v3_get": uat.SNMP_V3_GET_EXPECTED,
+                "v3_priv_get": uat.SNMP_V3_GET_EXPECTED,
+                **kwargs,
+            }
+        )
+
     def test_it_walks_over_v2c_then_v1_then_gets_over_v3_inside_the_telegraf_snmp_service(self) -> None:
         argvs: list[list[str]] = []
         clock = Clock()
         walks = uat.walk_snmp_versions(
             REPO_ROOT,
             run=self.runner(
-                [(0, walked(), ""), (0, v1_walked(), ""), (0, uat.SNMP_V3_GET_EXPECTED, "")], argvs
+                [
+                    (0, walked(), ""),
+                    (0, v1_walked(), ""),
+                    (0, uat.SNMP_V3_GET_EXPECTED, ""),
+                    (0, uat.SNMP_V3_GET_EXPECTED, ""),
+                ],
+                argvs,
             ),
             now=clock.now,
             sleep=clock.sleep,
         )
+        self.assertEqual(walks, self.walks())
         self.assertEqual(
-            walks, uat.SnmpWalks(v2c=walked(), v1=v1_walked(), v3_get=uat.SNMP_V3_GET_EXPECTED)
+            [after_compose(argv)[:5] for argv in argvs],
+            [["exec", "-T", "-e", "MIBS=", "telegraf-snmp"]] * 4,
         )
-        self.assertEqual([argv[4:9] for argv in argvs], [["exec", "-T", "-e", "MIBS=", "telegraf-snmp"]] * 3)
         self.assertEqual(
-            [argv[9:] for argv in argvs],
+            [after_compose(argv)[5:] for argv in argvs],
             [
                 ["snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
                 ["snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
                 [
-                    "snmpget", "-v3", "-l", "authNoPriv", "-u", "telegraf", "-a", "SHA-256",
+                    "snmpget", "-v3", "-l", "authNoPriv", "-u", "monitor", "-a", "SHA-256",
                     "-A", "lab-only-v3-password", "-On", "sonda:1161", "1.3.6.1.2.1.1.5.0",
+                ],
+                [
+                    "snmpget", "-v3", "-l", "authPriv", "-u", "telegraf", "-a", "SHA-256",
+                    "-A", "lab-only-v3-password", "-x", "AES", "-X", "lab-only-v3-privacy",
+                    "-On", "sonda:1161", "1.3.6.1.2.1.1.5.0",
                 ],
             ],
         )
@@ -1275,10 +1880,10 @@ class WalkSnmpVersionsTests(unittest.TestCase):
             sleep=clock.sleep,
         )
         self.assertEqual(walks.v1, v1_walked())
-        self.assertEqual(len(argvs), 4)
+        self.assertEqual(len(argvs), 5)
         self.assertEqual(clock.slept, [1.0])
 
-    def test_the_v3_get_retries_until_it_prints_the_system_name(self) -> None:
+    def test_each_v3_get_retries_until_it_prints_the_system_name(self) -> None:
         argvs: list[list[str]] = []
         clock = Clock()
         failure = "snmpget: Authentication failure (incorrect password, community or key)\n"
@@ -1291,17 +1896,24 @@ class WalkSnmpVersionsTests(unittest.TestCase):
                     (1, "", failure),
                     (0, '.1.3.6.1.2.1.1.5.0 = STRING: ""\n', ""),
                     (0, uat.SNMP_V3_GET_EXPECTED, ""),
+                    (1, "", "snmpget: Decryption error\n"),
+                    (0, uat.SNMP_V3_GET_EXPECTED, ""),
                 ],
                 argvs,
             ),
             now=clock.now,
             sleep=clock.sleep,
         )
-        self.assertEqual(walks.v3_get, uat.SNMP_V3_GET_EXPECTED)
-        self.assertEqual([argv[9] for argv in argvs], ["snmpbulkwalk", "snmpwalk"] + ["snmpget"] * 3)
-        self.assertEqual(clock.slept, [1.0, 1.0])
+        self.assertEqual(walks, self.walks())
+        self.assertEqual(
+            [(after_compose(argv)[5], after_compose(argv)[8]) for argv in argvs],
+            [("snmpbulkwalk", "public"), ("snmpwalk", "public")]
+            + [("snmpget", "authNoPriv")] * 3
+            + [("snmpget", "authPriv")] * 2,
+        )
+        self.assertEqual(clock.slept, [1.0, 1.0, 1.0])
 
-    def test_all_three_share_one_window(self) -> None:
+    def test_all_four_share_one_window(self) -> None:
         argvs: list[list[str]] = []
         clock = Clock()
         timeout = "Timeout: No Response from sonda:1161\n"
@@ -1312,15 +1924,18 @@ class WalkSnmpVersionsTests(unittest.TestCase):
             now=clock.now,
             sleep=clock.sleep,
         )
-        self.assertEqual(walks, uat.SnmpWalks(v2c=timeout, v1=timeout, v3_get=timeout))
+        self.assertEqual(
+            walks, uat.SnmpWalks(v2c=timeout, v1=timeout, v3_get=timeout, v3_priv_get=timeout)
+        )
         # Each attempt takes 4 s and each retry waits 1 s: the v2c walk
         # attempts at 0, 5 and 10 s and gives up at 14 s, past the window,
-        # so the v1 walk and the v3 get each have the one-second floor and
-        # give up after their first attempt, at 18 and 22 s.
+        # so the v1 walk and the two v3 gets each have the one-second floor
+        # and give up after their first attempt, at 18, 22 and 26 s.
         self.assertEqual(
-            [argv[9] for argv in argvs], ["snmpbulkwalk"] * 3 + ["snmpwalk", "snmpget"]
+            [after_compose(argv)[5] for argv in argvs],
+            ["snmpbulkwalk"] * 3 + ["snmpwalk", "snmpget", "snmpget"],
         )
-        self.assertEqual(clock.now_s, 22.0)
+        self.assertEqual(clock.now_s, 26.0)
 
 
 if __name__ == "__main__":
