@@ -33,9 +33,10 @@ ENDED_S = STARTED_S + uat.SNMP_RUN_S
 # Telegraf polls every 2 s; the first poll that sonda answers lands 1 s in.
 POLL_S = 2.0
 FIRST_POLL_S = STARTED_S + 1.0
-# When the during hook stopped sonda and started it again.
+# When the during hook stopped sonda and started it again: at once, between
+# two polls.
 STOPPED_S = STARTED_S + uat.SNMP_RESTART_AT_S
-RESTARTED_S = STOPPED_S + uat.SNMP_RESTART_DOWN_S
+RESTARTED_S = STOPPED_S + 0.2
 RESTART = uat.SnmpRestart(stopped_s=STOPPED_S, restarted_s=RESTARTED_S)
 # Every interface table field examples/telegraf/telegraf-snmp.conf names.
 FIELDS = ("ifOperStatus", "ifInErrors", "ifOutErrors", "ifHCInOctets", "ifHCOutOctets")
@@ -101,9 +102,11 @@ def timed_out(at_s: float) -> str:
 
 def good_log() -> str:
     """Telegraf's startup, errors from polls sonda was not listening for (ten
-    minutes before the run, in the second of the first sample, while it was
-    stopped for the restart, and in the second the run ended), gosnmp's
-    time-window line after the restart, and nothing else."""
+    minutes before the run, in the second of the first sample, in the second
+    of the first poll after the restart, and in the second the run ended),
+    gosnmp's time-window line after the restart, and nothing else. The v3
+    input has no error at the restart: Telegraf would have discovered the
+    engine again after one, and logged no time-window line."""
     return (
         telegraf_line(STARTED_S - 600, "I! Loading config: /etc/telegraf/telegraf.conf")
         + telegraf_line(STARTED_S - 600, "I! Loaded inputs: snmp (2x)")
@@ -114,7 +117,6 @@ def good_log() -> str:
         + refused_v1(FIRST_POLL_S)
         + refused(STOPPED_S + 1)
         + refused_v1(STOPPED_S + 1)
-        + refused_v3(STOPPED_S + 1)
         + time_window(RESTARTED_S)
         + refused(ENDED_S)
         + refused_v1(ENDED_S)
@@ -774,9 +776,10 @@ class SnmpRestartFindingsTests(unittest.TestCase):
             )
             self.assertTrue([ts for ts, _ in pairs if ts >= restarted_ms], (series, index))
         uptime = dict(samples[(uat.SNMP_V3_UPTIME_SERIES, "")])
-        self.assertLess(uptime[restarted_ms], uptime[stopped_ms - 1000], "it starts again")
+        # The polls a second either side of the restart.
+        self.assertLess(uptime[stopped_ms + 1000], uptime[stopped_ms - 1000], "it starts again")
         self.assertIn(time_window(RESTARTED_S), good_log())
-        self.assertIn(refused_v3(STOPPED_S + 1), good_log())
+        self.assertIn(refused(STOPPED_S + 1), good_log())
         self.assertEqual(findings(), [])
 
     def test_a_v3_series_that_does_not_resume_is_named(self) -> None:
@@ -791,16 +794,39 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         )
 
     def test_a_v3_series_resuming_late_is_named(self) -> None:
-        found = findings(export=good_export(v3_resumed_s=RESTARTED_S + 32))
+        # The first poll from here is 30.8 s after the restart.
+        found = findings(export=good_export(v3_resumed_s=RESTARTED_S + 30))
         self.assertEqual(len(found), len(uat.SNMP_V3_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES))
         self.assertTrue(all("no sample within 30s of sonda starting again" in line for line in found), found)
-        # Guard: resuming at the edge of the window is in time.
-        self.assertEqual(findings(export=good_export(v3_resumed_s=RESTARTED_S + 30)), [])
+        # Guard: resuming at the last poll inside the window, 28.8 s after the
+        # restart, is in time.
+        self.assertEqual(findings(export=good_export(v3_resumed_s=RESTARTED_S + 28)), [])
 
     def test_no_time_window_line_is_named(self) -> None:
         log = good_log().replace(time_window(RESTARTED_S), "")
         self.assertEqual(
             findings(log=log),
+            [
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
+            ],
+        )
+
+    def test_a_v3_error_after_the_stop_is_named_with_the_missing_time_window(self) -> None:
+        error = refused_v3(STOPPED_S + 1)
+        log = good_log().replace(time_window(RESTARTED_S), "") + error
+        self.assertEqual(
+            findings(log=log),
+            [
+                f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows; the input "
+                "errored first, and Telegraf discovers the engine again after an error: "
+                f"{error.strip()}"
+            ],
+        )
+        # Guard: a v3 error before the run, excused, is not named with it.
+        self.assertEqual(
+            findings(log=good_log().replace(time_window(RESTARTED_S), "") + refused_v3(STARTED_S - 600)),
             [
                 f"telegraf's v3 input logged no {uat.SNMP_TIME_WINDOW_LINE!r} after sonda "
                 "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
@@ -831,12 +857,12 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         reason = "<the restart failed: sonda exited (0) before the restart>"
         found = findings(restart=reason)
         self.assertIn(f"sonda was not restarted: {reason}", found)
-        for error in (refused(STOPPED_S + 1), refused_v1(STOPPED_S + 1), refused_v3(STOPPED_S + 1)):
+        for error in (refused(STOPPED_S + 1), refused_v1(STOPPED_S + 1)):
             self.assertIn(f"telegraf logged an error while sonda served: {error.strip()}", found)
 
     def test_an_error_after_its_input_resumed_is_named(self) -> None:
-        # The v2c input's first sample after the restart is at RESTARTED_S.
-        self.assertEqual(findings(log=good_log() + refused(RESTARTED_S)), [])
+        # The v2c input's first sample after the restart is at STOPPED_S + 1.
+        self.assertEqual(findings(log=good_log() + refused(STOPPED_S + 1)), [])
         error = refused(RESTARTED_S + 4)
         self.assertEqual(
             findings(log=good_log() + error),
@@ -852,12 +878,13 @@ class SnmpRestartFindingsTests(unittest.TestCase):
         )
 
     def test_an_uptime_that_falls_within_one_run_is_named(self) -> None:
-        fallen = RESTARTED_S + 10
+        # A poll 13 s after the stop; the one before it read 10.8 s of uptime.
+        fallen = STOPPED_S + 13
         found = findings(
             export=good_export(uptime=lambda at: 0 if at == fallen else sys_up_time(at))
         )
         self.assertEqual(len(found), 1, found)
-        self.assertTrue(found[0].startswith("snmp_uptime did not increase: 800 then 0"), found)
+        self.assertTrue(found[0].startswith("snmp_uptime did not increase: 1080 then 0"), found)
 
     def test_a_failed_priv_get_is_named(self) -> None:
         self.assertEqual(
@@ -988,6 +1015,19 @@ class TelegrafConfTests(unittest.TestCase):
         self.assertIn('source="sonda"', uat.SNMP_EXPORT_MATCH)
         self.assertNotIn("translator", snmp)
         self.assertEqual(conf["agent"]["interval"], "2s")
+
+    def test_the_inputs_poll_on_the_clocks_multiples_of_the_restarts_interval(self) -> None:
+        conf = telegraf_conf()
+        agent = conf["agent"]
+        self.assertEqual(agent["interval"], f"{uat.SNMP_POLL_INTERVAL_S:g}s")
+        # round_interval is Telegraf's default, and no jitter or offset moves
+        # a poll off the multiple.
+        self.assertTrue(agent.get("round_interval", True))
+        for key in ("collection_jitter", "collection_offset"):
+            self.assertEqual(agent.get(key, "0s"), "0s", key)
+        self.assertEqual(len(conf["inputs"]["snmp"]), 3)
+        for snmp in conf["inputs"]["snmp"]:
+            self.assertNotIn("interval", snmp, snmp["alias"])
 
     def test_every_oid_is_numeric(self) -> None:
         fields = [
@@ -1144,13 +1184,17 @@ class MatrixRowTests(unittest.TestCase):
         self.assertIs(row.post_verify, uat.verify_snmp_row)
         self.assertEqual(row.failure_log_containers[0], "telegraf-snmp")
         self.assertEqual(row.extra_args, ("--duration", "210s"))
-        # The restart is past the 150 s time window and leaves the series
-        # time to resume before the run ends.
-        self.assertGreater(uat.SNMP_RESTART_AT_S, 150.0)
-        self.assertLessEqual(uat.SNMP_RESTART_DOWN_S, 5.0)
+        # The restart is past the 150 s time window by more than two polls
+        # (the engine time gosnmp keeps is up to a poll old at the stop, and
+        # the restarted agent's clock up to a poll on at its first request);
+        # it lands between two polls; it leaves the series time to resume
+        # before the run ends.
+        self.assertGreater(uat.SNMP_RESTART_AT_S - 2 * uat.SNMP_POLL_INTERVAL_S, 150.0)
+        self.assertLess(0.0, uat.SNMP_RESTART_PHASE_S)
+        self.assertLess(uat.SNMP_RESTART_PHASE_S, uat.SNMP_POLL_INTERVAL_S)
         self.assertGreaterEqual(
             uat.SNMP_RUN_S,
-            uat.SNMP_RESTART_AT_S + uat.SNMP_RESTART_DOWN_S + uat.SNMP_RESUME_WITHIN_S,
+            uat.SNMP_RESTART_AT_S + uat.SNMP_POLL_INTERVAL_S + uat.SNMP_RESUME_WITHIN_S,
         )
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(row.verify_url).query)
         self.assertEqual(query["query"], [uat.SNMP_EXPORT_MATCH])
@@ -1534,18 +1578,27 @@ class SnmpDuringTests(unittest.TestCase):
 
         return run
 
-    def test_it_walks_then_restarts_sonda_at_its_time(self) -> None:
-        clock = Clock()
-        sonda = FakeRun(clock)
-        evidence = uat.snmp_during(
-            REPO_ROOT, sonda=sonda, run=self.runner(), now=clock.now, sleep=clock.sleep
-        )
-        self.assertEqual(evidence.walks.v3_priv_get, uat.SNMP_V3_GET_EXPECTED)
-        self.assertEqual(evidence.restart, RESTART)
-        self.assertEqual(
-            sonda.restarts,
-            [(uat.SNMP_RESTART_AT_S, uat.SNMP_RESTART_DOWN_S, uat.SNMP_RUN_S)],
-        )
+    def test_it_walks_then_restarts_sonda_between_two_polls_at_its_time(self) -> None:
+        # Where the wall clock is in the poll cycle when restart_at_s have
+        # passed, and how long the hook then waits to restart sonda at once.
+        for phase_s, wait_s in ((0.25, 0.75), (1.0, 0.0), (1.5, 1.5)):
+            with self.subTest(phase_s=phase_s):
+                clock = Clock()
+                sonda = FakeRun(clock)
+                evidence = uat.snmp_during(
+                    REPO_ROOT,
+                    sonda=sonda,
+                    run=self.runner(),
+                    now=clock.now,
+                    wall=lambda: STARTED_S - uat.SNMP_RESTART_AT_S + phase_s + clock.now_s,
+                    sleep=clock.sleep,
+                )
+                self.assertEqual(evidence.walks.v3_priv_get, uat.SNMP_V3_GET_EXPECTED)
+                self.assertEqual(evidence.restart, RESTART)
+                at_s = uat.SNMP_RESTART_AT_S + wait_s
+                self.assertEqual(sonda.restarts, [(at_s, 0.0, uat.SNMP_RUN_S)])
+                wall_s = STARTED_S - uat.SNMP_RESTART_AT_S + phase_s + at_s
+                self.assertEqual(wall_s % uat.SNMP_POLL_INTERVAL_S, uat.SNMP_RESTART_PHASE_S)
 
     def test_a_failed_restart_is_returned_as_its_reason(self) -> None:
         clock = Clock()

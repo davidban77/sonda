@@ -387,13 +387,21 @@ def verify_gnmi_row(
 # How long the snmp row's `sonda run` serves in all (its --duration): the
 # restart below, then long enough after it for the series to resume.
 SNMP_RUN_S = 210.0
-# When the snmp row's during hook stops sonda, from the run's start, and how
-# long it stays stopped before the hook starts it again. Past the 150 s time
-# window: Telegraf's v3 input keeps the engine time of the last response it
-# read, about this far ahead of the restarted agent's clock, so its first
-# request after the restart is answered usmStatsNotInTimeWindows.
+# When the snmp row's during hook stops sonda, from the run's start, at the
+# earliest. Past the 150 s time window: Telegraf's v3 input keeps the engine
+# time of the last response it read, about this far ahead of the restarted
+# agent's clock, so its first request after the restart is answered
+# usmStatsNotInTimeWindows.
 SNMP_RESTART_AT_S = 160.0
-SNMP_RESTART_DOWN_S = 3.0
+# Telegraf's poll interval, telegraf-snmp.conf's [agent] interval: with
+# round_interval, its default, every input polls on the wall clock's
+# multiples of it.
+SNMP_POLL_INTERVAL_S = 2.0
+# Where in that cycle the hook stops sonda and starts it again at once:
+# between two polls, so no request reaches the closed port. Telegraf 1.40
+# closes an input's session after any error and discovers the engine again,
+# which would send no request with the stale time.
+SNMP_RESTART_PHASE_S = 1.0
 # Each interface_v3 series has a sample this soon after the restart.
 SNMP_RESUME_WITHIN_S = 30.0
 # What gosnmp logs, at trace level through Telegraf's v3 input, when a
@@ -743,20 +751,23 @@ def snmp_during(
     *,
     sonda: SondaRun,
     restart_at_s: float = SNMP_RESTART_AT_S,
-    down_s: float = SNMP_RESTART_DOWN_S,
     run_s: float = SNMP_RUN_S,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     now: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SnmpEvidence:
     """The snmp row's during hook: :func:`walk_snmp_versions`, then, once
-    ``restart_at_s`` have passed since sonda started, ``sonda`` stopped and
-    started again ``down_s`` later (:meth:`SondaRun.restart`). A restart
-    that fails is returned as its reason."""
+    ``restart_at_s`` have passed since sonda started, at the next moment
+    the wall clock is SNMP_RESTART_PHASE_S into a SNMP_POLL_INTERVAL_S
+    cycle, ``sonda`` stopped and started again at once
+    (:meth:`SondaRun.restart`). A restart that fails is returned as its
+    reason."""
     walks = walk_snmp_versions(repo_root, run=run, now=now, sleep=sleep)
     sleep(max(sonda.started + restart_at_s - now(), 0.0))
+    sleep((SNMP_RESTART_PHASE_S - wall()) % SNMP_POLL_INTERVAL_S)
     try:
-        restart: SnmpRestart | str = sonda.restart(down_s, run_s)
+        restart: SnmpRestart | str = sonda.restart(0.0, run_s)
     except RuntimeError as e:
         restart = f"<the restart failed: {e}>"
     return SnmpEvidence(walks=walks, restart=restart)
@@ -871,7 +882,8 @@ def snmp_findings(
     again (each that had one before sonda stopped; one that had none is
     named above), a SNMP_V3_TRACE_LINE carrying SNMP_TIME_WINDOW_LINE is stamped
     from a second before sonda stopped on (gosnmp answered
-    usmStatsNotInTimeWindows and re-synchronized), and none carrying
+    usmStatsNotInTimeWindows and re-synchronized; when none is, the v3
+    input's first SNMP_ERROR_LINE from then on is named with it), and none carrying
     SNMP_REDISCOVERY_LINE is (the engine ID did not change); both uptimes
     are checked for increase before sonda stopped and after it, apart;
     ``walk``, masked, is ``golden``, masked, and ``v1_walk`` is
@@ -1044,16 +1056,25 @@ def snmp_findings(
                         f'{series}{{index="{index}"}}: no sample within '
                         f"{SNMP_RESUME_WITHIN_S:.0f}s of sonda starting again"
                     )
-        traced = [
+        since_stop = [
             line
             for line in telegraf_log.splitlines()
-            if SNMP_V3_TRACE_LINE.search(line)
-            and (telegraf_log_stamp(line) or 0) >= stopped_ms // 1000 - 1
+            if (telegraf_log_stamp(line) or 0) >= stopped_ms // 1000 - 1
         ]
+        traced = [line for line in since_stop if SNMP_V3_TRACE_LINE.search(line)]
         if not any(SNMP_TIME_WINDOW_LINE in line for line in traced):
+            errored = ""
+            for line in since_stop:
+                error = SNMP_ERROR_LINE.search(line)
+                if error is not None and error.group("alias") == SNMP_V3_INPUT:
+                    errored = (
+                        "; the input errored first, and Telegraf discovers the "
+                        f"engine again after an error: {line.strip()}"
+                    )
+                    break
             findings.append(
                 f"telegraf's v3 input logged no {SNMP_TIME_WINDOW_LINE!r} after sonda "
-                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
+                f"restarted: gosnmp was not answered usmStatsNotInTimeWindows{errored}"
             )
         for line in traced:
             if SNMP_REDISCOVERY_LINE in line:
@@ -1401,7 +1422,8 @@ MATRIX: tuple[MatrixRow, ...] = (
     # writes to VictoriaMetrics over SNMPv2c, SNMPv1 and SNMPv3 (authPriv),
     # and snmp_during walks it in the first two versions and reads sysName
     # over SNMPv3 at authNoPriv and authPriv from inside the telegraf-snmp
-    # container, then stops sonda at SNMP_RESTART_AT_S and starts it again.
+    # container, then stops sonda past SNMP_RESTART_AT_S, between two polls,
+    # and starts it again at once.
     # The verify URL proves some series arrived at all; verify_snmp_row then
     # checks each interface in the three tables, both uptimes, the flap, the
     # v3 series resuming after the restart through gosnmp's time-window
