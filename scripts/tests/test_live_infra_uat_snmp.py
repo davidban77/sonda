@@ -57,6 +57,16 @@ def refused(at_s: float) -> str:
     )
 
 
+def refused_v3(at_s: float) -> str:
+    """An error of the v3 input, as Telegraf 1.40.2 logs it."""
+    return telegraf_line(
+        at_s,
+        "E! [inputs.snmp::v3] Error in plugin: agent udp://sonda:1161: performing get "
+        "on field uptime: error reading from socket: read udp 172.18.0.3:51234->"
+        "172.17.0.1:1161: recvfrom: connection refused",
+    )
+
+
 def refused_v1(at_s: float) -> str:
     """An error of the v1 input, as Telegraf 1.40.2 logs it."""
     return telegraf_line(
@@ -135,19 +145,29 @@ def good_export(
     v2c_from_s: float = FIRST_POLL_S,
     tags=if_name_tag,
     v1_tags=None,
+    v3_interfaces: tuple[str, ...] = uat.SNMP_INTERFACES,
+    v3_fields: tuple[str, ...] = FIELDS,
+    v3_tags=if_name_tag,
+    v3_uptime=lambda at_s: round((at_s - STARTED_S) * 100) + 1,
+    v3_from_s: float = FIRST_POLL_S,
 ) -> bytes:
     """What VictoriaMetrics exports for a run in which Telegraf read every
     poll: each field of each of ``interfaces``, each of ``v1_fields`` of each
-    of ``v1_interfaces`` in the interface_v1 table, every row tagged with
-    ``tags`` of its interface (``v1_tags`` in the interface_v1 table, when
-    given), and snmp_uptime. The v2c input's series (all but interface_v1)
-    start at ``v2c_from_s``."""
+    of ``v1_interfaces`` in the interface_v1 table, each of ``v3_fields`` of
+    each of ``v3_interfaces`` in the interface_v3 table, every row tagged
+    with ``tags`` of its interface (``v1_tags`` in the interface_v1 table,
+    when given; ``v3_tags``, which ``tags`` does not change, in the
+    interface_v3 table), snmp_uptime and snmp_v3_uptime. The v2c input's
+    series (interface and snmp_uptime) start at ``v2c_from_s``, the v3
+    input's (interface_v3 and snmp_v3_uptime) at ``v3_from_s``."""
     times = poll_times()
     v2c_times = poll_times(first_s=v2c_from_s)
+    v3_times = poll_times(first_s=v3_from_s)
     lines = []
     for table, indices, fields, polls, tagged in (
         ("interface", interfaces, FIELDS, v2c_times, tags),
         ("interface_v1", v1_interfaces, v1_fields, times, v1_tags or tags),
+        ("interface_v3", v3_interfaces, v3_fields, v3_times, v3_tags),
     ):
         for index in indices:
             for field in fields:
@@ -162,6 +182,11 @@ def good_export(
             uat.SNMP_UPTIME_SERIES,
             {"hostname": "rtr-core-01"},
             [(at, float(uptime(at))) for at in v2c_times],
+        )
+    )
+    lines.append(
+        export_line(
+            uat.SNMP_V3_UPTIME_SERIES, {}, [(at, float(v3_uptime(at))) for at in v3_times]
         )
     )
     return "\n".join(lines).encode()
@@ -191,6 +216,7 @@ def findings(
     export: bytes | None = None,
     walk: str | None = None,
     v1_walk: str | None = None,
+    v3_get: str = uat.SNMP_V3_GET_EXPECTED,
 ) -> list[str]:
     export = good_export() if export is None else export
     return uat.snmp_findings(
@@ -203,6 +229,7 @@ def findings(
         ENDED_S,
         v1_walk=v1_walked() if v1_walk is None else v1_walk,
         v1_golden=v1_golden(),
+        v3_get=v3_get,
     )
 
 
@@ -216,9 +243,11 @@ class SnmpFindingsTests(unittest.TestCase):
         samples = uat.parse_vm_export(good_export(), label="index")
         self.assertEqual(
             len(samples),
-            len(uat.SNMP_INTERFACES) * (len(FIELDS) + len(V1_FIELDS)) + 1,
+            len(uat.SNMP_INTERFACES) * (2 * len(FIELDS) + len(V1_FIELDS)) + 2,
         )
         self.assertIn((uat.SNMP_UPTIME_SERIES, ""), samples)
+        self.assertIn((uat.SNMP_V3_UPTIME_SERIES, ""), samples)
+        self.assertEqual(len(samples[("interface_v3_ifOperStatus", "4")]), len(poll_times()))
         self.assertEqual(len(samples[("interface_ifOperStatus", "4")]), len(poll_times()))
         self.assertEqual(len(samples[("interface_v1_ifOperStatus", "4")]), len(poll_times()))
         tags = uat.parse_vm_export_tags(good_export(), uat.SNMP_IF_NAME_TAG)
@@ -265,7 +294,7 @@ class SnmpFindingsTests(unittest.TestCase):
                 )
             )
         found = findings(export="\n".join(lines).encode())
-        self.assertEqual(len(found), 4, found)
+        self.assertEqual(len(found), 6, found)
         for line in found:
             self.assertIn('{index="3"}: 2 sample(s) within 30s', line)
 
@@ -389,6 +418,7 @@ class SnmpFindingsTests(unittest.TestCase):
             ENDED_S + 20,
             v1_walk=v1_walked(),
             v1_golden=v1_golden(),
+            v3_get=uat.SNMP_V3_GET_EXPECTED,
         )
         self.assertEqual(
             outside[-1],
@@ -462,11 +492,12 @@ class SnmpFindingsTests(unittest.TestCase):
             ENDED_S,
             v1_walk=v1_walked(),
             v1_golden=v1_golden(),
+            v3_get=uat.SNMP_V3_GET_EXPECTED,
         )
-        self.assertEqual(
-            len(found),
-            len(uat.SNMP_INTERFACE_SERIES + uat.SNMP_V1_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES),
+        tagged_series = (
+            uat.SNMP_INTERFACE_SERIES + uat.SNMP_V1_INTERFACE_SERIES + uat.SNMP_V3_INTERFACE_SERIES
         )
+        self.assertEqual(len(found), len(tagged_series) * len(uat.SNMP_INTERFACES))
         for line in found:
             self.assertIn("no sample tagged ifName=", line)
 
@@ -563,6 +594,132 @@ class SnmpFindingsTests(unittest.TestCase):
             ],
         )
 
+
+class SnmpV3FindingsTests(unittest.TestCase):
+    """The v3 input's evidence: its rows, its uptime, its errors and the
+    in-container SNMPv3 get. Each red case runs beside the good run, which
+    has none (SnmpFindingsTests.test_a_good_run_has_no_findings)."""
+
+    def test_the_good_run_has_v3_rows_and_a_v3_uptime(self) -> None:
+        samples = uat.parse_vm_export(good_export(), label="index")
+        for series in uat.SNMP_V3_INTERFACE_SERIES:
+            for index in uat.SNMP_INTERFACES:
+                self.assertTrue(samples.get((series, index)), (series, index))
+        self.assertGreaterEqual(len(samples[(uat.SNMP_V3_UPTIME_SERIES, "")]), uat.SNMP_MIN_SAMPLES)
+        self.assertEqual(findings(), [])
+
+    def test_a_missing_interface_v3_row_is_named(self) -> None:
+        found = findings(export=good_export(v3_interfaces=("1", "2", "3")))
+        self.assertEqual(
+            found,
+            [
+                f'{series}{{index="4"}}: 0 sample(s) within 30s of the first sample, want >= 3'
+                for series in uat.SNMP_V3_INTERFACE_SERIES
+            ],
+        )
+
+    def test_no_interface_v3_rows_at_all_are_named(self) -> None:
+        found = findings(export=good_export(v3_interfaces=()))
+        self.assertEqual(len(found), len(uat.SNMP_V3_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES))
+        self.assertTrue(all(line.startswith("interface_v3_") for line in found), found)
+
+    def test_a_v3_row_lacking_if_oper_status_is_named(self) -> None:
+        found = findings(export=good_export(v3_fields=("ifHCInOctets", "ifInErrors")))
+        self.assertEqual(
+            found,
+            [
+                f'interface_v3_ifOperStatus{{index="{index}"}}: 0 sample(s) within 30s '
+                "of the first sample, want >= 3"
+                for index in uat.SNMP_INTERFACES
+            ],
+        )
+
+    def test_v3_rows_without_the_if_name_tag_are_named(self) -> None:
+        found = findings(export=good_export(v3_tags=lambda index: {}))
+        self.assertEqual(len(found), 2 * len(uat.SNMP_V3_INTERFACE_SERIES) * len(uat.SNMP_INTERFACES))
+        self.assertIn(
+            'interface_v3_ifOperStatus{index="2"}: no sample tagged ifName="GigabitEthernet0/0/1"',
+            found,
+        )
+
+    def test_too_few_v3_uptime_samples_are_named(self) -> None:
+        lines = [
+            line
+            for line in good_export().decode().splitlines()
+            if uat.SNMP_V3_UPTIME_SERIES not in line
+        ]
+        self.assertEqual(len(lines), len(good_export().decode().splitlines()) - 1)
+        lines.append(export_line(uat.SNMP_V3_UPTIME_SERIES, {}, [(FIRST_POLL_S, 100.0)]))
+        self.assertEqual(
+            findings(export="\n".join(lines).encode()),
+            ["snmp_v3_uptime: 1 sample(s), want >= 3"],
+        )
+
+    def test_a_flat_v3_uptime_is_named(self) -> None:
+        found = findings(export=good_export(v3_uptime=lambda _: 42))
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].startswith("snmp_v3_uptime did not increase: 42 then 42"), found)
+
+    def test_a_v3_error_before_its_own_first_sample_is_excused(self) -> None:
+        export = good_export(v3_from_s=FIRST_POLL_S + 4)
+        error = refused_v3(FIRST_POLL_S + 3)
+        self.assertEqual(findings(log=good_log() + error, export=export), [])
+        # Guard: the same moment is not excused for the v2c input.
+        late_v2c = refused(FIRST_POLL_S + 3)
+        self.assertEqual(
+            findings(log=good_log() + late_v2c, export=export),
+            [f"telegraf logged an error while sonda served: {late_v2c.strip()}"],
+        )
+
+    def test_a_v3_error_after_its_own_first_sample_is_named(self) -> None:
+        export = good_export(v3_from_s=FIRST_POLL_S + 4)
+        error = refused_v3(FIRST_POLL_S + 5)
+        self.assertEqual(
+            findings(log=good_log() + error, export=export),
+            [f"telegraf logged an error while sonda served: {error.strip()}"],
+        )
+
+    def test_every_v3_series_belongs_to_the_v3_input(self) -> None:
+        for series in uat.SNMP_V3_INTERFACE_SERIES + (uat.SNMP_V3_UPTIME_SERIES,):
+            self.assertEqual(uat.snmp_input_of(series), uat.SNMP_V3_INPUT, series)
+        self.assertEqual(uat.snmp_input_of(uat.SNMP_UPTIME_SERIES), uat.SNMP_V2C_INPUT)
+
+    def test_a_failed_v3_get_is_named(self) -> None:
+        failure = "snmpget: Authentication failure (incorrect password, community or key)\n"
+        self.assertEqual(
+            findings(v3_get=failure),
+            [
+                "the in-container snmpget -v3 printed 'snmpget: Authentication failure "
+                "(incorrect password, community or key)', want "
+                "'.1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"'"
+            ],
+        )
+
+    def test_a_v3_get_of_another_name_is_named(self) -> None:
+        found = findings(v3_get='.1.3.6.1.2.1.1.5.0 = STRING: "rtr-2"\n')
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("printed '.1.3.6.1.2.1.1.5.0 = STRING: \"rtr-2\"'", found[0])
+
+    def test_an_empty_v3_get_is_named(self) -> None:
+        self.assertEqual(findings(v3_get=""), ["the in-container snmpget -v3 printed nothing"])
+
+    def test_the_v3_findings_come_after_the_v1_ones_and_before_the_walks(self) -> None:
+        found = findings(
+            export=good_export(v1_interfaces=("1", "2", "3"), v3_interfaces=("1", "2", "3")),
+            walk="",
+            v3_get="",
+        )
+        self.assertEqual(
+            [line.split(":")[0].split("{")[0] for line in found],
+            [
+                "interface_v1_ifOperStatus",
+                "interface_v1_ifInErrors",
+                "interface_v3_ifHCInOctets",
+                "interface_v3_ifOperStatus",
+                "the in-container walk printed nothing",
+                "the in-container snmpget -v3 printed nothing",
+            ],
+        )
 
 class MaskTests(unittest.TestCase):
     def test_moving_values_are_masked_and_the_rest_kept(self) -> None:
@@ -675,7 +832,7 @@ def telegraf_conf() -> dict:
 class TelegrafConfTests(unittest.TestCase):
     def test_telegraf_polls_the_agent_and_tags_its_host_as_source(self) -> None:
         conf = telegraf_conf()
-        snmp, _ = conf["inputs"]["snmp"]
+        snmp, _, _ = conf["inputs"]["snmp"]
         self.assertEqual(snmp["agents"], ["udp://sonda:1161"])
         self.assertEqual(snmp["version"], 2)
         self.assertEqual(snmp["community"], "public")
@@ -690,23 +847,28 @@ class TelegrafConfTests(unittest.TestCase):
             for snmp in telegraf_conf()["inputs"]["snmp"]
             for field in snmp.get("field", []) + [f for table in snmp["table"] for f in table["field"]]
         ]
-        self.assertEqual(len(fields), 16)
+        self.assertEqual(len(fields), 24)
         for field in fields:
             self.assertRegex(field["oid"], r"^(\.[0-9]+)+$", field["name"])
 
     def test_each_block_has_the_alias_the_checker_attributes_errors_by(self) -> None:
-        v2c, v1 = telegraf_conf()["inputs"]["snmp"]
-        self.assertEqual((v2c["alias"], v1["alias"]), (uat.SNMP_V2C_INPUT, uat.SNMP_V1_INPUT))
+        v2c, v1, v3 = telegraf_conf()["inputs"]["snmp"]
+        self.assertEqual(
+            (v2c["alias"], v1["alias"], v3["alias"]),
+            (uat.SNMP_V2C_INPUT, uat.SNMP_V1_INPUT, uat.SNMP_V3_INPUT),
+        )
         self.assertEqual(v2c["version"], 2)
         (table,) = v1["table"]
         self.assertEqual(f"{table['name']}_", uat.SNMP_V1_SERIES_PREFIX)
-        for alias in (uat.SNMP_V2C_INPUT, uat.SNMP_V1_INPUT):
+        (table,) = v3["table"]
+        self.assertEqual(f"{table['name']}_", uat.SNMP_V3_SERIES_PREFIX)
+        for alias in (uat.SNMP_V2C_INPUT, uat.SNMP_V1_INPUT, uat.SNMP_V3_INPUT):
             match = uat.SNMP_ERROR_LINE.search(f"E! [inputs.snmp::{alias}] Error in plugin: x")
             self.assertIsNotNone(match, alias)
             self.assertEqual(match.group("alias"), alias)
 
     def test_the_v1_block_polls_the_same_table_as_v1(self) -> None:
-        v2c, v1 = telegraf_conf()["inputs"]["snmp"]
+        v2c, v1, _ = telegraf_conf()["inputs"]["snmp"]
         self.assertEqual(v1["version"], 1)
         for key in ("agents", "community", "agent_host_tag"):
             self.assertEqual(v1[key], v2c[key], key)
@@ -722,7 +884,7 @@ class TelegrafConfTests(unittest.TestCase):
             self.assertIn(series.removeprefix("interface_v1_"), polled)
 
     def test_the_interface_table_polls_the_columns_the_pack_hints(self) -> None:
-        snmp, _ = telegraf_conf()["inputs"]["snmp"]
+        snmp, _, _ = telegraf_conf()["inputs"]["snmp"]
         (table,) = snmp["table"]
         self.assertEqual(table["name"], "interface")
         self.assertIs(table["index_as_tag"], True)
@@ -737,6 +899,51 @@ class TelegrafConfTests(unittest.TestCase):
         self.assertIn(uat.SNMP_IF_NAME_TAG, tags)
         uptime = {f["name"]: f["oid"] for f in snmp["field"]}
         self.assertEqual(uptime["uptime"], ".1.3.6.1.2.1.1.3.0")
+
+    def test_the_v3_block_polls_the_same_table_over_v3_as_the_examples_user(self) -> None:
+        v2c, _, v3 = telegraf_conf()["inputs"]["snmp"]
+        self.assertEqual(v3["version"], 3)
+        self.assertEqual(
+            (v3["sec_level"], v3["sec_name"], v3["auth_protocol"], v3["auth_password"]),
+            ("authNoPriv", uat.SNMP_V3_USER, "SHA256", uat.SNMP_V3_AUTH_PASSWORD),
+        )
+        for key in ("agents", "agent_host_tag", "max_repetitions"):
+            self.assertEqual(v3[key], v2c[key], key)
+        self.assertNotIn("community", v3)
+        self.assertNotIn("priv_protocol", v3)
+        self.assertEqual(f"{v3['name']}_uptime", uat.SNMP_V3_UPTIME_SERIES)
+        self.assertEqual({f["name"]: f["oid"] for f in v3["field"]}, {"uptime": ".1.3.6.1.2.1.1.3.0"})
+        (table,) = v3["table"]
+        (v2c_table,) = v2c["table"]
+        self.assertEqual(table["name"], "interface_v3")
+        self.assertIs(table["index_as_tag"], True)
+        self.assertEqual(table["field"], v2c_table["field"])
+        polled = {f["name"] for f in table["field"]}
+        for series in uat.SNMP_V3_INTERFACE_SERIES:
+            self.assertIn(series.removeprefix(uat.SNMP_V3_SERIES_PREFIX), polled)
+
+    def test_the_example_serves_the_v3_user_the_conf_and_the_get_use(self) -> None:
+        import yaml
+
+        example = yaml.safe_load((REPO_ROOT / "examples/snmp-telegraf.yaml").read_text())
+        sink = example["defaults"]["sink"]
+        self.assertEqual(sink["versions"], ["v1", "v2c", "v3"])
+        (user,) = sink["users"]
+        self.assertEqual(
+            user,
+            {
+                "name": uat.SNMP_V3_USER,
+                "auth": {"protocol": "sha256", "password": uat.SNMP_V3_AUTH_PASSWORD},
+            },
+        )
+        self.assertEqual(sink["system"]["name"], "rtr-core-01")
+        self.assertIn('STRING: "rtr-core-01"', uat.SNMP_V3_GET_EXPECTED)
+        command = uat.SNMP_V3_GET_COMMAND
+        self.assertEqual(
+            (command[command.index("-u") + 1], command[command.index("-A") + 1]),
+            (uat.SNMP_V3_USER, uat.SNMP_V3_AUTH_PASSWORD),
+        )
+        self.assertEqual(command[command.index("-a") + 1], "SHA-256")
 
     def test_the_health_output_is_the_backend_the_harness_waits_for(self) -> None:
         (health,) = telegraf_conf()["outputs"]["health"]
@@ -780,7 +987,9 @@ class VerifySnmpRowTests(unittest.TestCase):
                     REPO_ROOT,
                     STARTED_S,
                     ENDED_S,
-                    during=uat.SnmpWalks(v2c=walked(), v1=v1_walked()),
+                    during=uat.SnmpWalks(
+                        v2c=walked(), v1=v1_walked(), v3_get=uat.SNMP_V3_GET_EXPECTED
+                    ),
                 ),
                 "",
             )
@@ -799,10 +1008,11 @@ class VerifySnmpRowTests(unittest.TestCase):
             self.assertEqual(
                 uat.verify_snmp_row(REPO_ROOT, STARTED_S, ENDED_S),
                 "the in-container walk printed nothing\n"
-                "the in-container v1 walk printed nothing",
+                "the in-container v1 walk printed nothing\n"
+                "the in-container snmpget -v3 printed nothing",
             )
 
-    def test_a_failed_hook_stands_for_both_walks(self) -> None:
+    def test_a_failed_hook_stands_for_both_walks_and_the_get(self) -> None:
         with mock.patch.object(uat, "http_get", return_value=(200, good_export())), mock.patch.object(
             uat, "compose_logs_tail", return_value=good_log()
         ):
@@ -811,11 +1021,20 @@ class VerifySnmpRowTests(unittest.TestCase):
             )
         found = [line for line in failure.splitlines() if line.startswith("the in-container")]
         self.assertEqual(
-            [line.split(" from ")[0] for line in found],
-            ["the in-container walk differs", "the in-container v1 walk differs"],
+            [line.split(" from ")[0].split(" printed ")[0] for line in found],
+            [
+                "the in-container walk differs",
+                "the in-container v1 walk differs",
+                "the in-container snmpget -v3",
+            ],
             failure,
         )
         self.assertIn("+<the during hook raised boom>", failure)
+        self.assertEqual(
+            failure.splitlines()[-1],
+            "the in-container snmpget -v3 printed '<the during hook raised boom>', want "
+            "'.1.3.6.1.2.1.1.5.0 = STRING: \"rtr-core-01\"'",
+        )
 
     def test_an_export_error_is_reported(self) -> None:
         with mock.patch.object(uat, "http_get", return_value=(503, b"busy")), mock.patch.object(
@@ -1010,22 +1229,30 @@ class WalkSnmpVersionsTests(unittest.TestCase):
 
         return run
 
-    def test_it_walks_over_v2c_then_v1_inside_the_telegraf_snmp_service(self) -> None:
+    def test_it_walks_over_v2c_then_v1_then_gets_over_v3_inside_the_telegraf_snmp_service(self) -> None:
         argvs: list[list[str]] = []
         clock = Clock()
         walks = uat.walk_snmp_versions(
             REPO_ROOT,
-            run=self.runner([(0, walked(), ""), (0, v1_walked(), "")], argvs),
+            run=self.runner(
+                [(0, walked(), ""), (0, v1_walked(), ""), (0, uat.SNMP_V3_GET_EXPECTED, "")], argvs
+            ),
             now=clock.now,
             sleep=clock.sleep,
         )
-        self.assertEqual(walks, uat.SnmpWalks(v2c=walked(), v1=v1_walked()))
-        self.assertEqual([argv[4:9] for argv in argvs], [["exec", "-T", "-e", "MIBS=", "telegraf-snmp"]] * 2)
+        self.assertEqual(
+            walks, uat.SnmpWalks(v2c=walked(), v1=v1_walked(), v3_get=uat.SNMP_V3_GET_EXPECTED)
+        )
+        self.assertEqual([argv[4:9] for argv in argvs], [["exec", "-T", "-e", "MIBS=", "telegraf-snmp"]] * 3)
         self.assertEqual(
             [argv[9:] for argv in argvs],
             [
                 ["snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
                 ["snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
+                [
+                    "snmpget", "-v3", "-l", "authNoPriv", "-u", "telegraf", "-a", "SHA-256",
+                    "-A", "lab-only-v3-password", "-On", "sonda:1161", "1.3.6.1.2.1.1.5.0",
+                ],
             ],
         )
         self.assertEqual(clock.slept, [])
@@ -1035,15 +1262,46 @@ class WalkSnmpVersionsTests(unittest.TestCase):
         clock = Clock()
         walks = uat.walk_snmp_versions(
             REPO_ROOT,
-            run=self.runner([(0, walked(), ""), (0, walked(), ""), (0, v1_walked(), "")], argvs),
+            run=self.runner(
+                [
+                    (0, walked(), ""),
+                    (0, walked(), ""),
+                    (0, v1_walked(), ""),
+                    (0, uat.SNMP_V3_GET_EXPECTED, ""),
+                ],
+                argvs,
+            ),
             now=clock.now,
             sleep=clock.sleep,
         )
         self.assertEqual(walks.v1, v1_walked())
-        self.assertEqual(len(argvs), 3)
+        self.assertEqual(len(argvs), 4)
         self.assertEqual(clock.slept, [1.0])
 
-    def test_both_walks_share_one_window(self) -> None:
+    def test_the_v3_get_retries_until_it_prints_the_system_name(self) -> None:
+        argvs: list[list[str]] = []
+        clock = Clock()
+        failure = "snmpget: Authentication failure (incorrect password, community or key)\n"
+        walks = uat.walk_snmp_versions(
+            REPO_ROOT,
+            run=self.runner(
+                [
+                    (0, walked(), ""),
+                    (0, v1_walked(), ""),
+                    (1, "", failure),
+                    (0, '.1.3.6.1.2.1.1.5.0 = STRING: ""\n', ""),
+                    (0, uat.SNMP_V3_GET_EXPECTED, ""),
+                ],
+                argvs,
+            ),
+            now=clock.now,
+            sleep=clock.sleep,
+        )
+        self.assertEqual(walks.v3_get, uat.SNMP_V3_GET_EXPECTED)
+        self.assertEqual([argv[9] for argv in argvs], ["snmpbulkwalk", "snmpwalk"] + ["snmpget"] * 3)
+        self.assertEqual(clock.slept, [1.0, 1.0])
+
+    def test_all_three_share_one_window(self) -> None:
         argvs: list[list[str]] = []
         clock = Clock()
         timeout = "Timeout: No Response from sonda:1161\n"
@@ -1054,13 +1312,15 @@ class WalkSnmpVersionsTests(unittest.TestCase):
             now=clock.now,
             sleep=clock.sleep,
         )
-        self.assertEqual(walks, uat.SnmpWalks(v2c=timeout, v1=timeout))
+        self.assertEqual(walks, uat.SnmpWalks(v2c=timeout, v1=timeout, v3_get=timeout))
         # Each attempt takes 4 s and each retry waits 1 s: the v2c walk
         # attempts at 0, 5 and 10 s and gives up at 14 s, past the window,
-        # so the v1 walk has its one-second floor and gives up after its
-        # first attempt, at 18 s.
-        self.assertEqual([argv[9] for argv in argvs], ["snmpbulkwalk"] * 3 + ["snmpwalk"])
-        self.assertEqual(clock.now_s, 18.0)
+        # so the v1 walk and the v3 get each have the one-second floor and
+        # give up after their first attempt, at 18 and 22 s.
+        self.assertEqual(
+            [argv[9] for argv in argvs], ["snmpbulkwalk"] * 3 + ["snmpwalk", "snmpget"]
+        )
+        self.assertEqual(clock.now_s, 22.0)
 
 
 if __name__ == "__main__":

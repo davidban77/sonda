@@ -26,6 +26,7 @@
 pub(crate) mod ber;
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod oid;
+pub(crate) mod v3;
 pub mod value;
 
 pub use value::SnmpValueType;
