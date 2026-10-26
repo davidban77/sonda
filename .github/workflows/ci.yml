@@ -601,12 +601,11 @@ jobs:
     # reaching a shell, and a moving tag resolving to the wrong release.
     # Cheap enough to run on every PR, so they do.
     #
-    # No step here touches the network but the pinned pytest install. A
-    # floor-staleness probe used to, and it did its job: it went red on
-    # v1.21.0, the release that shipped `--alertmanager-url` and so made the
-    # constant a settled fact. With nothing left to ask it would have
-    # reddened every future PR in the repo, so it was removed rather than
-    # muted.
+    # No step here touches the network. A floor-staleness probe used to,
+    # and it did its job: it went red on v1.21.0, the release that shipped
+    # `--alertmanager-url` and so made the constant a settled fact. With
+    # nothing left to ask it would have reddened every future PR in the
+    # repo, so it was removed rather than muted.
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -635,12 +634,13 @@ jobs:
           python3 scripts/check_compose_features.py
 
       # The live-UAT harness's checker, Telegraf-conf and compose-override
-      # tests. The runner image has no pytest, so the step installs it.
-      # pytest exits 5 when it collects nothing, which fails the step.
+      # tests: the same unittest.TestCase suites pytest runs locally. unittest
+      # exits 5 when discovery collects nothing only from Python 3.12; on 3.11
+      # an empty discovery exits 0, so the first line fails an older python3.
       - name: Live-UAT harness tests
         run: |
-          python3 -m pip install pytest==9.1.1
-          python3 -m pytest scripts/tests
+          python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'
+          python3 -m unittest discover -s scripts/tests -v
 
       - name: Live-UAT harness self-test
         run: python3 scripts/live_infra_uat.py --self-test
