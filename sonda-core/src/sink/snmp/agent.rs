@@ -91,9 +91,10 @@ pub(crate) enum Lookup {
 /// An SNMPv3 message to an agent serving SNMPv3 is checked for its shape,
 /// then by the User-based Security Model in this order: its engine ID, its
 /// privacy flag, its user, its security level, its digest, its time window.
-/// The first check it fails is counted under the `usm_` counter of the
-/// `Report` it is answered with; a message that passes is answered and
-/// counted under its PDU type.
+/// The first check it fails is counted under that check's `usm_` counter,
+/// and the message is answered with that check's `Report` only when it is
+/// reportable: one that is not reportable is counted, not answered. A
+/// message that passes is answered and counted under its PDU type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RequestCounters {
@@ -129,20 +130,21 @@ pub struct RequestCounters {
     /// Requests answered as SNMPv3, also counted under their PDU type.
     pub v3: u64,
     /// SNMPv3 messages whose engine ID was empty (discovery) or not the
-    /// agent's, answered with a `usmStatsUnknownEngineIDs` report.
+    /// agent's. A reportable one is answered with a
+    /// `usmStatsUnknownEngineIDs` report.
     pub usm_unknown_engine_ids: u64,
-    /// SNMPv3 messages from a user the agent does not have, answered with a
-    /// `usmStatsUnknownUserNames` report.
+    /// SNMPv3 messages from a user the agent does not have. A reportable one
+    /// is answered with a `usmStatsUnknownUserNames` report.
     pub usm_unknown_user_names: u64,
     /// SNMPv3 messages asking for privacy, or for a security level other
-    /// than their user's, answered with a `usmStatsUnsupportedSecLevels`
-    /// report.
+    /// than their user's. A reportable one is answered with a
+    /// `usmStatsUnsupportedSecLevels` report.
     pub usm_unsupported_sec_levels: u64,
-    /// SNMPv3 messages whose digest was not their user's, answered with a
-    /// `usmStatsWrongDigests` report.
+    /// SNMPv3 messages whose digest was not their user's. A reportable one
+    /// is answered with a `usmStatsWrongDigests` report.
     pub usm_wrong_digests: u64,
-    /// Authenticated SNMPv3 messages outside the agent's time window,
-    /// answered with a `usmStatsNotInTimeWindows` report.
+    /// Authenticated SNMPv3 messages outside the agent's time window. A
+    /// reportable one is answered with a `usmStatsNotInTimeWindows` report.
     pub usm_not_in_time_windows: u64,
 }
 

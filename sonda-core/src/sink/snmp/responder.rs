@@ -4043,12 +4043,16 @@ mod tests {
             "{} of {full}",
             reply.varbinds.len()
         );
-        // One more varbind would not have fitted.
-        let next = reply.varbinds.len();
+        // The next instance would not have fitted: appending its VarBind
+        // adds at least its own length to the message.
+        let last = reply.varbinds.last().expect("a varbind");
+        let (last, _) = last.split_once(" = ").expect("name = value");
+        let (next, varbind) = agent.next_after(&oid(last)).expect("an instance after it");
         assert!(
-            trimmed.len() + 16 > 484,
-            "{} bytes after {next} varbinds",
-            trimmed.len()
+            trimmed.len() + varbind.len() > 484,
+            "{} bytes, then {next} in {} more",
+            trimmed.len(),
+            varbind.len()
         );
     }
 

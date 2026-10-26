@@ -146,9 +146,11 @@ pub struct SnmpAgentConfig {
     pub users: Vec<UsmUser>,
     /// The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as
     /// `"80001f8804736f6e6461"`; a leading `0x` is allowed. A string; a YAML
-    /// number is an error. Default: derived from `listen` (net-snmp's
-    /// enterprise prefix `80001f88`, format `04`, then the text
-    /// `sonda:<listen>` cut to 27 octets), so it is the same on every run.
+    /// number is an error. Default: derived from the address the agent binds
+    /// (net-snmp's enterprise prefix `80001f88`, format `04`, then the text
+    /// `sonda:<bound address>` cut to 27 octets; a `listen` on port 0 gives
+    /// the port it was bound to), so an agent on a fixed address has the same
+    /// one on every run.
     #[cfg_attr(
         feature = "config",
         serde(
@@ -877,10 +879,10 @@ fn parse_engine_id(text: &str) -> Result<Vec<u8>, SondaError> {
     Ok(octets)
 }
 
-/// The engine ID of an agent bound to `listen` without a configured one:
-/// [`DERIVED_ENGINE_ID_PREFIX`], then `sonda:<listen>` cut to 27 octets.
-pub(crate) fn derived_engine_id(listen: SocketAddr) -> Vec<u8> {
-    let text = format!("sonda:{listen}");
+/// The engine ID of an agent bound to `bound` without a configured one:
+/// [`DERIVED_ENGINE_ID_PREFIX`], then `sonda:<bound>` cut to 27 octets.
+pub(crate) fn derived_engine_id(bound: SocketAddr) -> Vec<u8> {
+    let text = format!("sonda:{bound}");
     let room = MAX_ENGINE_ID - DERIVED_ENGINE_ID_PREFIX.len();
     let mut id = DERIVED_ENGINE_ID_PREFIX.to_vec();
     id.extend_from_slice(&text.as_bytes()[..text.len().min(room)]);
