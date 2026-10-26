@@ -31,9 +31,11 @@ import json
 import math
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -107,7 +109,11 @@ class MatrixRow:
     # Called with repo_root on a thread while the sonda run is in flight;
     # what it returns reaches post_verify as its `during` keyword. For
     # evidence only a running sonda can give.
-    during: Callable[[Path], object] | None = None
+    during: Callable[..., object] | None = None
+    # When set, sonda runs as a SondaRun and the during hook is also given
+    # it, as `sonda=`, to stop and start again; the run ends when the last
+    # sonda it started exits.
+    during_gets_sonda: bool = False
 
 
 @dataclasses.dataclass
@@ -378,8 +384,26 @@ def verify_gnmi_row(
 
 # --- SNMP row checks ---------------------------------------------------------
 
-# How long the snmp row's `sonda run` serves (its --duration).
-SNMP_RUN_S = 90.0
+# How long the snmp row's `sonda run` serves in all (its --duration): the
+# restart below, then long enough after it for the series to resume.
+SNMP_RUN_S = 210.0
+# When the snmp row's during hook stops sonda, from the run's start, and how
+# long it stays stopped before the hook starts it again. Past the 150 s time
+# window: Telegraf's v3 input keeps the engine time of the last response it
+# read, about this far ahead of the restarted agent's clock, so its first
+# request after the restart is answered usmStatsNotInTimeWindows.
+SNMP_RESTART_AT_S = 160.0
+SNMP_RESTART_DOWN_S = 3.0
+# Each interface_v3 series has a sample this soon after the restart.
+SNMP_RESUME_WITHIN_S = 30.0
+# What gosnmp logs, at trace level through Telegraf's v3 input, when a
+# request is answered usmStatsNotInTimeWindows (it re-synchronizes and asks
+# again), and when one is answered usmStatsUnknownEngineIDs after the first
+# discovery (the engine ID changed).
+SNMP_TIME_WINDOW_LINE = "WARNING detected out-of-time-window ERROR"
+SNMP_REDISCOVERY_LINE = "WARNING detected unknown engine id ERROR"
+# Telegraf's trace lines of the v3 input.
+SNMP_V3_TRACE_LINE = re.compile(r"T! \[inputs\.snmp::v3\]")
 # Telegraf's startup line naming the inputs it loaded.
 SNMP_LOADED_INPUTS = "Loaded inputs:"
 # Every error Telegraf's inputs.snmp logs begins "E! [inputs.snmp]", or
@@ -435,14 +459,21 @@ SNMP_V1_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf-v1.walk")
 SNMP_V1_WALK_COMMAND = (
     "snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
 )
-# The example's SNMPv3 user and the conf's v3 block: an in-container
-# snmpget over SNMPv3 at authNoPriv (net-snmp, where Telegraf is gosnmp) of
-# sysName.0, and what it prints.
+# The example's SNMPv3 users: the conf's v3 block reads as telegraf at
+# authPriv; monitor reads at authNoPriv. In-container snmpgets of sysName.0
+# (net-snmp, where Telegraf is gosnmp) as each, and what both print.
 SNMP_V3_USER = "telegraf"
 SNMP_V3_AUTH_PASSWORD = "lab-only-v3-password"
+SNMP_V3_PRIV_PASSWORD = "lab-only-v3-privacy"
+SNMP_V3_AUTH_ONLY_USER = "monitor"
 SNMP_V3_GET_COMMAND = (
-    "snmpget", "-v3", "-l", "authNoPriv", "-u", SNMP_V3_USER, "-a", "SHA-256",
+    "snmpget", "-v3", "-l", "authNoPriv", "-u", SNMP_V3_AUTH_ONLY_USER, "-a", "SHA-256",
     "-A", SNMP_V3_AUTH_PASSWORD, "-On", "sonda:1161", "1.3.6.1.2.1.1.5.0",
+)
+SNMP_V3_PRIV_GET_COMMAND = (
+    "snmpget", "-v3", "-l", "authPriv", "-u", SNMP_V3_USER, "-a", "SHA-256",
+    "-A", SNMP_V3_AUTH_PASSWORD, "-x", "AES", "-X", SNMP_V3_PRIV_PASSWORD,
+    "-On", "sonda:1161", "1.3.6.1.2.1.1.5.0",
 )
 SNMP_V3_GET_EXPECTED = '.1.3.6.1.2.1.1.5.0 = STRING: "rtr-core-01"\n'
 # How long walk_snmp_versions retries both walks and the SNMPv3 get before
@@ -534,14 +565,16 @@ def net_snmp_in_container(
 
 @dataclasses.dataclass(frozen=True)
 class SnmpWalks:
-    """The snmp row's two in-container walks and its SNMPv3 get."""
+    """The snmp row's two in-container walks and its two SNMPv3 gets."""
 
     # SNMP_WALK_COMMAND's output.
     v2c: str
     # SNMP_V1_WALK_COMMAND's output.
     v1: str
-    # SNMP_V3_GET_COMMAND's output.
+    # SNMP_V3_GET_COMMAND's output (authNoPriv).
     v3_get: str
+    # SNMP_V3_PRIV_GET_COMMAND's output (authPriv).
+    v3_priv_get: str
 
 
 def walk_snmp_versions(
@@ -553,10 +586,10 @@ def walk_snmp_versions(
     sleep: Callable[[float], None] = time.sleep,
 ) -> SnmpWalks:
     """:func:`walk_snmp_agent` over SNMPv2c against SNMP_WALK_GOLDEN, then
-    over SNMPv1 against SNMP_V1_WALK_GOLDEN, then SNMP_V3_GET_COMMAND until
-    it prints SNMP_V3_GET_EXPECTED, each after the first with what is left
-    of ``within_s`` (at least a second), so all three finish within one
-    window."""
+    over SNMPv1 against SNMP_V1_WALK_GOLDEN, then SNMP_V3_GET_COMMAND and
+    SNMP_V3_PRIV_GET_COMMAND each until it prints SNMP_V3_GET_EXPECTED, each
+    after the first with what is left of ``within_s`` (at least a second),
+    so all four finish within one window."""
     deadline = now() + within_s
     v2c = walk_snmp_agent(repo_root, within_s=within_s, run=run, now=now, sleep=sleep)
     v1 = walk_snmp_agent(
@@ -568,17 +601,165 @@ def walk_snmp_versions(
         now=now,
         sleep=sleep,
     )
-    v3_get = net_snmp_in_container(
-        repo_root,
-        SNMP_V3_GET_COMMAND,
-        lambda stdout: stdout == SNMP_V3_GET_EXPECTED,
-        what="snmpget -v3",
-        within_s=max(deadline - now(), 1.0),
-        run=run,
-        now=now,
-        sleep=sleep,
+    v3_get, v3_priv_get = (
+        net_snmp_in_container(
+            repo_root,
+            command,
+            lambda stdout: stdout == SNMP_V3_GET_EXPECTED,
+            what="snmpget -v3",
+            within_s=max(deadline - now(), 1.0),
+            run=run,
+            now=now,
+            sleep=sleep,
+        )
+        for command in (SNMP_V3_GET_COMMAND, SNMP_V3_PRIV_GET_COMMAND)
     )
-    return SnmpWalks(v2c=v2c, v1=v1, v3_get=v3_get)
+    return SnmpWalks(v2c=v2c, v1=v1, v3_get=v3_get, v3_priv_get=v3_priv_get)
+
+
+@dataclasses.dataclass(frozen=True)
+class SnmpRestart:
+    """When the snmp row's during hook stopped sonda and started it again,
+    in seconds since the epoch."""
+
+    stopped_s: float
+    restarted_s: float
+
+
+@dataclasses.dataclass(frozen=True)
+class SnmpEvidence:
+    """What the snmp row's during hook returns: the walks and gets, and the
+    restart, or why there was none."""
+
+    walks: SnmpWalks
+    restart: SnmpRestart | str
+
+
+class SondaRun:
+    """A ``sonda`` run as a child of the harness, which a during hook can
+    stop and start again: :meth:`start` runs ``argv``, :meth:`restart` stops
+    it with SIGINT (sonda's graceful stop) and runs it again for what is
+    left of ``run_s`` (its ``--duration`` rewritten), and :meth:`wait`
+    returns once the run that is current when one exits is the last one.
+    Each run's output goes to temporary files, read back when it ends."""
+
+    def __init__(
+        self,
+        argv: Sequence[str],
+        cwd: Path,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        wall: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+        popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    ) -> None:
+        self.argv = list(argv)
+        self.cwd = cwd
+        self._now, self._wall, self._sleep, self._popen = now, wall, sleep, popen
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._files: tuple = ()
+        self._stdout: list[str] = []
+        self._stderr: list[str] = []
+        self.started = 0.0
+
+    def _spawn(self, argv: Sequence[str]) -> None:
+        stdout = tempfile.TemporaryFile(mode="w+")
+        stderr = tempfile.TemporaryFile(mode="w+")
+        self._files = (stdout, stderr)
+        self._proc = self._popen(
+            list(argv), stdout=stdout, stderr=stderr, text=True, cwd=str(self.cwd)
+        )
+
+    def _collect(self) -> None:
+        for file, sink in zip(self._files, (self._stdout, self._stderr)):
+            file.seek(0)
+            sink.append(file.read())
+            file.close()
+        self._files = ()
+
+    def start(self) -> None:
+        """Run ``argv``."""
+        self.started = self._now()
+        self._spawn(self.argv)
+
+    def restart(self, down_s: float, run_s: float) -> SnmpRestart:
+        """Stop the current run with SIGINT, wait ``down_s``, and run
+        ``argv`` again with ``--duration`` what is left of ``run_s`` since
+        :meth:`start`. Raises RuntimeError, starting nothing, when the run
+        had already exited or does not exit 0 within 30 s of the signal."""
+        with self._lock:
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                code = None if proc is None else proc.returncode
+                raise RuntimeError(f"sonda exited ({code}) before the restart")
+            proc.send_signal(signal.SIGINT)
+            try:
+                code = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("sonda did not stop within 30s of SIGINT") from None
+            stopped_s = self._wall()
+            self._collect()
+            if code != 0:
+                raise RuntimeError(f"sonda exited {code} on SIGINT")
+            self._sleep(down_s)
+            left_s = max(run_s - (self._now() - self.started), 1.0)
+            argv = list(self.argv)
+            argv[argv.index("--duration") + 1] = f"{left_s:.0f}s"
+            self._spawn(argv)
+            return SnmpRestart(stopped_s=stopped_s, restarted_s=self._wall())
+
+    def wait(self, timeout_s: float) -> subprocess.CompletedProcess[str]:
+        """Wait for the last run to exit, at most ``timeout_s`` from now;
+        its exit code and every run's output. On a timeout the current run
+        is killed and subprocess.TimeoutExpired raised."""
+        deadline = self._now() + timeout_s
+        while True:
+            with self._lock:
+                proc = self._proc
+            assert proc is not None, "start() first"
+            try:
+                proc.wait(timeout=max(deadline - self._now(), 0.0))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise
+            with self._lock:
+                if self._proc is proc:
+                    if self._files:
+                        self._collect()
+                    return subprocess.CompletedProcess(
+                        self.argv,
+                        proc.returncode,
+                        "".join(self._stdout),
+                        "".join(self._stderr),
+                    )
+
+
+def snmp_during(
+    repo_root: Path,
+    *,
+    sonda: SondaRun,
+    restart_at_s: float = SNMP_RESTART_AT_S,
+    down_s: float = SNMP_RESTART_DOWN_S,
+    run_s: float = SNMP_RUN_S,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> SnmpEvidence:
+    """The snmp row's during hook: :func:`walk_snmp_versions`, then, once
+    ``restart_at_s`` have passed since sonda started, ``sonda`` stopped and
+    started again ``down_s`` later (:meth:`SondaRun.restart`). A restart
+    that fails is returned as its reason."""
+    walks = walk_snmp_versions(repo_root, run=run, now=now, sleep=sleep)
+    sleep(max(sonda.started + restart_at_s - now(), 0.0))
+    try:
+        restart: SnmpRestart | str = sonda.restart(down_s, run_s)
+    except RuntimeError as e:
+        restart = f"<the restart failed: {e}>"
+    return SnmpEvidence(walks=walks, restart=restart)
 
 
 def walk_finding(walk: str, golden: str, name: str, golden_path: Path) -> str | None:
@@ -601,15 +782,15 @@ def walk_finding(walk: str, golden: str, name: str, golden_path: Path) -> str | 
     )
 
 
-def v3_get_finding(v3_get: str) -> str | None:
-    """Why the in-container SNMPv3 get did not print SNMP_V3_GET_EXPECTED;
-    None when it did."""
+def v3_get_finding(v3_get: str, name: str = "snmpget -v3") -> str | None:
+    """Why the in-container SNMPv3 get ``name`` did not print
+    SNMP_V3_GET_EXPECTED; None when it did."""
     if not v3_get.strip():
-        return "the in-container snmpget -v3 printed nothing"
+        return f"the in-container {name} printed nothing"
     if v3_get == SNMP_V3_GET_EXPECTED:
         return None
     return (
-        f"the in-container snmpget -v3 printed {v3_get.strip()!r}, want "
+        f"the in-container {name} printed {v3_get.strip()!r}, want "
         f"{SNMP_V3_GET_EXPECTED.strip()!r}"
     )
 
@@ -645,6 +826,8 @@ def snmp_findings(
     v1_walk: str,
     v1_golden: str,
     v3_get: str,
+    v3_priv_get: str,
+    restart: SnmpRestart | str,
 ) -> list[str]:
     """Every way the snmp row's evidence falls short, in check order; empty
     when all hold.
@@ -659,7 +842,9 @@ def snmp_findings(
     succeeds begins, and a sample is stamped when its poll begins; the two
     inputs poll independently, so one input's first sample says nothing
     about the other's polls; an error in the second the run ended may be the
-    first poll after sonda stopped). An error's input is the alias in its
+    first poll after sonda stopped), nor from a second before ``restart``
+    stopped sonda to the second of its input's first sample after it started
+    again (to ended_s when there is none). An error's input is the alias in its
     prefix (SNMP_V2C_INPUT, SNMP_V1_INPUT, SNMP_V3_INPUT); a series' input is
     :func:`snmp_input_of` it. An error naming no known alias is measured
     from the first sample of any input; an input with no sample, from the
@@ -680,9 +865,18 @@ def snmp_findings(
     interface within SNMP_SAMPLES_WITHIN_S of the first sample, every one of
     them tagged with the interface's SNMP_IF_NAMES name as above, and
     SNMP_V3_UPTIME_SERIES has at least SNMP_MIN_SAMPLES samples, each greater
-    than the one before; ``walk``, masked, is ``golden``, masked, and
-    ``v1_walk`` is ``v1_golden`` (an empty walk is named as such); ``v3_get``
-    is SNMP_V3_GET_EXPECTED (:func:`v3_get_finding`).
+    than the one before; the restart: ``restart`` is an SnmpRestart (a text
+    is the hook's failure, named), each SNMP_V3_INTERFACE_SERIES has a
+    sample for each interface within SNMP_RESUME_WITHIN_S of sonda starting
+    again (each that had one before sonda stopped; one that had none is
+    named above), a SNMP_V3_TRACE_LINE carrying SNMP_TIME_WINDOW_LINE is stamped
+    from a second before sonda stopped on (gosnmp answered
+    usmStatsNotInTimeWindows and re-synchronized), and none carrying
+    SNMP_REDISCOVERY_LINE is (the engine ID did not change); both uptimes
+    are checked for increase before sonda stopped and after it, apart;
+    ``walk``, masked, is ``golden``, masked, and ``v1_walk`` is
+    ``v1_golden`` (an empty walk is named as such); ``v3_get`` and
+    ``v3_priv_get`` are SNMP_V3_GET_EXPECTED (:func:`v3_get_finding`).
     """
     findings: list[str] = []
     loaded = any(
@@ -709,6 +903,25 @@ def snmp_findings(
     def excused_until_s(first: int | None) -> float:
         return first // 1000 if first is not None else math.floor(started_s) - 1
 
+    # The restart's gap: from a second before sonda stopped, per input to
+    # the second of its first sample after sonda started again.
+    stopped_ms = restarted_ms = None
+    input_resumed_ms: dict[str, int] = {}
+    if isinstance(restart, SnmpRestart):
+        stopped_ms = int(restart.stopped_s * 1000)
+        restarted_ms = int(restart.restarted_s * 1000)
+        for (series, _), pairs in in_window.items():
+            after = [ts for ts, _ in pairs if ts >= restarted_ms]
+            if after:
+                alias = snmp_input_of(series)
+                input_resumed_ms[alias] = min(input_resumed_ms.get(alias, after[0]), after[0])
+
+    def in_gap(stamp: float, resumed: int | None) -> bool:
+        if stopped_ms is None:
+            return False
+        until_s = resumed // 1000 if resumed is not None else ended_s
+        return stopped_ms // 1000 - 1 <= stamp <= until_s
+
     for line in telegraf_log.splitlines():
         error = SNMP_ERROR_LINE.search(line)
         if error is None:
@@ -716,10 +929,12 @@ def snmp_findings(
         alias = error.group("alias")
         if alias in (SNMP_V2C_INPUT, SNMP_V1_INPUT, SNMP_V3_INPUT):
             after_s = excused_until_s(input_first_ms.get(alias))
+            resumed = input_resumed_ms.get(alias)
         else:
             after_s = excused_until_s(first_ms)
+            resumed = min(input_resumed_ms.values()) if input_resumed_ms else None
         stamp = telegraf_log_stamp(line)
-        if stamp is None or after_s < stamp <= ended_s - 1:
+        if stamp is None or (after_s < stamp <= ended_s - 1 and not in_gap(stamp, resumed)):
             findings.append(f"telegraf logged an error while sonda served: {line.strip()}")
 
     if first_ms is None:
@@ -773,13 +988,25 @@ def snmp_findings(
         uptime = in_window.get((series, ""), [])
         if len(uptime) < SNMP_MIN_SAMPLES:
             findings.append(f"{series}: {len(uptime)} sample(s), want >= {SNMP_MIN_SAMPLES}")
-        for (_, before), (ts, after) in zip(uptime, uptime[1:]):
-            if after <= before:
-                findings.append(
-                    f"{series} did not increase: {before:g} then {after:g}, "
-                    f"{(ts - start_ms) / 1000:.1f}s after sonda started"
-                )
-                break
+        # sysUpTime starts again from 0 when sonda does.
+        runs = [uptime]
+        if stopped_ms is not None:
+            runs = [
+                [pair for pair in uptime if pair[0] < stopped_ms],
+                [pair for pair in uptime if pair[0] >= stopped_ms],
+            ]
+        falls = (
+            (before, after, ts)
+            for samples in runs
+            for (_, before), (ts, after) in zip(samples, samples[1:])
+            if after <= before
+        )
+        for before, after, ts in falls:
+            findings.append(
+                f"{series} did not increase: {before:g} then {after:g}, "
+                f"{(ts - start_ms) / 1000:.1f}s after sonda started"
+            )
+            break
 
     increasing(SNMP_UPTIME_SERIES)
 
@@ -804,10 +1031,47 @@ def snmp_findings(
     every_name_tagged(SNMP_V3_INTERFACE_SERIES)
     increasing(SNMP_V3_UPTIME_SERIES)
 
+    if isinstance(restart, SnmpRestart):
+        # A series with no sample before sonda stopped is named above.
+        resume_by_ms = restarted_ms + int(SNMP_RESUME_WITHIN_S * 1000)
+        for series in SNMP_V3_INTERFACE_SERIES:
+            for index in SNMP_INTERFACES:
+                pairs = in_window.get((series, index), [])
+                if not any(ts < stopped_ms for ts, _ in pairs):
+                    continue
+                if not any(restarted_ms <= ts <= resume_by_ms for ts, _ in pairs):
+                    findings.append(
+                        f'{series}{{index="{index}"}}: no sample within '
+                        f"{SNMP_RESUME_WITHIN_S:.0f}s of sonda starting again"
+                    )
+        traced = [
+            line
+            for line in telegraf_log.splitlines()
+            if SNMP_V3_TRACE_LINE.search(line)
+            and (telegraf_log_stamp(line) or 0) >= stopped_ms // 1000 - 1
+        ]
+        if not any(SNMP_TIME_WINDOW_LINE in line for line in traced):
+            findings.append(
+                f"telegraf's v3 input logged no {SNMP_TIME_WINDOW_LINE!r} after sonda "
+                "restarted: gosnmp was not answered usmStatsNotInTimeWindows"
+            )
+        for line in traced:
+            if SNMP_REDISCOVERY_LINE in line:
+                findings.append(
+                    f"telegraf's v3 input discovered the engine again after sonda "
+                    f"restarted: {line.strip()}"
+                )
+                break
+    else:
+        findings.append(
+            f"sonda was not restarted: {restart or 'the during hook reported no restart'}"
+        )
+
     for found in (
         walk_finding(walk, golden, "walk", SNMP_WALK_GOLDEN),
         walk_finding(v1_walk, v1_golden, "v1 walk", SNMP_V1_WALK_GOLDEN),
         v3_get_finding(v3_get),
+        v3_get_finding(v3_priv_get, "snmpget -v3 -l authPriv"),
     ):
         if found is not None:
             findings.append(found)
@@ -815,13 +1079,13 @@ def snmp_findings(
 
 
 def verify_snmp_row(
-    repo_root: Path, started_s: float, ended_s: float, during: SnmpWalks | str = ""
+    repo_root: Path, started_s: float, ended_s: float, during: SnmpEvidence | str = ""
 ) -> str:
     """Collect the telegraf-snmp service's log, the run's samples matching
     SNMP_EXPORT_MATCH, SNMP_WALK_GOLDEN and SNMP_V1_WALK_GOLDEN, then apply
-    :func:`snmp_findings` with ``during``, the walks and the SNMPv3 get
-    :func:`walk_snmp_versions` took; a text ``during`` (no hook, or the
-    hook's failure) stands for all three."""
+    :func:`snmp_findings` with ``during``, the walks, the SNMPv3 gets and the
+    restart :func:`snmp_during` returned; a text ``during`` (no hook, or the
+    hook's failure) stands for all of them."""
     telegraf_log = compose_logs_tail(repo_root, "telegraf-snmp", tail_lines=None)
     query = urllib.parse.urlencode(
         {
@@ -839,11 +1103,15 @@ def verify_snmp_row(
             goldens.append((repo_root / path).read_text())
         except OSError as e:
             return f"cannot read {path}: {e}"
-    walks = (
+    evidence = (
         during
-        if isinstance(during, SnmpWalks)
-        else SnmpWalks(v2c=during, v1=during, v3_get=during)
+        if isinstance(during, SnmpEvidence)
+        else SnmpEvidence(
+            walks=SnmpWalks(v2c=during, v1=during, v3_get=during, v3_priv_get=during),
+            restart=during,
+        )
     )
+    walks = evidence.walks
     return "\n".join(
         snmp_findings(
             telegraf_log,
@@ -856,6 +1124,8 @@ def verify_snmp_row(
             v1_walk=walks.v1,
             v1_golden=goldens[1],
             v3_get=walks.v3_get,
+            v3_priv_get=walks.v3_priv_get,
+            restart=evidence.restart,
         )
     )
 
@@ -1128,12 +1398,14 @@ MATRIX: tuple[MatrixRow, ...] = (
     ),
     # -- SNMP: sonda is the agent and Telegraf (profile snmp) the poller.
     # `sonda run` serves for SNMP_RUN_S while Telegraf polls it every 2s and
-    # writes to VictoriaMetrics over SNMPv2c, SNMPv1 and SNMPv3, and
-    # walk_snmp_versions walks it in the first two versions and reads
-    # sysName over SNMPv3 from inside the telegraf-snmp container. The verify
-    # URL proves some series arrived at all; verify_snmp_row then checks each
-    # interface in the three tables, both uptimes, the flap, each walk
-    # against its golden file and the SNMPv3 read.
+    # writes to VictoriaMetrics over SNMPv2c, SNMPv1 and SNMPv3 (authPriv),
+    # and snmp_during walks it in the first two versions and reads sysName
+    # over SNMPv3 at authNoPriv and authPriv from inside the telegraf-snmp
+    # container, then stops sonda at SNMP_RESTART_AT_S and starts it again.
+    # The verify URL proves some series arrived at all; verify_snmp_row then
+    # checks each interface in the three tables, both uptimes, the flap, the
+    # v3 series resuming after the restart through gosnmp's time-window
+    # report, each walk against its golden file and both SNMPv3 reads.
     MatrixRow(
         name="snmp",
         profiles=("snmp",),
@@ -1146,7 +1418,8 @@ MATRIX: tuple[MatrixRow, ...] = (
         failure_log_containers=("telegraf-snmp", "victoriametrics"),
         extra_args=("--duration", f"{SNMP_RUN_S:.0f}s"),
         timeout_s=SNMP_RUN_S + 60.0,
-        during=walk_snmp_versions,
+        during=snmp_during,
+        during_gets_sonda=True,
         post_verify=verify_snmp_row,
     ),
 )
@@ -1392,7 +1665,8 @@ def compose_logs_tail(
     timeout_s: float = 30.0,
 ) -> str:
     """Return the last ``tail_lines`` lines of the named service's logs, or
-    all of them when ``tail_lines`` is None.
+    all of them when ``tail_lines`` is None, bytes that are not UTF-8 (such
+    as the raw packet fields in gosnmp's trace) replaced.
 
     Returns a placeholder string on failure rather than raising — log
     collection is best-effort diagnostic output.
@@ -1409,6 +1683,7 @@ def compose_logs_tail(
             ),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_s,
             check=False,
         )
@@ -1465,17 +1740,28 @@ def run_row(
 
     started_wall_s = time.time()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    during = pool.submit(row.during, repo_root) if row.during is not None else None
+    during = None
     try:
-        proc = run_scenario(
-            sonda_bin,
-            row.subcommand,
-            row.scenario,
-            repo_root,
-            verb=row.verb,
-            extra_args=row.extra_args,
-            timeout_s=row.timeout_s,
-        )
+        if row.during_gets_sonda:
+            sonda = SondaRun(
+                [str(sonda_bin), row.verb, str(row.scenario), *row.extra_args], repo_root
+            )
+            sonda.start()
+            if row.during is not None:
+                during = pool.submit(row.during, repo_root, sonda=sonda)
+            proc = sonda.wait(row.timeout_s)
+        else:
+            if row.during is not None:
+                during = pool.submit(row.during, repo_root)
+            proc = run_scenario(
+                sonda_bin,
+                row.subcommand,
+                row.scenario,
+                repo_root,
+                verb=row.verb,
+                extra_args=row.extra_args,
+                timeout_s=row.timeout_s,
+            )
         # Taken before waiting for the during hook: the run's window ends
         # when sonda does.
         ended_wall_s = time.time()
