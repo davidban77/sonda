@@ -286,6 +286,30 @@ pub(crate) fn write_counter64(out: &mut Vec<u8>, v: u64) {
     write_u64(out, Tag::Counter64, v);
 }
 
+/// Write an Opaque holding an IEEE 754 single as net-snmp encodes it:
+/// `44 07`, then the inner tag `9f 78`, length `04` and the value,
+/// big-endian.
+pub(crate) fn write_opaque_float(out: &mut Vec<u8>, v: f32) {
+    write_header(out, Tag::Opaque, 7);
+    out.extend_from_slice(&[0x9F, 0x78, 0x04]);
+    out.extend_from_slice(&v.to_be_bytes());
+}
+
+/// Write an Opaque holding an IEEE 754 double as net-snmp encodes it:
+/// `44 0b`, then the inner tag `9f 79`, length `08` and the value,
+/// big-endian.
+pub(crate) fn write_opaque_double(out: &mut Vec<u8>, v: f64) {
+    write_header(out, Tag::Opaque, 11);
+    out.extend_from_slice(&[0x9F, 0x79, 0x08]);
+    out.extend_from_slice(&v.to_be_bytes());
+}
+
+/// Write an IpAddress: `40 04` and the address's four octets, most
+/// significant first.
+pub(crate) fn write_ipaddress(out: &mut Vec<u8>, v: u32) {
+    write_octets(out, Tag::IpAddress, &v.to_be_bytes());
+}
+
 /// Write an OCTET STRING.
 pub(crate) fn write_string(out: &mut Vec<u8>, bytes: &[u8]) {
     write_octets(out, Tag::OctetString, bytes);
@@ -612,7 +636,7 @@ pub(crate) fn write_message(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rstest::rstest;
 
@@ -700,6 +724,13 @@ mod tests {
         0f010a00430500ffffffff3014060c2b06010401bf08ce0f011400040431322e353013060d2b0601\
         0401bf08ce0f020107030202ff7f3014060c2b06010401bf08ce0f0104000204800000003019060c\
         2b06010401bf08ce0f010700460900ffffffffffffffff";
+
+    /// `snmpset -v2c -c public -r0 -t1 -On 127.0.0.1:<port> 1.3.6.1.4.1.2021.10.1.6.1 F 0.15 1.3.6.1.4.1.8072.9999.1.1.0 D 0.15 1.3.6.1.4.1.8072.9999.1.2.0 a 10.0.0.1 1.3.6.1.4.1.8072.9999.1.3.0 s up 1.3.6.1.4.1.8072.9999.1.5.0 a 255.255.255.255`, net-snmp 5.9.4.pre2 (with `MIBS=`): an Opaque float, an Opaque double, two IpAddresses and an OCTET STRING as net-snmp encodes them.
+    pub(crate) const NET_SNMP_SET_TYPES: &str =
+        "30819102010104067075626c6963a3818302045e7b1b3b02010002010030753016060b2b06010401\
+        8f650a01060144079f78043e19999a301b060c2b06010401bf08ce0f010100440b9f79083fc33333\
+        333333333014060c2b06010401bf08ce0f01020040040a0000013012060c2b06010401bf08ce0f01\
+        0300040275703014060c2b06010401bf08ce0f0105004004ffffffff";
 
     /// `snmpget -v3 -l noAuthNoPriv -u probe -r 0 -t 1 127.0.0.1:<port> 1.3.6.1.2.1.1.3.0`, net-snmp 5.9.4: the engine-discovery request it sends first.
     const NET_SNMP_V3_DISCOVERY: &str =
@@ -872,6 +903,21 @@ mod tests {
                 write_u64(out, tag, decode_u64(body).expect("unsigned"))
             }
             Tag::OctetString => write_octets(out, Tag::OctetString, body),
+            Tag::IpAddress => write_ipaddress(
+                out,
+                u32::from_be_bytes(body.try_into().expect("four octets")),
+            ),
+            Tag::Opaque => match body {
+                [0x9F, 0x78, 0x04, single @ ..] => write_opaque_float(
+                    out,
+                    f32::from_be_bytes(single.try_into().expect("a single")),
+                ),
+                [0x9F, 0x79, 0x08, double @ ..] => write_opaque_double(
+                    out,
+                    f64::from_be_bytes(double.try_into().expect("a double")),
+                ),
+                other => panic!("no re-encoding for Opaque {other:02x?}"),
+            },
             Tag::Oid => write_oid(out, &Oid::from_ber_body(body).expect("oid")),
             Tag::Null => write_null(out),
             tag @ (Tag::NoSuchObject | Tag::NoSuchInstance | Tag::EndOfMibView) => {
@@ -921,6 +967,7 @@ mod tests {
     #[case::gosnmp_getbulk(          GOSNMP_GETBULK)]
     #[case::too_big_reply(           TOO_BIG_REPLY)]
     #[case::net_snmp_trap(           NET_SNMP_TRAP)]
+    #[case::net_snmp_set_types(      NET_SNMP_SET_TYPES)]
     fn captured_datagram_reencodes_byte_identical(#[case] captured: &str) {
         let bytes = hex(captured);
         assert!(bytes.len() > 20, "fixture present");
@@ -1012,6 +1059,25 @@ mod tests {
         panic!("no varbind {oid} in the fixture");
     }
 
+    /// The whole VarBind named `oid` in a captured datagram, its SEQUENCE
+    /// header included, exactly as the datagram carries it.
+    pub(crate) fn captured_varbind(captured: &str, oid: &str) -> Vec<u8> {
+        let bytes = hex(captured);
+        assert_eq!(bytes.first(), Some(&0x30), "fixture present");
+        let message = Message::decode(&bytes).expect("captured datagram decodes");
+        let wanted = Oid::parse(oid).expect("valid");
+        let mut list = Reader::new(message.varbinds);
+        while !list.is_empty() {
+            let before = list.rest;
+            let body = list.expect(Tag::Sequence).expect("varbind");
+            let whole = &before[..before.len() - list.rest.len()];
+            if Reader::new(body).oid().expect("name") == wanted {
+                return whole.to_vec();
+            }
+        }
+        panic!("no varbind {oid} in the fixture");
+    }
+
     #[rustfmt::skip]
     #[rstest]
     #[case::integer_i32_min(      NET_SNMP_TRAP,       "1.3.6.1.4.1.8072.9999.1.4.0",  |o: &mut Vec<u8>| write_integer(o, i32::MIN))]
@@ -1027,6 +1093,11 @@ mod tests {
     #[case::counter64_two_pow_63( NET_SNMP_TRAP,       "1.3.6.1.4.1.8072.9999.1.6.0",  |o: &mut Vec<u8>| write_counter64(o, 1 << 63))]
     #[case::counter64_u64_max(    NET_SNMP_TRAP_TYPES, "1.3.6.1.4.1.8072.9999.1.7.0",  |o: &mut Vec<u8>| write_counter64(o, u64::MAX))]
     #[case::string_decimal(       NET_SNMP_TRAP_TYPES, "1.3.6.1.4.1.8072.9999.1.20.0", |o: &mut Vec<u8>| write_string(o, b"12.5"))]
+    #[case::opaque_float(         NET_SNMP_SET_TYPES,  "1.3.6.1.4.1.2021.10.1.6.1",    |o: &mut Vec<u8>| write_opaque_float(o, 0.15))]
+    #[case::opaque_double(        NET_SNMP_SET_TYPES,  "1.3.6.1.4.1.8072.9999.1.1.0",  |o: &mut Vec<u8>| write_opaque_double(o, 0.15))]
+    #[case::ipaddress(            NET_SNMP_SET_TYPES,  "1.3.6.1.4.1.8072.9999.1.2.0",  |o: &mut Vec<u8>| write_ipaddress(o, 0x0A00_0001))]
+    #[case::ipaddress_u32_max(    NET_SNMP_SET_TYPES,  "1.3.6.1.4.1.8072.9999.1.5.0",  |o: &mut Vec<u8>| write_ipaddress(o, u32::MAX))]
+    #[case::string_label(         NET_SNMP_SET_TYPES,  "1.3.6.1.4.1.8072.9999.1.3.0",  |o: &mut Vec<u8>| write_string(o, b"up"))]
     fn typed_writers_match_net_snmp(#[case] captured: &str, #[case] oid: &str, #[case] write: fn(&mut Vec<u8>)) {
         let expected = captured_value(captured, oid);
         assert!(expected.len() >= 3, "a value TLV was found for {oid}");

@@ -745,7 +745,7 @@ fn every_telegraf_snmp_metric_carries_its_if_mib_hint() {
                 .snmp
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} carries no snmp hint", spec.name));
-            (spec.name.as_str(), hint.oid.as_str(), hint.r#type)
+            (spec.name.as_str(), hint.oid.as_str(), hint.r#type.clone())
         })
         .collect();
     assert_eq!(hints, TELEGRAF_SNMP_HINTS);

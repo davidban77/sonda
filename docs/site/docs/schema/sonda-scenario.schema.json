@@ -3746,6 +3746,31 @@
         }
       ]
     },
+    "SnmpEnumWire": {
+      "description": "`{ enum: { <i64>: <string>, ... } }`.",
+      "type": "object",
+      "properties": {
+        "enum": {
+          "description": "The label of each integer code, served as an OCTET STRING; at least\none entry.",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "patternProperties": {
+            "^-?\\d+$": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enum"
+      ]
+    },
     "SnmpHint": {
       "description": "A pack metric's SNMP OID template and value type.\n\n# YAML Schema\n\n```yaml\nsnmp:\n  oid: \"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"\n  type: counter64\n```",
       "type": "object",
@@ -3765,8 +3790,8 @@
         "type"
       ]
     },
-    "SnmpValueType": {
-      "description": "The BER type a metric's value is encoded as.\n\nYAML forms: `integer`, `counter32`, `counter64`, `gauge32`, `unsigned32`,\n`timeticks`, `string`. The default is `gauge32`.\n\nEvery type but `string` rounds the value to the nearest integer, halves\naway from zero, and rejects the event when the value is not finite or\nthe rounded value is outside the type's range. A counter does not wrap:\na value past its range is rejected, not reduced.",
+    "SnmpTypeName": {
+      "description": "The value type names.",
       "oneOf": [
         {
           "description": "INTEGER (Integer32): -2³¹ to 2³¹ − 1.",
@@ -3784,7 +3809,7 @@
           "const": "counter64"
         },
         {
-          "description": "Gauge32: 0 to 2³² − 1.",
+          "description": "Gauge32: 0 to 2³² − 1. The default.",
           "type": "string",
           "const": "gauge32"
         },
@@ -3799,9 +3824,35 @@
           "const": "timeticks"
         },
         {
-          "description": "OCTET STRING: the shortest decimal text that round-trips the `f64`.",
+          "description": "OCTET STRING: the shortest decimal text that round-trips the value.",
           "type": "string",
           "const": "string"
+        },
+        {
+          "description": "Opaque float (net-snmp): the value as an IEEE 754 single.",
+          "type": "string",
+          "const": "opaque_float"
+        },
+        {
+          "description": "Opaque double (net-snmp): the value as an IEEE 754 double.",
+          "type": "string",
+          "const": "opaque_double"
+        },
+        {
+          "description": "IpAddress: the rounded value, 0 to 2³² − 1, as four octets.",
+          "type": "string",
+          "const": "ipaddress"
+        }
+      ]
+    },
+    "SnmpValueType": {
+      "description": "The BER type a metric's value is encoded as.\n\nYAML forms: `integer`, `counter32`, `counter64`, `gauge32`, `unsigned32`,\n`timeticks`, `string`, `opaque_float`, `opaque_double`, `ipaddress`, and\n`{ enum: { 1: up, 2: down } }`. The default is `gauge32`.\n\nThe integer types, `ipaddress` and the enum round the value to the\nnearest integer, halves away from zero. Every type but `string` rejects\nthe event when the value is not finite; the integer types and\n`ipaddress` when the rounded value is outside the type's range,\n`opaque_float` when the value is beyond the `f32` range, and the enum\nwhen the rounded value has no entry. A counter does not wrap: a value\npast its range is rejected, not reduced.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SnmpTypeName"
+        },
+        {
+          "$ref": "#/$defs/SnmpEnumWire"
         }
       ]
     },
