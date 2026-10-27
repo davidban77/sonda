@@ -986,9 +986,11 @@ src/
                            its own value: different series), ArcSet = listed arcs plus
                            counters prefix ++ 0..cardinality, a spike's outside values
                            included; ArcSet::narrow passes to a fixed point, exact but for
-                           two counters that meet (kept whole: refuses, never misses); each
-                           label named once in the refusal, both arcs when they differ
-                           between the templates), nothing in oids: or label_columns:
+                           two counters that meet (kept whole: refuses, never misses; the
+                           collision is then not `exact` unless both labels hold that one
+                           position alone, and the refusal says "may render" instead of
+                           "both render"); each label named once in the refusal, both arcs
+                           when they differ between the templates), nothing in oids: or label_columns:
                            under the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
                            and the snmp_agent sink on histogram, summary and logs entries,
                            validate_cardinality_spike_config, validate_dynamic_label_config,

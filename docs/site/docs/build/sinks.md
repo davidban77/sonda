@@ -864,8 +864,8 @@ With the agent running, net-snmp's tools read it directly:
 
 ```bash
 snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
-snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
-snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1    # when versions lists v1
+snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1
+snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1        # when versions lists v1
 snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
   -x AES -X lab-only-v3-privacy -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0   # when versions lists v3
 ```
@@ -1020,9 +1020,9 @@ The Telegraf image ships net-snmp, so the agent can be walked from inside the co
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
-  snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
+  snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
-  snmpwalk -v1 -c public -On sonda:1161 1.3.6.1.2.1
+  snmpwalk -v1 -c public -On sonda:1161 1.3.6.1
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
   snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
   -x AES -X lab-only-v3-privacy -On sonda:1161 1.3.6.1.2.1.1.5.0

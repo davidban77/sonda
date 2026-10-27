@@ -492,7 +492,7 @@ services:
   # so the agent can also be walked from inside the container:
   #
   #   docker compose -f examples/docker-compose-victoriametrics.yml exec \
-  #     telegraf-snmp snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
+  #     telegraf-snmp snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1
   #
   # Its health endpoint is on port 8097.
   #

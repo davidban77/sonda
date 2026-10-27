@@ -785,10 +785,12 @@ enum SnmpCollision {
     /// Both render this OID, when the labels take these values: each label
     /// once, with the arc it renders as in the first template it appears
     /// in and, when it renders as another in the second template, that arc
-    /// too.
+    /// too. `exact` is false when the OID rests on a counter
+    /// [`ArcSet::narrow`] kept whole: the templates may render it.
     Oid {
         oid: String,
         values: Vec<(String, u32, Option<u32>)>,
+        exact: bool,
     },
     /// A template has a string index and one object is equal to or a prefix
     /// of the other.
@@ -814,8 +816,11 @@ enum SnmpCollision {
 /// every position share an arc. The OID returned takes the smallest shared
 /// arc at each position, which for listed arcs is each label's smallest
 /// narrowed arc at every position it occupies, and names each label once.
-/// Exact but for two counters that meet ([`ArcSet::narrow`]). O((labels +
-/// counters + arcs listed) × arcs × values) for the passes.
+/// Exact but for two counters that meet ([`ArcSet::narrow`]): a counter
+/// kept whole decides exactly only at a position where it meets the other
+/// side's counter and each of the two labels occupies no other position;
+/// anywhere else the collision is not `exact`. O((labels + counters + arcs
+/// listed) × arcs × values) for the passes.
 #[cfg(feature = "snmp")]
 fn snmp_collision(
     own: &crate::encoder::snmp::oid::OidTemplate,
@@ -881,6 +886,22 @@ fn snmp_collision(
     if sets.iter().any(ArcSet::is_empty) {
         return None;
     }
+    let occupied = |i: usize| {
+        positions
+            .iter()
+            .flatten()
+            .filter(|(_, slot)| *slot == Some(i))
+            .count()
+    };
+    let exact = positions.iter().all(|position| {
+        let kept_whole = position
+            .iter()
+            .any(|(_, slot)| slot.is_some_and(|i| !sets[i].counters.is_empty()));
+        !kept_whole
+            || position
+                .iter()
+                .all(|(_, slot)| slot.is_some_and(|i| occupied(i) == 1))
+    });
     let mut oid: Vec<String> = Vec::new();
     // Each label of each side with its arc at its first position, in the
     // order the positions name them.
@@ -916,7 +937,20 @@ fn snmp_collision(
     Some(SnmpCollision::Oid {
         oid: oid.join("."),
         values,
+        exact,
     })
+}
+
+/// How a rule 6 refusal says the two templates reach an OID: they "both
+/// render" it when the collision is exact, and "may render" it when it rests
+/// on a counter [`ArcSet::narrow`] kept whole.
+#[cfg(feature = "snmp")]
+fn renders(exact: bool) -> &'static str {
+    if exact {
+        "both render"
+    } else {
+        "may render"
+    }
 }
 
 /// Validate a metrics entry's `snmp` encoder against the entry.
@@ -969,7 +1003,8 @@ fn snmp_collision(
 ///    number of arcs, and their arcs can be equal at every position at
 ///    once, a label taking one value at every position of its template.
 ///    Exact but for two counters whose values meet, which may be refused
-///    when they cannot collide. O((metrics + columns)² × (labels + arcs
+///    when they cannot collide; such a refusal says the templates "may
+///    render" the OID rather than "both render". O((metrics + columns)² × (labels + arcs
 ///    listed) × arcs × values).
 ///
 /// Last, the **system group**: no `oids:` or `label_columns:` template can
@@ -1192,7 +1227,7 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         };
         match snmp_collision(a_template, b_template, &config.base) {
             None => {}
-            Some(SnmpCollision::Oid { oid, values }) => {
+            Some(SnmpCollision::Oid { oid, values, exact }) => {
                 let when = if values.is_empty() {
                     String::new()
                 } else {
@@ -1209,8 +1244,9 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
                     format!(" when {}", values.join(" and "))
                 };
                 return Err(invalid(format!(
-                    "snmp OID templates of {both} both render {oid} for this entry{when}; give \
-                     each its own column"
+                    "snmp OID templates of {both} {} {oid} for this entry{when}; give each its \
+                     own column",
+                    renders(exact)
                 )));
             }
             Some(SnmpCollision::Nested) => {
@@ -5438,6 +5474,13 @@ generator:
             snmp_cfg(c).drop_labels.push("slot".to_string());
             set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{slot}"); },
         "both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry when ifIndex is 1 and slot is 1")]
+    #[case::r6_counters_kept_whole_may_render(|c: &mut ScenarioConfig| {
+            c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some(""), 30)),
+                snmp_dynamic("slot", snmp_counter(Some("1"), 1)), snmp_dynamic("port", snmp_counter(Some("2"), 1))]);
+            snmp_cfg(c).drop_labels.extend(["slot".to_string(), "port".to_string()]);
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{ifIndex}");
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.2.1.{slot}.{port}"); },
+        "snmp OID templates of metrics \"ifHCInOctets\" and \"ifHCOutOctets\" may render 1.3.6.1.4.1.8072.9999.2.1.10.20 for this entry when ifIndex is 10 and slot is 10 and port is 20; give each its own column")]
     #[case::r6_a_label_renders_apart_in_each_template(|c: &mut ScenarioConfig| { set_label(c, "slot", "2");
             c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex",
                 DynamicLabelStrategy::ValuesList { values: vec!["1".to_string(), "2".to_string()] })]);
@@ -5720,54 +5763,59 @@ generator:
     /// the one conservative case, which can only keep an arc the exact
     /// intersection would not, so rule 6 may refuse two such templates but
     /// never misses a collision." The first collides (`0.0`); the second is
-    /// refused though `{a}.{a}` never renders `10.20`.
+    /// refused though `{a}.{a}` never renders `10.20`. Both say the templates
+    /// "may render" the OID; every exact collision says they "both render" it.
     #[cfg(feature = "snmp")]
     #[rustfmt::skip]
     #[rstest::rstest]
     #[case::repeated_label_against_a_scalar_apart(  "1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.1.0", &[("a", "0,1")], &[], None)]
     #[case::repeated_label_against_a_scalar_it_renders("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.0.0", &[("a", "0,1")], &[],
-        Some(("1.3.6.1.4.1.8072.9999.0.0", &[("a", 0, None)][..])))]
+        Some(("both render", "1.3.6.1.4.1.8072.9999.0.0", &[("a", 0, None)][..])))]
     #[case::repeated_label_against_a_literal_and_a_label_apart("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.1.{b}",
         &[("a", "1,2"), ("b", "2")], &[], None)]
     #[case::repeated_label_against_a_literal_and_a_label_that_meet("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.1.{b}",
         &[("a", "1,2"), ("b", "1,2")], &[],
-        Some(("1.3.6.1.4.1.8072.9999.1.1", &[("a", 1, None), ("b", 1, None)][..])))]
+        Some(("both render", "1.3.6.1.4.1.8072.9999.1.1", &[("a", 1, None), ("b", 1, None)][..])))]
     #[case::repeated_label_against_two_labels_apart("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}",
         &[("a", "1,2"), ("b", "1"), ("c", "2")], &[], None)]
     #[case::repeated_label_against_two_labels_that_meet("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}",
         &[("a", "1,2"), ("b", "1"), ("c", "1,2")], &[],
-        Some(("1.3.6.1.4.1.8072.9999.1.1", &[("a", 1, None), ("b", 1, None), ("c", 1, None)][..])))]
+        Some(("both render", "1.3.6.1.4.1.8072.9999.1.1", &[("a", 1, None), ("b", 1, None), ("c", 1, None)][..])))]
     #[case::repeated_counter_against_a_literal_and_a_label_apart("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.7.{b}",
         &[("b", "8")], &[("a", "", 48)], None)]
     #[case::repeated_counter_against_a_literal_and_a_label_that_meet("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.7.{b}",
         &[("b", "7,8")], &[("a", "", 48)],
-        Some(("1.3.6.1.4.1.8072.9999.7.7", &[("a", 7, None), ("b", 7, None)][..])))]
+        Some(("both render", "1.3.6.1.4.1.8072.9999.7.7", &[("a", 7, None), ("b", 7, None)][..])))]
     #[case::counters_meet(                        "1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}", &[],
         &[("a", "", 3), ("b", "", 3), ("c", "", 3)],
-        Some(("1.3.6.1.4.1.8072.9999.0.0", &[("a", 0, None), ("b", 0, None), ("c", 0, None)][..])))]
+        Some(("may render", "1.3.6.1.4.1.8072.9999.0.0", &[("a", 0, None), ("b", 0, None), ("c", 0, None)][..])))]
     #[case::counters_kept_whole_refuse(           "1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}", &[],
         &[("a", "", 30), ("b", "1", 1), ("c", "2", 1)],
-        Some(("1.3.6.1.4.1.8072.9999.10.20", &[("a", 10, None), ("b", 10, None), ("c", 20, None)][..])))]
+        Some(("may render", "1.3.6.1.4.1.8072.9999.10.20", &[("a", 10, None), ("b", 10, None), ("c", 20, None)][..])))]
     #[case::a_label_in_each_template_apart(      "1.3.6.1.4.1.8072.9999.1.{a}", "1.3.6.1.4.1.8072.9999.{a}.{b}",
         &[("a", "1"), ("b", "2")], &[], None)]
     #[case::a_label_in_each_template_meets(      "1.3.6.1.4.1.8072.9999.1.{a}", "1.3.6.1.4.1.8072.9999.{a}.{b}",
         &[("a", "1,2"), ("b", "2")], &[],
-        Some(("1.3.6.1.4.1.8072.9999.1.2", &[("a", 2, Some(1)), ("b", 2, None)][..])))]
+        Some(("both render", "1.3.6.1.4.1.8072.9999.1.2", &[("a", 2, Some(1)), ("b", 2, None)][..])))]
     fn rule_6_holds_one_value_per_label(
         #[case] own: &str,
         #[case] other: &str,
         #[case] values: &[(&str, &str)],
         #[case] counters: &[(&str, &str, u64)],
-        #[case] expected: Option<(&str, &[NamedArcs<'_>])>,
+        #[case] expected: Option<(&str, &str, &[NamedArcs<'_>])>,
     ) {
-        let expected = expected.map(|(oid, values)| SnmpCollision::Oid {
-            oid: oid.to_string(),
-            values: values
+        let found = collision_of(own, other, values, counters).map(|collision| match collision {
+            SnmpCollision::Oid { oid, values, exact } => (renders(exact), oid, values),
+            SnmpCollision::Nested => panic!("no string index here"),
+        });
+        let expected = expected.map(|(verb, oid, values)| {
+            let values = values
                 .iter()
                 .map(|(label, arc, second)| (label.to_string(), *arc, *second))
-                .collect(),
+                .collect::<Vec<_>>();
+            (verb, oid.to_string(), values)
         });
-        assert_eq!(collision_of(own, other, values, counters), expected);
+        assert_eq!(found, expected);
     }
 
     /// `narrow` keeps a listed arc the other set contains, turns a counter

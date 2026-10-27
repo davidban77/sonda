@@ -3286,14 +3286,20 @@ mod tests {
 
     /// A 1 400-byte reply sent with its packet info from a wildcard-bound
     /// socket allocates nothing once the thread has sent one, and the peer
-    /// receives it whole from the source the packet info names.
+    /// receives it whole from the source the packet info names: over IPv4,
+    /// 127.0.0.2, which the route to 127.0.0.1 would not choose; over IPv6,
+    /// `::1`, the host's only IPv6 address.
     #[cfg(target_os = "linux")]
     #[rustfmt::skip]
     #[rstest]
-    #[case::ipv4("0.0.0.0:0", "127.0.0.1:0")]
-    #[case::ipv6("[::]:0",    "[::1]:0")]
+    #[case::ipv4("0.0.0.0:0", "127.0.0.1:0", "127.0.0.2")]
+    #[case::ipv6("[::]:0",    "[::1]:0",     "::1")]
     #[tokio::test(flavor = "current_thread")]
-    async fn a_wildcard_reply_allocates_nothing(#[case] bind: &str, #[case] peer: &str) {
+    async fn a_wildcard_reply_allocates_nothing(
+        #[case] bind: &str,
+        #[case] peer: &str,
+        #[case] source: IpAddr,
+    ) {
         use std::future::Future as _;
         use std::task::{Context, Poll, Waker};
 
@@ -3305,7 +3311,7 @@ mod tests {
         let peer = UdpSocket::bind(peer).await.expect("bind the peer");
         let to = peer.local_addr().expect("bound");
         let from = ReplySource {
-            addr: to.ip(),
+            addr: source,
             ifindex: 0,
         };
         let reply: Vec<u8> = (0..1400).map(|i| (i % 251) as u8).collect();
@@ -3324,7 +3330,8 @@ mod tests {
         assert_eq!(sent, reply.len());
         peer.readable().await.expect("readable");
         let (first, source) = received(&peer);
-        assert_eq!((first, source.ip()), (reply.clone(), from.addr));
+        assert_eq!(source.ip(), from.addr, "the reply leaves from the packet info's source");
+        assert!(first == reply, "the peer receives the reply whole");
 
         let mut sending = std::pin::pin!(pktinfo::send(&socket, &reply, to, from));
         let mut cx = Context::from_waker(Waker::noop());
@@ -3339,7 +3346,8 @@ mod tests {
             .expect("the reply arrives within 1 s")
             .expect("readable");
         let (second, source) = received(&peer);
-        assert_eq!((second, source.ip()), (reply.clone(), from.addr));
+        assert_eq!(source.ip(), from.addr, "the reply leaves from the packet info's source");
+        assert!(second == reply, "the peer receives the reply whole");
         assert_eq!(allocations, 0);
     }
 
