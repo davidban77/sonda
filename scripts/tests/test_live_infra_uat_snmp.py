@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -161,6 +162,17 @@ def oper_status(index: str, at_s: float) -> float:
     return 1.0
 
 
+def link_state(at_s: float) -> str:
+    """The example's link state: down from 60 s to 65 s, as interface 1."""
+    return "down" if 60 <= at_s - STARTED_S < 65 else "up"
+
+
+def load_1m(at_s: float) -> float:
+    """laLoadFloat.1 as Telegraf reads it: the example's sine between 0.1 and
+    0.9, through an f32."""
+    return round(0.5 + 0.4 * math.sin(2 * math.pi * (at_s - STARTED_S) / 120), 7)
+
+
 def if_name_tag(index: str) -> dict[str, str]:
     """The ifName tag Telegraf sets on interface ``index``'s rows."""
     return {uat.SNMP_IF_NAME_TAG: uat.SNMP_IF_NAMES[index]}
@@ -183,6 +195,8 @@ def good_export(
     v3_resumed_s: float = RESTARTED_S,
     v2c_resumed_s: float = RESTARTED_S,
     v1_resumed_s: float = RESTARTED_S,
+    load=load_1m,
+    state=link_state,
 ) -> bytes:
     """What VictoriaMetrics exports for a run in which Telegraf read every
     poll: each field of each of ``interfaces``, each of ``v1_fields`` of each
@@ -194,7 +208,10 @@ def good_export(
     series (interface and snmp_uptime) start at ``v2c_from_s``, the v3
     input's (interface_v3 and snmp_v3_uptime) at ``v3_from_s``; after the
     restart the v2c, v1 and v3 inputs' series start again at
-    ``v2c_resumed_s``, ``v1_resumed_s`` and ``v3_resumed_s``."""
+    ``v2c_resumed_s``, ``v1_resumed_s`` and ``v3_resumed_s``. The v2c
+    input's top-level series, snmp_uptime and snmp_load_1m (``load``), carry
+    the link_state tag ``state`` gives each poll, one series per value;
+    ``state`` returning None leaves a poll's samples untagged."""
 
     def resuming(polls: list[float], resumed_s: float) -> list[float]:
         return [at for at in polls if at < STOPPED_S or at >= resumed_s]
@@ -216,13 +233,17 @@ def good_export(
                     samples = [(at, 125_000.0 * (at - STARTED_S)) for at in polls]
                 labels = {"index": index, **tagged(index)}
                 lines.append(export_line(f"{table}_{field}", labels, samples))
-    lines.append(
-        export_line(
-            uat.SNMP_UPTIME_SERIES,
-            {"hostname": "rtr-core-01"},
-            [(at, float(uptime(at))) for at in v2c_times],
+    for value in dict.fromkeys(state(at) for at in v2c_times):
+        tags = {"hostname": "rtr-core-01"}
+        if value is not None:
+            tags[uat.SNMP_LINK_STATE_TAG] = value
+        polls = [at for at in v2c_times if state(at) == value]
+        lines.append(
+            export_line(uat.SNMP_UPTIME_SERIES, tags, [(at, float(uptime(at))) for at in polls])
         )
-    )
+        lines.append(
+            export_line(uat.SNMP_LOAD_SERIES, tags, [(at, float(load(at))) for at in polls])
+        )
     lines.append(
         export_line(
             uat.SNMP_V3_UPTIME_SERIES, {}, [(at, float(v3_uptime(at))) for at in v3_times]
@@ -243,10 +264,17 @@ def golden() -> str:
     return (REPO_ROOT / uat.SNMP_WALK_GOLDEN).read_text()
 
 
+def unmasked(text: str) -> str:
+    """A golden's Opaque floats and link state as net-snmp prints them."""
+    text = text.replace("Opaque: Float: *", "Opaque: Float: 0.562574", 1)
+    text = text.replace("Opaque: Float: *", "Opaque: Float: 273.465170", 1)
+    return text.replace('STRING: "<link_state>"', 'STRING: "down"')
+
+
 def walked(ticks: int = 2284, octets: int = 2_750_000) -> str:
     """The golden walk as net-snmp prints it, before masking."""
     text = golden().replace("Timeticks: (*)", f"Timeticks: ({ticks}) 0:00:22.84")
-    return text.replace("Counter64: *", f"Counter64: {octets}")
+    return unmasked(text.replace("Counter64: *", f"Counter64: {octets}"))
 
 
 def v1_golden() -> str:
@@ -255,7 +283,7 @@ def v1_golden() -> str:
 
 def v1_walked(ticks: int = 2290) -> str:
     """The v1 golden walk as net-snmp prints it, before masking."""
-    return v1_golden().replace("Timeticks: (*)", f"Timeticks: ({ticks}) 0:00:22.90")
+    return unmasked(v1_golden().replace("Timeticks: (*)", f"Timeticks: ({ticks}) 0:00:22.90"))
 
 
 def findings(
@@ -281,6 +309,7 @@ def findings(
         v3_get=v3_get,
         v3_priv_get=v3_priv_get,
         restart=restart,
+        link_states=uat.parse_vm_export_tags(export, uat.SNMP_LINK_STATE_TAG),
     )
 
 
@@ -294,9 +323,12 @@ class SnmpFindingsTests(unittest.TestCase):
         samples = uat.parse_vm_export(good_export(), label="index")
         self.assertEqual(
             len(samples),
-            len(uat.SNMP_INTERFACES) * (2 * len(FIELDS) + len(V1_FIELDS)) + 2,
+            len(uat.SNMP_INTERFACES) * (2 * len(FIELDS) + len(V1_FIELDS)) + 3,
         )
         self.assertIn((uat.SNMP_UPTIME_SERIES, ""), samples)
+        self.assertEqual(len(samples[(uat.SNMP_LOAD_SERIES, "")]), len(poll_times()))
+        states = uat.parse_vm_export_tags(good_export(), uat.SNMP_LINK_STATE_TAG)
+        self.assertEqual(sorted(states[(uat.SNMP_UPTIME_SERIES, "")]), ["down", "up"])
         self.assertIn((uat.SNMP_V3_UPTIME_SERIES, ""), samples)
         self.assertEqual(len(samples[("interface_v3_ifOperStatus", "4")]), len(poll_times()))
         self.assertEqual(len(samples[("interface_ifOperStatus", "4")]), len(poll_times()))
@@ -361,7 +393,8 @@ class SnmpFindingsTests(unittest.TestCase):
             if uat.SNMP_UPTIME_SERIES not in line
         ]
         two = [(FIRST_POLL_S, 100.0), (FIRST_POLL_S + POLL_S, 300.0)]
-        lines.append(export_line(uat.SNMP_UPTIME_SERIES, {}, two))
+        lines.append(export_line(uat.SNMP_UPTIME_SERIES, {uat.SNMP_LINK_STATE_TAG: "up"}, two[:1]))
+        lines.append(export_line(uat.SNMP_UPTIME_SERIES, {uat.SNMP_LINK_STATE_TAG: "down"}, two[1:]))
         self.assertEqual(
             findings(export="\n".join(lines).encode()),
             ["snmp_uptime: 2 sample(s), want >= 3"],
@@ -472,6 +505,7 @@ class SnmpFindingsTests(unittest.TestCase):
             v3_get=uat.SNMP_V3_GET_EXPECTED,
             v3_priv_get=uat.SNMP_V3_GET_EXPECTED,
             restart=RESTART,
+            link_states=uat.parse_vm_export_tags(good_export(), uat.SNMP_LINK_STATE_TAG),
         )
         self.assertEqual(
             outside[-1],
@@ -548,6 +582,7 @@ class SnmpFindingsTests(unittest.TestCase):
             v3_get=uat.SNMP_V3_GET_EXPECTED,
             v3_priv_get=uat.SNMP_V3_GET_EXPECTED,
             restart=RESTART,
+            link_states=uat.parse_vm_export_tags(good_export(), uat.SNMP_LINK_STATE_TAG),
         )
         tagged_series = (
             uat.SNMP_INTERFACE_SERIES + uat.SNMP_V1_INTERFACE_SERIES + uat.SNMP_V3_INTERFACE_SERIES
@@ -555,6 +590,91 @@ class SnmpFindingsTests(unittest.TestCase):
         self.assertEqual(len(found), len(tagged_series) * len(uat.SNMP_INTERFACES))
         for line in found:
             self.assertIn("no sample tagged ifName=", line)
+
+    def test_the_good_run_reads_a_float_load_and_both_link_states(self) -> None:
+        # Guards the green case: the load is in range and not integral, and
+        # snmp_uptime carries both states.
+        samples = uat.parse_vm_export(good_export(), label="index")
+        load = [v for _, v in samples[(uat.SNMP_LOAD_SERIES, "")]]
+        self.assertGreaterEqual(len(load), uat.SNMP_LOAD_MIN_SAMPLES)
+        self.assertTrue(all(0.1 <= v <= 0.9 for v in load), load)
+        self.assertTrue(any(v != math.floor(v) for v in load), load)
+        states = uat.parse_vm_export_tags(good_export(), uat.SNMP_LINK_STATE_TAG)
+        self.assertEqual(set(states[(uat.SNMP_UPTIME_SERIES, "")]), {"up", "down"})
+
+    def test_all_integral_load_samples_are_named(self) -> None:
+        found = findings(export=good_export(load=lambda at: 1.0))
+        self.assertEqual(
+            found,
+            [
+                f"snmp_load_1m: {len(poll_times())} sample(s) not finite or outside "
+                "[0.05, 0.95], the first 1.0",
+                "snmp_load_1m: every sample is integral ([1.0]); the Opaque float was "
+                "not decoded as a float",
+            ],
+        )
+
+    def test_a_load_sample_outside_the_bounds_is_named(self) -> None:
+        high = FIRST_POLL_S + 10 * POLL_S
+        found = findings(export=good_export(load=lambda at: 0.97 if at == high else load_1m(at)))
+        self.assertEqual(
+            found, ["snmp_load_1m: 1 sample(s) not finite or outside [0.05, 0.95], the first 0.97"]
+        )
+
+    def test_a_load_sample_that_is_not_finite_is_named(self) -> None:
+        nan_at = FIRST_POLL_S + 10 * POLL_S
+        found = findings(
+            export=good_export(load=lambda at: math.nan if at == nan_at else load_1m(at))
+        )
+        self.assertEqual(
+            found, ["snmp_load_1m: 1 sample(s) not finite or outside [0.05, 0.95], the first nan"]
+        )
+
+    def test_too_few_load_samples_are_named(self) -> None:
+        lines = [
+            line
+            for line in good_export().decode().splitlines()
+            if uat.SNMP_LOAD_SERIES not in line
+        ]
+        nine = [(FIRST_POLL_S + i * POLL_S, 0.5 + i / 100) for i in range(9)]
+        lines.append(export_line(uat.SNMP_LOAD_SERIES, {}, nine))
+        self.assertEqual(
+            findings(export="\n".join(lines).encode()),
+            ["snmp_load_1m: 9 sample(s), want >= 10"],
+        )
+        # Guard: the tenth is enough.
+        lines.append(export_line(uat.SNMP_LOAD_SERIES, {}, [(FIRST_POLL_S + 9 * POLL_S, 0.6)]))
+        self.assertEqual(findings(export="\n".join(lines).encode()), [])
+
+    def test_a_link_state_outside_the_map_is_named(self) -> None:
+        odd_at = FIRST_POLL_S + 10 * POLL_S
+        found = findings(
+            export=good_export(state=lambda at: "testing" if at == odd_at else link_state(at))
+        )
+        self.assertEqual(
+            found, ['snmp_uptime: 1 sample(s) tagged link_state="testing", want one of up, down']
+        )
+
+    def test_a_run_that_saw_only_up_is_named(self) -> None:
+        found = findings(export=good_export(state=lambda at: "up"))
+        self.assertEqual(
+            found, ["snmp_uptime: no sample tagged link_state=\"down\" within the run; saw ['up']"]
+        )
+
+    def test_a_sample_without_the_link_state_tag_is_no_value(self) -> None:
+        # A poll that reached the agent before the leaf was published.
+        found = findings(
+            export=good_export(state=lambda at: None if at == FIRST_POLL_S else link_state(at))
+        )
+        self.assertEqual(found, [])
+        # Guard: with no tag at all, both values are named.
+        self.assertEqual(
+            findings(export=good_export(state=lambda at: None)),
+            [
+                'snmp_uptime: no sample tagged link_state="up" within the run; saw []',
+                'snmp_uptime: no sample tagged link_state="down" within the run; saw []',
+            ],
+        )
 
     def test_a_flap_that_never_went_down_is_named(self) -> None:
         found = findings(export=good_export(status=lambda index, at: 1.0))
@@ -631,6 +751,8 @@ class SnmpFindingsTests(unittest.TestCase):
             uptime=lambda _: 5,
             v1_interfaces=("1", "2", "3"),
             v1_fields=V1_FIELDS + ("ifHCInOctets",),
+            load=lambda _: 2.0,
+            state=lambda _: "up",
         )
         found = findings(log=log, export=export, walk="", v1_walk="")
         self.assertEqual(
@@ -641,6 +763,9 @@ class SnmpFindingsTests(unittest.TestCase):
                 "interface_ifHCInOctets",
                 "interface_ifOperStatus",
                 "snmp_uptime did not increase",
+                "snmp_load_1m",
+                "snmp_load_1m",
+                "snmp_uptime",
                 "interface_v1_ifOperStatus",
                 "interface_v1_ifInErrors",
                 "interface_v1_ifHCInOctets",
@@ -949,13 +1074,23 @@ class MaskTests(unittest.TestCase):
             ".1.3.6.1.2.1.31.1.1.1.6.1 = Counter64: 2750000\n"
             ".1.3.6.1.2.1.2.2.1.14.1 = Counter32: 7\n"
             ".1.3.6.1.2.1.2.2.1.8.1 = INTEGER: 2\n"
+            ".1.3.6.1.4.1.2021.10.1.6.1 = Opaque: Float: 0.562574\n"
+            ".1.3.6.1.4.1.8072.9999.1.1.0 = Opaque: Double: 273.465170\n"
+            ".1.3.6.1.4.1.8072.9999.1.2.0 = IpAddress: 10.0.0.1\n"
+            '.1.3.6.1.4.1.8072.9999.1.3.0 = STRING: "down"\n'
+            '.1.3.6.1.2.1.31.1.1.1.1.1 = STRING: "GigabitEthernet0/0/0"\n'
         )
         self.assertEqual(
             uat.mask_snmp_walk(walk),
             ".1.3.6.1.2.1.1.3.0 = Timeticks: (*)\n"
             ".1.3.6.1.2.1.31.1.1.1.6.1 = Counter64: *\n"
             ".1.3.6.1.2.1.2.2.1.14.1 = Counter32: 7\n"
-            ".1.3.6.1.2.1.2.2.1.8.1 = INTEGER: 2\n",
+            ".1.3.6.1.2.1.2.2.1.8.1 = INTEGER: 2\n"
+            ".1.3.6.1.4.1.2021.10.1.6.1 = Opaque: Float: *\n"
+            ".1.3.6.1.4.1.8072.9999.1.1.0 = Opaque: Double: *\n"
+            ".1.3.6.1.4.1.8072.9999.1.2.0 = IpAddress: 10.0.0.1\n"
+            '.1.3.6.1.4.1.8072.9999.1.3.0 = STRING: "<link_state>"\n'
+            '.1.3.6.1.2.1.31.1.1.1.1.1 = STRING: "GigabitEthernet0/0/0"\n',
         )
 
 
@@ -984,6 +1119,15 @@ def pack_label_columns() -> dict[str, str]:
     return dict(re.findall(r'^  (\w+): "([0-9.]+)\.\{ifIndex\}"$', block, re.MULTILINE))
 
 
+# The example's leaves past mib-2, masked, as both walks print them.
+ENTERPRISE_LINES = [
+    ".1.3.6.1.4.1.2021.10.1.6.1 = Opaque: Float: *",
+    ".1.3.6.1.4.1.8072.9999.1.1.0 = Opaque: Float: *",
+    ".1.3.6.1.4.1.8072.9999.1.2.0 = IpAddress: 10.0.0.1",
+    '.1.3.6.1.4.1.8072.9999.1.3.0 = STRING: "<link_state>"',
+]
+
+
 class GoldenWalkTests(unittest.TestCase):
     def test_the_pack_serves_if_name_and_if_alias(self) -> None:
         self.assertEqual(
@@ -997,7 +1141,7 @@ class GoldenWalkTests(unittest.TestCase):
         lines = golden().splitlines()
         self.assertEqual(
             lines[-1],
-            ".1.3.6.1.2.1.31.1.1.1.18.4 = No more variables left in this MIB "
+            ".1.3.6.1.4.1.8072.9999.1.3.0 = No more variables left in this MIB "
             "View (It is past the end of the MIB tree)",
         )
         names = [line.split(" = ")[0] for line in lines[:-1]]
@@ -1006,7 +1150,29 @@ class GoldenWalkTests(unittest.TestCase):
             (f".{column}.{index}" for column in columns for index in uat.SNMP_INTERFACES),
             key=lambda oid: [int(arc) for arc in oid.strip(".").split(".")],
         )
-        self.assertEqual(names, system + instances)
+        enterprise = [line.split(" = ")[0] for line in ENTERPRISE_LINES]
+        self.assertEqual(names, system + instances + enterprise)
+
+    def test_both_golden_walks_end_with_the_examples_enterprise_leaves(self) -> None:
+        # The walks start at 1.3.6.1, so the leaves past mib-2 are in them,
+        # after its last instance and in this order.
+        self.assertEqual(uat.SNMP_WALK_COMMAND[-1], "1.3.6.1")
+        self.assertEqual(uat.SNMP_V1_WALK_COMMAND[-1], "1.3.6.1")
+        for walk in (golden(), v1_golden()):
+            lines = walk.splitlines()
+            self.assertEqual(lines[-5:-1], ENTERPRISE_LINES)
+            self.assertTrue(lines[-6].startswith(".1.3.6.1.2.1.31.1.1.1.18.4 = "), lines[-6])
+
+    def test_a_walk_of_mib_2_alone_is_named(self) -> None:
+        # Guard: the walk as the row took it before the enterprise leaves.
+        lines = walked().splitlines()
+        mib_2 = lines[:-5] + [
+            ".1.3.6.1.2.1.31.1.1.1.18.4 = No more variables left in this MIB "
+            "View (It is past the end of the MIB tree)"
+        ]
+        found = findings(walk="\n".join(mib_2) + "\n")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("-.1.3.6.1.4.1.2021.10.1.6.1 = Opaque: Float: *", found[0])
 
     def test_the_golden_walk_is_masked_and_names_the_example_router(self) -> None:
         text = golden()
@@ -1031,7 +1197,9 @@ class GoldenWalkTests(unittest.TestCase):
             (f".{column}.{index}" for column in kept for index in uat.SNMP_INTERFACES),
             key=oid_order,
         )
-        self.assertEqual(names, system + instances)
+        # SNMPv1 carries Opaque, IpAddress and OCTET STRING (RFC 1155).
+        enterprise = [line.split(" = ")[0] for line in ENTERPRISE_LINES]
+        self.assertEqual(names, system + instances + enterprise)
 
     def test_the_v1_golden_walk_is_masked_and_holds_no_counter64(self) -> None:
         text = v1_golden()
@@ -1169,7 +1337,7 @@ class TelegrafConfTests(unittest.TestCase):
             for snmp in telegraf_conf()["inputs"]["snmp"]
             for field in snmp.get("field", []) + [f for table in snmp["table"] for f in table["field"]]
         ]
-        self.assertEqual(len(fields), 24)
+        self.assertEqual(len(fields), 26)
         for field in fields:
             self.assertRegex(field["oid"], r"^(\.[0-9]+)+$", field["name"])
 
@@ -1294,6 +1462,38 @@ class TelegrafConfTests(unittest.TestCase):
                 "AES",
                 uat.SNMP_V3_PRIV_PASSWORD,
             ),
+        )
+
+    def test_the_v2c_block_reads_the_examples_float_and_tags_its_link_state(self) -> None:
+        import yaml
+
+        v2c, v1, v3 = telegraf_conf()["inputs"]["snmp"]
+        fields = {f["name"]: f for f in v2c["field"]}
+        self.assertEqual(uat.SNMP_LOAD_SERIES, f"snmp_{fields['load_1m']['name']}")
+        self.assertEqual(fields["load_1m"]["oid"], ".1.3.6.1.4.1.2021.10.1.6.1")
+        self.assertNotIn("is_tag", fields["load_1m"])
+        self.assertEqual(fields[uat.SNMP_LINK_STATE_TAG]["oid"], ".1.3.6.1.4.1.8072.9999.1.3.0")
+        self.assertIs(fields[uat.SNMP_LINK_STATE_TAG]["is_tag"], True)
+        self.assertNotIn("field", v1)
+        self.assertEqual([f["name"] for f in v3["field"]], ["uptime"])
+        # The example serves both leaves with the types the checker reads.
+        example = yaml.safe_load((REPO_ROOT / "examples/snmp-telegraf.yaml").read_text())
+        served = {}
+        for entry in example["scenarios"]:
+            encoder = entry.get("encoder")
+            if encoder:
+                ((name, oid),) = encoder["oids"].items()
+                served[oid] = (encoder["types"][name], entry["generator"])
+        self.assertEqual(served["1.3.6.1.4.1.2021.10.1.6.{laIndex}"][0], "opaque_float")
+        sine = served["1.3.6.1.4.1.2021.10.1.6.{laIndex}"][1]
+        low, high = uat.SNMP_LOAD_BOUNDS
+        self.assertTrue(
+            low < sine["offset"] - sine["amplitude"] and sine["offset"] + sine["amplitude"] < high,
+            sine,
+        )
+        self.assertEqual(
+            served["1.3.6.1.4.1.8072.9999.1.3.0"][0],
+            {"enum": dict(enumerate(uat.SNMP_LINK_STATES, start=1))},
         )
 
     def test_the_health_output_is_the_backend_the_harness_waits_for(self) -> None:
@@ -1485,7 +1685,7 @@ class WalkSnmpAgentTests(unittest.TestCase):
             after_compose(argv),
             [
                 "exec", "-T", "-e", "MIBS=", "telegraf-snmp",
-                "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
+                "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1",
             ],
         )
 
@@ -1847,8 +2047,8 @@ class WalkSnmpVersionsTests(unittest.TestCase):
         self.assertEqual(
             [after_compose(argv)[5:] for argv in argvs],
             [
-                ["snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
-                ["snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1"],
+                ["snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1"],
+                ["snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1"],
                 [
                     "snmpget", "-v3", "-l", "authNoPriv", "-u", "monitor", "-a", "SHA-256",
                     "-A", "lab-only-v3-password", "-On", "sonda:1161", "1.3.6.1.2.1.1.5.0",

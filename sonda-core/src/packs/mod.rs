@@ -672,7 +672,9 @@ pub fn fold_snmp_hints(encoder: &mut EncoderConfig, pack: &MetricPackDef) {
             cfg.oids
                 .entry(spec.name.clone())
                 .or_insert_with(|| hint.oid.clone());
-            cfg.types.entry(spec.name.clone()).or_insert(hint.r#type);
+            cfg.types
+                .entry(spec.name.clone())
+                .or_insert_with(|| hint.r#type.clone());
         }
         for (label, template) in &pack.snmp_label_columns {
             cfg.label_columns
@@ -2136,6 +2138,76 @@ sink:
             with_id("out", SnmpValueType::Counter64),
         ]);
         assert_eq!(validate_pack(&same), Ok(()), "one hint shared is fine");
+    }
+
+    /// `validate_pack` compares enum maps whole: one label apart is a
+    /// different hint.
+    #[test]
+    fn specs_sharing_a_name_with_different_enum_maps_do_not_load() {
+        let enum_of = |labels: &[(i64, &str)]| {
+            SnmpValueType::Enum(
+                labels
+                    .iter()
+                    .map(|(code, label)| (*code, label.to_string()))
+                    .collect(),
+            )
+        };
+        let with_id = |id: &str, r#type| MetricSpec {
+            id: Some(id.to_string()),
+            ..snmp_hinted("ifOperStatus", "1.3.6.1.2.1.2.2.1.8.{ifIndex}", r#type)
+        };
+        let pack = pack_of(vec![
+            with_id("a", enum_of(&[(1, "up"), (2, "down")])),
+            with_id("b", enum_of(&[(1, "up"), (2, "lowerLayerDown")])),
+        ]);
+        assert_eq!(
+            validate_pack(&pack),
+            Err(PackValidationError::ConflictingSnmpHints {
+                pack_name: "p".to_string(),
+                name: "ifOperStatus".to_string(),
+            })
+        );
+
+        let same = pack_of(vec![
+            with_id("a", enum_of(&[(1, "up"), (2, "down")])),
+            with_id("b", enum_of(&[(1, "up"), (2, "down")])),
+        ]);
+        assert_eq!(validate_pack(&same), Ok(()), "one enum map shared is fine");
+    }
+
+    /// A hint's `type:` takes the enum form a `types:` entry takes, and the
+    /// fold carries the map into the encoder.
+    #[cfg(all(feature = "config", feature = "snmp"))]
+    #[test]
+    fn an_enum_hint_loads_and_folds() {
+        use crate::encoder::snmp::SnmpEncoderConfig;
+        let pack: MetricPackDef = serde_yaml_ng::from_str(
+            "name: p
+description: d
+category: network
+metrics:
+  - name: ifOperStatus
+    \
+             snmp:
+      oid: \"1.3.6.1.2.1.2.2.1.8.{ifIndex}\"
+      \
+             type: { enum: { 1: up, 2: down } }
+",
+        )
+        .expect("an enum hint parses");
+        assert_eq!(validate_pack(&pack), Ok(()));
+        let up_down = SnmpValueType::Enum(BTreeMap::from([
+            (1, "up".to_string()),
+            (2, "down".to_string()),
+        ]));
+        let encoders = expanded_encoders(&pack, EncoderConfig::Snmp(SnmpEncoderConfig::default()));
+        let [EncoderConfig::Snmp(cfg)] = &encoders[..] else {
+            panic!("one snmp encoder: {encoders:?}");
+        };
+        assert_eq!(
+            cfg.types,
+            HashMap::from([("ifOperStatus".to_string(), up_down)])
+        );
     }
 
     fn invalid_snmp_hint_pack() -> MetricPackDef {

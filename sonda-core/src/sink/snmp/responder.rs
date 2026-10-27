@@ -11,8 +11,11 @@
 //! (`0.0.0.0` or `[::]`) the socket reports each datagram's packet info
 //! (`IP_PKTINFO` / `IPV6_RECVPKTINFO`, Linux and macOS) and the response
 //! is sent with [`reply_source`]'s address in its packet-info control
-//! message. Elsewhere a wildcard bind's responses leave from the address
-//! the route chooses.
+//! message: on Linux with `sendmmsg` through headers preallocated once per
+//! thread, so a response allocates nothing, and on macOS with `sendmsg`,
+//! which allocates its control-message buffer for each response because
+//! nix has no `sendmmsg` there. Elsewhere a wildcard bind's responses leave
+//! from the address the route chooses.
 //!
 //! | Received | SNMPv2c answer | SNMPv1 answer |
 //! |---|---|---|
@@ -778,7 +781,7 @@ async fn recv<'b>(
 }
 
 /// Send `reply` to `to`: with `send_to` when `from` is `None`, otherwise
-/// with `sendmsg` carrying `from` as its packet info.
+/// carrying `from` as its packet info ([`pktinfo`]).
 async fn send(
     socket: &UdpSocket,
     reply: &[u8],
@@ -791,12 +794,13 @@ async fn send(
     }
 }
 
-/// `recvmsg` and `sendmsg` with packet info, through the socket's readiness.
+/// `recvmsg` with packet info, and `sendmmsg` (Linux) or `sendmsg` (macOS)
+/// carrying it, through the socket's readiness.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod pktinfo {
     use std::io::{self, IoSlice, IoSliceMut};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, RawFd};
 
     use nix::libc;
     use nix::sys::socket::{
@@ -806,6 +810,34 @@ mod pktinfo {
     use tokio::net::UdpSocket;
 
     use super::{PacketInfo, ReplySource};
+
+    /// The message header `sendmmsg` sends one response through, with
+    /// control room for the larger of `in_pktinfo` and `in6_pktinfo`.
+    /// The kernel stops reading control messages where fewer bytes remain
+    /// than a `cmsghdr`, so an `in_pktinfo` fits the same room.
+    #[cfg(target_os = "linux")]
+    struct SendHeaders(socket::MultiHeaders<SockaddrStorage>);
+
+    #[cfg(target_os = "linux")]
+    impl SendHeaders {
+        fn new() -> Self {
+            let room = std::cmp::max_by_key(
+                nix::cmsg_space!(libc::in_pktinfo),
+                nix::cmsg_space!(libc::in6_pktinfo),
+                Vec::capacity,
+            );
+            Self(socket::MultiHeaders::preallocate(1, Some(room)))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    std::thread_local! {
+        /// This thread's [`SendHeaders`], allocated by its first response.
+        /// One per thread: the headers hold raw pointers and are not
+        /// `Send`, so they stay on the thread that made them.
+        static SEND_HEADERS: std::cell::RefCell<Option<SendHeaders>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
     /// Room for one packet-info control message of either family, aligned
     /// as a `cmsghdr`.
@@ -895,15 +927,49 @@ mod pktinfo {
         }];
         loop {
             socket.writable().await?;
-            let sent = socket.try_io(Interest::WRITABLE, || {
-                socket::sendmsg(fd, &iov, &cmsgs, MsgFlags::empty(), Some(&to))
-                    .map_err(io::Error::from)
-            });
+            let sent = socket.try_io(Interest::WRITABLE, || send_now(fd, &iov, &cmsgs, to));
             match sent {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                 sent => return sent,
             }
         }
+    }
+
+    /// Send one datagram of `iov` to `to` with `cmsgs`, through this
+    /// thread's [`SendHeaders`]: allocates nothing once the thread has sent
+    /// one. A datagram is sent whole or not at all, so the count is its
+    /// length.
+    #[cfg(target_os = "linux")]
+    fn send_now(
+        fd: RawFd,
+        iov: &[IoSlice<'_>; 1],
+        cmsgs: &[ControlMessage<'_>; 1],
+        to: SockaddrStorage,
+    ) -> io::Result<usize> {
+        SEND_HEADERS.with_borrow_mut(|headers| {
+            let headers = headers.get_or_insert_with(SendHeaders::new);
+            socket::sendmmsg(
+                fd,
+                &mut headers.0,
+                [iov],
+                [Some(to)],
+                cmsgs,
+                MsgFlags::empty(),
+            )
+            .map(|_| iov[0].len())
+            .map_err(io::Error::from)
+        })
+    }
+
+    /// Send one datagram of `iov` to `to` with `cmsgs`.
+    #[cfg(target_os = "macos")]
+    fn send_now(
+        fd: RawFd,
+        iov: &[IoSlice<'_>; 1],
+        cmsgs: &[ControlMessage<'_>; 1],
+        to: SockaddrStorage,
+    ) -> io::Result<usize> {
+        socket::sendmsg(fd, iov, cmsgs, MsgFlags::empty(), Some(&to)).map_err(io::Error::from)
     }
 
     fn socket_addr(address: &SockaddrStorage) -> Option<SocketAddr> {
@@ -3218,6 +3284,74 @@ mod tests {
         assert_eq!(response(&reply).varbinds.len(), 1);
     }
 
+    /// A 1 400-byte reply sent with its packet info from a wildcard-bound
+    /// socket allocates nothing once the thread has sent one, and the peer
+    /// receives it whole from the source the packet info names: over IPv4,
+    /// 127.0.0.2, which the route to 127.0.0.1 would not choose; over IPv6,
+    /// `::1`, the only loopback address, which the route picks too. So the
+    /// IPv6 case proves the path sends, and the IPv4 case proves the source.
+    #[cfg(target_os = "linux")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::ipv4("0.0.0.0:0", "127.0.0.1:0", "127.0.0.2")]
+    #[case::ipv6("[::]:0",    "[::1]:0",     "::1")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_wildcard_reply_allocates_nothing(
+        #[case] bind: &str,
+        #[case] peer: &str,
+        #[case] source: IpAddr,
+    ) {
+        use std::future::Future as _;
+        use std::task::{Context, Poll, Waker};
+
+        if bind.starts_with('[') && !ipv6_loopback() {
+            return;
+        }
+        let socket = UdpSocket::bind(bind).await.expect("bind the agent's socket");
+        enable_pktinfo(&socket, socket.local_addr().expect("bound")).expect("packet info");
+        let peer = UdpSocket::bind(peer).await.expect("bind the peer");
+        let to = peer.local_addr().expect("bound");
+        let from = ReplySource {
+            addr: source,
+            ifindex: 0,
+        };
+        let reply: Vec<u8> = (0..1400).map(|i| (i % 251) as u8).collect();
+        let received = |peer: &UdpSocket| {
+            let mut buffer = vec![0; RECEIVE_BUFFER];
+            match peer.try_recv_from(&mut buffer) {
+                Ok((len, source)) => {
+                    buffer.truncate(len);
+                    (buffer, source)
+                }
+                Err(e) => panic!("the peer received nothing: {e}"),
+            }
+        };
+
+        let sent = pktinfo::send(&socket, &reply, to, from).await.expect("sent");
+        assert_eq!(sent, reply.len());
+        peer.readable().await.expect("readable");
+        let (first, source) = received(&peer);
+        assert_eq!(source.ip(), from.addr, "the reply leaves from the packet info's source");
+        assert!(first == reply, "the peer receives the reply whole");
+
+        let mut sending = std::pin::pin!(pktinfo::send(&socket, &reply, to, from));
+        let mut cx = Context::from_waker(Waker::noop());
+        counting::assert_count_allocations_counts();
+        let (sent, allocations) = counting::count_allocations(|| sending.as_mut().poll(&mut cx));
+        assert!(
+            matches!(sent, Poll::Ready(Ok(len)) if len == reply.len()),
+            "the reply was sent in one poll: {sent:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(1), peer.readable())
+            .await
+            .expect("the reply arrives within 1 s")
+            .expect("readable");
+        let (second, source) = received(&peer);
+        assert_eq!(source.ip(), from.addr, "the reply leaves from the packet info's source");
+        assert!(second == reply, "the peer receives the reply whole");
+        assert_eq!(allocations, 0);
+    }
+
     /// An agent on a specific address reads without packet info, sends with
     /// `send_to`, and answers a connected client.
     #[tokio::test]
@@ -3549,6 +3683,73 @@ mod tests {
         .1.3.6.1.2.1.31.1.1.1.15.8 = Gauge32: 10000\n\
         .1.3.6.1.2.1.31.1.1.1.15.9 = Gauge32: 10000\n\
         .1.3.6.1.2.1.31.1.1.1.15.10 = Gauge32: 10000\n";
+
+    /// net-snmp reads an Opaque float, an Opaque double, an IpAddress and an
+    /// enum's text, each written by the value layer, over SNMPv2c and
+    /// SNMPv1, which carries all four (RFC 1155). net-snmp prints an Opaque
+    /// double as "Opaque: Float:" too, with the double's digits.
+    #[tokio::test]
+    #[ignore = "needs net-snmp's snmpget on PATH; run with --ignored"]
+    async fn net_snmp_reads_the_opaque_ipaddress_and_enum_types() {
+        use crate::encoder::snmp::SnmpValueType;
+
+        let agent = agent_serving(&[SnmpVersion::V1, SnmpVersion::V2c]).await;
+        let owner = owner();
+        let up_down = SnmpValueType::Enum(
+            [(1, "up".to_string()), (2, "down".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let leaves = [
+            (
+                "1.3.6.1.4.1.2021.10.1.6.1",
+                SnmpValueType::OpaqueFloat,
+                0.15,
+            ),
+            (
+                "1.3.6.1.4.1.8072.9999.1.1.0",
+                SnmpValueType::OpaqueDouble,
+                273.46517,
+            ),
+            (
+                "1.3.6.1.4.1.8072.9999.1.2.0",
+                SnmpValueType::IpAddress,
+                167_772_161.0,
+            ),
+            ("1.3.6.1.4.1.8072.9999.1.3.0", up_down, 1.0),
+        ];
+        for (oid, ty, value) in &leaves {
+            publish(&agent, owner, oid, |out| {
+                ty.write(*value, out).expect("a value of the type")
+            });
+        }
+        let target = format!("127.0.0.1:{}", agent.local_addr().port());
+        for version in ["-v2c", "-v1"] {
+            let args = [
+                version, "-c", "public", "-On", "-r", "0", "-t", "2", &target,
+            ]
+            .into_iter()
+            .chain(leaves.iter().map(|(oid, _, _)| *oid))
+            .map(str::to_string)
+            .collect();
+            let get = net_snmp("snmpget", args).await;
+            assert!(
+                get.status.success(),
+                "{version}: {}",
+                String::from_utf8_lossy(&get.stderr)
+            );
+            let stdout = String::from_utf8(get.stdout).expect("UTF-8");
+            println!("{stdout}");
+            assert_eq!(
+                stdout,
+                ".1.3.6.1.4.1.2021.10.1.6.1 = Opaque: Float: 0.150000\n\
+                 .1.3.6.1.4.1.8072.9999.1.1.0 = Opaque: Float: 273.465170\n\
+                 .1.3.6.1.4.1.8072.9999.1.2.0 = IpAddress: 10.0.0.1\n\
+                 .1.3.6.1.4.1.8072.9999.1.3.0 = STRING: \"up\"\n",
+                "{version}"
+            );
+        }
+    }
 
     /// net-snmp's v1 walk of MIB-2 prints every instance but the Counter64
     /// ones, and its v2c bulk walk of the same agent still prints the v2c

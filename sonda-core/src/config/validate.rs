@@ -652,6 +652,54 @@ impl ArcSet {
                 .any(|(prefix, cardinality)| counter_holds(prefix, *cardinality, arc))
     }
 
+    /// Whether the set holds no arc: nothing listed, and no counter with a
+    /// value. A counter's values are arcs once rule 4 has passed.
+    fn is_empty(&self) -> bool {
+        self.listed.is_empty()
+            && self
+                .counters
+                .iter()
+                .all(|(_, cardinality)| *cardinality == 0)
+    }
+
+    /// The arcs of this set that `other` also holds.
+    ///
+    /// Exact for listed arcs against anything (an arc is kept when `other`
+    /// [contains](Self::contains) it) and for a counter against a listed
+    /// set (the counter becomes the listed arcs of `other` it holds). A
+    /// counter that meets a counter of `other` is kept whole, unchanged:
+    /// the one conservative case, which can only keep an arc the exact
+    /// intersection would not, so rule 6 may refuse two such templates but
+    /// never misses a collision. O((listed + counters) × (listed + counters)
+    /// × digits).
+    fn narrow(&self, other: &ArcSet) -> ArcSet {
+        let mut listed: std::collections::BTreeSet<u32> = self
+            .listed
+            .iter()
+            .copied()
+            .filter(|arc| other.contains(*arc))
+            .collect();
+        let mut counters = Vec::new();
+        for (prefix, cardinality) in &self.counters {
+            let meets_a_counter = other
+                .counters
+                .iter()
+                .any(|(q, d)| counters_meet((prefix, *cardinality), (q, *d)).is_some());
+            if meets_a_counter {
+                counters.push((prefix.clone(), *cardinality));
+            } else {
+                listed.extend(
+                    other
+                        .listed
+                        .iter()
+                        .copied()
+                        .filter(|arc| counter_holds(prefix, *cardinality, *arc)),
+                );
+            }
+        }
+        ArcSet { listed, counters }
+    }
+
     /// The smallest arc in both sets, if they share one. O(listed ×
     /// counters × digits + counters²).
     fn common(&self, other: &Self) -> Option<u32> {
@@ -734,10 +782,15 @@ fn placeholder_text(template: &crate::encoder::snmp::oid::OidTemplate, label: &s
 #[cfg(feature = "snmp")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SnmpCollision {
-    /// Both render this OID, when the labels take these values.
+    /// Both render this OID, when the labels take these values: each label
+    /// once, with the arc it renders as in the first template it appears
+    /// in and, when it renders as another in the second template, that arc
+    /// too. `exact` is false when the OID rests on a counter
+    /// [`ArcSet::narrow`] kept whole: the templates may render it.
     Oid {
         oid: String,
-        values: Vec<(String, u32)>,
+        values: Vec<(String, u32, Option<u32>)>,
+        exact: bool,
     },
     /// A template has a string index and one object is equal to or a prefix
     /// of the other.
@@ -750,14 +803,24 @@ enum SnmpCollision {
 ///
 /// When either template has a string index, the two collide exactly when one
 /// object is equal to or a prefix of the other ([`SnmpCollision::Nested`]).
-/// Otherwise they collide when they have the same number of arcs and the
-/// arcs at every position can be equal: two literals when they are the same
-/// number, a placeholder and a literal when the literal is among the arcs
-/// the placeholder's label renders as for this entry ([`ArcSet::of_label`]),
-/// two placeholders when their labels share an arc. Templates of different
-/// lengths never collide. The OID returned takes the smallest shared arc at
-/// each position, and names each label once, with its first arc. O(arcs ×
-/// values).
+/// Templates of different lengths never collide. Otherwise a label takes one
+/// value at every position of its template, and the same label in the other
+/// template is a value of its own, because the two render for different
+/// series. Each label of each template starts with the arcs it renders as
+/// for this entry ([`ArcSet::of_label`]); a pass visits every position
+/// and narrows the set of each label there to the arcs the other side's set
+/// at that position also holds ([`ArcSet::narrow`]; a literal is its one
+/// arc), and passes repeat until no set changes, each pass but the last
+/// removing an arc or turning a counter into listed arcs. The templates
+/// collide when, after that, no label's set is empty and the two sides of
+/// every position share an arc. The OID returned takes the smallest shared
+/// arc at each position, which for listed arcs is each label's smallest
+/// narrowed arc at every position it occupies, and names each label once.
+/// Exact but for two counters that meet ([`ArcSet::narrow`]): a counter
+/// kept whole decides exactly only at a position where it meets the other
+/// side's counter and each of the two labels occupies no other position;
+/// anywhere else the collision is not `exact`. O((labels + counters + arcs
+/// listed) × arcs × values) for the passes.
 #[cfg(feature = "snmp")]
 fn snmp_collision(
     own: &crate::encoder::snmp::oid::OidTemplate,
@@ -769,32 +832,125 @@ fn snmp_collision(
         let (a, b) = (own.object(), other.object());
         return (a.is_prefix_of(b) || b.is_prefix_of(a)).then_some(SnmpCollision::Nested);
     }
-    let set = |arc: TemplateArc<'_>| match arc {
-        TemplateArc::Literal(arc) => ArcSet::literal(arc),
-        TemplateArc::Label(label) => ArcSet::of_label(base.label_value_set(label)),
-        // Neither template has one: answered above.
-        TemplateArc::StringLabel(_) => ArcSet::default(),
-    };
-    if own.arcs().count() != other.arcs().count() {
+    let sides: [Vec<TemplateArc<'_>>; 2] = [own.arcs().collect(), other.arcs().collect()];
+    if sides[0].len() != sides[1].len() {
         return None;
     }
+    // One set per label of each side; each position holds, per side, its
+    // arc and the index of the set of the label there.
+    let mut keys: Vec<(usize, &str)> = Vec::new();
+    let mut sets: Vec<ArcSet> = Vec::new();
+    let mut positions: Vec<[(TemplateArc<'_>, Option<usize>); 2]> = Vec::new();
+    for (&a, &b) in sides[0].iter().zip(&sides[1]) {
+        let mut position = [(a, None), (b, None)];
+        for (side, (arc, slot)) in position.iter_mut().enumerate() {
+            let TemplateArc::Label(label) = *arc else {
+                continue;
+            };
+            *slot = Some(match keys.iter().position(|key| *key == (side, label)) {
+                Some(i) => i,
+                None => {
+                    keys.push((side, label));
+                    sets.push(ArcSet::of_label(base.label_value_set(label)));
+                    keys.len() - 1
+                }
+            });
+        }
+        positions.push(position);
+    }
+    let set_of = |sets: &[ArcSet], (arc, slot): (TemplateArc<'_>, Option<usize>)| match (slot, arc)
+    {
+        (Some(i), _) => sets[i].clone(),
+        (None, TemplateArc::Literal(arc)) => ArcSet::literal(arc),
+        // Neither template has a string index: answered above.
+        (None, _) => ArcSet::default(),
+    };
+    loop {
+        let mut changed = false;
+        for position in &positions {
+            for side in [0, 1] {
+                let Some(i) = position[side].1 else {
+                    continue;
+                };
+                let narrowed = sets[i].narrow(&set_of(&sets, position[1 - side]));
+                if narrowed != sets[i] {
+                    sets[i] = narrowed;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if sets.iter().any(ArcSet::is_empty) {
+        return None;
+    }
+    let occupied = |i: usize| {
+        positions
+            .iter()
+            .flatten()
+            .filter(|(_, slot)| *slot == Some(i))
+            .count()
+    };
+    let exact = positions.iter().all(|position| {
+        let kept_whole = position
+            .iter()
+            .any(|(_, slot)| slot.is_some_and(|i| !sets[i].counters.is_empty()));
+        !kept_whole
+            || position
+                .iter()
+                .all(|(_, slot)| slot.is_some_and(|i| occupied(i) == 1))
+    });
     let mut oid: Vec<String> = Vec::new();
-    let mut values: Vec<(String, u32)> = Vec::new();
-    for (a, b) in own.arcs().zip(other.arcs()) {
-        let arc = set(a).common(&set(b))?;
+    // Each label of each side with its arc at its first position, in the
+    // order the positions name them.
+    let mut arcs: Vec<((usize, &str), u32)> = Vec::new();
+    for position in &positions {
+        let arc = set_of(&sets, position[0]).common(&set_of(&sets, position[1]))?;
         oid.push(arc.to_string());
-        for side in [a, b] {
-            if let TemplateArc::Label(label) = side {
-                if !values.iter().any(|(named, _)| named == label) {
-                    values.push((label.to_string(), arc));
+        for (side, (template_arc, _)) in position.iter().enumerate() {
+            if let TemplateArc::Label(label) = *template_arc {
+                if !arcs.iter().any(|(key, _)| *key == (side, label)) {
+                    arcs.push(((side, label), arc));
                 }
             }
         }
     }
+    let first_arc = |side: usize, label: &str| {
+        arcs.iter()
+            .find(|(key, _)| *key == (side, label))
+            .map(|(_, arc)| *arc)
+    };
+    let mut values: Vec<(String, u32, Option<u32>)> = Vec::new();
+    for ((_, label), _) in &arcs {
+        if values.iter().any(|(named, _, _)| named == label) {
+            continue;
+        }
+        let (own_arc, other_arc) = (first_arc(0, label), first_arc(1, label));
+        let Some(arc) = own_arc.or(other_arc) else {
+            continue;
+        };
+        let second = other_arc.filter(|second| own_arc.is_some_and(|first| first != *second));
+        values.push((label.to_string(), arc, second));
+    }
     Some(SnmpCollision::Oid {
         oid: oid.join("."),
         values,
+        exact,
     })
+}
+
+/// How a rule 6 refusal says the two templates reach an OID: they "both
+/// render" it when the collision is exact, and "may render" it when it rests
+/// on a counter [`ArcSet::narrow`] kept whole.
+#[cfg(feature = "snmp")]
+fn renders(exact: bool) -> &'static str {
+    if exact {
+        "both render"
+    } else {
+        "may render"
+    }
 }
 
 /// Validate a metrics entry's `snmp` encoder against the entry.
@@ -844,8 +1000,12 @@ fn snmp_collision(
 ///    another template of the encoder, in `oids:` or `label_columns:`, can
 ///    render ([`snmp_collision`]): with a string index in either, one object
 ///    is equal to or a prefix of the other; otherwise the two have the same
-///    number of arcs, and at every position their arcs can be equal.
-///    O((metrics + columns)² × arcs × values).
+///    number of arcs, and their arcs can be equal at every position at
+///    once, a label taking one value at every position of its template.
+///    Exact but for two counters whose values meet, which may be refused
+///    when they cannot collide; such a refusal says the templates "may
+///    render" the OID rather than "both render". O((metrics + columns)² × (labels + arcs
+///    listed) × arcs × values).
 ///
 /// Last, the **system group**: no `oids:` or `label_columns:` template can
 /// render an OID under `1.3.6.1.2.1.1`, which the agent serves itself
@@ -1067,19 +1227,26 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
         };
         match snmp_collision(a_template, b_template, &config.base) {
             None => {}
-            Some(SnmpCollision::Oid { oid, values }) => {
+            Some(SnmpCollision::Oid { oid, values, exact }) => {
                 let when = if values.is_empty() {
                     String::new()
                 } else {
                     let values: Vec<String> = values
                         .iter()
-                        .map(|(label, arc)| format!("{label} is {arc}"))
+                        .map(|(label, arc, second)| match second {
+                            None => format!("{label} is {arc}"),
+                            Some(second) => format!(
+                                "{label} is {arc} in the first template and {second} in the \
+                                 second"
+                            ),
+                        })
                         .collect();
                     format!(" when {}", values.join(" and "))
                 };
                 return Err(invalid(format!(
-                    "snmp OID templates of {both} both render {oid} for this entry{when}; give \
-                     each its own column"
+                    "snmp OID templates of {both} {} {oid} for this entry{when}; give each its \
+                     own column",
+                    renders(exact)
                 )));
             }
             Some(SnmpCollision::Nested) => {
@@ -5307,6 +5474,20 @@ generator:
             snmp_cfg(c).drop_labels.push("slot".to_string());
             set_oid(c, "ifHCOutOctets", "1.3.6.1.2.1.31.1.1.1.6.{slot}"); },
         "both render 1.3.6.1.2.1.31.1.1.1.6.1 for this entry when ifIndex is 1 and slot is 1")]
+    #[case::r6_counters_kept_whole_may_render(|c: &mut ScenarioConfig| {
+            c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex", snmp_counter(Some(""), 30)),
+                snmp_dynamic("slot", snmp_counter(Some("1"), 1)), snmp_dynamic("port", snmp_counter(Some("2"), 1))]);
+            snmp_cfg(c).drop_labels.extend(["slot".to_string(), "port".to_string()]);
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{ifIndex}");
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.2.1.{slot}.{port}"); },
+        "snmp OID templates of metrics \"ifHCInOctets\" and \"ifHCOutOctets\" may render 1.3.6.1.4.1.8072.9999.2.1.10.20 for this entry when ifIndex is 10 and slot is 10 and port is 20; give each its own column")]
+    #[case::r6_a_label_renders_apart_in_each_template(|c: &mut ScenarioConfig| { set_label(c, "slot", "2");
+            c.base.dynamic_labels = Some(vec![snmp_dynamic("ifIndex",
+                DynamicLabelStrategy::ValuesList { values: vec!["1".to_string(), "2".to_string()] })]);
+            snmp_cfg(c).drop_labels.push("slot".to_string());
+            set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.2.1.1.{ifIndex}");
+            set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{slot}"); },
+        "both render 1.3.6.1.4.1.8072.9999.2.1.1.2 for this entry when ifIndex is 2 in the first template and 1 in the second and slot is 2")]
     // The literal part parses as an OID, and nothing renders under the system group.
     #[case::r2_oid_of_one_arc(|c: &mut ScenarioConfig| set_oid(c, "ifHCOutOctets", "1.{ifIndex}"),
         "oids.ifHCOutOctets: OID template \"1.{ifIndex}\": OID \"1\" has one arc")]
@@ -5486,8 +5667,9 @@ generator:
         validate_snmp_encoder(&config).expect("this variant validates");
     }
 
-    /// Rule 6 matches a label used twice in one template position by
-    /// position, and the refusal names it once, with its first value.
+    /// Rule 6 holds one value for a label used twice in one template:
+    /// `{ifIndex}.{ifIndex}` renders `0.0` and `1.1`, never `1.0`, and the
+    /// refusal names the label once.
     #[cfg(feature = "snmp")]
     #[test]
     fn a_label_repeated_in_a_template_is_named_once() {
@@ -5514,14 +5696,152 @@ generator:
             "ifHCOutOctets",
             "1.3.6.1.4.1.8072.9999.2.1.1.0",
         );
+        validate_snmp_encoder(&config).expect("ifIndex renders 1.1 or 0.0, never 1.0");
+        set_oid(
+            &mut config,
+            "ifHCOutOctets",
+            "1.3.6.1.4.1.8072.9999.2.1.0.0",
+        );
         let msg = err_msg(validate_snmp_encoder(&config));
         assert!(
             msg.contains(
-                "both render 1.3.6.1.4.1.8072.9999.2.1.1.0 for this entry when ifIndex is 1;"
+                "both render 1.3.6.1.4.1.8072.9999.2.1.0.0 for this entry when ifIndex is 0;"
             ),
             "got: {msg}"
         );
         assert_eq!(msg.matches("ifIndex is").count(), 1, "named once: {msg}");
+    }
+
+    /// A label a collision names, its arc, and its arc in the second template
+    /// when that differs.
+    #[cfg(feature = "snmp")]
+    type NamedArcs<'a> = (&'a str, u32, Option<u32>);
+
+    /// [`snmp_collision`] of `own` and `other` under [`snmp_config`] with
+    /// each of `values` (key, comma-separated values) a static label (one
+    /// value) or a `values` dynamic label, and each of `counters` (key, prefix, cardinality) a `counter`
+    /// dynamic label.
+    #[cfg(feature = "snmp")]
+    fn collision_of(
+        own: &str,
+        other: &str,
+        values: &[(&str, &str)],
+        counters: &[(&str, &str, u64)],
+    ) -> Option<SnmpCollision> {
+        use crate::encoder::snmp::oid::OidTemplate;
+        let mut config = snmp_config();
+        let mut dynamic = Vec::new();
+        for (key, values) in values {
+            let values: Vec<String> = values.split(',').map(str::to_string).collect();
+            match &values[..] {
+                [value] => set_label(&mut config, key, value),
+                _ => dynamic.push(snmp_dynamic(
+                    key,
+                    DynamicLabelStrategy::ValuesList { values },
+                )),
+            }
+        }
+        for (key, prefix, cardinality) in counters {
+            dynamic.push(snmp_dynamic(key, snmp_counter(Some(prefix), *cardinality)));
+        }
+        if !dynamic.is_empty() {
+            config.base.dynamic_labels = Some(dynamic);
+        }
+        let parse = |text: &str| OidTemplate::parse(text).expect("a template");
+        snmp_collision(&parse(own), &parse(other), &config.base)
+    }
+
+    /// Rule 6 holds one value per label across the positions of its
+    /// template, and a label of the other template is a value of its own.
+    /// Each case without a collision has a sibling, one value or arc apart,
+    /// that collides. `repeated_label_against_*_apart` were refused before
+    /// the rule held one value per label: position by position each arc
+    /// could be equal.
+    ///
+    /// The two `counters_*` cases are the conservative one, `ArcSet::narrow`:
+    /// "A counter that meets a counter of `other` is kept whole, unchanged:
+    /// the one conservative case, which can only keep an arc the exact
+    /// intersection would not, so rule 6 may refuse two such templates but
+    /// never misses a collision." The first collides (`0.0`); the second is
+    /// refused though `{a}.{a}` never renders `10.20`. Both say the templates
+    /// "may render" the OID; every exact collision says they "both render" it.
+    #[cfg(feature = "snmp")]
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::repeated_label_against_a_scalar_apart(  "1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.1.0", &[("a", "0,1")], &[], None)]
+    #[case::repeated_label_against_a_scalar_it_renders("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.0.0", &[("a", "0,1")], &[],
+        Some(("both render", "1.3.6.1.4.1.8072.9999.0.0", &[("a", 0, None)][..])))]
+    #[case::repeated_label_against_a_literal_and_a_label_apart("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.1.{b}",
+        &[("a", "1,2"), ("b", "2")], &[], None)]
+    #[case::repeated_label_against_a_literal_and_a_label_that_meet("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.1.{b}",
+        &[("a", "1,2"), ("b", "1,2")], &[],
+        Some(("both render", "1.3.6.1.4.1.8072.9999.1.1", &[("a", 1, None), ("b", 1, None)][..])))]
+    #[case::repeated_label_against_two_labels_apart("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}",
+        &[("a", "1,2"), ("b", "1"), ("c", "2")], &[], None)]
+    #[case::repeated_label_against_two_labels_that_meet("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}",
+        &[("a", "1,2"), ("b", "1"), ("c", "1,2")], &[],
+        Some(("both render", "1.3.6.1.4.1.8072.9999.1.1", &[("a", 1, None), ("b", 1, None), ("c", 1, None)][..])))]
+    #[case::repeated_counter_against_a_literal_and_a_label_apart("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.7.{b}",
+        &[("b", "8")], &[("a", "", 48)], None)]
+    #[case::repeated_counter_against_a_literal_and_a_label_that_meet("1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.7.{b}",
+        &[("b", "7,8")], &[("a", "", 48)],
+        Some(("both render", "1.3.6.1.4.1.8072.9999.7.7", &[("a", 7, None), ("b", 7, None)][..])))]
+    #[case::counters_meet(                        "1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}", &[],
+        &[("a", "", 3), ("b", "", 3), ("c", "", 3)],
+        Some(("may render", "1.3.6.1.4.1.8072.9999.0.0", &[("a", 0, None), ("b", 0, None), ("c", 0, None)][..])))]
+    #[case::counters_kept_whole_refuse(           "1.3.6.1.4.1.8072.9999.{a}.{a}", "1.3.6.1.4.1.8072.9999.{b}.{c}", &[],
+        &[("a", "", 30), ("b", "1", 1), ("c", "2", 1)],
+        Some(("may render", "1.3.6.1.4.1.8072.9999.10.20", &[("a", 10, None), ("b", 10, None), ("c", 20, None)][..])))]
+    #[case::a_label_in_each_template_apart(      "1.3.6.1.4.1.8072.9999.1.{a}", "1.3.6.1.4.1.8072.9999.{a}.{b}",
+        &[("a", "1"), ("b", "2")], &[], None)]
+    #[case::a_label_in_each_template_meets(      "1.3.6.1.4.1.8072.9999.1.{a}", "1.3.6.1.4.1.8072.9999.{a}.{b}",
+        &[("a", "1,2"), ("b", "2")], &[],
+        Some(("both render", "1.3.6.1.4.1.8072.9999.1.2", &[("a", 2, Some(1)), ("b", 2, None)][..])))]
+    fn rule_6_holds_one_value_per_label(
+        #[case] own: &str,
+        #[case] other: &str,
+        #[case] values: &[(&str, &str)],
+        #[case] counters: &[(&str, &str, u64)],
+        #[case] expected: Option<(&str, &str, &[NamedArcs<'_>])>,
+    ) {
+        let found = collision_of(own, other, values, counters).map(|collision| match collision {
+            SnmpCollision::Oid { oid, values, exact } => (renders(exact), oid, values),
+            SnmpCollision::Nested => panic!("no string index here"),
+        });
+        let expected = expected.map(|(verb, oid, values)| {
+            let values = values
+                .iter()
+                .map(|(label, arc, second)| (label.to_string(), *arc, *second))
+                .collect::<Vec<_>>();
+            (verb, oid.to_string(), values)
+        });
+        assert_eq!(found, expected);
+    }
+
+    /// `narrow` keeps a listed arc the other set contains, turns a counter
+    /// into the listed arcs it holds, keeps a counter that meets another
+    /// whole, and drops one that meets none.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn narrow_is_exact_but_for_two_counters_that_meet() {
+        let listed = |arcs: &[u32]| ArcSet {
+            listed: arcs.iter().copied().collect(),
+            counters: Vec::new(),
+        };
+        let counter = |prefix: &str, cardinality: u64| ArcSet {
+            listed: Default::default(),
+            counters: vec![(prefix.to_string(), cardinality)],
+        };
+        assert_eq!(
+            listed(&[1, 5, 9]).narrow(&listed(&[5, 9, 11])),
+            listed(&[5, 9])
+        );
+        assert_eq!(listed(&[1, 5, 12]).narrow(&counter("1", 3)), listed(&[12]));
+        assert_eq!(counter("", 10).narrow(&listed(&[3, 10, 42])), listed(&[3]));
+        assert_eq!(counter("", 30).narrow(&counter("2", 1)), counter("", 30));
+        assert_eq!(counter("", 10).narrow(&counter("2", 1)), listed(&[]));
+        assert!(listed(&[]).is_empty() && counter("", 0).is_empty());
+        assert!(!counter("", 1).is_empty() && !listed(&[0]).is_empty());
     }
 
     #[cfg(feature = "snmp")]
