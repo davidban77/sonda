@@ -995,6 +995,67 @@ scenarios:
     )
 }
 
+/// The schema and the parser agree on a `types:` entry: the value type
+/// names and the `enum:` map with integer keys, bare or quoted, are
+/// accepted by both; a map with a non-integer key, an empty map, a key
+/// beside `enum` and an unknown name are refused by both.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::opaque_float("opaque_float", true)]
+#[case::opaque_double("opaque_double", true)]
+#[case::ipaddress("ipaddress", true)]
+#[case::string("string", true)]
+#[case::enum_map("{ enum: { 1: up, 2: down } }", true)]
+#[case::enum_map_string_key("{ enum: { \"1\": up } }", true)]
+#[case::enum_map_non_integer_key("{ enum: { up: 1 } }", false)]
+#[case::enum_map_empty("{ enum: {} }", false)]
+#[case::enum_map_extra_key("{ enum: { 1: up }, extra: 1 }", false)]
+#[case::unknown_name("float", false)]
+fn the_schema_and_the_parser_agree_on_snmp_value_types(#[case] ty: &str, #[case] valid: bool) {
+    let yaml = format!(
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    oids:
+      ifOperStatus: "1.3.6.1.2.1.2.2.1.8.{{ifIndex}}"
+    types:
+      ifOperStatus: {ty}
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1161
+scenarios:
+  - signal_type: metrics
+    name: ifOperStatus
+    labels:
+      ifIndex: "1"
+    generator:
+      type: constant
+      value: 1.0
+"#
+    );
+    let parsed = sonda_core::compiler::parse::parse(&yaml);
+    assert_eq!(parsed.is_ok(), valid, "the parser: {parsed:?}");
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        let json = yaml_to_json(value);
+        let errors: Vec<String> = validator()
+            .iter_errors(&json)
+            .map(|e| format!("  at {}: {e}", e.instance_path()))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the schema rejected `{ty}`:\n{}",
+            errors.join("\n")
+        );
+    } else {
+        assert_rejected(ty, &yaml);
+    }
+}
+
 /// The `snmp_agent` block and its `system:` block deny unknown keys, in the
 /// schema and the parser.
 #[cfg(feature = "snmp")]

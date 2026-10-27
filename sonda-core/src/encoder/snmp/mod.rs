@@ -471,7 +471,7 @@ impl SnmpEncoder {
                     .filter(|label| !referenced(label))
                     .map(str::to_string)
                     .collect();
-                let ty = cfg.types.get(metric).copied().unwrap_or_default();
+                let ty = cfg.types.get(metric).cloned().unwrap_or_default();
                 Ok((
                     metric.clone(),
                     Template {
@@ -669,7 +669,9 @@ impl Encoder for SnmpEncoder {
     /// - a label column the event carries cannot be rendered, for the same
     ///   reasons;
     /// - the value is NaN or infinite and the type is not `string`;
-    /// - the rounded value is outside the type's range.
+    /// - the rounded value is outside the type's range, or an
+    ///   `opaque_float` value is beyond the `f32` range;
+    /// - the type is an enum map with no entry for the rounded value.
     ///
     /// The label checks run only when a series is first seen and its OID is
     /// rendered and cached; later events for the same series skip them. A
@@ -684,14 +686,15 @@ impl Encoder for SnmpEncoder {
         let rendered = self.rendered(template, event)?;
         let companions = rendered.take_companions();
         let start = buf.len();
-        // The header, a SEQUENCE header, the OID, the longest numeric value
-        // TLV (a Counter64: tag, length, nine octets), and the companions.
+        // The header, a SEQUENCE header, the OID, the longest fixed-size
+        // value TLV (an Opaque double: tag, length, eleven octets), and the
+        // companions.
         let companion_len = if companions {
             rendered.companions.len()
         } else {
             0
         };
-        buf.reserve(RECORD_HEADER + 2 + rendered.oid.len() + 11 + companion_len);
+        buf.reserve(RECORD_HEADER + 2 + rendered.oid.len() + 13 + companion_len);
         buf.push(rendered.index_arcs);
         buf.push(if companions {
             rendered.companion_count
@@ -825,6 +828,32 @@ mod tests {
         assert_eq!(&out[RECORD_HEADER..], &expected[..]);
     }
 
+    /// The record's `VarBind` for an Opaque float, an Opaque double, an
+    /// IpAddress and an enum string is, byte for byte, the `VarBind` net-snmp
+    /// 5.9.4 sent for the same OID and value (`snmpset` with `F`, `D`, `a`
+    /// and `s`: the `NET_SNMP_SET_TYPES` fixture in `ber.rs`).
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::opaque_float(      "1.3.6.1.4.1.2021.10.1.6.{laIndex}", &[("laIndex", "1")], SnmpValueType::OpaqueFloat,  0.15,            "1.3.6.1.4.1.2021.10.1.6.1")]
+    #[case::opaque_double(     "1.3.6.1.4.1.8072.9999.1.1.0",       &[],                 SnmpValueType::OpaqueDouble, 0.15,            "1.3.6.1.4.1.8072.9999.1.1.0")]
+    #[case::ipaddress(         "1.3.6.1.4.1.8072.9999.1.2.0",       &[],                 SnmpValueType::IpAddress,    167_772_161.0,   "1.3.6.1.4.1.8072.9999.1.2.0")]
+    #[case::ipaddress_u32_max( "1.3.6.1.4.1.8072.9999.1.5.0",       &[],                 SnmpValueType::IpAddress,    4_294_967_295.0, "1.3.6.1.4.1.8072.9999.1.5.0")]
+    #[case::enum_string(       "1.3.6.1.4.1.8072.9999.1.3.0",       &[],                 SnmpValueType::Enum(BTreeMap::from([(1, "up".to_string()), (2, "down".to_string())])), 1.0, "1.3.6.1.4.1.8072.9999.1.3.0")]
+    fn record_varbind_is_the_one_net_snmp_sent(
+        #[case] template: &str,
+        #[case] pairs: &[(&str, &str)],
+        #[case] ty: SnmpValueType,
+        #[case] value: f64,
+        #[case] oid: &str,
+    ) {
+        let expected = ber::tests::captured_varbind(ber::tests::NET_SNMP_SET_TYPES, oid);
+        assert!(expected.len() > 16, "the fixture carries {oid}");
+        let encoder = encoder_of("m", template, ty);
+        let out = record(&encoder, &event("m", value, pairs));
+        assert_eq!(&out[..RECORD_HEADER], &[1, 0], "one index arc, no companions");
+        assert_eq!(&out[RECORD_HEADER..], &expected[..]);
+    }
+
     /// `snmptrap -v2c -c public 127.0.0.1:<port> 0 1.3.6.1.4.1.8072.9999.0.2`
     /// with `1.3.6.1.2.1.31.1.1.1.6.1 C 1250000`,
     /// `1.3.6.1.2.1.31.1.1.1.1.1 s GigabitEthernet0/0/0`,
@@ -841,12 +870,17 @@ mod tests {
 
     /// ifHCInOctets with ifName and ifAlias served as columns.
     fn column_encoder() -> SnmpEncoder {
+        column_encoder_of(SnmpValueType::Counter64)
+    }
+
+    /// [`column_encoder`] with ifHCInOctets encoded as `ty`.
+    fn column_encoder_of(ty: SnmpValueType) -> SnmpEncoder {
         SnmpEncoder::new(&SnmpEncoderConfig {
             oids: HashMap::from([(
                 "ifHCInOctets".to_string(),
                 "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}".to_string(),
             )]),
-            types: HashMap::from([("ifHCInOctets".to_string(), SnmpValueType::Counter64)]),
+            types: HashMap::from([("ifHCInOctets".to_string(), ty)]),
             label_columns: HashMap::from([
                 (
                     "ifName".to_string(),
@@ -973,13 +1007,27 @@ mod tests {
 
     /// The companions ride the series' first record that is written: a first
     /// event refused for its value carries none away with it.
-    #[test]
-    fn companions_wait_for_a_written_record() {
-        let encoder = column_encoder();
+    #[rstest]
+    #[case::negative_counter64(SnmpValueType::Counter64, -1.0, "value -1 is outside the counter64 range")]
+    #[case::enum_without_an_entry(
+        SnmpValueType::Enum(BTreeMap::from([(1, "up".to_string()), (2, "down".to_string())])),
+        3.0,
+        "value 3 rounds to 3, which has no entry in the enum map"
+    )]
+    fn companions_wait_for_a_written_record(
+        #[case] ty: SnmpValueType,
+        #[case] refused: f64,
+        #[case] reason: &str,
+    ) {
+        let encoder = column_encoder_of(ty);
         let mut buf = Vec::new();
-        encoder
-            .encode_metric(&interface_one(-1.0), &mut buf)
-            .expect_err("a negative counter64");
+        let err = encoder
+            .encode_metric(&interface_one(refused), &mut buf)
+            .expect_err("refused for its value");
+        assert!(
+            matches!(&err, SondaError::Encoder(EncoderError::EventRejected(text)) if text.contains(reason)),
+            "{err}"
+        );
         assert!(buf.is_empty());
         assert_eq!(encoder.cached_series(), 1, "the OID was cached");
         assert_eq!(record(&encoder, &interface_one(1.0))[1], 2);
@@ -1045,7 +1093,11 @@ mod tests {
         )]
         ty: SnmpValueType,
     ) {
-        let encoder = encoder_of("ifHCInOctets", "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}", ty);
+        let encoder = encoder_of(
+            "ifHCInOctets",
+            "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}",
+            ty.clone(),
+        );
         let out = record(
             &encoder,
             &event(
@@ -1305,6 +1357,42 @@ mod tests {
         );
         let empty: SnmpEncoderConfig = serde_yaml_ng::from_str("{}").expect("all fields default");
         assert_eq!(empty, SnmpEncoderConfig::default());
+    }
+
+    /// Every value type parses as a `types:` entry, inside the
+    /// `type:`-tagged block and outside it.
+    #[cfg(feature = "config")]
+    #[rstest]
+    #[case::config_alone("")]
+    #[case::encoder_block("type: snmp\n")]
+    fn a_types_entry_of_each_new_type_parses(#[case] prefix: &str) {
+        let yaml = format!(
+            "{prefix}types:\n  a: opaque_float\n  b: opaque_double\n  c: ipaddress\n  \
+             d: {{ enum: {{ 1: up, \"2\": down }} }}\n"
+        );
+        let types = if prefix.is_empty() {
+            serde_yaml_ng::from_str::<SnmpEncoderConfig>(&yaml)
+                .expect("parses")
+                .types
+        } else {
+            match serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(&yaml).expect("parses") {
+                crate::encoder::EncoderConfig::Snmp(cfg) => cfg.types,
+                other => panic!("not the snmp variant: {other:?}"),
+            }
+        };
+        let expected = HashMap::from([
+            ("a".to_string(), SnmpValueType::OpaqueFloat),
+            ("b".to_string(), SnmpValueType::OpaqueDouble),
+            ("c".to_string(), SnmpValueType::IpAddress),
+            (
+                "d".to_string(),
+                SnmpValueType::Enum(BTreeMap::from([
+                    (1, "up".to_string()),
+                    (2, "down".to_string()),
+                ])),
+            ),
+        ]);
+        assert_eq!(types, expected);
     }
 
     /// Inside the `type:`-tagged block a YAML number reaches a field as a

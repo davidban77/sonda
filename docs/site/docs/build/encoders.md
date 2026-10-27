@@ -423,6 +423,8 @@ A scenario file is refused, with the metric and the label named, when any of the
 
     A label's values are its static value, every entry of a `values` dynamic label, and the values of a `counter` dynamic label or `counter` cardinality spike: its prefix followed by `0` to `cardinality - 1`, with a spike's values outside its window as well. A label the entry does not have has none. `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` is refused when `ifIndex` is `0` or takes `0` among its values; the refusal names both templates, the OID and the label values that render it.
 
+    A label used twice in one template takes the same value at both places: `1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{ifIndex}` renders `…2.1.0.0` and `…2.1.1.1` when `ifIndex` takes `0` and `1`, never `…2.1.1.0`, so it is accepted beside the scalar `1.3.6.1.4.1.8072.9999.2.1.1.0`. The same label in the other template can take another value, because the two render different series. The check is exact but in one case: where both positions hold `counter` labels whose values meet, it assumes they can be equal, so it may refuse two templates that never render the same OID; it never accepts two that do. A refusal that rests on that assumption says the templates may render the OID; every other one says they both render it.
+
     When either template has a `{label:str}` placeholder, the two can render the same OID exactly when one's object OID equals or begins with the other's: `1.3.6.1.4.1.8072.9999.3.1.{ifName:str}` and `1.3.6.1.4.1.8072.9999.3.2.{ifName:str}` are accepted, `1.3.6.1.4.1.8072.9999.3.{ifName:str}` beside either is refused.
 
 Histogram, summary and logs entries refuse both this encoder and the `snmp_agent` sink.
@@ -438,8 +440,25 @@ Histogram, summary and logs entries refuse both this encoder and the `snmp_agent
 | `unsigned32` | Unsigned32, encoded as Gauge32 | 0 to 4294967295 |
 | `timeticks` | TimeTicks, in hundredths of a second | 0 to 4294967295 |
 | `string` | OCTET STRING | The shortest decimal text that reads back as the same value. |
+| `opaque_float` | Opaque holding an IEEE 754 single, as net-snmp writes it | The value converted to a single; one beyond about ±3.4 × 10³⁸, which converts to an infinity, is rejected. |
+| `opaque_double` | Opaque holding an IEEE 754 double, as net-snmp writes it | Any finite value, exactly. |
+| `ipaddress` | IpAddress | Rounded, 0 to 4294967295, as four octets most significant first: `167772161` is `10.0.0.1`. |
+| `{ enum: { 1: up, 2: down } }` | OCTET STRING | The label of the rounded value's entry: `1` is `up`. A value with no entry is rejected. |
 
-Every type but `string` rounds the value to the nearest integer, halves away from zero. A value that is not finite, or that rounds outside the type's range, is rejected. `string` writes a value that is not finite as its text: `NaN`, `inf` or `-inf`. The encoder does not wrap a counter: give the generator a `max`, as the `step` generator takes, for a counter that wraps.
+The integer types, `ipaddress` and the enum round the value to the nearest integer, halves away from zero. Every type but `string` rejects a value that is not finite, and the integer types and `ipaddress` one that rounds outside the type's range. `string` writes a value that is not finite as its text: `NaN`, `inf` or `-inf`. The encoder does not wrap a counter: give the generator a `max`, as the `step` generator takes, for a counter that wraps.
+
+The enum form gives the label of each code, as the `gnmi` encoder's `values:` enum does. Codes are integers, written bare or quoted (`1` or `"1"`); labels are text. The map needs at least one entry. A `flap` generator with `enum:` drives one, as `link_state` in [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) does:
+
+```yaml title="An enum string"
+encoder:
+  type: snmp
+  oids:
+    link_state: "1.3.6.1.4.1.8072.9999.1.3.0"
+  types:
+    link_state: { enum: { 1: up, 2: down } }
+```
+
+net-snmp prints an Opaque float and an Opaque double alike, as `Opaque: Float:` with the value's digits. A pack's `snmp:` hint takes the same forms for its `type:`.
 
 A rejected event is skipped and counted in the scenario's errors, and the scenario keeps running.
 

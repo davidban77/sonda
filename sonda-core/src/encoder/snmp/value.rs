@@ -4,21 +4,29 @@
 //! Compiled with or without the `snmp` feature: a pack's `snmp:` hints
 //! carry it. Writing a value needs the feature.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// The BER type a metric's value is encoded as.
 ///
 /// YAML forms: `integer`, `counter32`, `counter64`, `gauge32`, `unsigned32`,
-/// `timeticks`, `string`. The default is `gauge32`.
+/// `timeticks`, `string`, `opaque_float`, `opaque_double`, `ipaddress`, and
+/// `{ enum: { 1: up, 2: down } }`. The default is `gauge32`.
 ///
-/// Every type but `string` rounds the value to the nearest integer, halves
-/// away from zero, and rejects the event when the value is not finite or
-/// the rounded value is outside the type's range. A counter does not wrap:
-/// a value past its range is rejected, not reduced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// The integer types, `ipaddress` and the enum round the value to the
+/// nearest integer, halves away from zero. Every type but `string` rejects
+/// the event when the value is not finite; the integer types and
+/// `ipaddress` when the rounded value is outside the type's range,
+/// `opaque_float` when the value is beyond the `f32` range, and the enum
+/// when the rounded value has no entry. A counter does not wrap: a value
+/// past its range is rejected, not reduced.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "config",
+    serde(from = "SnmpValueTypeWire", into = "SnmpValueTypeWire")
+)]
 #[non_exhaustive]
 pub enum SnmpValueType {
     /// INTEGER (Integer32): -2³¹ to 2³¹ − 1.
@@ -36,11 +44,26 @@ pub enum SnmpValueType {
     TimeTicks,
     /// OCTET STRING: the shortest decimal text that round-trips the `f64`.
     String,
+    /// Opaque wrapping an IEEE 754 single, as net-snmp encodes it: the
+    /// value converted to `f32`. A value whose conversion is not finite
+    /// (beyond ±3.4 × 10³⁸) rejects the event.
+    OpaqueFloat,
+    /// Opaque wrapping an IEEE 754 double, as net-snmp encodes it: the
+    /// value exactly.
+    OpaqueDouble,
+    /// IpAddress: the rounded value, 0 to 2³² − 1, as four octets, most
+    /// significant first (167772161 is 10.0.0.1).
+    IpAddress,
+    /// OCTET STRING holding the label of the rounded value's entry, such as
+    /// `up` for 1 under `{ enum: { 1: up, 2: down } }`. A value with no
+    /// entry rejects the event.
+    Enum(BTreeMap<i64, String>),
 }
 
 impl SnmpValueType {
-    /// The name the type has in YAML, such as `"counter64"`.
-    pub fn name(self) -> &'static str {
+    /// The name the type has in YAML, such as `"counter64"`; `"enum"` for
+    /// an enum map.
+    pub fn name(&self) -> &'static str {
         match self {
             SnmpValueType::Integer => "integer",
             SnmpValueType::Counter32 => "counter32",
@@ -49,6 +72,10 @@ impl SnmpValueType {
             SnmpValueType::Unsigned32 => "unsigned32",
             SnmpValueType::TimeTicks => "timeticks",
             SnmpValueType::String => "string",
+            SnmpValueType::OpaqueFloat => "opaque_float",
+            SnmpValueType::OpaqueDouble => "opaque_double",
+            SnmpValueType::IpAddress => "ipaddress",
+            SnmpValueType::Enum(_) => "enum",
         }
     }
 }
@@ -59,23 +86,274 @@ impl fmt::Display for SnmpValueType {
     }
 }
 
+/// YAML shape of [`SnmpValueType`]: a bare name, or a one-key `enum:` map.
+///
+/// `Deserialize` is written by hand so that enum keys may be integers or
+/// integer strings (`1` or `"1"`, as JSON requires), and so that a mistake
+/// names what is accepted instead of failing as an unmatched untagged enum.
+#[cfg(feature = "config")]
+#[derive(Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+enum SnmpValueTypeWire {
+    Name(SnmpTypeName),
+    Enum(SnmpEnumWire),
+}
+
+/// The value type names.
+#[cfg(feature = "config")]
+#[derive(Clone, Copy, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+enum SnmpTypeName {
+    /// INTEGER (Integer32): -2³¹ to 2³¹ − 1.
+    Integer,
+    /// Counter32: 0 to 2³² − 1.
+    Counter32,
+    /// Counter64: 0 to 2⁶⁴ − 1.
+    Counter64,
+    /// Gauge32: 0 to 2³² − 1. The default.
+    Gauge32,
+    /// Unsigned32: 0 to 2³² − 1, encoded as a Gauge32.
+    Unsigned32,
+    /// TimeTicks, hundredths of a second: 0 to 2³² − 1.
+    TimeTicks,
+    /// OCTET STRING: the shortest decimal text that round-trips the value.
+    String,
+    /// Opaque float (net-snmp): the value as an IEEE 754 single.
+    #[serde(rename = "opaque_float")]
+    OpaqueFloat,
+    /// Opaque double (net-snmp): the value as an IEEE 754 double.
+    #[serde(rename = "opaque_double")]
+    OpaqueDouble,
+    /// IpAddress: the rounded value, 0 to 2³² − 1, as four octets.
+    IpAddress,
+}
+
+/// `{ enum: { <i64>: <string>, ... } }`.
+#[cfg(feature = "config")]
+#[derive(Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+struct SnmpEnumWire {
+    /// The label of each integer code, served as an OCTET STRING; at least
+    /// one entry.
+    #[serde(rename = "enum")]
+    #[cfg_attr(feature = "schema", schemars(extend("minProperties" = 1)))]
+    map: BTreeMap<i64, String>,
+}
+
+/// What a value type may be, for error messages.
+#[cfg(feature = "config")]
+const VALUE_TYPE_EXPECTED: &str = "one of integer, counter32, counter64, gauge32, unsigned32, \
+     timeticks, string, opaque_float, opaque_double, ipaddress, or \
+     { enum: { <integer>: <label>, ... } }";
+
+/// What an enum map may be, for error messages.
+#[cfg(feature = "config")]
+const ENUM_EXPECTED: &str = "{ enum: { <integer>: <label>, ... } } with at least one entry";
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for SnmpValueTypeWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(ValueTypeVisitor)
+    }
+}
+
+#[cfg(feature = "config")]
+struct ValueTypeVisitor;
+
+#[cfg(feature = "config")]
+impl<'de> serde::de::Visitor<'de> for ValueTypeVisitor {
+    type Value = SnmpValueTypeWire;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "an snmp value type: {VALUE_TYPE_EXPECTED}")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        let name = match v {
+            "integer" => SnmpTypeName::Integer,
+            "counter32" => SnmpTypeName::Counter32,
+            "counter64" => SnmpTypeName::Counter64,
+            "gauge32" => SnmpTypeName::Gauge32,
+            "unsigned32" => SnmpTypeName::Unsigned32,
+            "timeticks" => SnmpTypeName::TimeTicks,
+            "string" => SnmpTypeName::String,
+            "opaque_float" => SnmpTypeName::OpaqueFloat,
+            "opaque_double" => SnmpTypeName::OpaqueDouble,
+            "ipaddress" => SnmpTypeName::IpAddress,
+            other => {
+                return Err(E::custom(format!(
+                    "unknown snmp value type {other:?}; expected {VALUE_TYPE_EXPECTED}"
+                )))
+            }
+        };
+        Ok(SnmpValueTypeWire::Name(name))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error as _;
+        let mut entries: Option<BTreeMap<i64, String>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key != "enum" {
+                return Err(A::Error::custom(format!(
+                    "unknown key {key:?} in an snmp value type; expected {VALUE_TYPE_EXPECTED}"
+                )));
+            }
+            if entries.is_some() {
+                return Err(A::Error::custom(format!(
+                    "duplicate `enum` key in an snmp value type; expected {ENUM_EXPECTED}"
+                )));
+            }
+            entries = Some(map.next_value::<EnumEntries>()?.0);
+        }
+        entries
+            .map(|map| SnmpValueTypeWire::Enum(SnmpEnumWire { map }))
+            .ok_or_else(|| A::Error::custom(format!("empty map; expected {VALUE_TYPE_EXPECTED}")))
+    }
+}
+
+/// The body of `enum:`: keys are integers, written bare or as strings, and
+/// there is at least one.
+#[cfg(feature = "config")]
+struct EnumEntries(BTreeMap<i64, String>);
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for EnumEntries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntriesVisitor;
+        impl<'de> serde::de::Visitor<'de> for EntriesVisitor {
+            type Value = EnumEntries;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "a map from integer codes to labels, e.g. {{ 1: up, 2: down }}; \
+                     expected {ENUM_EXPECTED}"
+                )
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = BTreeMap::new();
+                while let Some(EnumCode(code)) = map.next_key()? {
+                    let crate::config::scalar_text::ScalarText(label) = map.next_value()?;
+                    if out.insert(code, label).is_some() {
+                        return Err(serde::de::Error::custom(format!(
+                            "enum code {code} is given more than once (keys such as 1 and \
+                             \"01\" are the same code)"
+                        )));
+                    }
+                }
+                if out.is_empty() {
+                    return Err(serde::de::Error::custom(format!(
+                        "an snmp enum map is empty; expected {ENUM_EXPECTED}"
+                    )));
+                }
+                Ok(EnumEntries(out))
+            }
+        }
+        deserializer.deserialize_map(EntriesVisitor)
+    }
+}
+
+/// One `enum:` key: an integer, or a string holding one.
+#[cfg(feature = "config")]
+struct EnumCode(i64);
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for EnumCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CodeVisitor;
+        impl serde::de::Visitor<'_> for CodeVisitor {
+            type Value = EnumCode;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "an integer enum code; expected {ENUM_EXPECTED}")
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(EnumCode(v))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                i64::try_from(v)
+                    .map(EnumCode)
+                    .map_err(|_| E::custom(format!("enum code {v} does not fit in i64")))
+            }
+            /// Accepts exactly the schema's `^-?\\d+$`: digits with an
+            /// optional leading `-`, no sign, spaces or decimal point.
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                let digits = v.strip_prefix('-').unwrap_or(v);
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(E::custom(format!(
+                        "enum key {v:?} is not an integer: write digits with an optional \
+                         leading '-'; expected {ENUM_EXPECTED}"
+                    )));
+                }
+                v.parse::<i64>()
+                    .map(EnumCode)
+                    .map_err(|_| E::custom(format!("enum code {v:?} does not fit in i64")))
+            }
+        }
+        deserializer.deserialize_any(CodeVisitor)
+    }
+}
+
+#[cfg(feature = "config")]
+impl From<SnmpValueTypeWire> for SnmpValueType {
+    fn from(wire: SnmpValueTypeWire) -> Self {
+        match wire {
+            SnmpValueTypeWire::Name(SnmpTypeName::Integer) => Self::Integer,
+            SnmpValueTypeWire::Name(SnmpTypeName::Counter32) => Self::Counter32,
+            SnmpValueTypeWire::Name(SnmpTypeName::Counter64) => Self::Counter64,
+            SnmpValueTypeWire::Name(SnmpTypeName::Gauge32) => Self::Gauge32,
+            SnmpValueTypeWire::Name(SnmpTypeName::Unsigned32) => Self::Unsigned32,
+            SnmpValueTypeWire::Name(SnmpTypeName::TimeTicks) => Self::TimeTicks,
+            SnmpValueTypeWire::Name(SnmpTypeName::String) => Self::String,
+            SnmpValueTypeWire::Name(SnmpTypeName::OpaqueFloat) => Self::OpaqueFloat,
+            SnmpValueTypeWire::Name(SnmpTypeName::OpaqueDouble) => Self::OpaqueDouble,
+            SnmpValueTypeWire::Name(SnmpTypeName::IpAddress) => Self::IpAddress,
+            SnmpValueTypeWire::Enum(e) => Self::Enum(e.map),
+        }
+    }
+}
+
+#[cfg(feature = "config")]
+impl From<SnmpValueType> for SnmpValueTypeWire {
+    fn from(value: SnmpValueType) -> Self {
+        match value {
+            SnmpValueType::Integer => Self::Name(SnmpTypeName::Integer),
+            SnmpValueType::Counter32 => Self::Name(SnmpTypeName::Counter32),
+            SnmpValueType::Counter64 => Self::Name(SnmpTypeName::Counter64),
+            SnmpValueType::Gauge32 => Self::Name(SnmpTypeName::Gauge32),
+            SnmpValueType::Unsigned32 => Self::Name(SnmpTypeName::Unsigned32),
+            SnmpValueType::TimeTicks => Self::Name(SnmpTypeName::TimeTicks),
+            SnmpValueType::String => Self::Name(SnmpTypeName::String),
+            SnmpValueType::OpaqueFloat => Self::Name(SnmpTypeName::OpaqueFloat),
+            SnmpValueType::OpaqueDouble => Self::Name(SnmpTypeName::OpaqueDouble),
+            SnmpValueType::IpAddress => Self::Name(SnmpTypeName::IpAddress),
+            SnmpValueType::Enum(map) => Self::Enum(SnmpEnumWire { map }),
+        }
+    }
+}
+
 /// Why a value could not be written as its type.
 #[cfg(feature = "snmp")]
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub(crate) enum ValueError {
-    /// The value is NaN or infinite and the type is an integer type.
+    /// The value is NaN or infinite and the type is not `string`.
     #[error("value {value} cannot be encoded as {ty}")]
     NonFinite {
-        /// The type.
-        ty: SnmpValueType,
+        /// The type's [name](SnmpValueType::name).
+        ty: &'static str,
         /// The value.
         value: f64,
     },
-    /// The rounded value is outside the type's range.
+    /// The rounded value is outside the type's range, or an `opaque_float`
+    /// value is beyond the `f32` range.
     #[error("value {value} is outside the {ty} range")]
     OutOfRange {
-        /// The type.
-        ty: SnmpValueType,
+        /// The type's [name](SnmpValueType::name).
+        ty: &'static str,
         /// The value, before rounding.
         value: f64,
     },
@@ -83,6 +361,12 @@ pub(crate) enum ValueError {
     #[error("value {value} could not be formatted as a string")]
     Format {
         /// The value.
+        value: f64,
+    },
+    /// The rounded value has no entry in the enum map.
+    #[error("value {value} rounds to {}, which has no entry in the enum map", value.round())]
+    NoEnumEntry {
+        /// The value, before rounding.
         value: f64,
     },
 }
@@ -105,30 +389,43 @@ const U32_RANGE: std::ops::Range<f64> = 0.0..4_294_967_296.0;
 #[cfg(feature = "snmp")]
 const U64_RANGE: std::ops::Range<f64> = 0.0..18_446_744_073_709_551_616.0;
 
+/// The rounded values that fit an `i64`: from -2⁶³ up to, not including,
+/// 2⁶³. Both bounds are exact `f64`s.
+#[cfg(feature = "snmp")]
+const I64_RANGE: std::ops::Range<f64> = -9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0;
+
 #[cfg(feature = "snmp")]
 impl SnmpValueType {
     /// Write `value` as this type's BER TLV into `out`.
     ///
-    /// Rounds to the nearest integer, halves away from zero, for every type
-    /// but `string`. [`ValueError::NonFinite`] for NaN or an infinity, and
+    /// Rounds to the nearest integer, halves away from zero, for the
+    /// integer types, `ipaddress` and the enum. [`ValueError::NonFinite`]
+    /// for NaN or an infinity under every type but `string`, and
     /// [`ValueError::OutOfRange`] when the rounded value is outside the
     /// `i32` range (`integer`), the `u32` range (`counter32`, `gauge32`,
-    /// `unsigned32`, `timeticks`) or the `u64` range (`counter64`). `string`
-    /// writes the shortest decimal text that round-trips the `f64`, and NaN
-    /// and the infinities as `NaN`, `inf` and `-inf`. On an error nothing is
-    /// written.
-    pub(crate) fn write(self, value: f64, out: &mut Vec<u8>) -> Result<(), ValueError> {
+    /// `unsigned32`, `timeticks`, `ipaddress`) or the `u64` range
+    /// (`counter64`), or when an `opaque_float` value converts to an
+    /// infinite `f32`. [`ValueError::NoEnumEntry`] when the enum map has no
+    /// entry for the rounded value. `string` writes the shortest decimal
+    /// text that round-trips the `f64`, and NaN and the infinities as `NaN`,
+    /// `inf` and `-inf`. On an error nothing is written.
+    pub(crate) fn write(&self, value: f64, out: &mut Vec<u8>) -> Result<(), ValueError> {
         use super::ber;
 
-        let rounded = |range: std::ops::Range<f64>| {
-            if !value.is_finite() {
-                return Err(ValueError::NonFinite { ty: self, value });
+        let ty = self.name();
+        let finite = || {
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(ValueError::NonFinite { ty, value })
             }
-            let rounded = value.round();
+        };
+        let rounded = |range: std::ops::Range<f64>| {
+            let rounded = finite()?.round();
             if range.contains(&rounded) {
                 Ok(rounded)
             } else {
-                Err(ValueError::OutOfRange { ty: self, value })
+                Err(ValueError::OutOfRange { ty, value })
             }
         };
         match self {
@@ -142,6 +439,24 @@ impl SnmpValueType {
             SnmpValueType::String => {
                 let mut text = [0u8; F64_TEXT_CAPACITY];
                 ber::write_string(out, format_f64(value, &mut text)?);
+            }
+            SnmpValueType::OpaqueFloat => {
+                let single = finite()? as f32;
+                if !single.is_finite() {
+                    return Err(ValueError::OutOfRange { ty, value });
+                }
+                ber::write_opaque_float(out, single);
+            }
+            SnmpValueType::OpaqueDouble => ber::write_opaque_double(out, finite()?),
+            SnmpValueType::IpAddress => ber::write_ipaddress(out, rounded(U32_RANGE)? as u32),
+            SnmpValueType::Enum(labels) => {
+                let code = finite()?.round();
+                let label = I64_RANGE
+                    .contains(&code)
+                    .then(|| labels.get(&(code as i64)))
+                    .flatten()
+                    .ok_or(ValueError::NoEnumEntry { value })?;
+                ber::write_string(out, label.as_bytes());
             }
         }
         Ok(())
@@ -165,6 +480,15 @@ mod tests {
     #[cfg(any(feature = "config", feature = "snmp"))]
     use rstest::rstest;
 
+    /// `{ 1: up, 2: down }`.
+    #[cfg(any(feature = "config", feature = "snmp"))]
+    fn up_down() -> SnmpValueType {
+        SnmpValueType::Enum(BTreeMap::from([
+            (1, "up".to_string()),
+            (2, "down".to_string()),
+        ]))
+    }
+
     #[test]
     fn the_default_is_gauge32() {
         assert_eq!(SnmpValueType::default(), SnmpValueType::Gauge32);
@@ -173,13 +497,16 @@ mod tests {
     #[cfg(feature = "config")]
     #[rustfmt::skip]
     #[rstest]
-    #[case::integer(    "integer",    SnmpValueType::Integer)]
-    #[case::counter32(  "counter32",  SnmpValueType::Counter32)]
-    #[case::counter64(  "counter64",  SnmpValueType::Counter64)]
-    #[case::gauge32(    "gauge32",    SnmpValueType::Gauge32)]
-    #[case::unsigned32( "unsigned32", SnmpValueType::Unsigned32)]
-    #[case::timeticks(  "timeticks",  SnmpValueType::TimeTicks)]
-    #[case::string(     "string",     SnmpValueType::String)]
+    #[case::integer(       "integer",       SnmpValueType::Integer)]
+    #[case::counter32(     "counter32",     SnmpValueType::Counter32)]
+    #[case::counter64(     "counter64",     SnmpValueType::Counter64)]
+    #[case::gauge32(       "gauge32",       SnmpValueType::Gauge32)]
+    #[case::unsigned32(    "unsigned32",    SnmpValueType::Unsigned32)]
+    #[case::timeticks(     "timeticks",     SnmpValueType::TimeTicks)]
+    #[case::string(        "string",        SnmpValueType::String)]
+    #[case::opaque_float(  "opaque_float",  SnmpValueType::OpaqueFloat)]
+    #[case::opaque_double( "opaque_double", SnmpValueType::OpaqueDouble)]
+    #[case::ipaddress(     "ipaddress",     SnmpValueType::IpAddress)]
     fn names_parse_from_yaml_and_serialize_back(#[case] yaml: &str, #[case] ty: SnmpValueType) {
         let parsed: SnmpValueType = serde_yaml_ng::from_str(yaml).expect("a value type name parses");
         assert_eq!(parsed, ty);
@@ -199,8 +526,50 @@ mod tests {
         );
     }
 
+    /// Keys bare or as integer strings; labels any scalar, kept as text.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::bare_keys(          "enum: { 1: up, 2: down }",     &[(1, "up"), (2, "down")])]
+    #[case::string_key(         "enum: { \"1\": up }",          &[(1, "up")])]
+    #[case::negative_key(       "enum: { \"-1\": unknown }",    &[(-1, "unknown")])]
+    #[case::scalar_labels(      "enum: { 1: 200, 2: true }",    &[(1, "200"), (2, "true")])]
+    fn an_enum_map_parses(#[case] yaml: &str, #[case] entries: &[(i64, &str)]) {
+        let parsed: SnmpValueType = serde_yaml_ng::from_str(yaml).expect("an enum map parses");
+        let expected = entries.iter().map(|(code, label)| (*code, label.to_string())).collect();
+        assert_eq!(parsed, SnmpValueType::Enum(expected));
+        assert_eq!(parsed.name(), "enum");
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn an_enum_map_serializes_back() {
+        let shown = serde_yaml_ng::to_string(&up_down()).expect("serializes");
+        let parsed: SnmpValueType = serde_yaml_ng::from_str(&shown).expect("parses back");
+        assert_eq!(parsed, up_down(), "{shown}");
+    }
+
+    /// Each refusal names the accepted shape.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::empty_enum(       "enum: {}",                   "empty")]
+    #[case::non_integer_key(  "enum: { a: up }",            "\"a\" is not an integer")]
+    #[case::extra_key(        "{ enum: { 1: up }, extra: 1 }", "unknown key \"extra\"")]
+    #[case::misspelt_enum(    "enumm: { 1: up }",           "unknown key \"enumm\"")]
+    #[case::empty_map(        "{}",                         "empty map")]
+    #[case::duplicate_code(   "enum: { 1: up, \"01\": on }", "more than once")]
+    fn a_malformed_enum_map_is_refused(#[case] yaml: &str, #[case] reason: &str) {
+        let err = serde_yaml_ng::from_str::<SnmpValueType>(yaml).expect_err("refused");
+        let shown = err.to_string();
+        assert!(shown.contains(reason), "{shown}");
+        if reason != "more than once" {
+            assert!(shown.contains("{ enum: { <integer>: <label>, ... } }"), "names the shape: {shown}");
+        }
+    }
+
     #[cfg(feature = "snmp")]
-    fn written(ty: SnmpValueType, value: f64) -> Result<Vec<u8>, ValueError> {
+    fn written(ty: &SnmpValueType, value: f64) -> Result<Vec<u8>, ValueError> {
         let mut out = vec![0xEE];
         let result = ty.write(value, &mut out);
         match result {
@@ -213,28 +582,37 @@ mod tests {
     }
 
     /// Expected bytes as net-snmp 5.9.4 encodes the same values (the
-    /// `NET_SNMP_TRAP` and `NET_SNMP_TRAP_TYPES` fixtures in `ber.rs`).
+    /// `NET_SNMP_TRAP`, `NET_SNMP_TRAP_TYPES` and `NET_SNMP_SET_TYPES`
+    /// fixtures in `ber.rs`).
     #[cfg(feature = "snmp")]
     #[rustfmt::skip]
     #[rstest]
-    #[case::integer_i32_max(        SnmpValueType::Integer,    2_147_483_647.0,  "02047fffffff")]
-    #[case::integer_i32_min(        SnmpValueType::Integer,    -2_147_483_648.0, "020480000000")]
-    #[case::integer_rounds_up(      SnmpValueType::Integer,    1.5,              "020102")]
-    #[case::integer_rounds_away(    SnmpValueType::Integer,    -128.5,           "0202ff7f")]
-    #[case::counter32_u32_max(      SnmpValueType::Counter32,  4_294_967_295.0,  "410500ffffffff")]
-    #[case::counter32_minus_zero(   SnmpValueType::Counter32,  -0.4,             "410100")]
-    #[case::gauge32_ten_thousand(   SnmpValueType::Gauge32,    10_000.0,         "42022710")]
-    #[case::unsigned32_is_gauge32(  SnmpValueType::Unsigned32, 10_000.0,         "42022710")]
-    #[case::timeticks_u32_max(      SnmpValueType::TimeTicks,  4_294_967_295.0,  "430500ffffffff")]
-    #[case::counter64_two_pow_63(   SnmpValueType::Counter64,  9_223_372_036_854_775_808.0, "4609008000000000000000")]
-    #[case::string_shortest(        SnmpValueType::String,     12.5,             "040431322e35")]
-    #[case::string_nan(             SnmpValueType::String,     f64::NAN,         "04034e614e")]
+    #[case::integer_i32_max(        SnmpValueType::Integer,      2_147_483_647.0,  "02047fffffff")]
+    #[case::integer_i32_min(        SnmpValueType::Integer,      -2_147_483_648.0, "020480000000")]
+    #[case::integer_rounds_up(      SnmpValueType::Integer,      1.5,              "020102")]
+    #[case::integer_rounds_away(    SnmpValueType::Integer,      -128.5,           "0202ff7f")]
+    #[case::counter32_u32_max(      SnmpValueType::Counter32,    4_294_967_295.0,  "410500ffffffff")]
+    #[case::counter32_minus_zero(   SnmpValueType::Counter32,    -0.4,             "410100")]
+    #[case::gauge32_ten_thousand(   SnmpValueType::Gauge32,      10_000.0,         "42022710")]
+    #[case::unsigned32_is_gauge32(  SnmpValueType::Unsigned32,   10_000.0,         "42022710")]
+    #[case::timeticks_u32_max(      SnmpValueType::TimeTicks,    4_294_967_295.0,  "430500ffffffff")]
+    #[case::counter64_two_pow_63(   SnmpValueType::Counter64,    9_223_372_036_854_775_808.0, "4609008000000000000000")]
+    #[case::string_shortest(        SnmpValueType::String,       12.5,             "040431322e35")]
+    #[case::string_nan(             SnmpValueType::String,       f64::NAN,         "04034e614e")]
+    #[case::opaque_float(           SnmpValueType::OpaqueFloat,  0.15,             "44079f78043e19999a")]
+    #[case::opaque_double(          SnmpValueType::OpaqueDouble, 0.15,             "440b9f79083fc3333333333333")]
+    #[case::ipaddress_ten_0_0_1(    SnmpValueType::IpAddress,    167_772_161.0,    "40040a000001")]
+    #[case::ipaddress_u32_max(      SnmpValueType::IpAddress,    4_294_967_295.0,  "4004ffffffff")]
+    #[case::ipaddress_rounds_away(  SnmpValueType::IpAddress,    167_772_160.5,    "40040a000001")]
+    #[case::enum_up(                up_down(),                   1.0,              "04027570")]
+    #[case::enum_half_rounds_away(  up_down(),                   1.5,              "0404646f776e")]
+    #[case::enum_half_rounds_up(    up_down(),                   0.5,              "04027570")]
     fn writes_the_typed_tlv(#[case] ty: SnmpValueType, #[case] value: f64, #[case] expected: &str) {
         let expected: Vec<u8> = (0..expected.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&expected[i..i + 2], 16).expect("hex"))
             .collect();
-        assert_eq!(written(ty, value).expect("in range"), expected, "{ty} {value}");
+        assert_eq!(written(&ty, value).expect("in range"), expected, "{ty} {value}");
     }
 
     #[cfg(feature = "snmp")]
@@ -245,9 +623,21 @@ mod tests {
         let mut expected = vec![0x46, 0x09, 0x00];
         expected.extend_from_slice(&(largest as u64).to_be_bytes());
         assert_eq!(
-            written(SnmpValueType::Counter64, largest).expect("in range"),
+            written(&SnmpValueType::Counter64, largest).expect("in range"),
             expected
         );
+    }
+
+    /// Any finite value is written exactly, the extremes included.
+    #[cfg(feature = "snmp")]
+    #[rstest]
+    fn opaque_double_writes_every_finite_value_exactly(
+        #[values(f64::MAX, f64::MIN, f64::MIN_POSITIVE, 5e-324, -0.0, 0.1)] value: f64,
+    ) {
+        let bytes = written(&SnmpValueType::OpaqueDouble, value).expect("finite");
+        assert_eq!(&bytes[..5], &[0x44, 0x0B, 0x9F, 0x79, 0x08]);
+        let back = f64::from_be_bytes(bytes[5..].try_into().expect("eight octets"));
+        assert_eq!(back.to_bits(), value.to_bits());
     }
 
     #[cfg(feature = "snmp")]
@@ -263,27 +653,60 @@ mod tests {
     #[case::timeticks_two_pow_32(     SnmpValueType::TimeTicks,  4_294_967_296.0)]
     #[case::counter64_two_pow_64(     SnmpValueType::Counter64,  18_446_744_073_709_551_616.0)]
     #[case::counter64_negative(       SnmpValueType::Counter64,  -1.0)]
+    #[case::ipaddress_negative(       SnmpValueType::IpAddress,  -1.0)]
+    #[case::ipaddress_two_pow_32(     SnmpValueType::IpAddress,  4_294_967_296.0)]
+    #[case::opaque_float_beyond_f32(  SnmpValueType::OpaqueFloat, 1e39)]
+    #[case::opaque_float_below_f32(   SnmpValueType::OpaqueFloat, -1e39)]
     fn out_of_range_is_rejected(#[case] ty: SnmpValueType, #[case] value: f64) {
-        assert_eq!(written(ty, value), Err(ValueError::OutOfRange { ty, value }));
+        assert_eq!(
+            written(&ty, value),
+            Err(ValueError::OutOfRange { ty: ty.name(), value })
+        );
+    }
+
+    /// A value whose rounded code is not a key, or is past the `i64` range
+    /// (which a saturating conversion would read as `i64::MAX`), has no
+    /// entry; nothing is written.
+    #[cfg(feature = "snmp")]
+    #[rstest]
+    #[case::no_code_three(up_down(), 3.0)]
+    #[case::rounds_to_zero(up_down(), 0.4)]
+    #[case::past_i64(SnmpValueType::Enum(BTreeMap::from([(i64::MAX, "max".to_string())])), 1e300)]
+    fn an_enum_value_without_an_entry_is_rejected(#[case] ty: SnmpValueType, #[case] value: f64) {
+        assert_eq!(written(&ty, value), Err(ValueError::NoEnumEntry { value }));
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn the_smallest_enum_code_is_reached() {
+        let ty = SnmpValueType::Enum(BTreeMap::from([(i64::MIN, "min".to_string())]));
+        assert_eq!(
+            written(&ty, -9_223_372_036_854_775_808.0),
+            Ok(b"\x04\x03min".to_vec())
+        );
     }
 
     #[cfg(feature = "snmp")]
     #[rstest]
-    fn non_finite_is_rejected_by_every_integer_type(
+    fn non_finite_is_rejected_by_every_type_but_string(
         #[values(
             SnmpValueType::Integer,
             SnmpValueType::Counter32,
             SnmpValueType::Counter64,
             SnmpValueType::Gauge32,
             SnmpValueType::Unsigned32,
-            SnmpValueType::TimeTicks
+            SnmpValueType::TimeTicks,
+            SnmpValueType::OpaqueFloat,
+            SnmpValueType::OpaqueDouble,
+            SnmpValueType::IpAddress,
+            up_down()
         )]
         ty: SnmpValueType,
         #[values(f64::NAN, f64::INFINITY, f64::NEG_INFINITY)] value: f64,
     ) {
         assert!(matches!(
-            written(ty, value),
-            Err(ValueError::NonFinite { .. })
+            written(&ty, value),
+            Err(ValueError::NonFinite { ty: name, .. }) if name == ty.name()
         ));
     }
 
@@ -295,7 +718,7 @@ mod tests {
     fn string_writes_non_finite_values_as_text(#[case] value: f64, #[case] text: &str) {
         let mut expected = vec![0x04, text.len() as u8];
         expected.extend_from_slice(text.as_bytes());
-        assert_eq!(written(SnmpValueType::String, value), Ok(expected));
+        assert_eq!(written(&SnmpValueType::String, value), Ok(expected));
     }
 
     #[cfg(feature = "snmp")]
@@ -308,7 +731,7 @@ mod tests {
             -f64::MIN_POSITIVE,
             5e-324,
         ] {
-            let bytes = written(SnmpValueType::String, value).expect("formats");
+            let bytes = written(&SnmpValueType::String, value).expect("formats");
             // Short form below 128 octets of text, long form above.
             let header = if bytes[1] & 0x80 == 0 {
                 2

@@ -241,7 +241,11 @@ src/
 │   │   │                   definite lengths (write_tlv back-patches, long form above 127),
 │   │   │                   write_i64/write_u64 and the typed writers the value layer uses
 │   │   │                   (write_integer(i32), write_counter32/gauge32/timeticks(u32),
-│   │   │                   write_counter64(u64), write_string), write_oid, write_varbind;
+│   │   │                   write_counter64(u64), write_string, write_opaque_float(f32) =
+│   │   │                   44 07 9f 78 04 + BE single, write_opaque_double(f64) = 44 0b 9f
+│   │   │                   79 08 + BE double (net-snmp's Opaque sub-types, pinned by the
+│   │   │                   NET_SNMP_SET_TYPES capture), write_ipaddress(u32) = 40 04 + BE),
+│   │   │                   write_oid, write_varbind;
 │   │   │                   Reader, Message::decode (version read first: anything but 0/1
 │   │   │                   is UnsupportedVersion before the community is parsed),
 │   │   │                   VarBinds/VarBind, message_len/write_message. Fixtures are
@@ -299,12 +303,21 @@ src/
 │   │   │                   OID's arcs beyond the object's. Any other {x:...} form is
 │   │   │                   Unsupported; at most 128 arcs, a string index counting 2.
 │   │   └── value.rs    ←   SnmpValueType (integer, counter32, counter64, gauge32 = default,
-│   │                       unsigned32, timeticks, string; non_exhaustive). Compiled WITHOUT
-│   │                       the snmp feature too, through an inline `snmp` module in
-│   │                       encoder/mod.rs, as gnmi's value.rs is. write() (snmp only)
-│   │                       rounds halves away from zero and refuses non-finite or
-│   │                       out-of-range values (i32 / u32 / u64) before writing anything;
-│   │                       string writes the shortest round-trip text, NaN/inf/-inf too.
+│   │                       unsigned32, timeticks, string, opaque_float, opaque_double,
+│   │                       ipaddress, Enum(BTreeMap<i64, String>) written { enum: {..} };
+│   │                       non_exhaustive; Clone, not Copy). Its YAML shape is gnmi's: a
+│   │                       hand-written Deserialize over SnmpValueTypeWire (keys bare or
+│   │                       integer strings, labels any scalar as text, an empty map
+│   │                       refused, errors naming the accepted forms), schema via
+│   │                       serde(from/into). Compiled WITHOUT the snmp feature too, through
+│   │                       an inline `snmp` module in encoder/mod.rs, as gnmi's value.rs
+│   │                       is. write(&self) (snmp only) rounds halves away from zero for
+│   │                       the integer types, ipaddress and the enum, and refuses non-finite
+│   │                       (every type but string) or out-of-range values (i32 / u32 / u64;
+│   │                       opaque_float when `as f32` is infinite; NoEnumEntry for an enum
+│   │                       code without a label, or outside i64) before writing anything;
+│   │                       ValueError names the type by name(). string writes the shortest
+│   │                       round-trip text, NaN/inf/-inf too.
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent(SnmpAgentConfig)
@@ -832,14 +845,20 @@ src/
 │   │                       reserved to max_message_size, sends to the datagram's source,
 │   │                       counts send errors. When the socket reports packet info
 │   │                       (pktinfo::enabled reads the option back) it reads with recvmsg
-│   │                       and sends with sendmsg carrying reply_source(info) as the
-│   │                       packet-info source (nix, no unsafe; tokio readable()/writable()
-│   │                       + try_io), otherwise recv_from/send_to. reply_source is the ONE
+│   │                       and sends carrying reply_source(info) as the packet-info
+│   │                       source (nix, no unsafe; tokio readable()/writable() + try_io),
+│   │                       otherwise recv_from/send_to. On Linux it sends with sendmmsg
+│   │                       through SendHeaders, a MultiHeaders preallocated once per
+│   │                       THREAD (a thread_local: it holds raw pointers, so it is not
+│   │                       Send and cannot live in the spawned serve task), control room
+│   │                       for the larger of in_pktinfo/in6_pktinfo, so a wildcard reply
+│   │                       allocates nothing (a_wildcard_reply_allocates_nothing); macOS
+│   │                       sends with sendmsg, which allocates its control buffer (nix),
+│   │                       once per reply. reply_source is the ONE
 │   │                       rule: IPv4 ipi_spec_dst (the local address, the interface's for
 │   │                       broadcast/multicast; unspecified -> the destination if unicast,
 │   │                       else none); IPv6 the destination if unicast, else the receiving
 │   │                       ifindex with the address unspecified (IPv4-mapped kept mapped).
-│   │                       sendmsg allocates its control buffer (nix), once per reply.
 │   │                       A wrong community warns once per peer IP
 │   │                       per minute (PeerWarnings, ≤ 1024 IPs), with its length only.
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
@@ -962,10 +981,16 @@ src/
                            column's against each other and every other oids: template
                            (snmp_collision: with a string
                            index in either, one object equal to or a prefix of the other;
-                           else same arc count and every position can match, ArcSet = listed
-                           arcs plus counters prefix ++ 0..cardinality, exact, a spike's
-                           outside values included; each label named once in the refusal;
-                           O(arcs x values) per pair), nothing in oids: or label_columns:
+                           else same arc count and every position can match AT ONCE: one
+                           ArcSet per label per template (a label of the other template is
+                           its own value: different series), ArcSet = listed arcs plus
+                           counters prefix ++ 0..cardinality, a spike's outside values
+                           included; ArcSet::narrow passes to a fixed point, exact but for
+                           two counters that meet (kept whole: refuses, never misses; the
+                           collision is then not `exact` unless both labels hold that one
+                           position alone, and the refusal says "may render" instead of
+                           "both render"); each label named once in the refusal, both arcs
+                           when they differ between the templates), nothing in oids: or label_columns:
                            under the system group 1.3.6.1.2.1.1; reject_snmp_for refuses the encoder
                            and the snmp_agent sink on histogram, summary and logs entries,
                            validate_cardinality_spike_config, validate_dynamic_label_config,
@@ -984,7 +1009,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication), `aes`, `cfb-mode`, `des` and `cbc` (SNMPv3 privacy, default features off) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg`/`sendmsg` with packet info; `hostname`: the default engine ID) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv, authNoPriv and authPriv) responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication), `aes`, `cfb-mode`, `des` and `cbc` (SNMPv3 privacy, default features off) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg` and `sendmmsg` (Linux) or `sendmsg` (macOS) with packet info; `hostname`: the default engine ID) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv, authNoPriv and authPriv) responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

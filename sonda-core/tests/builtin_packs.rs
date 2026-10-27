@@ -745,7 +745,7 @@ fn every_telegraf_snmp_metric_carries_its_if_mib_hint() {
                 .snmp
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} carries no snmp hint", spec.name));
-            (spec.name.as_str(), hint.oid.as_str(), hint.r#type)
+            (spec.name.as_str(), hint.oid.as_str(), hint.r#type.clone())
         })
         .collect();
     assert_eq!(hints, TELEGRAF_SNMP_HINTS);
@@ -775,28 +775,59 @@ fn telegraf_snmp_interface_serves_if_name_and_if_alias_as_columns() {
 }
 
 /// `examples/snmp-telegraf.yaml` expands the pack under an snmp encoder
-/// that writes no `oids:`, `types:` or `label_columns:`: every entry's
-/// encoder gets the five hints and the two label columns, drops only `job`,
-/// and the file validates with the example's labels.
+/// whose defaults write no `oids:`, `types:` or `label_columns:`: every pack
+/// entry's encoder gets the five hints and the two label columns, drops only
+/// `job`, and the file validates with the example's labels. The four entries
+/// after the pack's each name their own one OID and type.
 #[cfg(feature = "snmp")]
 #[test]
 fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
+    use sonda_core::encoder::snmp::SnmpValueType;
     use sonda_core::encoder::EncoderConfig;
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/snmp-telegraf.yaml");
     let yaml = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()));
-    assert!(
-        !yaml.contains("oids:") && !yaml.contains("types:") && !yaml.contains("label_columns:"),
-        "the example names no oids:, types: or label_columns: of its own"
-    );
+    let file: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("the example is YAML");
+    let defaults = &file["defaults"]["encoder"];
+    assert_eq!(defaults["type"], "snmp", "the defaults' encoder is present");
+    for key in ["oids", "types", "label_columns"] {
+        assert!(
+            defaults.get(key).is_none(),
+            "the defaults' encoder names no {key}:"
+        );
+    }
     let entries = compile_scenario_file(&yaml, &builtin::BuiltinPackResolver::new())
         .unwrap_or_else(|e| panic!("the example compiles: {}", error_chain(&e)));
     assert_eq!(
         entries.len(),
-        4 * TELEGRAF_SNMP_HINTS.len(),
-        "four interfaces"
+        4 * TELEGRAF_SNMP_HINTS.len() + 4,
+        "four interfaces and the four value-type entries"
     );
+    let up_down = SnmpValueType::Enum(
+        [(1, "up".to_string()), (2, "down".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    let own: [(&str, &str, SnmpValueType); 4] = [
+        (
+            "laLoadFloat",
+            "1.3.6.1.4.1.2021.10.1.6.{laIndex}",
+            SnmpValueType::OpaqueFloat,
+        ),
+        (
+            "psu_power_watts",
+            "1.3.6.1.4.1.8072.9999.1.1.0",
+            SnmpValueType::OpaqueDouble,
+        ),
+        (
+            "mgmt_address",
+            "1.3.6.1.4.1.8072.9999.1.2.0",
+            SnmpValueType::IpAddress,
+        ),
+        ("link_state", "1.3.6.1.4.1.8072.9999.1.3.0", up_down),
+    ];
+    let mut owned = 0;
     for entry in &entries {
         let ScenarioEntry::Metrics(config) = entry else {
             panic!("a metrics entry: {entry:?}");
@@ -804,6 +835,18 @@ fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
         let EncoderConfig::Snmp(cfg) = &config.encoder else {
             panic!("an snmp encoder: {:?}", config.encoder);
         };
+        if let Some((name, oid, value_type)) = own.iter().find(|(name, _, _)| *name == config.name)
+        {
+            owned += 1;
+            assert_eq!(
+                cfg.oids,
+                std::collections::HashMap::from([(name.to_string(), oid.to_string())]),
+                "{name}"
+            );
+            assert_eq!(cfg.types.get(*name), Some(value_type), "{name}");
+            assert!(cfg.label_columns.is_empty(), "{name}");
+            continue;
+        }
         let mut oids: Vec<(&str, &str)> = cfg
             .oids
             .iter()
@@ -828,6 +871,7 @@ fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
         assert_eq!(columns, TELEGRAF_SNMP_LABEL_COLUMNS, "{}", config.name);
         assert_eq!(cfg.drop_labels, ["job"], "{}", config.name);
     }
+    assert_eq!(owned, own.len(), "every value-type entry is present");
     sonda_core::schedule::launch::prepare_entries(entries)
         .unwrap_or_else(|e| panic!("the example validates: {e}"));
 }

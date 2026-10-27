@@ -15,7 +15,9 @@
 # The telegraf_snmp_interface pack carries each metric's IF-MIB column and
 # SNMP type, and serves the ifName and ifAlias labels as ifXTable columns, so
 # the encoder block names no OIDs. Interface 1's ifOperStatus flaps: up for
-# 60s, down for 5s.
+# 60s, down for 5s. Four entries after the interfaces serve the remaining
+# value types: an Opaque float, an Opaque double, an IpAddress and an enum
+# string; Telegraf reads the float and the string.
 #
 # Prerequisites (for the Telegraf side):
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile snmp up -d
@@ -24,8 +26,8 @@
 #   sonda run examples/snmp-telegraf.yaml
 #
 # Walk the agent directly with net-snmp:
-#   snmpbulkwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
-#   snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1
+#   snmpbulkwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1
+#   snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1
 #   snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
 #     -x AES -X lab-only-v3-privacy -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
 #   snmpget -v3 -l authNoPriv -u monitor -a SHA-256 -A lab-only-v3-password \
@@ -86,3 +88,52 @@ scenarios:
   - signal_type: metrics
     pack: telegraf_snmp_interface
     labels: { device: rtr-core-01, ifIndex: 4, ifName: GigabitEthernet0/0/3 }
+
+  # The remaining value types, on net-snmp's objects: UCD-SNMP-MIB's
+  # laLoadFloat.1 as an Opaque float, and three leaves under net-snmp's
+  # experimental subtree 1.3.6.1.4.1.8072.9999 (the enterprise the agent's
+  # sysObjectID claims): an Opaque double, an IpAddress and an enum string.
+  # Each names its OID in an encoder block of its own, because the pack's
+  # label columns need {ifIndex} in every OID template of their encoder.
+  - signal_type: metrics
+    name: laLoadFloat
+    labels: { device: rtr-core-01, laIndex: 1 }
+    encoder:
+      type: snmp
+      oids: { laLoadFloat: "1.3.6.1.4.1.2021.10.1.6.{laIndex}" }
+      types: { laLoadFloat: opaque_float }
+    generator: { type: sine, amplitude: 0.4, offset: 0.5, period_secs: 120 }
+
+  # Watts, between 100 and 400.
+  - signal_type: metrics
+    name: psu_power_watts
+    labels: { device: rtr-core-01 }
+    encoder:
+      type: snmp
+      oids: { psu_power_watts: "1.3.6.1.4.1.8072.9999.1.1.0" }
+      types: { psu_power_watts: opaque_double }
+    generator: { type: sine, amplitude: 150.0, offset: 250.0, period_secs: 120 }
+
+  # 167772161 is 10.0.0.1.
+  - signal_type: metrics
+    name: mgmt_address
+    labels: { device: rtr-core-01 }
+    encoder:
+      type: snmp
+      oids: { mgmt_address: "1.3.6.1.4.1.8072.9999.1.2.0" }
+      types: { mgmt_address: ipaddress }
+    generator: { type: constant, value: 167772161 }
+
+  # Served as the text of its code: up for 60s, down for 5s.
+  - signal_type: metrics
+    name: link_state
+    labels: { device: rtr-core-01 }
+    encoder:
+      type: snmp
+      oids: { link_state: "1.3.6.1.4.1.8072.9999.1.3.0" }
+      types: { link_state: { enum: { 1: up, 2: down } } }
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 5s
+      enum: oper_state

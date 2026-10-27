@@ -864,8 +864,8 @@ With the agent running, net-snmp's tools read it directly:
 
 ```bash
 snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.5.0
-snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1.2.1
-snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1.2.1    # when versions lists v1
+snmpwalk -v2c -c public -On 127.0.0.1:1161 1.3.6.1
+snmpwalk -v1 -c public -On 127.0.0.1:1161 1.3.6.1        # when versions lists v1
 snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
   -x AES -X lab-only-v3-privacy -On 127.0.0.1:1161 1.3.6.1.2.1.1.5.0   # when versions lists v3
 ```
@@ -952,7 +952,7 @@ Telegraf polls every 2 seconds: it reads `sysUpTime` and `sysName` and walks the
       oid = ".1.3.6.1.2.1.31.1.1.1.6"
 ```
 
-The table's `name` becomes the measurement, each row's index the `index` tag and its `ifName` the `ifName` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets`, tags each row with its `ifAlias` (the example sets none, and an empty tag is left off), and walks the same table again over SNMPv1 as `interface_v1`, with `GETNEXT` and the same tags. Telegraf writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface. The SNMPv1 table has no `ifHCInOctets` or `ifHCOutOctets` series, because the agent passes over `counter64` instances for an SNMPv1 poller:
+The table's `name` becomes the measurement, each row's index the `index` tag and its `ifName` the `ifName` tag, and `agent_host_tag` tags every metric with the host Telegraf polled as `source`. The full config also polls `ifInErrors`, `ifOutErrors` and `ifHCOutOctets`, tags each row with its `ifAlias` (the example sets none, and an empty tag is left off), reads `laLoadFloat.1`, an Opaque float, as `snmp_load_1m` and the example's enum string as a `link_state` tag on `snmp_uptime` and `snmp_load_1m`, and walks the same table again over SNMPv1 as `interface_v1`, with `GETNEXT` and the same tags. Telegraf writes to VictoriaMetrics over the InfluxDB line protocol, which stores one series per field and interface. The SNMPv1 table has no `ifHCInOctets` or `ifHCOutOctets` series, because the agent passes over `counter64` instances for an SNMPv1 poller:
 
 ```toml title="examples/telegraf/telegraf-snmp.conf (the SNMPv1 block, excerpt)"
 [[inputs.snmp]]
@@ -1004,7 +1004,8 @@ interface_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",sou
 interface_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
 interface_v1_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
 interface_v3_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
-snmp_uptime{db="telegraf",hostname="rtr-core-01",source="sonda"}
+snmp_uptime{db="telegraf",hostname="rtr-core-01",link_state="up",source="sonda"}
+snmp_load_1m{db="telegraf",hostname="rtr-core-01",link_state="up",source="sonda"}
 snmp_v3_uptime{db="telegraf",source="sonda"}
 ```
 
@@ -1019,9 +1020,9 @@ The Telegraf image ships net-snmp, so the agent can be walked from inside the co
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
-  snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1.2.1
+  snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
-  snmpwalk -v1 -c public -On sonda:1161 1.3.6.1.2.1
+  snmpwalk -v1 -c public -On sonda:1161 1.3.6.1
 docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp \
   snmpget -v3 -l authPriv -u telegraf -a SHA-256 -A lab-only-v3-password \
   -x AES -X lab-only-v3-privacy -On sonda:1161 1.3.6.1.2.1.1.5.0

@@ -445,6 +445,17 @@ SNMP_V3_INTERFACE_SERIES = ("interface_v3_ifHCInOctets", "interface_v3_ifOperSta
 SNMP_V3_UPTIME_SERIES = "snmp_v3_uptime"
 SNMP_OPER_STATUS_SERIES = "interface_ifOperStatus"
 SNMP_UPTIME_SERIES = "snmp_uptime"
+# The v2c input's load_1m field: laLoadFloat.1, which the example serves as
+# an Opaque float from a sine between 0.1 and 0.9. Within the bounds, and at
+# least one sample not integral: the float was decoded, not rounded.
+SNMP_LOAD_SERIES = "snmp_load_1m"
+SNMP_LOAD_MIN_SAMPLES = 10
+SNMP_LOAD_BOUNDS = (0.05, 0.95)
+# The v2c input's link_state field, a tag on its top-level metrics: the
+# example's enum string, which flaps up 60s / down 5s. Over the run the
+# snmp_uptime samples carry exactly these values.
+SNMP_LINK_STATE_TAG = "link_state"
+SNMP_LINK_STATES = ("up", "down")
 SNMP_INTERFACES = ("1", "2", "3", "4")
 # The tag Telegraf sets on each interface row from the ifName column the
 # agent serves, and the name the example gives each interface.
@@ -470,13 +481,13 @@ SNMP_TRACE_SETTING = 'log_level = "trace"'
 SNMP_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf.walk")
 # Run inside the telegraf-snmp service, with MIBS set empty.
 SNMP_WALK_COMMAND = (
-    "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
+    "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1161", "1.3.6.1",
 )
 # The SNMPv1 walk and what it prints, masked: every instance but the
 # Counter64 ones.
 SNMP_V1_WALK_GOLDEN = Path("tests/e2e/snmp-telegraf-v1.walk")
 SNMP_V1_WALK_COMMAND = (
-    "snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1.2.1",
+    "snmpwalk", "-v1", "-c", "public", "-On", "sonda:1161", "1.3.6.1",
 )
 # The example's SNMPv3 users: the conf's v3 block reads as telegraf at
 # authPriv; monitor reads at authNoPriv. In-container snmpgets of sysName.0
@@ -498,10 +509,17 @@ SNMP_V3_GET_EXPECTED = '.1.3.6.1.2.1.1.5.0 = STRING: "rtr-core-01"\n'
 # How long walk_snmp_versions retries both walks and the SNMPv3 get before
 # giving up; all are taken well before the flap's first down at 60s.
 SNMP_WALK_WITHIN_S = 30.0
-# The values that move between walks: sysUpTime and the octet counters.
+# The values that move between walks: sysUpTime, the octet counters, the
+# example's Opaque float and double (net-snmp prints both as "Float"), and
+# its enum string, whose text the walk shows and Telegraf's samples check.
 SNMP_WALK_MASKS = (
     (re.compile(r"Timeticks: \(\d+\) .*"), "Timeticks: (*)"),
     (re.compile(r"Counter64: \d+"), "Counter64: *"),
+    (re.compile(r"Opaque: (Float|Double): \S+"), r"Opaque: \1: *"),
+    (
+        re.compile(r'^(\.1\.3\.6\.1\.4\.1\.8072\.9999\.1\.3\.0 = )STRING: "[^"\n]*"$', re.MULTILINE),
+        r'\1STRING: "<link_state>"',
+    ),
 )
 
 
@@ -850,12 +868,14 @@ def snmp_findings(
     v3_get: str,
     v3_priv_get: str,
     restart: SnmpRestart | str,
+    link_states: dict[tuple[str, str], dict[str, list[int]]],
 ) -> list[str]:
     """Every way the snmp row's evidence falls short, in check order; empty
     when all hold.
 
     ``if_names`` is the export grouped by series, interface and
-    SNMP_IF_NAME_TAG value (:func:`parse_vm_export_tags`). Only samples
+    SNMP_IF_NAME_TAG value (:func:`parse_vm_export_tags`); ``link_states``
+    the same by SNMP_LINK_STATE_TAG value. Only samples
     timestamped within [started_s, ended_s] count. In order: Telegraf logged
     a SNMP_LOADED_INPUTS line naming snmp; no SNMP_ERROR_LINE is stamped
     after the second of its input's first sample and at least a second
@@ -879,9 +899,14 @@ def snmp_findings(
     interface is tagged SNMP_IF_NAME_TAG with that interface's SNMP_IF_NAMES
     name (samples without the tag, or with another value, are named, and so
     is a series with samples and none so tagged); SNMP_UPTIME_SERIES has at
-    least SNMP_MIN_SAMPLES samples, each greater than the one before; the
-    flapping interface's ifOperStatus takes every SNMP_OPER_STATUS_CODES
-    value; each SNMP_V1_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES
+    least SNMP_MIN_SAMPLES samples, each greater than the one before;
+    SNMP_LOAD_SERIES has at least SNMP_LOAD_MIN_SAMPLES samples, every one
+    finite and within SNMP_LOAD_BOUNDS (those that are not are named), and
+    one at least not integral; the SNMP_LINK_STATE_TAG values of the
+    SNMP_UPTIME_SERIES samples are exactly SNMP_LINK_STATES (a value outside
+    them is named with its count, and so is each of them no sample carries;
+    a sample without the tag carries no value); the flapping interface's ifOperStatus takes every
+    SNMP_OPER_STATUS_CODES value; each SNMP_V1_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES
     samples for each interface within SNMP_SAMPLES_WITHIN_S of the first
     sample, and no SNMP_V1_ABSENT_SERIES has any sample; each
     SNMP_V3_INTERFACE_SERIES has at least SNMP_MIN_SAMPLES samples for each
@@ -1037,6 +1062,45 @@ def snmp_findings(
 
     increasing(SNMP_UPTIME_SERIES)
 
+    load = [v for _, v in in_window.get((SNMP_LOAD_SERIES, ""), [])]
+    if len(load) < SNMP_LOAD_MIN_SAMPLES:
+        findings.append(
+            f"{SNMP_LOAD_SERIES}: {len(load)} sample(s), want >= {SNMP_LOAD_MIN_SAMPLES}"
+        )
+    low, high = SNMP_LOAD_BOUNDS
+    outside = [v for v in load if not (math.isfinite(v) and low <= v <= high)]
+    if outside:
+        findings.append(
+            f"{SNMP_LOAD_SERIES}: {len(outside)} sample(s) not finite or outside "
+            f"[{low:g}, {high:g}], the first {outside[0]!r}"
+        )
+    if load and all(math.isfinite(v) and v == math.floor(v) for v in load):
+        findings.append(
+            f"{SNMP_LOAD_SERIES}: every sample is integral ({sorted(set(load))[:5]}); "
+            "the Opaque float was not decoded as a float"
+        )
+
+    # A sample without the tag is not a value: a poll can reach the agent
+    # before the example's first event publishes the leaf.
+    states = {
+        value: sum(1 for ts in stamps if start_ms <= ts <= end_ms)
+        for value, stamps in link_states.get((SNMP_UPTIME_SERIES, ""), {}).items()
+        if value
+    }
+    states = {value: count for value, count in states.items() if count}
+    for value, count in sorted(states.items()):
+        if value not in SNMP_LINK_STATES:
+            findings.append(
+                f'{SNMP_UPTIME_SERIES}: {count} sample(s) tagged {SNMP_LINK_STATE_TAG}="{value}", '
+                f"want one of {', '.join(SNMP_LINK_STATES)}"
+            )
+    for want in SNMP_LINK_STATES:
+        if not states.get(want):
+            findings.append(
+                f'{SNMP_UPTIME_SERIES}: no sample tagged {SNMP_LINK_STATE_TAG}="{want}" '
+                f"within the run; saw {sorted(states)}"
+            )
+
     seen = {v for _, v in in_window.get((SNMP_OPER_STATUS_SERIES, SNMP_FLAPPING_INTERFACE), [])}
     for state, code in SNMP_OPER_STATUS_CODES.items():
         if code not in seen:
@@ -1162,6 +1226,7 @@ def verify_snmp_row(
             v3_get=walks.v3_get,
             v3_priv_get=walks.v3_priv_get,
             restart=evidence.restart,
+            link_states=parse_vm_export_tags(body, SNMP_LINK_STATE_TAG),
         )
     )
 
