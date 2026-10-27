@@ -11,8 +11,11 @@
 //! (`0.0.0.0` or `[::]`) the socket reports each datagram's packet info
 //! (`IP_PKTINFO` / `IPV6_RECVPKTINFO`, Linux and macOS) and the response
 //! is sent with [`reply_source`]'s address in its packet-info control
-//! message. Elsewhere a wildcard bind's responses leave from the address
-//! the route chooses.
+//! message: on Linux with `sendmmsg` through headers preallocated once per
+//! thread, so a response allocates nothing, and on macOS with `sendmsg`,
+//! which allocates its control-message buffer for each response because
+//! nix has no `sendmmsg` there. Elsewhere a wildcard bind's responses leave
+//! from the address the route chooses.
 //!
 //! | Received | SNMPv2c answer | SNMPv1 answer |
 //! |---|---|---|
@@ -778,7 +781,7 @@ async fn recv<'b>(
 }
 
 /// Send `reply` to `to`: with `send_to` when `from` is `None`, otherwise
-/// with `sendmsg` carrying `from` as its packet info.
+/// carrying `from` as its packet info ([`pktinfo`]).
 async fn send(
     socket: &UdpSocket,
     reply: &[u8],
@@ -791,12 +794,13 @@ async fn send(
     }
 }
 
-/// `recvmsg` and `sendmsg` with packet info, through the socket's readiness.
+/// `recvmsg` with packet info, and `sendmmsg` (Linux) or `sendmsg` (macOS)
+/// carrying it, through the socket's readiness.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod pktinfo {
     use std::io::{self, IoSlice, IoSliceMut};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, RawFd};
 
     use nix::libc;
     use nix::sys::socket::{
@@ -806,6 +810,34 @@ mod pktinfo {
     use tokio::net::UdpSocket;
 
     use super::{PacketInfo, ReplySource};
+
+    /// The message header `sendmmsg` sends one response through, with
+    /// control room for the larger of `in_pktinfo` and `in6_pktinfo`.
+    /// The kernel stops reading control messages where fewer bytes remain
+    /// than a `cmsghdr`, so an `in_pktinfo` fits the same room.
+    #[cfg(target_os = "linux")]
+    struct SendHeaders(socket::MultiHeaders<SockaddrStorage>);
+
+    #[cfg(target_os = "linux")]
+    impl SendHeaders {
+        fn new() -> Self {
+            let room = std::cmp::max_by_key(
+                nix::cmsg_space!(libc::in_pktinfo),
+                nix::cmsg_space!(libc::in6_pktinfo),
+                Vec::capacity,
+            );
+            Self(socket::MultiHeaders::preallocate(1, Some(room)))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    std::thread_local! {
+        /// This thread's [`SendHeaders`], allocated by its first response.
+        /// One per thread: the headers hold raw pointers and are not
+        /// `Send`, so they stay on the thread that made them.
+        static SEND_HEADERS: std::cell::RefCell<Option<SendHeaders>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
     /// Room for one packet-info control message of either family, aligned
     /// as a `cmsghdr`.
@@ -895,15 +927,49 @@ mod pktinfo {
         }];
         loop {
             socket.writable().await?;
-            let sent = socket.try_io(Interest::WRITABLE, || {
-                socket::sendmsg(fd, &iov, &cmsgs, MsgFlags::empty(), Some(&to))
-                    .map_err(io::Error::from)
-            });
+            let sent = socket.try_io(Interest::WRITABLE, || send_now(fd, &iov, &cmsgs, to));
             match sent {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                 sent => return sent,
             }
         }
+    }
+
+    /// Send one datagram of `iov` to `to` with `cmsgs`, through this
+    /// thread's [`SendHeaders`]: allocates nothing once the thread has sent
+    /// one. A datagram is sent whole or not at all, so the count is its
+    /// length.
+    #[cfg(target_os = "linux")]
+    fn send_now(
+        fd: RawFd,
+        iov: &[IoSlice<'_>; 1],
+        cmsgs: &[ControlMessage<'_>; 1],
+        to: SockaddrStorage,
+    ) -> io::Result<usize> {
+        SEND_HEADERS.with_borrow_mut(|headers| {
+            let headers = headers.get_or_insert_with(SendHeaders::new);
+            socket::sendmmsg(
+                fd,
+                &mut headers.0,
+                [iov],
+                [Some(to)],
+                cmsgs,
+                MsgFlags::empty(),
+            )
+            .map(|_| iov[0].len())
+            .map_err(io::Error::from)
+        })
+    }
+
+    /// Send one datagram of `iov` to `to` with `cmsgs`.
+    #[cfg(target_os = "macos")]
+    fn send_now(
+        fd: RawFd,
+        iov: &[IoSlice<'_>; 1],
+        cmsgs: &[ControlMessage<'_>; 1],
+        to: SockaddrStorage,
+    ) -> io::Result<usize> {
+        socket::sendmsg(fd, iov, cmsgs, MsgFlags::empty(), Some(&to)).map_err(io::Error::from)
     }
 
     fn socket_addr(address: &SockaddrStorage) -> Option<SocketAddr> {
