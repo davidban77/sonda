@@ -3218,6 +3218,65 @@ mod tests {
         assert_eq!(response(&reply).varbinds.len(), 1);
     }
 
+    /// A 1 400-byte reply sent with its packet info from a wildcard-bound
+    /// socket allocates nothing once the thread has sent one, and the peer
+    /// receives it whole from the source the packet info names.
+    #[cfg(target_os = "linux")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::ipv4("0.0.0.0:0", "127.0.0.1:0")]
+    #[case::ipv6("[::]:0",    "[::1]:0")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_wildcard_reply_allocates_nothing(#[case] bind: &str, #[case] peer: &str) {
+        use std::future::Future as _;
+        use std::task::{Context, Poll, Waker};
+
+        if bind.starts_with('[') && !ipv6_loopback() {
+            return;
+        }
+        let socket = UdpSocket::bind(bind).await.expect("bind the agent's socket");
+        enable_pktinfo(&socket, socket.local_addr().expect("bound")).expect("packet info");
+        let peer = UdpSocket::bind(peer).await.expect("bind the peer");
+        let to = peer.local_addr().expect("bound");
+        let from = ReplySource {
+            addr: to.ip(),
+            ifindex: 0,
+        };
+        let reply: Vec<u8> = (0..1400).map(|i| (i % 251) as u8).collect();
+        let received = |peer: &UdpSocket| {
+            let mut buffer = vec![0; RECEIVE_BUFFER];
+            match peer.try_recv_from(&mut buffer) {
+                Ok((len, source)) => {
+                    buffer.truncate(len);
+                    (buffer, source)
+                }
+                Err(e) => panic!("the peer received nothing: {e}"),
+            }
+        };
+
+        let sent = pktinfo::send(&socket, &reply, to, from).await.expect("sent");
+        assert_eq!(sent, reply.len());
+        peer.readable().await.expect("readable");
+        let (first, source) = received(&peer);
+        assert_eq!((first, source.ip()), (reply.clone(), from.addr));
+
+        let mut sending = std::pin::pin!(pktinfo::send(&socket, &reply, to, from));
+        let mut cx = Context::from_waker(Waker::noop());
+        counting::assert_count_allocations_counts();
+        let (sent, allocations) = counting::count_allocations(|| sending.as_mut().poll(&mut cx));
+        assert!(
+            matches!(sent, Poll::Ready(Ok(len)) if len == reply.len()),
+            "the reply was sent in one poll: {sent:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(1), peer.readable())
+            .await
+            .expect("the reply arrives within 1 s")
+            .expect("readable");
+        let (second, source) = received(&peer);
+        assert_eq!((second, source.ip()), (reply.clone(), from.addr));
+        assert_eq!(allocations, 0);
+    }
+
     /// An agent on a specific address reads without packet info, sends with
     /// `send_to`, and answers a connected client.
     #[tokio::test]
