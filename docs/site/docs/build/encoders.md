@@ -423,6 +423,8 @@ A scenario file is refused, with the metric and the label named, when any of the
 
     A label's values are its static value, every entry of a `values` dynamic label, and the values of a `counter` dynamic label or `counter` cardinality spike: its prefix followed by `0` to `cardinality - 1`, with a spike's values outside its window as well. A label the entry does not have has none. `1.3.6.1.2.1.31.1.1.1.6.0` beside `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` is refused when `ifIndex` is `0` or takes `0` among its values; the refusal names both templates, the OID and the label values that render it.
 
+    A label used twice in one template takes the same value at both places: `1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{ifIndex}` renders `…2.1.0.0` and `…2.1.1.1` when `ifIndex` takes `0` and `1`, never `…2.1.1.0`, so it is accepted beside the scalar `1.3.6.1.4.1.8072.9999.2.1.1.0`. The same label in the other template can take another value, because the two render different series. The check is exact but in one case: where both positions hold `counter` labels whose values meet, it assumes they can be equal, so it may refuse two templates that never render the same OID; it never accepts two that do.
+
     When either template has a `{label:str}` placeholder, the two can render the same OID exactly when one's object OID equals or begins with the other's: `1.3.6.1.4.1.8072.9999.3.1.{ifName:str}` and `1.3.6.1.4.1.8072.9999.3.2.{ifName:str}` are accepted, `1.3.6.1.4.1.8072.9999.3.{ifName:str}` beside either is refused.
 
 Histogram, summary and logs entries refuse both this encoder and the `snmp_agent` sink.
