@@ -3288,7 +3288,8 @@ mod tests {
     /// socket allocates nothing once the thread has sent one, and the peer
     /// receives it whole from the source the packet info names: over IPv4,
     /// 127.0.0.2, which the route to 127.0.0.1 would not choose; over IPv6,
-    /// `::1`, the host's only IPv6 address.
+    /// `::1`, the only loopback address, which the route picks too. So the
+    /// IPv6 case proves the path sends, and the IPv4 case proves the source.
     #[cfg(target_os = "linux")]
     #[rustfmt::skip]
     #[rstest]
