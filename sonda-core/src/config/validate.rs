@@ -831,33 +831,30 @@ fn snmp_collision(
     if sides[0].len() != sides[1].len() {
         return None;
     }
-    // One set per label of each side; `slots[side][position]` is the index
-    // of the set of the label there.
+    // One set per label of each side; each position holds, per side, its
+    // arc and the index of the set of the label there.
     let mut keys: Vec<(usize, &str)> = Vec::new();
     let mut sets: Vec<ArcSet> = Vec::new();
-    let mut slots: [Vec<Option<usize>>; 2] = [Vec::new(), Vec::new()];
-    for (side, arcs) in sides.iter().enumerate() {
-        for arc in arcs {
-            let slot = match *arc {
-                TemplateArc::Label(label) => {
-                    Some(match keys.iter().position(|key| *key == (side, label)) {
-                        Some(i) => i,
-                        None => {
-                            keys.push((side, label));
-                            sets.push(ArcSet::of_label(base.label_value_set(label)));
-                            keys.len() - 1
-                        }
-                    })
-                }
-                _ => None,
+    let mut positions: Vec<[(TemplateArc<'_>, Option<usize>); 2]> = Vec::new();
+    for (&a, &b) in sides[0].iter().zip(&sides[1]) {
+        let mut position = [(a, None), (b, None)];
+        for (side, (arc, slot)) in position.iter_mut().enumerate() {
+            let TemplateArc::Label(label) = *arc else {
+                continue;
             };
-            slots[side].push(slot);
+            *slot = Some(match keys.iter().position(|key| *key == (side, label)) {
+                Some(i) => i,
+                None => {
+                    keys.push((side, label));
+                    sets.push(ArcSet::of_label(base.label_value_set(label)));
+                    keys.len() - 1
+                }
+            });
         }
+        positions.push(position);
     }
-    let set_at = |sets: &[ArcSet], side: usize, position: usize| match (
-        slots[side][position],
-        sides[side][position],
-    ) {
+    let set_of = |sets: &[ArcSet], (arc, slot): (TemplateArc<'_>, Option<usize>)| match (slot, arc)
+    {
         (Some(i), _) => sets[i].clone(),
         (None, TemplateArc::Literal(arc)) => ArcSet::literal(arc),
         // Neither template has a string index: answered above.
@@ -865,12 +862,12 @@ fn snmp_collision(
     };
     loop {
         let mut changed = false;
-        for position in 0..sides[0].len() {
+        for position in &positions {
             for side in [0, 1] {
-                let Some(i) = slots[side][position] else {
+                let Some(i) = position[side].1 else {
                     continue;
                 };
-                let narrowed = sets[i].narrow(&set_at(&sets, 1 - side, position));
+                let narrowed = sets[i].narrow(&set_of(&sets, position[1 - side]));
                 if narrowed != sets[i] {
                     sets[i] = narrowed;
                     changed = true;
@@ -888,11 +885,11 @@ fn snmp_collision(
     // Each label of each side with its arc at its first position, in the
     // order the positions name them.
     let mut arcs: Vec<((usize, &str), u32)> = Vec::new();
-    for position in 0..sides[0].len() {
-        let arc = set_at(&sets, 0, position).common(&set_at(&sets, 1, position))?;
+    for position in &positions {
+        let arc = set_of(&sets, position[0]).common(&set_of(&sets, position[1]))?;
         oid.push(arc.to_string());
-        for side in [0, 1] {
-            if let TemplateArc::Label(label) = sides[side][position] {
+        for (side, (template_arc, _)) in position.iter().enumerate() {
+            if let TemplateArc::Label(label) = *template_arc {
                 if !arcs.iter().any(|(key, _)| *key == (side, label)) {
                     arcs.push(((side, label), arc));
                 }
@@ -5672,6 +5669,11 @@ generator:
         assert_eq!(msg.matches("ifIndex is").count(), 1, "named once: {msg}");
     }
 
+    /// A label a collision names, its arc, and its arc in the second template
+    /// when that differs.
+    #[cfg(feature = "snmp")]
+    type NamedArcs<'a> = (&'a str, u32, Option<u32>);
+
     /// [`snmp_collision`] of `own` and `other` under [`snmp_config`] with
     /// each of `values` (key, comma-separated values) a static label (one
     /// value) or a `values` dynamic label, and each of `counters` (key, prefix, cardinality) a `counter`
@@ -5756,7 +5758,7 @@ generator:
         #[case] other: &str,
         #[case] values: &[(&str, &str)],
         #[case] counters: &[(&str, &str, u64)],
-        #[case] expected: Option<(&str, &[(&str, u32, Option<u32>)])>,
+        #[case] expected: Option<(&str, &[NamedArcs<'_>])>,
     ) {
         let expected = expected.map(|(oid, values)| SnmpCollision::Oid {
             oid: oid.to_string(),
