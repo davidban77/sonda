@@ -632,3 +632,15 @@ jobs:
         run: |
           python3 scripts/check_compose_features.py --self-test
           python3 scripts/check_compose_features.py
+
+      # The live-UAT harness's checker, Telegraf-conf and compose-override
+      # tests: the same unittest.TestCase suites pytest runs locally. unittest
+      # exits 5 when discovery collects nothing only from Python 3.12; on 3.11
+      # an empty discovery exits 0, so the first line fails an older python3.
+      - name: Live-UAT harness tests
+        run: |
+          python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'
+          python3 -m unittest discover -s scripts/tests -v
+
+      - name: Live-UAT harness self-test
+        run: python3 scripts/live_infra_uat.py --self-test
