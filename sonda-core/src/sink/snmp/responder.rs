@@ -3675,6 +3675,73 @@ mod tests {
         .1.3.6.1.2.1.31.1.1.1.15.9 = Gauge32: 10000\n\
         .1.3.6.1.2.1.31.1.1.1.15.10 = Gauge32: 10000\n";
 
+    /// net-snmp reads an Opaque float, an Opaque double, an IpAddress and an
+    /// enum's text, each written by the value layer, over SNMPv2c and
+    /// SNMPv1, which carries all four (RFC 1155). net-snmp prints an Opaque
+    /// double as "Opaque: Float:" too, with the double's digits.
+    #[tokio::test]
+    #[ignore = "needs net-snmp's snmpget on PATH; run with --ignored"]
+    async fn net_snmp_reads_the_opaque_ipaddress_and_enum_types() {
+        use crate::encoder::snmp::SnmpValueType;
+
+        let agent = agent_serving(&[SnmpVersion::V1, SnmpVersion::V2c]).await;
+        let owner = owner();
+        let up_down = SnmpValueType::Enum(
+            [(1, "up".to_string()), (2, "down".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let leaves = [
+            (
+                "1.3.6.1.4.1.2021.10.1.6.1",
+                SnmpValueType::OpaqueFloat,
+                0.15,
+            ),
+            (
+                "1.3.6.1.4.1.8072.9999.1.1.0",
+                SnmpValueType::OpaqueDouble,
+                273.46517,
+            ),
+            (
+                "1.3.6.1.4.1.8072.9999.1.2.0",
+                SnmpValueType::IpAddress,
+                167_772_161.0,
+            ),
+            ("1.3.6.1.4.1.8072.9999.1.3.0", up_down, 1.0),
+        ];
+        for (oid, ty, value) in &leaves {
+            publish(&agent, owner, oid, |out| {
+                ty.write(*value, out).expect("a value of the type")
+            });
+        }
+        let target = format!("127.0.0.1:{}", agent.local_addr().port());
+        for version in ["-v2c", "-v1"] {
+            let args = [
+                version, "-c", "public", "-On", "-r", "0", "-t", "2", &target,
+            ]
+            .into_iter()
+            .chain(leaves.iter().map(|(oid, _, _)| *oid))
+            .map(str::to_string)
+            .collect();
+            let get = net_snmp("snmpget", args).await;
+            assert!(
+                get.status.success(),
+                "{version}: {}",
+                String::from_utf8_lossy(&get.stderr)
+            );
+            let stdout = String::from_utf8(get.stdout).expect("UTF-8");
+            println!("{stdout}");
+            assert_eq!(
+                stdout,
+                ".1.3.6.1.4.1.2021.10.1.6.1 = Opaque: Float: 0.150000\n\
+                 .1.3.6.1.4.1.8072.9999.1.1.0 = Opaque: Float: 273.465170\n\
+                 .1.3.6.1.4.1.8072.9999.1.2.0 = IpAddress: 10.0.0.1\n\
+                 .1.3.6.1.4.1.8072.9999.1.3.0 = STRING: \"up\"\n",
+                "{version}"
+            );
+        }
+    }
+
     /// net-snmp's v1 walk of MIB-2 prints every instance but the Counter64
     /// ones, and its v2c bulk walk of the same agent still prints the v2c
     /// golden walk.
