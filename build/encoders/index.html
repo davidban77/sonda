@@ -1134,6 +1134,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#label-columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Label columns
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#oids-and-types-from-a-pack" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2531,6 +2542,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#label-columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Label columns
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#oids-and-types-from-a-pack" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3038,6 +3060,13 @@
 <td>Per-metric value type keyed by exact metric name. Unlisted metrics are <code>gauge32</code>. See <a href="#snmp-value-types">SNMP value types</a>.</td>
 </tr>
 <tr>
+<td><code>label_columns</code></td>
+<td>map</td>
+<td>no</td>
+<td><code>{}</code></td>
+<td>OID template per label whose value the agent serves as a string column, keyed by label. See <a href="#label-columns">Label columns</a>.</td>
+</tr>
+<tr>
 <td><code>agent_label</code></td>
 <td>string</td>
 <td>no</td>
@@ -3071,41 +3100,60 @@
 </span><span id="__span-20-16"><a id="__codelineno-20-16" name="__codelineno-20-16" href="#__codelineno-20-16"></a><span class="w">  </span><span class="nt">drop_labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">job</span><span class="p p-Indicator">]</span>
 </span></code></pre></div>
 <p>With that block, <code>ifHCInOctets{device="rtr-core-01", ifIndex="3", job="snmp"}</code> is the instance <code>1.3.6.1.2.1.31.1.1.1.6.3</code> with a Counter64 value. <code>device</code> is the agent label and <code>job</code> is dropped, so neither changes the OID.</p>
+<h3 id="label-columns">Label columns<a class="headerlink" href="#label-columns" title="Permanent link">&para;</a></h3>
+<p>A label can be served as a column of its own: its value, an OCTET STRING, at an OID rendered from the same index labels as the metrics, which is how IF-MIB gives each interface a name beside its counters:</p>
+<div class="language-yaml highlight"><span class="filename">ifName and ifAlias served beside the counters</span><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span><span class="nt">oids</span><span class="p">:</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">    </span><span class="nt">ifHCInOctets</span><span class="p">:</span><span class="w"> </span><span class="s">"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">  </span><span class="nt">types</span><span class="p">:</span>
+</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">    </span><span class="nt">ifHCInOctets</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">counter64</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="w">  </span><span class="nt">label_columns</span><span class="p">:</span>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="w">    </span><span class="nt">ifName</span><span class="p">:</span><span class="w"> </span><span class="s">"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"</span>
+</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="w">    </span><span class="nt">ifAlias</span><span class="p">:</span><span class="w"> </span><span class="s">"1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"</span>
+</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="w">  </span><span class="nt">drop_labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">job</span><span class="p p-Indicator">]</span>
+</span></code></pre></div>
+<p>With that block, <code>ifHCInOctets{device="rtr-core-01", ifIndex="3", ifName="GigabitEthernet0/0/2", job="snmp"}</code> serves <code>1.3.6.1.2.1.31.1.1.1.6.3</code> as a Counter64 and <code>1.3.6.1.2.1.31.1.1.1.1.3</code> as the string <code>GigabitEthernet0/0/2</code>. A label named in <code>label_columns</code> needs no placeholder and no <code>drop_labels</code> entry, and must be a static label of the entry, set in <code>labels</code> or a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s shared labels: series that differ only in a label-column label share the metric's OID, so a <code>dynamic_labels</code> or <code>cardinality_spikes</code> label, or a label the entry does not have, is refused. Each template is a string and follows the <a href="#oid-templates">OID template</a> rules, and uses only placeholders that every <code>oids:</code> template uses. The agent holds a column's instance while any series carrying it is live (see <a href="../sinks/#snmp_agent">the <code>snmp_agent</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr></a>).</p>
 <h3 id="oids-and-types-from-a-pack">OIDs and types from a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr><a class="headerlink" href="#oids-and-types-from-a-pack" title="Permanent link">&para;</a></h3>
 <p>A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s metrics can carry an <code>snmp:</code> hint, an OID template and a value type:</p>
-<div class="language-yaml highlight"><span class="filename">A pack metric with an SNMP hint</span><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># sonda:static - a pack fragment, not a scenario</span>
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="nt">metrics</span><span class="p">:</span>
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ifHCInOctets</span>
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">step</span><span class="p p-Indicator">,</span><span class="nt"> start</span><span class="p">:</span><span class="w"> </span><span class="nv">0.0</span><span class="p p-Indicator">,</span><span class="nt"> step_size</span><span class="p">:</span><span class="w"> </span><span class="nv">125000.0</span><span class="w"> </span><span class="p p-Indicator">}</span>
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">    </span><span class="nt">snmp</span><span class="p">:</span>
-</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">      </span><span class="nt">oid</span><span class="p">:</span><span class="w"> </span><span class="s">"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"</span>
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">counter64</span>
+<div class="language-yaml highlight"><span class="filename">A pack metric with an SNMP hint</span><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># sonda:static - a pack fragment, not a scenario</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="nt">metrics</span><span class="p">:</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ifHCInOctets</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">    </span><span class="nt">generator</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">step</span><span class="p p-Indicator">,</span><span class="nt"> start</span><span class="p">:</span><span class="w"> </span><span class="nv">0.0</span><span class="p p-Indicator">,</span><span class="nt"> step_size</span><span class="p">:</span><span class="w"> </span><span class="nv">125000.0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">    </span><span class="nt">snmp</span><span class="p">:</span>
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="w">      </span><span class="nt">oid</span><span class="p">:</span><span class="w"> </span><span class="s">"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"</span>
+</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">counter64</span>
 </span></code></pre></div>
-<p>When a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> entry's <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> is <code>snmp</code>, each hint fills <code>oids:</code> and <code>types:</code> for its metric. Your entries win: an <code>oids:</code> entry for a metric replaces its hint's OID, a <code>types:</code> entry its hint's type, each on its own. Under any other <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> the hints are not used.</p>
+<p>When a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> entry's <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> is <code>snmp</code>, each hint fills <code>oids:</code> and <code>types:</code> for its metric, and the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s <code>snmp_label_columns</code> map fills <code>label_columns:</code>. Your entries win: an <code>oids:</code> entry for a metric replaces its hint's OID, a <code>types:</code> entry its hint's type, a <code>label_columns:</code> entry the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s template for that label, each on its own. Under any other <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> the hints are not used.</p>
 <h3 id="oid-templates">OID templates<a class="headerlink" href="#oid-templates" title="Permanent link">&para;</a></h3>
 <ul>
-<li>A template is the object's OID in dotted decimal, without a leading dot, followed by one <code>{label}</code> placeholder per index arc: <code>1.3.6.1.2.1.2.2.1.8.{ifIndex}</code>.</li>
+<li>A template is the object's OID in dotted decimal, without a leading dot, followed by its index: one or more placeholders, <code>{label}</code> or <code>{label:str}</code>: <code>1.3.6.1.2.1.2.2.1.8.{ifIndex}</code>.</li>
 <li>A template is a string. Quote it: an unquoted value such as <code>1.30</code> is a YAML number, which would read as <code>1.3</code>, and is refused with the field named.</li>
 <li>Placeholders are the last arcs. A literal arc after a placeholder is an error.</li>
-<li>The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs.</li>
+<li>The object's OID has at least two arcs. The first is 0, 1 or 2, and when it is 0 or 1 the second is below 40. A template has at most 128 arcs, counting a <code>{label:str}</code> placeholder as two, and so does every OID it renders.</li>
 <li>A template with no placeholder is a scalar and must end in <code>.0</code>, its one instance: <code>1.3.6.1.4.1.8072.9999.1.1.0</code> is the instance of the scalar <code>1.3.6.1.4.1.8072.9999.1.1</code>.</li>
-<li>A placeholder renders its label's value as one arc. The value must be an unsigned 32-bit integer written in decimal, without a sign or leading zeros: <code>3</code>, not <code>03</code>. <code>{label:str}</code> and any other form are refused.</li>
-<li>No template may render an OID under <code>1.3.6.1.2.1.1</code>, the system group, which the agent serves itself.</li>
+<li>A <code>{label}</code> placeholder renders its label's value as one arc. The value must be an unsigned 32-bit integer written in decimal, without a sign or leading zeros: <code>3</code>, not <code>03</code>.</li>
+<li>A <code>{label:str}</code> placeholder renders its label's value as a string index: its length in bytes, then one arc per byte. <code>GigabitEthernet0/0/0</code> is <code>20.71.105.103.97.98.105.116.69.116.104.101.114.110.101.116.48.47.48.47.48</code>. Any value but the empty string renders; an event with an empty one is rejected. Any other <code>{label:...}</code> form is refused.</li>
+<li>No template, in <code>oids:</code> or <code>label_columns:</code>, may render an OID under <code>1.3.6.1.2.1.1</code>, the system group, which the agent serves itself.</li>
 </ul>
 <p>A <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file is refused, with the metric and the label named, when any of these do not hold for an entry:</p>
 <ul>
 <li>Every metric the entry emits has an <code>oids:</code> entry, from the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> block or a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> hint.</li>
 <li>Every placeholder names a key of the entry's <code>labels</code> or <code>dynamic_labels</code>. A <code>cardinality_spikes</code> label cannot be a placeholder: events carry it only while its window is open.</li>
-<li>Every value a placeholder's label can take is an arc: its static value, every <code>values:</code> entry of a dynamic label, and every value of a <code>counter</code> dynamic label or <code>counter</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike on it. A counter's values are its prefix followed by a number, and the default prefix (<code>&lt;label&gt;_</code>) is not a number, so set <code>prefix: ""</code>. A <code>random</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike on a placeholder's label is refused.</li>
-<li>Every label key of the entry, from <code>labels</code>, <code>dynamic_labels</code> and <code>cardinality_spikes</code>, is a placeholder, the <code>agent_label</code>, or listed in <code>drop_labels</code>. Otherwise series that differ only in that label would share one OID.</li>
+<li>Every placeholder of a <code>label_columns</code> template is a placeholder of every <code>oids:</code> template.</li>
+<li>Every <code>label_columns</code> label is a static label of the entry, not a <code>dynamic_labels</code> or <code>cardinality_spikes</code> label.</li>
+<li>Every value the label of a <code>{label}</code> placeholder can take is an arc: its static value, every <code>values:</code> entry of a dynamic label, and every value of a <code>counter</code> dynamic label or <code>counter</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike on it. A counter's values are its prefix followed by a number, and the default prefix (<code>&lt;label&gt;_</code>) is not a number, so set <code>prefix: ""</code>. A <code>random</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike on such a label is refused. A <code>{label:str}</code> placeholder takes any value.</li>
+<li>Every label key of the entry, from <code>labels</code>, <code>dynamic_labels</code> and <code>cardinality_spikes</code>, is a placeholder, a <code>label_columns</code> label, the <code>agent_label</code>, or listed in <code>drop_labels</code>. Otherwise series that differ only in that label would share one OID. Series that differ only in a <code>label_columns</code> label do share the metric's OID, which is why that label must be static.</li>
 <li>
-<p>No two metrics can render the same OID for the entry. Two templates can when they have the same number of arcs and the arcs at every position can be equal:</p>
+<p>No two templates can render the same OID for the entry: its metric's template and each <code>label_columns</code> template are compared with each other and with every other <code>oids:</code> template. Two templates can when they have the same number of arcs and the arcs at every position can be equal:</p>
 <ul>
 <li>two numbers when they are the same number;</li>
 <li>a number and a placeholder when the number is one of the values the placeholder's label takes;</li>
 <li>two placeholders when their labels share a value.</li>
 </ul>
-<p>A label's values are its static value, or every entry of a <code>values</code> dynamic label. A <code>counter</code> dynamic label or <code>counter</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike counts as every number, a <code>random</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike as only the values outside its window, and a label the entry does not have as none. <code>1.3.6.1.2.1.31.1.1.1.6.0</code> beside <code>1.3.6.1.2.1.31.1.1.1.6.{ifIndex}</code> is refused when <code>ifIndex</code> is <code>0</code> or takes <code>0</code> among its <code>values</code>; the refusal names both metrics, the OID and the label values that render it.</p>
+<p>A label's values are its static value, every entry of a <code>values</code> dynamic label, and the values of a <code>counter</code> dynamic label or <code>counter</code> <abbr title="Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.">cardinality</abbr> spike: its prefix followed by <code>0</code> to <code>cardinality - 1</code>, with a spike's values outside its window as well. A label the entry does not have has none. <code>1.3.6.1.2.1.31.1.1.1.6.0</code> beside <code>1.3.6.1.2.1.31.1.1.1.6.{ifIndex}</code> is refused when <code>ifIndex</code> is <code>0</code> or takes <code>0</code> among its values; the refusal names both templates, the OID and the label values that render it.</p>
+<p>A label used twice in one template takes the same value at both places: <code>1.3.6.1.4.1.8072.9999.2.1.{ifIndex}.{ifIndex}</code> renders <code>…2.1.0.0</code> and <code>…2.1.1.1</code> when <code>ifIndex</code> takes <code>0</code> and <code>1</code>, never <code>…2.1.1.0</code>, so it is accepted beside the scalar <code>1.3.6.1.4.1.8072.9999.2.1.1.0</code>. The same label in the other template can take another value, because the two render different series. The check is exact but in one case: where both positions hold <code>counter</code> labels whose values meet, it assumes they can be equal, so it may refuse two templates that never render the same OID; it never accepts two that do. A refusal that rests on that assumption says the templates may render the OID; every other one says they both render it.</p>
+<p>When either template has a <code>{label:str}</code> placeholder, the two can render the same OID exactly when one's object OID equals or begins with the other's: <code>1.3.6.1.4.1.8072.9999.3.1.{ifName:str}</code> and <code>1.3.6.1.4.1.8072.9999.3.2.{ifName:str}</code> are accepted, <code>1.3.6.1.4.1.8072.9999.3.{ifName:str}</code> beside either is refused.</p>
 </li>
 </ul>
 <p>Histogram, <abbr title="Distribution observed via client-side quantile sampling (p50, p95, p99).">summary</abbr> and logs entries refuse both this <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and the <code>snmp_agent</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
@@ -3154,9 +3202,38 @@
 <td>OCTET STRING</td>
 <td>The shortest decimal text that reads back as the same value.</td>
 </tr>
+<tr>
+<td><code>opaque_float</code></td>
+<td>Opaque holding an IEEE 754 single, as net-snmp writes it</td>
+<td>The value converted to a single; one beyond about ±3.4 × 10³⁸, which converts to an infinity, is rejected.</td>
+</tr>
+<tr>
+<td><code>opaque_double</code></td>
+<td>Opaque holding an IEEE 754 double, as net-snmp writes it</td>
+<td>Any finite value, exactly.</td>
+</tr>
+<tr>
+<td><code>ipaddress</code></td>
+<td>IpAddress</td>
+<td>Rounded, 0 to 4294967295, as four octets most significant first: <code>167772161</code> is <code>10.0.0.1</code>.</td>
+</tr>
+<tr>
+<td><code>{ enum: { 1: up, 2: down } }</code></td>
+<td>OCTET STRING</td>
+<td>The label of the rounded value's entry: <code>1</code> is <code>up</code>. A value with no entry is rejected.</td>
+</tr>
 </tbody>
 </table>
-<p>Every type but <code>string</code> rounds the value to the nearest integer, halves away from zero. A value that is not finite, or that rounds outside the type's range, is rejected. <code>string</code> writes a value that is not finite as its text: <code>NaN</code>, <code>inf</code> or <code>-inf</code>. The <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> does not wrap a counter: give the <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> a <code>max</code>, as the <code>step</code> <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> takes, for a counter that wraps.</p>
+<p>The integer types, <code>ipaddress</code> and the enum round the value to the nearest integer, halves away from zero. Every type but <code>string</code> rejects a value that is not finite, and the integer types and <code>ipaddress</code> one that rounds outside the type's range. <code>string</code> writes a value that is not finite as its text: <code>NaN</code>, <code>inf</code> or <code>-inf</code>. The <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> does not wrap a counter: give the <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> a <code>max</code>, as the <code>step</code> <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> takes, for a counter that wraps.</p>
+<p>The enum form gives the label of each code, as the <code>gnmi</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>'s <code>values:</code> enum does. Codes are integers, written bare or quoted (<code>1</code> or <code>"1"</code>); labels are text. The map needs at least one entry. A <code>flap</code> <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> with <code>enum:</code> drives one, as <code>link_state</code> in <a href="https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml"><code>examples/snmp-telegraf.yaml</code></a> does:</p>
+<div class="language-yaml highlight"><span class="filename">An enum string</span><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">  </span><span class="nt">oids</span><span class="p">:</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">    </span><span class="nt">link_state</span><span class="p">:</span><span class="w"> </span><span class="s">"1.3.6.1.4.1.8072.9999.1.3.0"</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">  </span><span class="nt">types</span><span class="p">:</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">    </span><span class="nt">link_state</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> enum</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> 1</span><span class="p">:</span><span class="w"> </span><span class="nv">up</span><span class="p p-Indicator">,</span><span class="nt"> 2</span><span class="p">:</span><span class="w"> </span><span class="nv">down</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span></code></pre></div>
+<p>net-snmp prints an Opaque float and an Opaque double alike, as <code>Opaque: Float:</code> with the value's digits. A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s <code>snmp:</code> hint takes the same forms for its <code>type:</code>.</p>
 <p>A rejected event is skipped and counted in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s errors, and the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> keeps running.</p>
 <p>This <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> accepts metrics entries only.</p>
 <h2 id="value-precision">Value precision<a class="headerlink" href="#value-precision" title="Permanent link">&para;</a></h2>
@@ -3167,9 +3244,9 @@
 <li><strong>Effect</strong>: values are rounded to the specified number of decimal places using standard rounding.</li>
 </ul>
 <p>Set <code>precision</code> on the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> block in your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML:</p>
-<div class="language-yaml highlight"><span class="filename">precision-formatting.yaml (encoder fragment)</span><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="nt">encoder</span><span class="p">:</span>
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">    </span><span class="c1"># 99.60573 becomes 99.61</span>
+<div class="language-yaml highlight"><span class="filename">precision-formatting.yaml (encoder fragment)</span><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prometheus_text</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="w">  </span><span class="nt">precision</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">    </span><span class="c1"># 99.60573 becomes 99.61</span>
 </span></code></pre></div>
 <p>The <code>syslog</code>, <code>remote_write</code>, <code>otlp</code>, <code>gnmi</code>, and <code>snmp</code> encoders do not support <code>precision</code>. Syslog encodes log events only, with no numeric values; remote write, <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> and gNMI use binary protobuf encoding, and SNMP binary BER.</p>
 <p>See <a href="https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml"><code>examples/precision-formatting.yaml</code></a> for a complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> that uses precision with several encoders.</p>
@@ -3263,7 +3340,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 24, 2026 11:29:39 UTC">October 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 27, 2026 21:56:21 UTC">October 27, 2026</span>
   </span>
 
     

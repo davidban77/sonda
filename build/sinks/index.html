@@ -1262,6 +1262,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#snmp-v1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SNMPv1
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#snmp-v3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SNMPv3
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#snmp-ports" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2748,6 +2770,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#snmp-v1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SNMPv1
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#snmp-v3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SNMPv3
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#snmp-ports" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3939,7 +3983,7 @@
 <td>string</td>
 <td>no</td>
 <td><code>public</code></td>
-<td>The SNMPv2c community a request must carry.</td>
+<td>The community a request must carry.</td>
 </tr>
 <tr>
 <td><code>max_message_size</code></td>
@@ -3954,6 +3998,27 @@
 <td>no</td>
 <td>see below</td>
 <td>The values of the system group, <code>1.3.6.1.2.1.1</code>.</td>
+</tr>
+<tr>
+<td><code>versions</code></td>
+<td>list</td>
+<td>no</td>
+<td><code>[v2c]</code></td>
+<td>The SNMP versions the agent answers: any of <code>v1</code>, <code>v2c</code> and <code>v3</code>, each once. See <a href="#snmp-v1">SNMPv1</a> and <a href="#snmp-v3">SNMPv3</a>.</td>
+</tr>
+<tr>
+<td><code>users</code></td>
+<td>list</td>
+<td>no</td>
+<td>none</td>
+<td>The SNMPv3 users, each name once. <code>v3</code> in <code>versions</code> needs at least one. See <a href="#snmp-v3">SNMPv3</a>.</td>
+</tr>
+<tr>
+<td><code>engine_id</code></td>
+<td>string</td>
+<td>no</td>
+<td>per host</td>
+<td>The agent's SNMPv3 engine ID: 5 to 32 bytes written as hex, such as <code>"80001f8804736f6e6461"</code>, a leading <code>0x</code> allowed. A string: an unquoted value YAML reads as a number is refused with the field named. See <a href="#snmp-v3">SNMPv3</a>.</td>
 </tr>
 </tbody>
 </table>
@@ -4015,7 +4080,7 @@
 </span><span id="__span-37-8"><a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a><span class="w">    </span><span class="nt">contact</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">noc@example.com</span>
 </span><span id="__span-37-9"><a id="__codelineno-37-9" name="__codelineno-37-9" href="#__codelineno-37-9"></a><span class="w">    </span><span class="nt">location</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lab-1</span>
 </span></code></pre></div>
-<p>Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set <code>community</code>, <code>max_message_size</code> and <code>system</code> alike; a difference is refused, naming the fields that differ but never a community. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.</p>
+<p>Every entry on one address shares one agent, so the scenarios of a file are one device to the poller. Entries on one address must set <code>community</code>, <code>max_message_size</code>, <code>system</code>, <code>versions</code>, <code>users</code> and <code>engine_id</code> alike (<code>versions</code> and <code>users</code> in any order); a difference is refused, naming the fields that differ but never a community or a password. An instance belongs to the run that publishes it: another run publishing the same OID while the first is live is a configuration error.</p>
 <p>The agent serves the system group and every instance its entries publish, in OID order, which is the order a walk visits them in. <code>sysUpTime</code> counts hundredths of a second from when the agent started listening. No entry may publish under <code>1.3.6.1.2.1.1</code>. A request reads:</p>
 <table>
 <thead>
@@ -4044,8 +4109,9 @@
 </tbody>
 </table>
 <p>An instance leaves the agent when the last <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> publishing it stops (scenarios of one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file can publish the same OID), and at no other time: a series that stops changing keeps its latest value, as a stalled counter does on a device. Once it has left, a walk skips it and a request for it answers <code>noSuchInstance</code>.</p>
+<p>A <a href="../encoders/#label-columns">label column</a> is served the same way. Its instance, such as <code>ifName.1</code>, arrives with the first value of the first series that carries it and stays while any series carrying it is live: <code>ifName.1</code> stays while any metric of interface 1 is published and leaves with the last. A label column's label is a static label of each entry, so the series of one entry agree on its value; entries that give one index different values share the instance, and the last one written is served. Another run's label column is owned like any other instance.</p>
 <h3 id="snmp-requests">Requests<a class="headerlink" href="#snmp-requests" title="Permanent link">&para;</a></h3>
-<p>The agent answers SNMPv2c. Each datagram is checked in turn: its version, then its community, then its operation.</p>
+<p>The agent answers SNMPv2c, SNMPv1 when <code>versions</code> lists it, and SNMPv3 when <code>versions</code> lists it. Each SNMPv1 or SNMPv2c datagram is checked in turn: its version, then its community, then its operation. This table is SNMPv2c's; <a href="#snmp-v1">SNMPv1</a> lists what differs, and <a href="#snmp-v3">SNMPv3</a> what comes before the operation over SNMPv3.</p>
 <table>
 <thead>
 <tr>
@@ -4083,7 +4149,7 @@
 <td>Dropped. Logged at warn at most once a minute per sender IP, with the community's length and never its value.</td>
 </tr>
 <tr>
-<td>SNMPv1 or SNMPv3</td>
+<td>A version <code>versions</code> does not list</td>
 <td>Dropped, the community never compared.</td>
 </tr>
 <tr>
@@ -4093,100 +4159,353 @@
 </tbody>
 </table>
 <p>Every answer fits in <code>max_message_size</code> bytes. A <code>GETBULK</code> answer ends before the first value that would not fit, and is sent with the values before it. A <code>GET</code>, <code>GETNEXT</code> or <code>SET</code> whose answer does not fit is answered <code>tooBig</code> with no values, and logged at warn at most once a minute, naming the request's first OID and the size. Answers go to the address and port the request came from, and leave from the address the request was sent to, also when <code>listen</code> is a wildcard such as <code>0.0.0.0</code> or <code>[::]</code> (on Linux and macOS), so a poller that accepts replies only from the address it polled, as <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> does, receives them.</p>
+<h3 id="snmp-v1">SNMPv1<a class="headerlink" href="#snmp-v1" title="Permanent link">&para;</a></h3>
+<p>With <code>versions: [v1, v2c]</code>, or <code>[v1]</code>, the agent also answers SNMPv1, as RFC 1157 and RFC 3584 describe. An answer carries the version of its request. SNMPv1 has no <code>counter64</code> type and no exceptions in its values, so the answers differ from SNMPv2c's:</p>
+<table>
+<thead>
+<tr>
+<th>Received over SNMPv1</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td>Each OID's value. The first OID that has no instance (where SNMPv2c answers <code>noSuchInstance</code> or <code>noSuchObject</code>), or whose value is a <code>counter64</code>, makes the answer <code>noSuchName</code> (error status 2) with that OID's position, from 1, as the error index, and the request's OIDs and values unchanged.</td>
+</tr>
+<tr>
+<td><code>GETNEXT</code></td>
+<td>Each OID's next instance in OID order, passing over every <code>counter64</code> instance. The first OID with no instance after it (where SNMPv2c answers <code>endOfMibView</code>) makes the answer <code>noSuchName</code> at its position, the request's OIDs and values unchanged.</td>
+</tr>
+<tr>
+<td><code>GETBULK</code></td>
+<td>Dropped: SNMPv1 has none.</td>
+</tr>
+<tr>
+<td><code>SET</code></td>
+<td><code>noSuchName</code> at error index 1, the request's values echoed. Nothing changes.</td>
+</tr>
+<tr>
+<td>A trap</td>
+<td>Dropped.</td>
+</tr>
+<tr>
+<td>An answer that does not fit</td>
+<td><code>tooBig</code> with the request's OIDs and values unchanged, where SNMPv2c sends none; dropped when even that does not fit. An OID that makes the answer <code>noSuchName</code> decides it first.</td>
+</tr>
+</tbody>
+</table>
+<p>A walk over SNMPv1 therefore reads every instance but the <code>counter64</code> ones: <code>ifInErrors</code>, <code>ifOperStatus</code> and the <code>ifName</code> label column, not <code>ifHCInOctets</code>.</p>
+<h3 id="snmp-v3">SNMPv3<a class="headerlink" href="#snmp-v3" title="Permanent link">&para;</a></h3>
+<p>With <code>v3</code> in <code>versions</code>, the agent also answers SNMPv3 with the User-based Security Model (RFC 3414), for the users it is given. SNMPv3 adds users in place of the community, authentication and privacy: each request of a user with <code>auth</code> carries an HMAC of the whole message made with a key derived from the user's password, so the agent knows who asked and that nothing changed on the way, and each request of a user with <code>priv</code> as well carries its operation encrypted with a second key, derived from the privacy password. The operations and their answers are SNMPv2c's.</p>
+<div class="language-yaml highlight"><span class="filename">An snmp_agent sink answering SNMPv3</span><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-38-2"><a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp_agent</span>
+</span><span id="__span-38-3"><a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a><span class="w">  </span><span class="nt">listen</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0:1161</span>
+</span><span id="__span-38-4"><a id="__codelineno-38-4" name="__codelineno-38-4" href="#__codelineno-38-4"></a><span class="w">  </span><span class="nt">versions</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">v2c</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">v3</span><span class="p p-Indicator">]</span>
+</span><span id="__span-38-5"><a id="__codelineno-38-5" name="__codelineno-38-5" href="#__codelineno-38-5"></a><span class="w">  </span><span class="nt">users</span><span class="p">:</span>
+</span><span id="__span-38-6"><a id="__codelineno-38-6" name="__codelineno-38-6" href="#__codelineno-38-6"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegraf</span><span class="w">           </span><span class="c1"># authPriv</span>
+</span><span id="__span-38-7"><a id="__codelineno-38-7" name="__codelineno-38-7" href="#__codelineno-38-7"></a><span class="w">      </span><span class="nt">auth</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">sha256</span><span class="p p-Indicator">,</span><span class="nt"> password</span><span class="p">:</span><span class="w"> </span><span class="nv">lab-only-v3-password</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-38-8"><a id="__codelineno-38-8" name="__codelineno-38-8" href="#__codelineno-38-8"></a><span class="w">      </span><span class="nt">priv</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">aes128</span><span class="p p-Indicator">,</span><span class="nt"> password</span><span class="p">:</span><span class="w"> </span><span class="nv">lab-only-v3-privacy</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-38-9"><a id="__codelineno-38-9" name="__codelineno-38-9" href="#__codelineno-38-9"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">monitor</span><span class="w">            </span><span class="c1"># authNoPriv</span>
+</span><span id="__span-38-10"><a id="__codelineno-38-10" name="__codelineno-38-10" href="#__codelineno-38-10"></a><span class="w">      </span><span class="nt">auth</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">sha256</span><span class="p p-Indicator">,</span><span class="nt"> password</span><span class="p">:</span><span class="w"> </span><span class="nv">lab-only-v3-password</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-38-11"><a id="__codelineno-38-11" name="__codelineno-38-11" href="#__codelineno-38-11"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">watcher</span><span class="w">            </span><span class="c1"># noAuthNoPriv: no auth block</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th><code>users</code> field</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>The user name, 1 to 32 bytes.</td>
+</tr>
+<tr>
+<td><code>auth.protocol</code></td>
+<td>with <code>auth</code></td>
+<td><code>md5</code>, <code>sha1</code> (also read as <code>sha</code>), <code>sha224</code>, <code>sha256</code>, <code>sha384</code> or <code>sha512</code>, as <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> names them in lower case.</td>
+</tr>
+<tr>
+<td><code>auth.password</code></td>
+<td>with <code>auth</code></td>
+<td>At least 8 bytes (RFC 3414). A string: a YAML number is refused. Never printed: a config shown for debugging prints <code>***</code> in its place.</td>
+</tr>
+<tr>
+<td><code>priv.protocol</code></td>
+<td>with <code>priv</code></td>
+<td>One of the privacy protocols below. <code>priv</code> needs <code>auth</code>.</td>
+</tr>
+<tr>
+<td><code>priv.password</code></td>
+<td>with <code>priv</code></td>
+<td>At least 8 bytes, a string, never printed, as <code>auth.password</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>A user without <code>auth</code> is <code>noAuthNoPriv</code>: its requests carry no HMAC. A user with <code>auth</code> is <code>authNoPriv</code>, and with <code>priv</code> as well <code>authPriv</code>. That level is the user's minimum and the only one its requests are answered at: an unauthenticated request in the name of a user with <code>auth</code>, or an unencrypted one in the name of a user with <code>priv</code>, is refused, and so is an encrypted request for a user without <code>priv</code>.</p>
+<table>
+<thead>
+<tr>
+<th><code>priv.protocol</code></th>
+<th>Cipher</th>
+<th>Key extension</th>
+<th><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> <code>priv_protocol</code></th>
+<th>net-snmp <code>-x</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>des</code></td>
+<td>DES-CBC (RFC 3414)</td>
+<td>none</td>
+<td><code>DES</code></td>
+<td><code>DES</code></td>
+</tr>
+<tr>
+<td><code>aes128</code>, also read as <code>aes</code></td>
+<td>AES-128-CFB (RFC 3826)</td>
+<td>none</td>
+<td><code>AES</code></td>
+<td><code>AES</code></td>
+</tr>
+<tr>
+<td><code>aes192</code></td>
+<td>AES-192-CFB</td>
+<td>Blumenthal</td>
+<td><code>AES192</code></td>
+<td><code>AES-192</code> or <code>AES192</code></td>
+</tr>
+<tr>
+<td><code>aes192c</code></td>
+<td>AES-192-CFB</td>
+<td>Reeder</td>
+<td><code>AES192C</code></td>
+<td><code>AES-192-C</code> or <code>AES192C</code></td>
+</tr>
+<tr>
+<td><code>aes256</code></td>
+<td>AES-256-CFB</td>
+<td>Blumenthal</td>
+<td><code>AES256</code></td>
+<td><code>AES-256</code> or <code>AES256</code></td>
+</tr>
+<tr>
+<td><code>aes256c</code></td>
+<td>AES-256-CFB</td>
+<td>Reeder</td>
+<td><code>AES256C</code></td>
+<td><code>AES-256-C</code> or <code>AES256C</code></td>
+</tr>
+</tbody>
+</table>
+<p>The privacy key is made from <code>priv.password</code> with the user's authentication hash, so it is as long as that hash. AES-192 and AES-256 need more than MD5 (16 bytes) or SHA-1 (20 bytes) gives, and two ways of extending the key are in use: the Blumenthal extension (draft-blumenthal-aes-usm-04) and the Reeder extension (draft-reeder-snmpv3-usm-3desede-00), which Cisco devices use and which gosnmp and <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> call the <code>C</code> variants. They give different keys, so a poller and an agent that disagree fail with a decryption error. With a hash at least as long as the key, such as SHA-256 with AES-256, there is nothing to extend and both give the same key.</p>
+<p>MD5 and DES are legacy: MD5 is broken and DES's key is 56 bits. Use <code>sha256</code> and <code>aes128</code> where the poller has them. A DES salt is the engine boots and a 32-bit counter, and the boots are 1 on every start under the same key, so a salt is unique within a run but across runs only because each run's counter starts at a random value: a run that encrypts N messages with DES repeats one of the previous run's salts with odds on the order of N in 2³².</p>
+<p>The agent is the SNMPv3 engine the poller talks to. Its engine ID is <code>engine_id</code>, or, without one, made from the host's name and the address the agent bound: net-snmp's enterprise prefix <code>80001f88</code>, format <code>05</code> (administratively assigned), then the first 16 bytes of the SHA-256 of <code>sonda:&lt;host name&gt;:&lt;address&gt;</code>, 21 bytes in all (a <code>listen</code> on port 0 gives the port it was bound to). It is the same every time the agent starts on one host and address, so a poller keeps its engine across a restart of sonda, and it differs between hosts, so agents in several containers behind one poller are separate engines. Set <code>engine_id</code> by hand when two agents on different hosts must present as one device across restarts, or when the poller is already configured with an engine ID. Its engine boots are 1 every time it starts listening (boots are not kept between runs) and its engine time counts whole seconds from then. A poller whose cached engine time is more than 150 seconds from the restarted clock gets a <code>usmStatsNotInTimeWindows</code> report and takes the new time from it. Each user's keys are derived from its passwords and the engine ID once, when the agent starts listening.</p>
+<p>A poller first learns the engine ID, boots and time from the agent: it sends a request with an empty engine ID and gets a report back. An SNMPv3 message is checked in this order, and the first check it fails is answered with a <code>Report</code> carrying that <code>usmStats</code> counter (<code>1.3.6.1.6.3.15.1.1</code>), counted, and not answered further:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The security model is not the User-based Security Model</td>
+<td>Dropped as malformed.</td>
+</tr>
+<tr>
+<td>The engine ID is empty, or another engine's</td>
+<td><code>usmStatsUnknownEngineIDs</code>, unauthenticated, carrying the agent's engine ID, boots and time. This is discovery.</td>
+</tr>
+<tr>
+<td>No user has the name</td>
+<td><code>usmStatsUnknownUserNames</code>. Logged at warn at most once a minute per sender IP, naming the user.</td>
+</tr>
+<tr>
+<td>The request is not at the user's level: authenticated for a user without <code>auth</code> or not for one with it, encrypted for a user without <code>priv</code> or not for one with it</td>
+<td><code>usmStatsUnsupportedSecLevels</code></td>
+</tr>
+<tr>
+<td>The HMAC is not the one the user's key makes, or not as long as the protocol's</td>
+<td><code>usmStatsWrongDigests</code>, unauthenticated. Logged at warn at most once a minute per sender IP, naming the user and never a key. net-snmp prints it as an authentication failure.</td>
+</tr>
+<tr>
+<td>The boots are not the agent's, or the time is more than 150 seconds from the agent's</td>
+<td><code>usmStatsNotInTimeWindows</code>, authenticated with the user's key, carrying the agent's boots and time. A poller takes them and asks again.</td>
+</tr>
+<tr>
+<td>The request is encrypted and does not decrypt, with the user's privacy key, to an operation for this engine: another privacy password or protocol, a DES ciphertext that is not whole 8-byte blocks</td>
+<td><code>usmStatsDecryptionErrors</code>, authenticated. net-snmp prints it as a decryption error.</td>
+</tr>
+</tbody>
+</table>
+<p>A report is sent only when the request asks for one (its reportable flag), as pollers' requests do, and is never encrypted. A request that passes every check is answered as SNMPv2c answers it, at its security level: authenticated with the user's key when it was, and encrypted, with a salt no other answer of the run has used, when it was. The answer fits in the smaller of <code>max_message_size</code> and the message size the request says the poller accepts, DES's padding included. SNMPv3 has no views here: every user reads everything the agent serves, and <code>SET</code> is still refused <code>notWritable</code>.</p>
 <h3 id="snmp-ports">Ports<a class="headerlink" href="#snmp-ports" title="Permanent link">&para;</a></h3>
 <p>SNMP's standard port is 161. Binding a port below 1024 takes the <code>CAP_NET_BIND_SERVICE</code> capability (or root); without it the run stops with an error naming the port and the capability. Listen on a port above 1023, such as 1161, and point the poller at it, or grant the binary the capability with <code>setcap cap_net_bind_service=+ep</code>.</p>
 <p>A <code>gnmi_target</code> and an <code>snmp_agent</code> may use the same port number: one listens on TCP, the other on UDP.</p>
 <p>With the agent running, net-snmp's tools read it directly:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>snmpget<span class="w"> </span>-v2c<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span><span class="m">127</span>.0.0.1:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1.1.5.0
-</span><span id="__span-38-2"><a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>snmpwalk<span class="w"> </span>-v2c<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span>-On<span class="w"> </span><span class="m">127</span>.0.0.1:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>snmpget<span class="w"> </span>-v2c<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span><span class="m">127</span>.0.0.1:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1.1.5.0
+</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>snmpwalk<span class="w"> </span>-v2c<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span>-On<span class="w"> </span><span class="m">127</span>.0.0.1:1161<span class="w"> </span><span class="m">1</span>.3.6.1
+</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>snmpwalk<span class="w"> </span>-v1<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span>-On<span class="w"> </span><span class="m">127</span>.0.0.1:1161<span class="w"> </span><span class="m">1</span>.3.6.1<span class="w">        </span><span class="c1"># when versions lists v1</span>
+</span><span id="__span-39-4"><a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>snmpget<span class="w"> </span>-v3<span class="w"> </span>-l<span class="w"> </span>authPriv<span class="w"> </span>-u<span class="w"> </span>telegraf<span class="w"> </span>-a<span class="w"> </span>SHA-256<span class="w"> </span>-A<span class="w"> </span>lab-only-v3-password<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-39-5"><a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a><span class="w">  </span>-x<span class="w"> </span>AES<span class="w"> </span>-X<span class="w"> </span>lab-only-v3-privacy<span class="w"> </span>-On<span class="w"> </span><span class="m">127</span>.0.0.1:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1.1.5.0<span class="w">   </span><span class="c1"># when versions lists v3</span>
 </span></code></pre></div>
 <h3 id="snmp-telegraf"><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr><a class="headerlink" href="#snmp-telegraf" title="Permanent link">&para;</a></h3>
-<p>The example below is a router with four interfaces, polled by <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>inputs.snmp</code>. The <a href="../builtin-packs/#snmp-hints"><code>telegraf_snmp_interface</code></a> <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> carries each metric's IF-MIB column and SNMP type, so the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> block names no OIDs. Only the first interface is shown here; the complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <a href="https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml"><code>examples/snmp-telegraf.yaml</code></a>:</p>
-<div class="language-yaml highlight"><span class="filename">examples/snmp-telegraf.yaml (excerpt)</span><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="c1"># sonda:static - excerpt only; an snmp_agent listens for a poller, which the browser playground cannot provide</span>
-</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
-</span><span id="__span-39-4"><a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>
-</span><span id="__span-39-5"><a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-39-6"><a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span><span id="__span-39-7"><a id="__codelineno-39-7" name="__codelineno-39-7" href="#__codelineno-39-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
-</span><span id="__span-39-8"><a id="__codelineno-39-8" name="__codelineno-39-8" href="#__codelineno-39-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp</span>
-</span><span id="__span-39-9"><a id="__codelineno-39-9" name="__codelineno-39-9" href="#__codelineno-39-9"></a><span class="w">    </span><span class="nt">drop_labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">ifName</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">ifAlias</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">job</span><span class="p p-Indicator">]</span>
-</span><span id="__span-39-10"><a id="__codelineno-39-10" name="__codelineno-39-10" href="#__codelineno-39-10"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-39-11"><a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp_agent</span>
-</span><span id="__span-39-12"><a id="__codelineno-39-12" name="__codelineno-39-12" href="#__codelineno-39-12"></a><span class="w">    </span><span class="nt">listen</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0:1161</span>
-</span><span id="__span-39-13"><a id="__codelineno-39-13" name="__codelineno-39-13" href="#__codelineno-39-13"></a><span class="w">    </span><span class="nt">community</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">public</span>
-</span><span id="__span-39-14"><a id="__codelineno-39-14" name="__codelineno-39-14" href="#__codelineno-39-14"></a><span class="w">    </span><span class="nt">system</span><span class="p">:</span>
-</span><span id="__span-39-15"><a id="__codelineno-39-15" name="__codelineno-39-15" href="#__codelineno-39-15"></a><span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rtr-core-01</span>
-</span><span id="__span-39-16"><a id="__codelineno-39-16" name="__codelineno-39-16" href="#__codelineno-39-16"></a><span class="w">      </span><span class="nt">descr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Sonda synthetic router</span>
-</span><span id="__span-39-17"><a id="__codelineno-39-17" name="__codelineno-39-17" href="#__codelineno-39-17"></a><span class="w">      </span><span class="nt">contact</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">noc@example.com</span>
-</span><span id="__span-39-18"><a id="__codelineno-39-18" name="__codelineno-39-18" href="#__codelineno-39-18"></a><span class="w">      </span><span class="nt">location</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lab-1</span>
-</span><span id="__span-39-19"><a id="__codelineno-39-19" name="__codelineno-39-19" href="#__codelineno-39-19"></a>
-</span><span id="__span-39-20"><a id="__codelineno-39-20" name="__codelineno-39-20" href="#__codelineno-39-20"></a><span class="nt">scenarios</span><span class="p">:</span>
-</span><span id="__span-39-21"><a id="__codelineno-39-21" name="__codelineno-39-21" href="#__codelineno-39-21"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
-</span><span id="__span-39-22"><a id="__codelineno-39-22" name="__codelineno-39-22" href="#__codelineno-39-22"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegraf_snmp_interface</span>
-</span><span id="__span-39-23"><a id="__codelineno-39-23" name="__codelineno-39-23" href="#__codelineno-39-23"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-core-01</span><span class="p p-Indicator">,</span><span class="nt"> ifIndex</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
-</span><span id="__span-39-24"><a id="__codelineno-39-24" name="__codelineno-39-24" href="#__codelineno-39-24"></a><span class="w">    </span><span class="nt">overrides</span><span class="p">:</span>
-</span><span id="__span-39-25"><a id="__codelineno-39-25" name="__codelineno-39-25" href="#__codelineno-39-25"></a><span class="w">      </span><span class="nt">ifOperStatus</span><span class="p">:</span>
-</span><span id="__span-39-26"><a id="__codelineno-39-26" name="__codelineno-39-26" href="#__codelineno-39-26"></a><span class="w">        </span><span class="nt">generator</span><span class="p">:</span>
-</span><span id="__span-39-27"><a id="__codelineno-39-27" name="__codelineno-39-27" href="#__codelineno-39-27"></a><span class="w">          </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flap</span>
-</span><span id="__span-39-28"><a id="__codelineno-39-28" name="__codelineno-39-28" href="#__codelineno-39-28"></a><span class="w">          </span><span class="nt">up_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60s</span>
-</span><span id="__span-39-29"><a id="__codelineno-39-29" name="__codelineno-39-29" href="#__codelineno-39-29"></a><span class="w">          </span><span class="nt">down_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span>
-</span><span id="__span-39-30"><a id="__codelineno-39-30" name="__codelineno-39-30" href="#__codelineno-39-30"></a><span class="w">          </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oper_state</span>
+<p>The example below is a router with four interfaces, polled by <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>inputs.snmp</code>. The <a href="../builtin-packs/#snmp-hints"><code>telegraf_snmp_interface</code></a> <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> carries each metric's IF-MIB column and SNMP type, and serves <code>ifName</code> and <code>ifAlias</code> as ifXTable columns, so the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> block names no OIDs. Only the first interface is shown here; the complete <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> is <a href="https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml"><code>examples/snmp-telegraf.yaml</code></a>:</p>
+<div class="language-yaml highlight"><span class="filename">examples/snmp-telegraf.yaml (excerpt)</span><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a><span class="c1"># sonda:static - excerpt only; an snmp_agent listens for a poller, which the browser playground cannot provide</span>
+</span><span id="__span-40-2"><a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-40-3"><a id="__codelineno-40-3" name="__codelineno-40-3" href="#__codelineno-40-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-40-4"><a id="__codelineno-40-4" name="__codelineno-40-4" href="#__codelineno-40-4"></a>
+</span><span id="__span-40-5"><a id="__codelineno-40-5" name="__codelineno-40-5" href="#__codelineno-40-5"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-40-6"><a id="__codelineno-40-6" name="__codelineno-40-6" href="#__codelineno-40-6"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-40-7"><a id="__codelineno-40-7" name="__codelineno-40-7" href="#__codelineno-40-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-40-8"><a id="__codelineno-40-8" name="__codelineno-40-8" href="#__codelineno-40-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp</span>
+</span><span id="__span-40-9"><a id="__codelineno-40-9" name="__codelineno-40-9" href="#__codelineno-40-9"></a><span class="w">    </span><span class="nt">drop_labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">job</span><span class="p p-Indicator">]</span>
+</span><span id="__span-40-10"><a id="__codelineno-40-10" name="__codelineno-40-10" href="#__codelineno-40-10"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-40-11"><a id="__codelineno-40-11" name="__codelineno-40-11" href="#__codelineno-40-11"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp_agent</span>
+</span><span id="__span-40-12"><a id="__codelineno-40-12" name="__codelineno-40-12" href="#__codelineno-40-12"></a><span class="w">    </span><span class="nt">listen</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0:1161</span>
+</span><span id="__span-40-13"><a id="__codelineno-40-13" name="__codelineno-40-13" href="#__codelineno-40-13"></a><span class="w">    </span><span class="nt">community</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">public</span>
+</span><span id="__span-40-14"><a id="__codelineno-40-14" name="__codelineno-40-14" href="#__codelineno-40-14"></a><span class="w">    </span><span class="nt">versions</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">v1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">v2c</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">v3</span><span class="p p-Indicator">]</span>
+</span><span id="__span-40-15"><a id="__codelineno-40-15" name="__codelineno-40-15" href="#__codelineno-40-15"></a><span class="w">    </span><span class="nt">users</span><span class="p">:</span>
+</span><span id="__span-40-16"><a id="__codelineno-40-16" name="__codelineno-40-16" href="#__codelineno-40-16"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegraf</span>
+</span><span id="__span-40-17"><a id="__codelineno-40-17" name="__codelineno-40-17" href="#__codelineno-40-17"></a><span class="w">        </span><span class="nt">auth</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">sha256</span><span class="p p-Indicator">,</span><span class="nt"> password</span><span class="p">:</span><span class="w"> </span><span class="nv">lab-only-v3-password</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-40-18"><a id="__codelineno-40-18" name="__codelineno-40-18" href="#__codelineno-40-18"></a><span class="w">        </span><span class="nt">priv</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">aes128</span><span class="p p-Indicator">,</span><span class="nt"> password</span><span class="p">:</span><span class="w"> </span><span class="nv">lab-only-v3-privacy</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-40-19"><a id="__codelineno-40-19" name="__codelineno-40-19" href="#__codelineno-40-19"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">monitor</span>
+</span><span id="__span-40-20"><a id="__codelineno-40-20" name="__codelineno-40-20" href="#__codelineno-40-20"></a><span class="w">        </span><span class="nt">auth</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">sha256</span><span class="p p-Indicator">,</span><span class="nt"> password</span><span class="p">:</span><span class="w"> </span><span class="nv">lab-only-v3-password</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-40-21"><a id="__codelineno-40-21" name="__codelineno-40-21" href="#__codelineno-40-21"></a><span class="w">    </span><span class="nt">system</span><span class="p">:</span>
+</span><span id="__span-40-22"><a id="__codelineno-40-22" name="__codelineno-40-22" href="#__codelineno-40-22"></a><span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rtr-core-01</span>
+</span><span id="__span-40-23"><a id="__codelineno-40-23" name="__codelineno-40-23" href="#__codelineno-40-23"></a><span class="w">      </span><span class="nt">descr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Sonda synthetic router</span>
+</span><span id="__span-40-24"><a id="__codelineno-40-24" name="__codelineno-40-24" href="#__codelineno-40-24"></a><span class="w">      </span><span class="nt">contact</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">noc@example.com</span>
+</span><span id="__span-40-25"><a id="__codelineno-40-25" name="__codelineno-40-25" href="#__codelineno-40-25"></a><span class="w">      </span><span class="nt">location</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lab-1</span>
+</span><span id="__span-40-26"><a id="__codelineno-40-26" name="__codelineno-40-26" href="#__codelineno-40-26"></a>
+</span><span id="__span-40-27"><a id="__codelineno-40-27" name="__codelineno-40-27" href="#__codelineno-40-27"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-40-28"><a id="__codelineno-40-28" name="__codelineno-40-28" href="#__codelineno-40-28"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-40-29"><a id="__codelineno-40-29" name="__codelineno-40-29" href="#__codelineno-40-29"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegraf_snmp_interface</span>
+</span><span id="__span-40-30"><a id="__codelineno-40-30" name="__codelineno-40-30" href="#__codelineno-40-30"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-core-01</span><span class="p p-Indicator">,</span><span class="nt"> ifIndex</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-40-31"><a id="__codelineno-40-31" name="__codelineno-40-31" href="#__codelineno-40-31"></a><span class="w">    </span><span class="nt">overrides</span><span class="p">:</span>
+</span><span id="__span-40-32"><a id="__codelineno-40-32" name="__codelineno-40-32" href="#__codelineno-40-32"></a><span class="w">      </span><span class="nt">ifOperStatus</span><span class="p">:</span>
+</span><span id="__span-40-33"><a id="__codelineno-40-33" name="__codelineno-40-33" href="#__codelineno-40-33"></a><span class="w">        </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-40-34"><a id="__codelineno-40-34" name="__codelineno-40-34" href="#__codelineno-40-34"></a><span class="w">          </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flap</span>
+</span><span id="__span-40-35"><a id="__codelineno-40-35" name="__codelineno-40-35" href="#__codelineno-40-35"></a><span class="w">          </span><span class="nt">up_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60s</span>
+</span><span id="__span-40-36"><a id="__codelineno-40-36" name="__codelineno-40-36" href="#__codelineno-40-36"></a><span class="w">          </span><span class="nt">down_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span>
+</span><span id="__span-40-37"><a id="__codelineno-40-37" name="__codelineno-40-37" href="#__codelineno-40-37"></a><span class="w">          </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oper_state</span>
 </span></code></pre></div>
-<p>Every label is in the instance OID, is the agent label, or is dropped: <code>ifIndex</code> is the index arc, <code>device</code> is the agent label, and the agent serves no OID for <code>ifName</code>, <code>ifAlias</code> or <code>job</code>, so the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> drops them. Interface 1's <code>ifOperStatus</code> is up for 60 seconds and down for 5.</p>
-<p><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> polls every 2 seconds: it reads <code>sysUpTime</code> and <code>sysName</code> and walks the interface table with <code>GETBULK</code>. Every OID is numeric, so <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> loads no MIB:</p>
-<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf-snmp.conf (excerpt)</span><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a><span class="k">[[inputs.snmp]]</span>
-</span><span id="__span-40-2"><a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a><span class="w">  </span><span class="n">agents</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"udp://sonda:1161"</span><span class="p">]</span>
-</span><span id="__span-40-3"><a id="__codelineno-40-3" name="__codelineno-40-3" href="#__codelineno-40-3"></a><span class="w">  </span><span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
-</span><span id="__span-40-4"><a id="__codelineno-40-4" name="__codelineno-40-4" href="#__codelineno-40-4"></a><span class="w">  </span><span class="n">community</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"public"</span>
-</span><span id="__span-40-5"><a id="__codelineno-40-5" name="__codelineno-40-5" href="#__codelineno-40-5"></a><span class="w">  </span><span class="n">agent_host_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"source"</span>
-</span><span id="__span-40-6"><a id="__codelineno-40-6" name="__codelineno-40-6" href="#__codelineno-40-6"></a>
-</span><span id="__span-40-7"><a id="__codelineno-40-7" name="__codelineno-40-7" href="#__codelineno-40-7"></a><span class="w">  </span><span class="k">[[inputs.snmp.field]]</span>
-</span><span id="__span-40-8"><a id="__codelineno-40-8" name="__codelineno-40-8" href="#__codelineno-40-8"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"uptime"</span>
-</span><span id="__span-40-9"><a id="__codelineno-40-9" name="__codelineno-40-9" href="#__codelineno-40-9"></a><span class="w">    </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.1.3.0"</span>
-</span><span id="__span-40-10"><a id="__codelineno-40-10" name="__codelineno-40-10" href="#__codelineno-40-10"></a>
-</span><span id="__span-40-11"><a id="__codelineno-40-11" name="__codelineno-40-11" href="#__codelineno-40-11"></a><span class="w">  </span><span class="k">[[inputs.snmp.field]]</span>
-</span><span id="__span-40-12"><a id="__codelineno-40-12" name="__codelineno-40-12" href="#__codelineno-40-12"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"hostname"</span>
-</span><span id="__span-40-13"><a id="__codelineno-40-13" name="__codelineno-40-13" href="#__codelineno-40-13"></a><span class="w">    </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.1.5.0"</span>
-</span><span id="__span-40-14"><a id="__codelineno-40-14" name="__codelineno-40-14" href="#__codelineno-40-14"></a><span class="w">    </span><span class="n">is_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-40-15"><a id="__codelineno-40-15" name="__codelineno-40-15" href="#__codelineno-40-15"></a>
-</span><span id="__span-40-16"><a id="__codelineno-40-16" name="__codelineno-40-16" href="#__codelineno-40-16"></a><span class="w">  </span><span class="k">[[inputs.snmp.table]]</span>
-</span><span id="__span-40-17"><a id="__codelineno-40-17" name="__codelineno-40-17" href="#__codelineno-40-17"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"interface"</span>
-</span><span id="__span-40-18"><a id="__codelineno-40-18" name="__codelineno-40-18" href="#__codelineno-40-18"></a><span class="w">    </span><span class="n">index_as_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-40-19"><a id="__codelineno-40-19" name="__codelineno-40-19" href="#__codelineno-40-19"></a>
-</span><span id="__span-40-20"><a id="__codelineno-40-20" name="__codelineno-40-20" href="#__codelineno-40-20"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
-</span><span id="__span-40-21"><a id="__codelineno-40-21" name="__codelineno-40-21" href="#__codelineno-40-21"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifOperStatus"</span>
-</span><span id="__span-40-22"><a id="__codelineno-40-22" name="__codelineno-40-22" href="#__codelineno-40-22"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.2.2.1.8"</span>
-</span><span id="__span-40-23"><a id="__codelineno-40-23" name="__codelineno-40-23" href="#__codelineno-40-23"></a>
-</span><span id="__span-40-24"><a id="__codelineno-40-24" name="__codelineno-40-24" href="#__codelineno-40-24"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
-</span><span id="__span-40-25"><a id="__codelineno-40-25" name="__codelineno-40-25" href="#__codelineno-40-25"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifHCInOctets"</span>
-</span><span id="__span-40-26"><a id="__codelineno-40-26" name="__codelineno-40-26" href="#__codelineno-40-26"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.31.1.1.1.6"</span>
+<p>Every label is in the instance OID, is the agent label, is a label column, or is dropped: <code>ifIndex</code> is the index arc, <code>device</code> is the agent label, <code>ifName</code> and <code>ifAlias</code> are served at <code>ifName.1</code> and <code>ifAlias.1</code>, and the agent serves no OID for <code>job</code>, so the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> drops it. Interface 1's <code>ifOperStatus</code> is up for 60 seconds and down for 5. The agent answers SNMPv1, SNMPv2c, and SNMPv3 for the user <code>telegraf</code> at <code>authPriv</code> and the user <code>monitor</code> at <code>authNoPriv</code>, whose passwords are lab values.</p>
+<p><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> polls every 2 seconds: it reads <code>sysUpTime</code> and <code>sysName</code> and walks the interface table with <code>GETBULK</code> over SNMPv2c, tagging each interface with its <code>ifName</code> and <code>ifAlias</code>. Every OID is numeric, so <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> loads no MIB:</p>
+<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf-snmp.conf (excerpt)</span><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a><span class="k">[[inputs.snmp]]</span>
+</span><span id="__span-41-2"><a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a><span class="w">  </span><span class="n">agents</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"udp://sonda:1161"</span><span class="p">]</span>
+</span><span id="__span-41-3"><a id="__codelineno-41-3" name="__codelineno-41-3" href="#__codelineno-41-3"></a><span class="w">  </span><span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+</span><span id="__span-41-4"><a id="__codelineno-41-4" name="__codelineno-41-4" href="#__codelineno-41-4"></a><span class="w">  </span><span class="n">community</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"public"</span>
+</span><span id="__span-41-5"><a id="__codelineno-41-5" name="__codelineno-41-5" href="#__codelineno-41-5"></a><span class="w">  </span><span class="n">agent_host_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"source"</span>
+</span><span id="__span-41-6"><a id="__codelineno-41-6" name="__codelineno-41-6" href="#__codelineno-41-6"></a>
+</span><span id="__span-41-7"><a id="__codelineno-41-7" name="__codelineno-41-7" href="#__codelineno-41-7"></a><span class="w">  </span><span class="k">[[inputs.snmp.field]]</span>
+</span><span id="__span-41-8"><a id="__codelineno-41-8" name="__codelineno-41-8" href="#__codelineno-41-8"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"uptime"</span>
+</span><span id="__span-41-9"><a id="__codelineno-41-9" name="__codelineno-41-9" href="#__codelineno-41-9"></a><span class="w">    </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.1.3.0"</span>
+</span><span id="__span-41-10"><a id="__codelineno-41-10" name="__codelineno-41-10" href="#__codelineno-41-10"></a>
+</span><span id="__span-41-11"><a id="__codelineno-41-11" name="__codelineno-41-11" href="#__codelineno-41-11"></a><span class="w">  </span><span class="k">[[inputs.snmp.field]]</span>
+</span><span id="__span-41-12"><a id="__codelineno-41-12" name="__codelineno-41-12" href="#__codelineno-41-12"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"hostname"</span>
+</span><span id="__span-41-13"><a id="__codelineno-41-13" name="__codelineno-41-13" href="#__codelineno-41-13"></a><span class="w">    </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.1.5.0"</span>
+</span><span id="__span-41-14"><a id="__codelineno-41-14" name="__codelineno-41-14" href="#__codelineno-41-14"></a><span class="w">    </span><span class="n">is_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-41-15"><a id="__codelineno-41-15" name="__codelineno-41-15" href="#__codelineno-41-15"></a>
+</span><span id="__span-41-16"><a id="__codelineno-41-16" name="__codelineno-41-16" href="#__codelineno-41-16"></a><span class="w">  </span><span class="k">[[inputs.snmp.table]]</span>
+</span><span id="__span-41-17"><a id="__codelineno-41-17" name="__codelineno-41-17" href="#__codelineno-41-17"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"interface"</span>
+</span><span id="__span-41-18"><a id="__codelineno-41-18" name="__codelineno-41-18" href="#__codelineno-41-18"></a><span class="w">    </span><span class="n">index_as_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-41-19"><a id="__codelineno-41-19" name="__codelineno-41-19" href="#__codelineno-41-19"></a>
+</span><span id="__span-41-20"><a id="__codelineno-41-20" name="__codelineno-41-20" href="#__codelineno-41-20"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
+</span><span id="__span-41-21"><a id="__codelineno-41-21" name="__codelineno-41-21" href="#__codelineno-41-21"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifName"</span>
+</span><span id="__span-41-22"><a id="__codelineno-41-22" name="__codelineno-41-22" href="#__codelineno-41-22"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.31.1.1.1.1"</span>
+</span><span id="__span-41-23"><a id="__codelineno-41-23" name="__codelineno-41-23" href="#__codelineno-41-23"></a><span class="w">      </span><span class="n">is_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-41-24"><a id="__codelineno-41-24" name="__codelineno-41-24" href="#__codelineno-41-24"></a>
+</span><span id="__span-41-25"><a id="__codelineno-41-25" name="__codelineno-41-25" href="#__codelineno-41-25"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
+</span><span id="__span-41-26"><a id="__codelineno-41-26" name="__codelineno-41-26" href="#__codelineno-41-26"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifOperStatus"</span>
+</span><span id="__span-41-27"><a id="__codelineno-41-27" name="__codelineno-41-27" href="#__codelineno-41-27"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.2.2.1.8"</span>
+</span><span id="__span-41-28"><a id="__codelineno-41-28" name="__codelineno-41-28" href="#__codelineno-41-28"></a>
+</span><span id="__span-41-29"><a id="__codelineno-41-29" name="__codelineno-41-29" href="#__codelineno-41-29"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
+</span><span id="__span-41-30"><a id="__codelineno-41-30" name="__codelineno-41-30" href="#__codelineno-41-30"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifHCInOctets"</span>
+</span><span id="__span-41-31"><a id="__codelineno-41-31" name="__codelineno-41-31" href="#__codelineno-41-31"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.31.1.1.1.6"</span>
 </span></code></pre></div>
-<p>The table's <code>name</code> becomes the measurement and each row's index the <code>index</code> tag, and <code>agent_host_tag</code> tags every metric with the host <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> polled as <code>source</code>. The full config also polls <code>ifInErrors</code>, <code>ifOutErrors</code> and <code>ifHCOutOctets</code> and writes to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> over the InfluxDB <abbr title="InfluxDB text format: `measurement,tag=v field=v timestamp`. Used by Telegraf and InfluxDB ingest.">line protocol</abbr>, which stores one series per field and interface:</p>
-<div class="language-text highlight"><span class="filename">What VictoriaMetrics stores (excerpt)</span><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>interface_ifOperStatus{db="telegraf",index="1",source="sonda"}
-</span><span id="__span-41-2"><a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>interface_ifHCInOctets{db="telegraf",index="1",source="sonda"}
-</span><span id="__span-41-3"><a id="__codelineno-41-3" name="__codelineno-41-3" href="#__codelineno-41-3"></a>snmp_uptime{db="telegraf",hostname="rtr-core-01",source="sonda"}
+<p>The table's <code>name</code> becomes the measurement, each row's index the <code>index</code> tag and its <code>ifName</code> the <code>ifName</code> tag, and <code>agent_host_tag</code> tags every metric with the host <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> polled as <code>source</code>. The full config also polls <code>ifInErrors</code>, <code>ifOutErrors</code> and <code>ifHCOutOctets</code>, tags each row with its <code>ifAlias</code> (the example sets none, and an empty tag is left off), reads <code>laLoadFloat.1</code>, an Opaque float, as <code>snmp_load_1m</code> and the example's enum string as a <code>link_state</code> tag on <code>snmp_uptime</code> and <code>snmp_load_1m</code>, and walks the same table again over SNMPv1 as <code>interface_v1</code>, with <code>GETNEXT</code> and the same tags. <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> writes to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> over the InfluxDB <abbr title="InfluxDB text format: `measurement,tag=v field=v timestamp`. Used by Telegraf and InfluxDB ingest.">line protocol</abbr>, which stores one series per field and interface. The SNMPv1 table has no <code>ifHCInOctets</code> or <code>ifHCOutOctets</code> series, because the agent passes over <code>counter64</code> instances for an SNMPv1 poller:</p>
+<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf-snmp.conf (the SNMPv1 block, excerpt)</span><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a><span class="k">[[inputs.snmp]]</span>
+</span><span id="__span-42-2"><a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a><span class="w">  </span><span class="n">agents</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"udp://sonda:1161"</span><span class="p">]</span>
+</span><span id="__span-42-3"><a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a><span class="w">  </span><span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-42-4"><a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a><span class="w">  </span><span class="n">community</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"public"</span>
+</span><span id="__span-42-5"><a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a><span class="w">  </span><span class="n">agent_host_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"source"</span>
+</span><span id="__span-42-6"><a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>
+</span><span id="__span-42-7"><a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a><span class="w">  </span><span class="k">[[inputs.snmp.table]]</span>
+</span><span id="__span-42-8"><a id="__codelineno-42-8" name="__codelineno-42-8" href="#__codelineno-42-8"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"interface_v1"</span>
+</span><span id="__span-42-9"><a id="__codelineno-42-9" name="__codelineno-42-9" href="#__codelineno-42-9"></a><span class="w">    </span><span class="n">index_as_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-42-10"><a id="__codelineno-42-10" name="__codelineno-42-10" href="#__codelineno-42-10"></a>
+</span><span id="__span-42-11"><a id="__codelineno-42-11" name="__codelineno-42-11" href="#__codelineno-42-11"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
+</span><span id="__span-42-12"><a id="__codelineno-42-12" name="__codelineno-42-12" href="#__codelineno-42-12"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifName"</span>
+</span><span id="__span-42-13"><a id="__codelineno-42-13" name="__codelineno-42-13" href="#__codelineno-42-13"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.31.1.1.1.1"</span>
+</span><span id="__span-42-14"><a id="__codelineno-42-14" name="__codelineno-42-14" href="#__codelineno-42-14"></a><span class="w">      </span><span class="n">is_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-42-15"><a id="__codelineno-42-15" name="__codelineno-42-15" href="#__codelineno-42-15"></a>
+</span><span id="__span-42-16"><a id="__codelineno-42-16" name="__codelineno-42-16" href="#__codelineno-42-16"></a><span class="w">    </span><span class="k">[[inputs.snmp.table.field]]</span>
+</span><span id="__span-42-17"><a id="__codelineno-42-17" name="__codelineno-42-17" href="#__codelineno-42-17"></a><span class="w">      </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"ifOperStatus"</span>
+</span><span id="__span-42-18"><a id="__codelineno-42-18" name="__codelineno-42-18" href="#__codelineno-42-18"></a><span class="w">      </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.2.2.1.8"</span>
+</span></code></pre></div>
+<p>A third block reads <code>sysUpTime</code> and walks the same table over SNMPv3 at <code>authPriv</code>, as the user <code>telegraf</code> with HMAC-SHA-256 and AES-128, writing <code>interface_v3</code> and, through its own measurement name, <code>snmp_v3_uptime</code>:</p>
+<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf-snmp.conf (the SNMPv3 block, excerpt)</span><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a><span class="k">[[inputs.snmp]]</span>
+</span><span id="__span-43-2"><a id="__codelineno-43-2" name="__codelineno-43-2" href="#__codelineno-43-2"></a><span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"snmp_v3"</span>
+</span><span id="__span-43-3"><a id="__codelineno-43-3" name="__codelineno-43-3" href="#__codelineno-43-3"></a><span class="w">  </span><span class="n">agents</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"udp://sonda:1161"</span><span class="p">]</span>
+</span><span id="__span-43-4"><a id="__codelineno-43-4" name="__codelineno-43-4" href="#__codelineno-43-4"></a><span class="w">  </span><span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+</span><span id="__span-43-5"><a id="__codelineno-43-5" name="__codelineno-43-5" href="#__codelineno-43-5"></a><span class="w">  </span><span class="n">sec_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"authPriv"</span>
+</span><span id="__span-43-6"><a id="__codelineno-43-6" name="__codelineno-43-6" href="#__codelineno-43-6"></a><span class="w">  </span><span class="n">sec_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"telegraf"</span>
+</span><span id="__span-43-7"><a id="__codelineno-43-7" name="__codelineno-43-7" href="#__codelineno-43-7"></a><span class="w">  </span><span class="n">auth_protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"SHA256"</span>
+</span><span id="__span-43-8"><a id="__codelineno-43-8" name="__codelineno-43-8" href="#__codelineno-43-8"></a><span class="w">  </span><span class="n">auth_password</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"lab-only-v3-password"</span>
+</span><span id="__span-43-9"><a id="__codelineno-43-9" name="__codelineno-43-9" href="#__codelineno-43-9"></a><span class="w">  </span><span class="n">priv_protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"AES"</span>
+</span><span id="__span-43-10"><a id="__codelineno-43-10" name="__codelineno-43-10" href="#__codelineno-43-10"></a><span class="w">  </span><span class="n">priv_password</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"lab-only-v3-privacy"</span>
+</span><span id="__span-43-11"><a id="__codelineno-43-11" name="__codelineno-43-11" href="#__codelineno-43-11"></a><span class="w">  </span><span class="n">agent_host_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"source"</span>
+</span><span id="__span-43-12"><a id="__codelineno-43-12" name="__codelineno-43-12" href="#__codelineno-43-12"></a>
+</span><span id="__span-43-13"><a id="__codelineno-43-13" name="__codelineno-43-13" href="#__codelineno-43-13"></a><span class="w">  </span><span class="k">[[inputs.snmp.field]]</span>
+</span><span id="__span-43-14"><a id="__codelineno-43-14" name="__codelineno-43-14" href="#__codelineno-43-14"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"uptime"</span>
+</span><span id="__span-43-15"><a id="__codelineno-43-15" name="__codelineno-43-15" href="#__codelineno-43-15"></a><span class="w">    </span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">".1.3.6.1.2.1.1.3.0"</span>
+</span><span id="__span-43-16"><a id="__codelineno-43-16" name="__codelineno-43-16" href="#__codelineno-43-16"></a>
+</span><span id="__span-43-17"><a id="__codelineno-43-17" name="__codelineno-43-17" href="#__codelineno-43-17"></a><span class="w">  </span><span class="k">[[inputs.snmp.table]]</span>
+</span><span id="__span-43-18"><a id="__codelineno-43-18" name="__codelineno-43-18" href="#__codelineno-43-18"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"interface_v3"</span>
+</span><span id="__span-43-19"><a id="__codelineno-43-19" name="__codelineno-43-19" href="#__codelineno-43-19"></a><span class="w">    </span><span class="n">index_as_tag</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span></code></pre></div>
+<div class="language-text highlight"><span class="filename">What VictoriaMetrics stores (excerpt)</span><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>interface_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+</span><span id="__span-44-2"><a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a>interface_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+</span><span id="__span-44-3"><a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a>interface_v1_ifOperStatus{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+</span><span id="__span-44-4"><a id="__codelineno-44-4" name="__codelineno-44-4" href="#__codelineno-44-4"></a>interface_v3_ifHCInOctets{db="telegraf",ifName="GigabitEthernet0/0/0",index="1",source="sonda"}
+</span><span id="__span-44-5"><a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a>snmp_uptime{db="telegraf",hostname="rtr-core-01",link_state="up",source="sonda"}
+</span><span id="__span-44-6"><a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a>snmp_load_1m{db="telegraf",hostname="rtr-core-01",link_state="up",source="sonda"}
+</span><span id="__span-44-7"><a id="__codelineno-44-7" name="__codelineno-44-7" href="#__codelineno-44-7"></a>snmp_v3_uptime{db="telegraf",source="sonda"}
 </span></code></pre></div>
 <p>To run the pair, start the compose stack's <code>snmp</code> profile. It runs <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> with that config. Then start the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> on the host:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>snmp<span class="w"> </span>up<span class="w"> </span>-d
-</span><span id="__span-42-2"><a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/snmp-telegraf.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-45-1"><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>snmp<span class="w"> </span>up<span class="w"> </span>-d
+</span><span id="__span-45-2"><a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/snmp-telegraf.yaml
 </span></code></pre></div>
 <p>The <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> image ships net-snmp, so the agent can be walked from inside the container too, at the address <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> polls:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>telegraf-snmp<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-43-2"><a id="__codelineno-43-2" name="__codelineno-43-2" href="#__codelineno-43-2"></a><span class="w">  </span>snmpbulkwalk<span class="w"> </span>-v2c<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span>-On<span class="w"> </span>sonda:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-46-1"><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>telegraf-snmp<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-2"><a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a><span class="w">  </span>snmpbulkwalk<span class="w"> </span>-v2c<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span>-On<span class="w"> </span>sonda:1161<span class="w"> </span><span class="m">1</span>.3.6.1
+</span><span id="__span-46-3"><a id="__codelineno-46-3" name="__codelineno-46-3" href="#__codelineno-46-3"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>telegraf-snmp<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-4"><a id="__codelineno-46-4" name="__codelineno-46-4" href="#__codelineno-46-4"></a><span class="w">  </span>snmpwalk<span class="w"> </span>-v1<span class="w"> </span>-c<span class="w"> </span>public<span class="w"> </span>-On<span class="w"> </span>sonda:1161<span class="w"> </span><span class="m">1</span>.3.6.1
+</span><span id="__span-46-5"><a id="__codelineno-46-5" name="__codelineno-46-5" href="#__codelineno-46-5"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>telegraf-snmp<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-6"><a id="__codelineno-46-6" name="__codelineno-46-6" href="#__codelineno-46-6"></a><span class="w">  </span>snmpget<span class="w"> </span>-v3<span class="w"> </span>-l<span class="w"> </span>authPriv<span class="w"> </span>-u<span class="w"> </span>telegraf<span class="w"> </span>-a<span class="w"> </span>SHA-256<span class="w"> </span>-A<span class="w"> </span>lab-only-v3-password<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-7"><a id="__codelineno-46-7" name="__codelineno-46-7" href="#__codelineno-46-7"></a><span class="w">  </span>-x<span class="w"> </span>AES<span class="w"> </span>-X<span class="w"> </span>lab-only-v3-privacy<span class="w"> </span>-On<span class="w"> </span>sonda:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1.1.5.0
+</span><span id="__span-46-8"><a id="__codelineno-46-8" name="__codelineno-46-8" href="#__codelineno-46-8"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>telegraf-snmp<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-9"><a id="__codelineno-46-9" name="__codelineno-46-9" href="#__codelineno-46-9"></a><span class="w">  </span>snmpget<span class="w"> </span>-v3<span class="w"> </span>-l<span class="w"> </span>authNoPriv<span class="w"> </span>-u<span class="w"> </span>monitor<span class="w"> </span>-a<span class="w"> </span>SHA-256<span class="w"> </span>-A<span class="w"> </span>lab-only-v3-password<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-10"><a id="__codelineno-46-10" name="__codelineno-46-10" href="#__codelineno-46-10"></a><span class="w">  </span>-On<span class="w"> </span>sonda:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1.1.5.0
 </span></code></pre></div>
 <h2 id="retry-with-backoff">Retry with backoff<a class="headerlink" href="#retry-with-backoff" title="Permanent link">&para;</a></h2>
 <p>Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does <strong>not</strong> retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a <code>retry:</code> block to any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
 <p>Retry applies to these sinks: <code>http_push</code>, <code>remote_write</code>, <code>loki</code>, <code>otlp_grpc</code>, <code>kafka</code>, <code>tcp</code>. It does <strong>not</strong> apply to <code>stdout</code>, <code>file</code>, or <code>udp</code>.</p>
 <h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
 <p>Add the <code>retry:</code> block inside any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> definition:</p>
-<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-44-2"><a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-44-3"><a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
-</span><span id="__span-44-4"><a id="__codelineno-44-4" name="__codelineno-44-4" href="#__codelineno-44-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
-</span><span id="__span-44-5"><a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
-</span><span id="__span-44-6"><a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
-</span><span id="__span-44-7"><a id="__codelineno-44-7" name="__codelineno-44-7" href="#__codelineno-44-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
+<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
+</span><span id="__span-47-3"><a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-47-4"><a id="__codelineno-47-4" name="__codelineno-47-4" href="#__codelineno-47-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
+</span><span id="__span-47-5"><a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
+</span><span id="__span-47-6"><a id="__codelineno-47-6" name="__codelineno-47-6" href="#__codelineno-47-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
+</span><span id="__span-47-7"><a id="__codelineno-47-7" name="__codelineno-47-7" href="#__codelineno-47-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
 </span></code></pre></div>
 <p>All three fields are required when <code>retry:</code> is present:</p>
 <table>
@@ -4217,13 +4536,13 @@
 </table>
 <h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
 <p>Sonda uses <strong>exponential backoff with full jitter</strong>:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-45-1"><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
-</span><span id="__span-45-2"><a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>sleep = random(0, base)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
+</span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>sleep = random(0, base)
 </span></code></pre></div>
 <p>The jitter prevents synchronized retries when several sinks retry at the same time ("thundering herd"). Each retry attempt is logged to stderr:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-46-1"><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
-</span><span id="__span-46-2"><a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
-</span><span id="__span-46-3"><a id="__codelineno-46-3" name="__codelineno-46-3" href="#__codelineno-46-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
+</span><span id="__span-49-2"><a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
+</span><span id="__span-49-3"><a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
 </span></code></pre></div>
 <p>If every retry is exhausted, the batch is <strong>discarded</strong>. Sonda generates synthetic data, so losing a batch is acceptable and prevents unbounded buffer growth.</p>
 <h3 id="error-classification">Error classification<a class="headerlink" href="#error-classification" title="Permanent link">&para;</a></h3>
@@ -4284,7 +4603,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 25, 2026 11:12:47 UTC">October 25, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 27, 2026 21:56:21 UTC">October 27, 2026</span>
   </span>
 
     

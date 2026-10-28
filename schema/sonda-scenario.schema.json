@@ -119,6 +119,19 @@
         "firing_within"
       ]
     },
+    "AuthProtocol": {
+      "description": "An SNMPv3 authentication protocol, named as Telegraf names it, in lower case: md5 (legacy; prefer a SHA-2 protocol), sha1 (also read as sha), sha224, sha256, sha384 or sha512.",
+      "type": "string",
+      "enum": [
+        "md5",
+        "sha",
+        "sha1",
+        "sha224",
+        "sha256",
+        "sha384",
+        "sha512"
+      ]
+    },
     "BurstConfig": {
       "description": "Burst window configuration — a recurring high-rate period within a scenario.\n\nDuring a burst the event rate is multiplied by `multiplier`. The burst\nrepeats on a fixed cycle defined by `every`, and each instance lasts for `for`.\n\nIf a gap and burst overlap in time, the gap takes priority and no events\nare emitted.",
       "type": "object",
@@ -857,8 +870,16 @@
                 ]
               }
             },
+            "label_columns": {
+              "description": "OID template per label whose value the agent serves as an OCTET\nSTRING, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`: a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry, and\nvalidation requires it to be a static label of the entry; a series\nwithout the label serves no instance of its column. Each is a string;\na YAML number is an error.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            },
             "oids": {
-              "description": "OID template per metric name, such as\n`\"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"`: the object's OID, then one\n`{label}` placeholder per index arc, or `.0` for a scalar. Every\nmetric the entry emits needs one. Each is a string; a YAML number is\nan error.",
+              "description": "OID template per metric name, such as\n`\"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"`: the object's OID, then its\nindex placeholders, `{label}` for one arc or `{label:str}` for a\nstring index, or `.0` for a scalar. Every metric the entry emits\nneeds one. Each is a string; a YAML number is an error.",
               "type": "object",
               "additionalProperties": {
                 "type": "string"
@@ -2800,6 +2821,14 @@
             ]
           },
           "default": null
+        },
+        "snmp_label_columns": {
+          "description": "OID template per label whose value an `snmp` encoder serves as a\ntable column, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`.\nUnder an `snmp` encoder each fills the encoder's `label_columns:`\nwhere it has no entry for the label (see [`fold_snmp_hints`]); under\nany other encoder they are not used. Each is a string; a YAML number\nis an error.\n\nAn extension's map is merged over its base's, so the extension wins.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
         }
       },
       "anyOf": [
@@ -2917,6 +2946,19 @@
           "type": "string",
           "const": "logs"
         }
+      ]
+    },
+    "PrivProtocol": {
+      "description": "An SNMPv3 privacy protocol, named as Telegraf names it, in lower case: des (legacy; prefer aes128), aes128 (also read as aes), aes192 and aes256 (the Blumenthal key extension), aes192c and aes256c (the Reeder key extension).",
+      "type": "string",
+      "enum": [
+        "des",
+        "aes",
+        "aes128",
+        "aes192",
+        "aes192c",
+        "aes256",
+        "aes256c"
       ]
     },
     "PromMetricType": {
@@ -3636,6 +3678,14 @@
               ],
               "default": "public"
             },
+            "engine_id": {
+              "description": "The agent's SNMPv3 engine ID, 5 to 32 octets written as hex, such as\n`\"80001f8804736f6e6461\"`; a leading `0x` is allowed. A string; a YAML\nnumber is an error. Default: made from the host name and the address\nthe agent binds (net-snmp's enterprise prefix `80001f88`, format `05`,\nthen the first 16 octets of the SHA-256 of\n`sonda:<host name>:<bound address>`; a `listen` on port 0 gives the\nport it was bound to), so an agent has the same one on every run on\none host and another on every other host.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^(0[xX])?([0-9a-fA-F]{2}){5,32}$"
+            },
             "listen": {
               "description": "Address to listen on, e.g. `\"0.0.0.0:1161\"`. `\"127.0.0.1:0\"` binds an\nephemeral port, readable from [`SnmpAgent::local_addr`]. A port below\n1024, such as SNMP's 161, needs `CAP_NET_BIND_SERVICE`.",
               "type": [
@@ -3667,6 +3717,25 @@
             "type": {
               "type": "string",
               "const": "snmp_agent"
+            },
+            "users": {
+              "description": "The SNMPv3 users the agent accepts, each name once. `v3` in\n`versions` needs at least one. Default none.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UsmUser"
+              }
+            },
+            "versions": {
+              "description": "The SNMP versions the agent answers, at least one and each once.\nDefault `[v2c]`. A request in another version is dropped unanswered.",
+              "type": "array",
+              "default": [
+                "v2c"
+              ],
+              "items": {
+                "$ref": "#/$defs/SnmpVersion"
+              },
+              "minItems": 1,
+              "uniqueItems": true
             }
           },
           "additionalProperties": false,
@@ -3677,12 +3746,37 @@
         }
       ]
     },
+    "SnmpEnumWire": {
+      "description": "`{ enum: { <i64>: <string>, ... } }`.",
+      "type": "object",
+      "properties": {
+        "enum": {
+          "description": "The label of each integer code, served as an OCTET STRING; at least\none entry.",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "patternProperties": {
+            "^-?\\d+$": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enum"
+      ]
+    },
     "SnmpHint": {
       "description": "A pack metric's SNMP OID template and value type.\n\n# YAML Schema\n\n```yaml\nsnmp:\n  oid: \"1.3.6.1.2.1.31.1.1.1.6.{ifIndex}\"\n  type: counter64\n```",
       "type": "object",
       "properties": {
         "oid": {
-          "description": "OID template for the metric, as an `oids:` entry of the snmp encoder\ntakes it: the object's OID, then one `{label}` placeholder per index\narc, or `.0` for a scalar. A string; a YAML number is an error.",
+          "description": "OID template for the metric, as an `oids:` entry of the snmp encoder\ntakes it: the object's OID, then its index placeholders, `{label}`\nor `{label:str}`, or `.0` for a scalar. A string; a YAML number is an\nerror.",
           "type": "string"
         },
         "type": {
@@ -3696,8 +3790,8 @@
         "type"
       ]
     },
-    "SnmpValueType": {
-      "description": "The BER type a metric's value is encoded as.\n\nYAML forms: `integer`, `counter32`, `counter64`, `gauge32`, `unsigned32`,\n`timeticks`, `string`. The default is `gauge32`.\n\nEvery type but `string` rounds the value to the nearest integer, halves\naway from zero, and rejects the event when the value is not finite or\nthe rounded value is outside the type's range. A counter does not wrap:\na value past its range is rejected, not reduced.",
+    "SnmpTypeName": {
+      "description": "The value type names.",
       "oneOf": [
         {
           "description": "INTEGER (Integer32): -2³¹ to 2³¹ − 1.",
@@ -3715,7 +3809,7 @@
           "const": "counter64"
         },
         {
-          "description": "Gauge32: 0 to 2³² − 1.",
+          "description": "Gauge32: 0 to 2³² − 1. The default.",
           "type": "string",
           "const": "gauge32"
         },
@@ -3730,9 +3824,55 @@
           "const": "timeticks"
         },
         {
-          "description": "OCTET STRING: the shortest decimal text that round-trips the `f64`.",
+          "description": "OCTET STRING: the shortest decimal text that round-trips the value.",
           "type": "string",
           "const": "string"
+        },
+        {
+          "description": "Opaque float (net-snmp): the value as an IEEE 754 single.",
+          "type": "string",
+          "const": "opaque_float"
+        },
+        {
+          "description": "Opaque double (net-snmp): the value as an IEEE 754 double.",
+          "type": "string",
+          "const": "opaque_double"
+        },
+        {
+          "description": "IpAddress: the rounded value, 0 to 2³² − 1, as four octets.",
+          "type": "string",
+          "const": "ipaddress"
+        }
+      ]
+    },
+    "SnmpValueType": {
+      "description": "The BER type a metric's value is encoded as.\n\nYAML forms: `integer`, `counter32`, `counter64`, `gauge32`, `unsigned32`,\n`timeticks`, `string`, `opaque_float`, `opaque_double`, `ipaddress`, and\n`{ enum: { 1: up, 2: down } }`. The default is `gauge32`.\n\nThe integer types, `ipaddress` and the enum round the value to the\nnearest integer, halves away from zero. Every type but `string` rejects\nthe event when the value is not finite; the integer types and\n`ipaddress` when the rounded value is outside the type's range,\n`opaque_float` when the value is beyond the `f32` range, and the enum\nwhen the rounded value has no entry. A counter does not wrap: a value\npast its range is rejected, not reduced.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SnmpTypeName"
+        },
+        {
+          "$ref": "#/$defs/SnmpEnumWire"
+        }
+      ]
+    },
+    "SnmpVersion": {
+      "description": "An SNMP version an agent can answer: the `versions:` items of an\n[`SnmpAgentConfig`].",
+      "oneOf": [
+        {
+          "description": "SNMPv1 (RFC 1157), `v1`: `Get`, `GetNext` and `Set` without\n`Counter64`, every error `noSuchName` at its varbind.",
+          "type": "string",
+          "const": "v1"
+        },
+        {
+          "description": "SNMPv2c (RFC 3416), `v2c`.",
+          "type": "string",
+          "const": "v2c"
+        },
+        {
+          "description": "SNMPv3 with the User-based Security Model (RFC 3414), `v3`: the\nSNMPv2c operations for the configured `users`, `noAuthNoPriv`,\n`authNoPriv` or `authPriv`.",
+          "type": "string",
+          "const": "v3"
         }
       ]
     },
@@ -3857,6 +3997,92 @@
           "type": "string",
           "const": "pending"
         }
+      ]
+    },
+    "UsmAuth": {
+      "description": "An SNMPv3 user's authentication: the `auth:` block of a [`UsmUser`].\n\n`Debug` prints `\"***\"` in place of the password.",
+      "type": "object",
+      "properties": {
+        "password": {
+          "description": "The password the user's key is made from, at least 8 octets. A\nstring; a YAML number is an error.",
+          "type": "string",
+          "$comment": "minLength counts characters where sonda counts octets, so the schema is the looser of the two: sonda refuses a password of fewer than 8 octets that the schema may accept.",
+          "minLength": 8,
+          "writeOnly": true
+        },
+        "protocol": {
+          "description": "The HMAC the user's requests are authenticated with.",
+          "$ref": "#/$defs/AuthProtocol"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "password"
+      ]
+    },
+    "UsmPriv": {
+      "description": "An SNMPv3 user's privacy: the `priv:` block of a [`UsmUser`].\n\nThe privacy key is made from the password with the user's\nauthentication hash. `Debug` prints `\"***\"` in place of the password.",
+      "type": "object",
+      "properties": {
+        "password": {
+          "description": "The password the user's privacy key is made from, at least 8 octets.\nA string; a YAML number is an error.",
+          "type": "string",
+          "$comment": "minLength counts characters where sonda counts octets, so the schema is the looser of the two: sonda refuses a password of fewer than 8 octets that the schema may accept.",
+          "minLength": 8,
+          "writeOnly": true
+        },
+        "protocol": {
+          "description": "The cipher the user's scoped PDUs are encrypted with.",
+          "$ref": "#/$defs/PrivProtocol"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "password"
+      ]
+    },
+    "UsmUser": {
+      "description": "An SNMPv3 user of the User-based Security Model (RFC 3414): an item of\nan [`SnmpAgentConfig`]'s `users:`.\n\nWithout `auth` the user is `noAuthNoPriv`; with it, every request must\nbe authenticated with the user's key (`authNoPriv`); with `priv` as well,\nevery request must also be encrypted with the user's privacy key\n(`authPriv`). A user's level is the only one it is answered at. `priv`\nneeds `auth`. Unknown keys are rejected.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "The user's authentication protocol and password, when its requests\nare authenticated.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsmAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "The user name (`securityName`), 1 to 32 octets.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "maxLength": 32,
+          "minLength": 1
+        },
+        "priv": {
+          "description": "The user's privacy protocol and password, `priv:` in a config, when\nits requests are encrypted. Needs `auth`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsmPriv"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     },
     "WhileClause": {
