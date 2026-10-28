@@ -227,7 +227,7 @@ mod tests {
     }
 
     /// The agent listening on `listen` in a body, or `Null`.
-    fn agent_on<'a>(body: &'a Value, listen: SocketAddr) -> &'a Value {
+    fn agent_on(body: &Value, listen: SocketAddr) -> &Value {
         body["agents"]
             .as_array()
             .and_then(|agents| {
