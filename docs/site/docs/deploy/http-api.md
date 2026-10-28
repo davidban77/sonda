@@ -289,6 +289,90 @@ Targets are listed in address order; each target's subscribers in the order they
 
 A subscriber whose `last_drained` stops moving while its window fills is reading nothing. Until the client's HTTP/2 receive window is spent its connection accepts data whether or not the application reads it, so `last_drained` keeps moving for a while after a client stops reading; once it stops, the subscription is ended after its stall limit and `stalled_subscribers_total` rises.
 
+### `GET /snmp/agents`
+
+The [`snmp_agent`](../build/sinks.md#snmp_agent) listeners running in the server, with what they serve and the requests they have received. Read-only: nothing a client sends here changes an agent. The route exists in builds with the `snmp` feature (release binaries and the Docker image); without it the path is a 404 like any unknown route. It sits behind the API key when one is set.
+
+```bash
+curl -s http://localhost:8080/snmp/agents | jq .
+```
+
+```json title="Response"
+{
+  "agents": [
+    {
+      "listen": "0.0.0.0:1161",
+      "versions": ["v1", "v2c", "v3"],
+      "community_required": true,
+      "engine_id": "80001f88058288abc1284d7c9d61bd3e562365422c",
+      "users": ["monitor", "telegraf"],
+      "instances": 28,
+      "uptime_seconds": 3600,
+      "requests": {
+        "get": 180,
+        "get_next": 1800,
+        "get_bulk": 240,
+        "set_refused": 0,
+        "malformed": 0,
+        "wrong_community": 0,
+        "too_big": 0,
+        "unsupported_version": 0,
+        "send_errors": 0,
+        "v1": 1800,
+        "v3": 180,
+        "usm_unknown_engine_ids": 2,
+        "usm_unknown_user_names": 0,
+        "usm_unsupported_sec_levels": 0,
+        "usm_wrong_digests": 0,
+        "usm_not_in_time_windows": 0,
+        "usm_decryption_errors": 0
+      },
+      "last_request": {
+        "at": "2026-10-28T10:00:00Z",
+        "peer": "172.18.0.4:51022",
+        "version": "v2c"
+      }
+    }
+  ]
+}
+```
+
+Agents are listed in address order. A datagram is counted once in `requests`: under the first check it fails (its shape, its version, its community, then for SNMPv3 the User-based Security Model's checks), or under its PDU type. `too_big`, `v1` and `v3` count again a request already counted under its PDU type.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `listen` | string | The address the agent listens on, with a `:0` port resolved to the port it bound. |
+| `versions` | array of strings | The SNMP versions the agent answers, ascending: `v1`, `v2c`, `v3`. |
+| `community_required` | bool | Whether the agent answers SNMPv1 or SNMPv2c, whose requests must carry its `community`. `false` for an agent that answers SNMPv3 only. |
+| `engine_id` | string | The agent's SNMPv3 engine ID in lower-case hex, without a `0x` prefix: the sink's `engine_id`, or the one the agent made from the host name and the address it bound. |
+| `users` | array of strings | The names of the sink's SNMPv3 `users`, sorted. Never a protocol, a password or a key. |
+| `instances` | integer | Instances the agent's entries publish, the system group not included. |
+| `uptime_seconds` | integer | Whole seconds since the agent bound its socket, the clock `sysUpTime` and the SNMPv3 engine time count from. |
+| `requests` | object | The requests the agent has received since it bound, by kind, one counter per row below. |
+| `requests.get` | integer | `GetRequest` PDUs answered, in any version. |
+| `requests.get_next` | integer | `GetNextRequest` PDUs answered, in any version. |
+| `requests.get_bulk` | integer | `GetBulkRequest` PDUs answered. |
+| `requests.set_refused` | integer | `SetRequest` PDUs, each answered `notWritable` (SNMPv1: `noSuchName`) and none applied. |
+| `requests.malformed` | integer | Datagrams that are not an SNMP message of a version the agent knows, messages carrying a PDU it does not answer (`Response`, `InformRequest`, `SNMPv2-Trap`, `Report`), and SNMPv1 messages carrying a `GetBulkRequest` or a `Trap`. Dropped unanswered. |
+| `requests.wrong_community` | integer | SNMPv1 and SNMPv2c messages whose community is not the agent's. Dropped unanswered. |
+| `requests.too_big` | integer | `GetRequest`, `GetNextRequest` and `SetRequest` PDUs answered `tooBig`, because their answer did not fit `max_message_size`. A `GetBulkRequest` answer is trimmed to fit instead. |
+| `requests.unsupported_version` | integer | Messages in a version the agent does not serve. Dropped unanswered, the community never compared and an SNMPv3 message never parsed past its version. |
+| `requests.send_errors` | integer | Answers the socket failed to send. |
+| `requests.v1` | integer | Requests answered as SNMPv1, also counted under their PDU type. |
+| `requests.v3` | integer | Requests answered as SNMPv3, also counted under their PDU type. |
+| `requests.usm_unknown_engine_ids` | integer | SNMPv3 messages whose engine ID was empty (discovery) or not the agent's. A reportable one is answered with a `usmStatsUnknownEngineIDs` report. A poller's first SNMPv3 request is one. |
+| `requests.usm_unknown_user_names` | integer | SNMPv3 messages from a user the agent does not have. A reportable one is answered with a `usmStatsUnknownUserNames` report. |
+| `requests.usm_unsupported_sec_levels` | integer | SNMPv3 messages asking for a security level other than their user's. A reportable one is answered with a `usmStatsUnsupportedSecLevels` report. |
+| `requests.usm_wrong_digests` | integer | SNMPv3 messages whose digest was not their user's: another password or authentication protocol. A reportable one is answered with a `usmStatsWrongDigests` report. |
+| `requests.usm_not_in_time_windows` | integer | Authenticated SNMPv3 messages outside the agent's time window. A reportable one is answered with a `usmStatsNotInTimeWindows` report. |
+| `requests.usm_decryption_errors` | integer | Authenticated SNMPv3 messages whose scoped PDU did not decrypt with their user's privacy key. A reportable one is answered with a `usmStatsDecryptionErrors` report. |
+| `last_request` | object \| null | The last datagram the agent received, whatever became of it; `null` before the first. |
+| `last_request.at` | string | When the agent read it, RFC 3339 UTC to the second. |
+| `last_request.peer` | string | The address it came from. |
+| `last_request.version` | string \| null | The version its message names, `v1`, `v2c` or `v3`, whether or not the agent serves it; `null` when the datagram is not an SNMP message: a BER SEQUENCE spanning the datagram whose first field is the version 0, 1 or 3. |
+
+A poller that reaches the agent and reads nothing shows here first: its requests land under `wrong_community`, `unsupported_version` or a `usm_` counter, and `last_request` names its address.
+
 ## Scenarios
 
 | Method | Path | Description |
