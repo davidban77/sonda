@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.28.0](https://github.com/davidban77/sonda/compare/v1.27.0...v1.28.0) (2026-10-28)
+
+
+### Features
+
+* **snmp:** answer SNMPv1 requests, skipping Counter64 as RFC 3584 requires ([#700](https://github.com/davidban77/sonda/issues/700)) ([e884836](https://github.com/davidban77/sonda/commit/e884836205f88274c2f36798c567ea331f34f335))
+* **snmp:** Opaque floats, IpAddress and enum strings; a wildcard reply allocates nothing ([#705](https://github.com/davidban77/sonda/issues/705)) ([f065de5](https://github.com/davidban77/sonda/commit/f065de5347fa4dc30c9626107087db7cf73e53af))
+* **snmp:** serve label values as table columns and accept string-indexed OIDs ([#701](https://github.com/davidban77/sonda/issues/701)) ([2c6e6ac](https://github.com/davidban77/sonda/commit/2c6e6acdc0f7b6efa0821ae445fb8c23dfd9101e))
+* **snmp:** SNMPv3 privacy with DES and AES, and a per-host default engine ID ([#703](https://github.com/davidban77/sonda/issues/703)) ([fde19a7](https://github.com/davidban77/sonda/commit/fde19a7f96e76551a2626df8c5574f5238056b4a))
+* **snmp:** SNMPv3 with USM authentication, discovery and the time window ([#702](https://github.com/davidban77/sonda/issues/702)) ([a50d796](https://github.com/davidban77/sonda/commit/a50d7968776bb249953ff42effbad63011c3191a))
+
+
+### CI/CD
+
+* run the live-UAT harness suites ([#704](https://github.com/davidban77/sonda/issues/704)) ([c1b1b91](https://github.com/davidban77/sonda/commit/c1b1b9173830e5f60d2ab8dd1f2ff891d384ab6c))
+
 ## [1.27.0](https://github.com/davidban77/sonda/compare/v1.26.0...v1.27.0) (2026-10-25)
 
 
