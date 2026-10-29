@@ -118,7 +118,7 @@ def good_export(
     ports=tuple(uat.IF_MIB_PORTS),
     fields: tuple[str, ...] | None = None,
     value=value_of,
-    number: float = uat.IF_MIB_NUMBER,
+    number: float = 24.0,
     polls: list[float] | None = None,
     extra: tuple[str, ...] = (),
 ) -> bytes:
