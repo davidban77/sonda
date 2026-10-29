@@ -214,7 +214,7 @@ scenarios:
     generator: { type: constant, value: 2 }
 ```
 
-`ifType.1` is served at `1.3.6.1.2.1.2.2.1.3.1` as `INTEGER: 6`, and `ifIndex.2` at `1.3.6.1.2.1.2.2.1.1.2` as `INTEGER: 2`. A label a typed column cannot serve, such as `ifType: copper`, is refused when the scenario is validated, naming the label, the type and the value. The pack carries no `gnmi:` hints: [`openconfig_interface`](#openconfig_interface) is the gNMI pack. [`examples/if-mib-switch.yaml`](https://github.com/davidban77/sonda/blob/main/examples/if-mib-switch.yaml) serves a 24-port switch on port 1163, polled by Telegraf in the interface-table layout of its documentation ([`examples/telegraf/telegraf-if-mib.conf`](https://github.com/davidban77/sonda/blob/main/examples/telegraf/telegraf-if-mib.conf)).
+`ifType.1` is served at `1.3.6.1.2.1.2.2.1.3.1` as `INTEGER: 6`, and `ifIndex.2` at `1.3.6.1.2.1.2.2.1.1.2` as `INTEGER: 2`. A label a typed column cannot serve, such as `ifType: copper` or `ifType: "6.5"`, is refused when the scenario is validated, naming the label, the type and the value. The pack carries no `gnmi:` hints: [`openconfig_interface`](#openconfig_interface) is the gNMI pack. [`examples/if-mib-switch.yaml`](https://github.com/davidban77/sonda/blob/main/examples/if-mib-switch.yaml) serves a 24-port switch on port 1163, polled by Telegraf in the interface-table layout of its documentation ([`examples/telegraf/telegraf-if-mib.conf`](https://github.com/davidban77/sonda/blob/main/examples/telegraf/telegraf-if-mib.conf)).
 
 ## Change one metric without editing the pack
 

@@ -396,7 +396,7 @@ encoder:
   drop_labels: [job]
 ```
 
-With that block, `ifInOctets{ifIndex="3", ifDescr="GigabitEthernet1/0/3", ifType="6", job="snmp"}` serves `1.3.6.1.2.1.2.2.1.3.3` as `INTEGER: 6`. The text is read as Rust reads a number (`6`, `6.0`, `1e3`; no spaces, no thousands separators) and then written as its type, rounded and range-checked as a metric's value is. `type: string` serves the text itself, as the bare template does. The enum type is refused for a column: a column serves the label's own text. Both forms take the same `oid:` rules, and `oid:`, like a bare template, must be quoted.
+With that block, `ifInOctets{ifIndex="3", ifDescr="GigabitEthernet1/0/3", ifType="6", job="snmp"}` serves `1.3.6.1.2.1.2.2.1.3.3` as `INTEGER: 6`. The text is read as Rust reads a number (`6`, `6.0`, `1e3`; no spaces, no thousands separators) and then written as its type, range-checked as a metric's value is. The integer types and `ipaddress` take a whole number only: `6.5` is refused, not rounded, while `6.0` and `1e3` are whole. `type: string` serves the text itself, as the bare template does. The enum type is refused for a column: a column serves the label's own text. Both forms take the same `oid:` rules, and `oid:`, like a bare template, must be quoted.
 
 ### OIDs and types from a pack
 
@@ -431,7 +431,7 @@ A scenario file is refused, with the metric and the label named, when any of the
 - Every placeholder names a key of the entry's `labels` or `dynamic_labels`. A `cardinality_spikes` label cannot be a placeholder: events carry it only while its window is open.
 - Every placeholder of a `label_columns` template is a placeholder of every `oids:` template.
 - Every `label_columns` label is a static label of the entry, not a `dynamic_labels` or `cardinality_spikes` label.
-- Every typed `label_columns` entry's type can serve its label's static value: the value is a number and fits the type. The refusal names the label, the type and the value. No `label_columns` entry is typed as an enum.
+- Every typed `label_columns` entry's type can serve its label's static value: the value is a number, whole for the integer types and `ipaddress`, and fits the type. The refusal names the label, the type and the value. No `label_columns` entry is typed as an enum.
 - Every value the label of a `{label}` placeholder can take is an arc: its static value, every `values:` entry of a dynamic label, and every value of a `counter` dynamic label or `counter` cardinality spike on it. A counter's values are its prefix followed by a number, and the default prefix (`<label>_`) is not a number, so set `prefix: ""`. A `random` cardinality spike on such a label is refused. A `{label:str}` placeholder takes any value.
 - Every label key of the entry, from `labels`, `dynamic_labels` and `cardinality_spikes`, is a placeholder, a `label_columns` label, the `agent_label`, or listed in `drop_labels`. Otherwise series that differ only in that label would share one OID. Series that differ only in a `label_columns` label do share the metric's OID, which is why that label must be static.
 - No two templates can render the same OID for the entry: its metric's template and each `label_columns` template are compared with each other and with every other `oids:` template. Two templates can when they have the same number of arcs and the arcs at every position can be equal:

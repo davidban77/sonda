@@ -344,8 +344,10 @@ impl From<SnmpValueType> for SnmpValueTypeWire {
 /// OCTET STRING; or `{ oid: <template>, type: <value type> }`, which parses
 /// the label's text as an `f64` (`str::parse`, nothing more lenient) and
 /// writes it as that type, except `string`, which serves the text itself, as
-/// the bare form does. Validation refuses the enum type for a column, and a
-/// typed column whose static label value its type cannot serve.
+/// the bare form does. The integer types and `ipaddress` refuse a text with a
+/// fractional part rather than round it. Validation refuses the enum type for
+/// a column, and a typed column whose static label value its type cannot
+/// serve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -581,7 +583,9 @@ pub(crate) struct ColumnError {
 ///
 /// No type, and `string`, write the text as an OCTET STRING. Any other type
 /// parses the text as an `f64` with `str::parse` and writes it with
-/// [`SnmpValueType::write`]; the enum writes nothing and is refused
+/// [`SnmpValueType::write`], except that a type [`write`](SnmpValueType::write)
+/// rounds refuses a finite value with a fractional part: `6.5` is refused,
+/// `1e3` and `6.0` are whole. The enum writes nothing and is refused
 /// ([`ENUM_COLUMN_REFUSED`]). On an error nothing is written. Validation and
 /// the snmp encoder both apply this one rule: validation writes the static
 /// value into a scratch buffer, the encoder writes the companion record.
@@ -608,8 +612,28 @@ pub(crate) fn write_label_text(
             let value: f64 = text
                 .parse()
                 .map_err(|_| refused(ty, "it is not a number".to_string()))?;
+            if rounds(ty) && value.is_finite() && value.fract() != 0.0 {
+                return Err(refused(ty, "it has a fractional part".to_string()));
+            }
             ty.write(value, out).map_err(|e| refused(ty, e.to_string()))
         }
+    }
+}
+
+/// Whether [`SnmpValueType::write`] rounds a value of type `ty` to a whole
+/// number: the integer types, `ipaddress` and the enum.
+#[cfg(feature = "snmp")]
+fn rounds(ty: &SnmpValueType) -> bool {
+    match ty {
+        SnmpValueType::Integer
+        | SnmpValueType::Counter32
+        | SnmpValueType::Counter64
+        | SnmpValueType::Gauge32
+        | SnmpValueType::Unsigned32
+        | SnmpValueType::TimeTicks
+        | SnmpValueType::IpAddress
+        | SnmpValueType::Enum(_) => true,
+        SnmpValueType::String | SnmpValueType::OpaqueFloat | SnmpValueType::OpaqueDouble => false,
     }
 }
 
@@ -767,16 +791,28 @@ mod tests {
     }
 
     /// A column writes the label's text verbatim for no type and `string`,
-    /// and otherwise `str::parse`s it and writes it as its type; a refusal
-    /// names the label, the type and the text, and writes nothing.
+    /// and otherwise `str::parse`s it and writes it as its type, refusing a
+    /// fractional text for a type that rounds; a refusal names the label, the
+    /// type and the text, and writes nothing.
     #[cfg(feature = "snmp")]
     #[rustfmt::skip]
     #[rstest]
     #[case::bare_text(            None,                          "Gi0",  Ok("0403476930"))]
     #[case::string_keeps_the_text(Some(SnmpValueType::String),   "06",   Ok("04023036"))]
     #[case::integer(              Some(SnmpValueType::Integer),  "6",    Ok("020106"))]
-    #[case::integer_rounds(       Some(SnmpValueType::Integer),  "6.5",  Ok("020107"))]
+    #[case::integer_fraction(     Some(SnmpValueType::Integer),  "6.5",  Err("label `l` has value \"6.5\", which its integer column cannot serve: it has a fractional part"))]
+    #[case::negative_fraction(    Some(SnmpValueType::Integer),  "-0.5", Err("which its integer column cannot serve: it has a fractional part"))]
+    #[case::counter32_fraction(   Some(SnmpValueType::Counter32), "0.5", Err("which its counter32 column cannot serve: it has a fractional part"))]
+    #[case::counter64_fraction(   Some(SnmpValueType::Counter64), "1.5", Err("which its counter64 column cannot serve: it has a fractional part"))]
+    #[case::gauge32_fraction(     Some(SnmpValueType::Gauge32),  "2.25", Err("which its gauge32 column cannot serve: it has a fractional part"))]
+    #[case::unsigned32_fraction(  Some(SnmpValueType::Unsigned32), "3.5", Err("which its unsigned32 column cannot serve: it has a fractional part"))]
+    #[case::timeticks_fraction(   Some(SnmpValueType::TimeTicks), "100.1", Err("which its timeticks column cannot serve: it has a fractional part"))]
+    #[case::ipaddress_fraction(   Some(SnmpValueType::IpAddress), "1.5", Err("which its ipaddress column cannot serve: it has a fractional part"))]
+    #[case::exponent_fraction(    Some(SnmpValueType::Integer),  "5e-1", Err("which its integer column cannot serve: it has a fractional part"))]
     #[case::gauge32_exponent(     Some(SnmpValueType::Gauge32),  "1e3",  Ok("420203e8"))]
+    #[case::integer_point_zero(   Some(SnmpValueType::Integer),  "6.0",  Ok("020106"))]
+    #[case::opaque_double_fraction(Some(SnmpValueType::OpaqueDouble), "6.5", Ok("440b9f7908401a000000000000"))]
+    #[case::nan_is_not_fractional(Some(SnmpValueType::Integer),  "NaN",  Err("which its integer column cannot serve: value NaN cannot be encoded as integer"))]
     #[case::empty_text(           Some(SnmpValueType::Integer),  "",     Err("label `l` has value \"\", which its integer column cannot serve: it is not a number"))]
     #[case::text_is_not_trimmed(  Some(SnmpValueType::Integer),  " 6",   Err("it is not a number"))]
     #[case::outside_the_type(     Some(SnmpValueType::Counter64), "-1",  Err("which its counter64 column cannot serve: value -1 is outside the counter64 range"))]

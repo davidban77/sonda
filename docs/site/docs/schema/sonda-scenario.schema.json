@@ -2546,7 +2546,7 @@
       ]
     },
     "LabelColumn": {
-      "description": "A label whose value the agent serves as a table column: the OID template\nof the column's instances, and the type the label's text is served as.\n\nYAML forms: a string, the template, which serves the label's text as an\nOCTET STRING; or `{ oid: <template>, type: <value type> }`, which parses\nthe label's text as an `f64` (`str::parse`, nothing more lenient) and\nwrites it as that type, except `string`, which serves the text itself, as\nthe bare form does. Validation refuses the enum type for a column, and a\ntyped column whose static label value its type cannot serve.",
+      "description": "A label whose value the agent serves as a table column: the OID template\nof the column's instances, and the type the label's text is served as.\n\nYAML forms: a string, the template, which serves the label's text as an\nOCTET STRING; or `{ oid: <template>, type: <value type> }`, which parses\nthe label's text as an `f64` (`str::parse`, nothing more lenient) and\nwrites it as that type, except `string`, which serves the text itself, as\nthe bare form does. The integer types and `ipaddress` refuse a text with a\nfractional part rather than round it. Validation refuses the enum type for\na column, and a typed column whose static label value its type cannot\nserve.",
       "anyOf": [
         {
           "description": "The OID template; the label's text is served as an OCTET STRING. A\nstring; a YAML number is an error.",

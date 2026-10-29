@@ -5577,6 +5577,9 @@ generator:
     #[case::r3_typed_gauge_column_of_a_negative_number(|c: &mut ScenarioConfig| { set_label(c, "speed", "-1");
             set_typed_column(c, "speed", "1.3.6.1.2.1.2.2.1.5.{ifIndex}", crate::encoder::snmp::SnmpValueType::Gauge32); },
         "label `speed` has value \"-1\", which its gauge32 column cannot serve: value -1 is outside the gauge32 range")]
+    #[case::r3_typed_column_of_a_fractional_number(|c: &mut ScenarioConfig| { set_label(c, "ifType", "6.5");
+            set_typed_column(c, "ifType", "1.3.6.1.2.1.2.2.1.3.{ifIndex}", crate::encoder::snmp::SnmpValueType::Integer); },
+        "snmp encoder label_columns.ifType: label `ifType` has value \"6.5\", which its integer column cannot serve: it has a fractional part")]
     #[case::r2_enum_label_column(|c: &mut ScenarioConfig| { set_label(c, "ifType", "6");
             set_typed_column(c, "ifType", "1.3.6.1.2.1.2.2.1.3.{ifIndex}",
                 crate::encoder::snmp::SnmpValueType::Enum(std::collections::BTreeMap::from([(6, "ethernetCsmacd".to_string())]))); },

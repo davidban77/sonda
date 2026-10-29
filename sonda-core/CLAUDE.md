@@ -329,7 +329,10 @@ src/
 │   │                       the ONE column rule validation (static value, scratch buffer) and
 │   │                       the encoder (companion) both call: no type or string writes the
 │   │                       text as an OCTET STRING; another type str::parse()s an f64 and
-│   │                       write()s it; the enum is refused (ENUM_COLUMN_REFUSED); a
+│   │                       write()s it, except that a type write() rounds (rounds(): the
+│   │                       integer types, ipaddress, the enum) refuses a finite value with a
+│   │                       fractional part ("6.5"; "1e3" and "6.0" are whole), never rounding
+│   │                       authored text; the enum is refused (ENUM_COLUMN_REFUSED); a
 │   │                       ColumnError names label, type and text; nothing written on error.
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
