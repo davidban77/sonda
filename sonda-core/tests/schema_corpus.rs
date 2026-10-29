@@ -1172,9 +1172,10 @@ metrics:
 
 /// The schema and the parser agree on a label column in both maps: a
 /// template string and the `{ oid, type }` object are accepted by both; an
-/// object without `oid:` or `type:`, with a key beside them, with an
-/// unquoted numeric template or an unknown type, and a bare unquoted number,
-/// are refused by both.
+/// object without `oid:` or `type:`, with a key beside the two (which only
+/// the schema's `additionalProperties` and the parser's unknown-key refusal
+/// catch: `required` holds), with an unquoted numeric template or an
+/// unknown type, and a bare unquoted number, are refused by both.
 #[cfg(feature = "snmp")]
 #[rstest::rstest]
 #[case::template_string(r#""1.3.6.1.2.1.2.2.1.3.{ifIndex}""#, true)]
@@ -1183,6 +1184,10 @@ metrics:
 #[case::object_missing_oid("{ type: integer }", false)]
 #[case::object_missing_type(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}" }"#, false)]
 #[case::object_misspelled_key(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", typ: integer }"#, false)]
+#[case::object_extra_key(
+    r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer, extra: 1 }"#,
+    false
+)]
 #[case::object_numeric_oid("{ oid: 1.30, type: integer }", false)]
 #[case::object_unknown_type(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: float }"#, false)]
 #[case::numeric_template("1.30", false)]
