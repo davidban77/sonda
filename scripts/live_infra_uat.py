@@ -536,26 +536,29 @@ def walk_snmp_agent(
     command: tuple[str, ...] = SNMP_WALK_COMMAND,
     golden_path: Path = SNMP_WALK_GOLDEN,
     within_s: float = SNMP_WALK_WITHIN_S,
+    service: str = "telegraf-snmp",
+    mask: Callable[[str], str] = mask_snmp_walk,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
-    """Walk sonda's agent with net-snmp from inside the telegraf-snmp service
+    """Walk sonda's agent with net-snmp from inside ``service``
     (:func:`net_snmp_in_container` of ``command``) until a walk prints
-    ``golden_path`` under ``repo_root`` (both masked; any output when the
-    golden cannot be read) or ``within_s`` has passed. The scenarios publish
-    their first values after the agent binds, so an early walk can see fewer
-    instances."""
+    ``golden_path`` under ``repo_root`` (both through ``mask``; any output
+    when the golden cannot be read) or ``within_s`` has passed. The
+    scenarios publish their first values after the agent binds, so an early
+    walk can see fewer instances."""
     try:
-        golden: str | None = mask_snmp_walk((repo_root / golden_path).read_text())
+        golden: str | None = mask((repo_root / golden_path).read_text())
     except OSError:
         golden = None
     return net_snmp_in_container(
         repo_root,
         command,
-        lambda stdout: golden is None or mask_snmp_walk(stdout) == golden,
+        lambda stdout: golden is None or mask(stdout) == golden,
         what="the walk",
         within_s=within_s,
+        service=service,
         run=run,
         now=now,
         sleep=sleep,
@@ -569,18 +572,17 @@ def net_snmp_in_container(
     *,
     what: str,
     within_s: float,
+    service: str = "telegraf-snmp",
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
-    """Run the net-snmp ``command`` inside the telegraf-snmp service with
-    MIBS set empty, once a second until it exits 0 printing an stdout that
-    ``matches`` accepts or ``within_s`` has passed. Returns the matching
-    stdout, otherwise the last attempt's: its stdout, and its stderr when it
-    did not exit 0. ``what`` names the command when an attempt times out."""
-    argv = compose_command(
-        repo_root, "exec", "-T", "-e", "MIBS=", "telegraf-snmp", *command
-    )
+    """Run the net-snmp ``command`` inside ``service`` with MIBS set empty,
+    once a second until it exits 0 printing an stdout that ``matches``
+    accepts or ``within_s`` has passed. Returns the matching stdout,
+    otherwise the last attempt's: its stdout, and its stderr when it did not
+    exit 0. ``what`` names the command when an attempt times out."""
+    argv = compose_command(repo_root, "exec", "-T", "-e", "MIBS=", service, *command)
     deadline = now() + within_s
     while True:
         try:
@@ -802,16 +804,23 @@ def snmp_during(
     return SnmpEvidence(walks=walks, restart=restart)
 
 
-def walk_finding(walk: str, golden: str, name: str, golden_path: Path) -> str | None:
-    """Why ``walk``, masked, is not ``golden``, masked, with the first lines
-    of the diff; None when it is. ``name`` names the walk."""
+def walk_finding(
+    walk: str,
+    golden: str,
+    name: str,
+    golden_path: Path,
+    mask: Callable[[str], str] = mask_snmp_walk,
+) -> str | None:
+    """Why ``walk``, through ``mask``, is not ``golden``, through ``mask``,
+    with the first lines of the diff; None when it is. ``name`` names the
+    walk."""
     if not walk.strip():
         return f"the in-container {name} printed nothing"
-    if mask_snmp_walk(walk) == mask_snmp_walk(golden):
+    if mask(walk) == mask(golden):
         return None
     diff = difflib.unified_diff(
-        mask_snmp_walk(golden).splitlines(),
-        mask_snmp_walk(walk).splitlines(),
+        mask(golden).splitlines(),
+        mask(walk).splitlines(),
         str(golden_path),
         f"the {name}",
         lineterm="",
@@ -1231,6 +1240,349 @@ def verify_snmp_row(
     )
 
 
+# --- The snmp-if-mib row checks -----------------------------------------------
+
+# How long the snmp-if-mib row's `sonda run` serves (its --duration): past
+# port 7's first 5 s down at 60 s and port 15's at 30 s, with polls after.
+IF_MIB_RUN_S = 100.0
+# The compose service that polls examples/if-mib-switch.yaml, its conf and
+# the alias of the conf's one inputs.snmp block.
+IF_MIB_SERVICE = "telegraf-if-mib"
+IF_MIB_TELEGRAF_CONF = Path("examples/telegraf/telegraf-if-mib.conf")
+IF_MIB_INPUT = "if_mib"
+# The conf's interface table, as VictoriaMetrics names its series: the
+# measurement + "_" + field, tagged with the row's ifDescr; and ifNumber,
+# the input's top-level field, untagged.
+IF_MIB_TABLE_PREFIX = "interface_"
+IF_MIB_DESCR_TAG = "ifDescr"
+IF_MIB_NUMBER_SERIES = "snmp_ifNumber"
+IF_MIB_NUMBER = 24.0
+# Only this service writes ifNumber, so a sample of it is this row's.
+IF_MIB_VERIFY_QUERY = 'snmp_ifNumber{source="sonda"}'
+IF_MIB_EXPORT_MATCH = '{__name__=~"interface_.*|snmp_ifNumber",source="sonda"}'
+# The example's ports, by their ifDescr, and the ifIndex of each.
+IF_MIB_PORTS = {f"GigabitEthernet1/0/{n}": float(n) for n in range(1, 25)}
+IF_MIB_MIN_SAMPLES = 3
+# The ports whose ifOperStatus flaps (up 60s / down 5s, half a cycle apart),
+# and the codes the field takes; every other port's is up throughout.
+IF_MIB_FLAPPING_PORTS = ("GigabitEthernet1/0/7", "GigabitEthernet1/0/15")
+IF_MIB_OPER_STATUS_FIELD = "ifOperStatus"
+IF_MIB_OPER_STATUS_CODES = {"up": 1.0, "down": 2.0}
+# The fields whose every sample is greater than the one before.
+IF_MIB_COUNTER_FIELDS = ("ifInOctets", "ifOutOctets", "ifHCInOctets", "ifHCOutOctets")
+# The fields whose every sample is one value: ifIndex the port's, and these.
+IF_MIB_INDEX_FIELD = "ifIndex"
+IF_MIB_CONSTANT_FIELDS = {
+    "ifType": 6.0,
+    "ifSpeed": 1_000_000_000.0,
+    "ifHighSpeed": 1000.0,
+    "ifAdminStatus": 1.0,
+    "ifInErrors": 0.0,
+    "ifOutErrors": 0.0,
+}
+# What net-snmp prints walking the interfaces group and the ifMIB subtree,
+# inside IF_MIB_SERVICE, with IF_MIB_WALK_MASKS applied.
+IF_MIB_WALK_GOLDEN = Path("tests/e2e/if-mib-switch.walk")
+IF_MIB_WALK_COMMAND = (
+    "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1163", "1.3.6.1.2.1.2",
+)
+IF_MIB_IFX_WALK_GOLDEN = Path("tests/e2e/if-mib-switch-ifx.walk")
+IF_MIB_IFX_WALK_COMMAND = (
+    "snmpbulkwalk", "-v2c", "-c", "public", "-On", "sonda:1163", "1.3.6.1.2.1.31",
+)
+# The values that move between walks: the Counter64s, the ifInOctets and
+# ifOutOctets Counter32s, and the flapping ports' ifOperStatus. The other
+# Counter32s and INTEGERs are compared as printed.
+IF_MIB_WALK_MASKS = (
+    (re.compile(r"Counter64: \d+"), "Counter64: *"),
+    (
+        re.compile(r"^(\.1\.3\.6\.1\.2\.1\.2\.2\.1\.(?:10|16)\.\d+ = )Counter32: \d+$", re.MULTILINE),
+        r"\1Counter32: *",
+    ),
+    (
+        re.compile(r"^(\.1\.3\.6\.1\.2\.1\.2\.2\.1\.8\.(?:7|15) = )INTEGER: \d+$", re.MULTILINE),
+        r"\1INTEGER: *",
+    ),
+)
+
+
+def mask_if_mib_walk(walk: str) -> str:
+    """``walk`` with each IF_MIB_WALK_MASKS pattern replaced by its mask."""
+    for pattern, mask in IF_MIB_WALK_MASKS:
+        walk = pattern.sub(mask, walk)
+    return walk
+
+
+def if_mib_conf_fields(conf: str) -> tuple[str, ...]:
+    """The fields of the interface table of ``conf`` (IF_MIB_TELEGRAF_CONF's
+    text), in order: every table field that is not a tag. Raises ValueError
+    when the conf does not hold exactly one inputs.snmp block with exactly
+    one table."""
+    inputs = tomllib.loads(conf).get("inputs", {}).get("snmp", [])
+    if len(inputs) != 1 or len(inputs[0].get("table", [])) != 1:
+        raise ValueError(
+            f"{IF_MIB_TELEGRAF_CONF} must hold one inputs.snmp block with one table"
+        )
+    fields = inputs[0]["table"][0].get("field", [])
+    return tuple(field["name"] for field in fields if not field.get("is_tag", False))
+
+
+@dataclasses.dataclass(frozen=True)
+class IfMibWalks:
+    """The snmp-if-mib row's two in-container walks."""
+
+    # IF_MIB_WALK_COMMAND's output.
+    interfaces: str
+    # IF_MIB_IFX_WALK_COMMAND's output.
+    ifx: str
+
+
+def if_mib_during(
+    repo_root: Path,
+    *,
+    within_s: float = SNMP_WALK_WITHIN_S,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> IfMibWalks:
+    """The snmp-if-mib row's during hook: :func:`walk_snmp_agent` inside
+    IF_MIB_SERVICE, through :func:`mask_if_mib_walk`, of the interfaces
+    group against IF_MIB_WALK_GOLDEN, then of the ifMIB subtree against
+    IF_MIB_IFX_WALK_GOLDEN with what is left of ``within_s`` (at least a
+    second), so both finish within one window."""
+    deadline = now() + within_s
+    walks = [
+        walk_snmp_agent(
+            repo_root,
+            command=command,
+            golden_path=golden,
+            within_s=max(deadline - now(), 1.0),
+            service=IF_MIB_SERVICE,
+            mask=mask_if_mib_walk,
+            run=run,
+            now=now,
+            sleep=sleep,
+        )
+        for command, golden in (
+            (IF_MIB_WALK_COMMAND, IF_MIB_WALK_GOLDEN),
+            (IF_MIB_IFX_WALK_COMMAND, IF_MIB_IFX_WALK_GOLDEN),
+        )
+    ]
+    return IfMibWalks(interfaces=walks[0], ifx=walks[1])
+
+
+def if_mib_findings(
+    telegraf_log: str,
+    samples: dict[tuple[str, str], list[tuple[int, float]]],
+    walk: str,
+    golden: str,
+    started_s: float,
+    ended_s: float,
+    *,
+    fields: tuple[str, ...],
+    ifx_walk: str,
+    ifx_golden: str,
+) -> list[str]:
+    """Every way the snmp-if-mib row's evidence falls short, in check order;
+    empty when all hold.
+
+    ``samples`` is the export grouped by series and IF_MIB_DESCR_TAG value
+    (:func:`parse_vm_export`); only samples timestamped within [started_s,
+    ended_s] count, and ``fields`` are the conf's interface table fields
+    (:func:`if_mib_conf_fields`). In order: Telegraf logged a
+    SNMP_LOADED_INPUTS line naming snmp; no SNMP_ERROR_LINE is stamped after
+    the second of the first sample and at least a second before ended_s, or
+    carries no stamp (the conf has one input, IF_MIB_INPUT, so every error
+    is measured from its first sample); some sample exists (with none, named
+    with IF_MIB_EXPORT_MATCH, the checks after this one do not run); the
+    IF_MIB_DESCR_TAG values of the IF_MIB_TABLE_PREFIX series are exactly
+    the IF_MIB_PORTS (each missing one named, with the count, and each other
+    value, "" for none); each of ``fields`` has at least IF_MIB_MIN_SAMPLES
+    samples for each port; IF_MIB_INDEX_FIELD is the port's IF_MIB_PORTS
+    value and each IF_MIB_CONSTANT_FIELDS field its value in every sample
+    (the first sample that is not, named); IF_MIB_NUMBER_SERIES has at least
+    IF_MIB_MIN_SAMPLES samples, every one IF_MIB_NUMBER; each
+    IF_MIB_FLAPPING_PORTS port's IF_MIB_OPER_STATUS_FIELD takes every
+    IF_MIB_OPER_STATUS_CODES value, and every other port's is only up; each
+    IF_MIB_COUNTER_FIELDS field of each port is greater in every sample than
+    in the one before; ``walk``, through :func:`mask_if_mib_walk`, is
+    ``golden``, and ``ifx_walk`` is ``ifx_golden`` (an empty walk is named as
+    such).
+    """
+    findings: list[str] = []
+    loaded = any(
+        SNMP_LOADED_INPUTS in line
+        and "snmp" in line.split(SNMP_LOADED_INPUTS, 1)[1].split()
+        for line in telegraf_log.splitlines()
+    )
+    if not loaded:
+        findings.append(f"telegraf log has no {SNMP_LOADED_INPUTS!r} line naming snmp")
+
+    start_ms, end_ms = int(started_s * 1000), int(ended_s * 1000)
+    in_window = {
+        key: sorted((ts, v) for ts, v in pairs if start_ms <= ts <= end_ms)
+        for key, pairs in samples.items()
+    }
+    in_window = {key: pairs for key, pairs in in_window.items() if pairs}
+    timestamps = [ts for pairs in in_window.values() for ts, _ in pairs]
+    first_ms = min(timestamps) if timestamps else None
+
+    # A poll that began before sonda listened logs its error before the
+    # first poll that succeeds begins; a sample is stamped when its poll
+    # begins. An error in the second the run ended may be the first poll
+    # after sonda stopped.
+    after_s = first_ms // 1000 if first_ms is not None else math.floor(started_s) - 1
+    for line in telegraf_log.splitlines():
+        if SNMP_ERROR_LINE.search(line) is None:
+            continue
+        stamp = telegraf_log_stamp(line)
+        if stamp is None or after_s < stamp <= ended_s - 1:
+            findings.append(f"telegraf logged an error while sonda served: {line.strip()}")
+
+    if first_ms is None:
+        findings.append(f"no sample matching {IF_MIB_EXPORT_MATCH} within the run's window")
+        return findings
+
+    rows = {
+        descr for series, descr in in_window if series.startswith(IF_MIB_TABLE_PREFIX)
+    }
+    missing = [port for port in IF_MIB_PORTS if port not in rows]
+    if missing:
+        findings.append(
+            f"{len(IF_MIB_PORTS) - len(missing)} of {len(IF_MIB_PORTS)} interface rows "
+            f"tagged {IF_MIB_DESCR_TAG}; none for {', '.join(missing)}"
+        )
+    for descr in sorted(rows - set(IF_MIB_PORTS)):
+        shown = f'{IF_MIB_DESCR_TAG}="{descr}"' if descr else f"no {IF_MIB_DESCR_TAG}"
+        findings.append(f"an interface row tagged {shown}, which is not a port of the example")
+
+    def series(field: str) -> str:
+        return f"{IF_MIB_TABLE_PREFIX}{field}"
+
+    for field in fields:
+        short = [
+            f"{port} ({len(in_window.get((series(field), port), []))})"
+            for port in IF_MIB_PORTS
+            if len(in_window.get((series(field), port), [])) < IF_MIB_MIN_SAMPLES
+        ]
+        if short:
+            findings.append(
+                f"{series(field)}: fewer than {IF_MIB_MIN_SAMPLES} samples for "
+                f"{len(short)} port(s): {', '.join(short)}"
+            )
+
+    def constant(field: str, want_of: Callable[[str], float]) -> None:
+        for port in IF_MIB_PORTS:
+            want = want_of(port)
+            wrong = [v for _, v in in_window.get((series(field), port), []) if v != want]
+            if wrong:
+                findings.append(
+                    f'{series(field)}{{{IF_MIB_DESCR_TAG}="{port}"}}: {len(wrong)} sample(s) '
+                    f"not {want:g}, the first {wrong[0]:g}"
+                )
+
+    constant(IF_MIB_INDEX_FIELD, lambda port: IF_MIB_PORTS[port])
+    for field, value in IF_MIB_CONSTANT_FIELDS.items():
+        constant(field, lambda _port, value=value: value)
+
+    number = [v for _, v in in_window.get((IF_MIB_NUMBER_SERIES, ""), [])]
+    if len(number) < IF_MIB_MIN_SAMPLES:
+        findings.append(
+            f"{IF_MIB_NUMBER_SERIES}: {len(number)} sample(s), want >= {IF_MIB_MIN_SAMPLES}"
+        )
+    wrong = [v for v in number if v != IF_MIB_NUMBER]
+    if wrong:
+        findings.append(
+            f"{IF_MIB_NUMBER_SERIES}: {len(wrong)} sample(s) not {IF_MIB_NUMBER:g}, "
+            f"the first {wrong[0]:g}"
+        )
+
+    oper = series(IF_MIB_OPER_STATUS_FIELD)
+    for port in IF_MIB_PORTS:
+        seen = {v for _, v in in_window.get((oper, port), [])}
+        if port in IF_MIB_FLAPPING_PORTS:
+            for state, code in IF_MIB_OPER_STATUS_CODES.items():
+                if code not in seen:
+                    findings.append(
+                        f'{oper}{{{IF_MIB_DESCR_TAG}="{port}"}} never took {state} '
+                        f"({code:g}) within the run; saw {sorted(seen)}"
+                    )
+        elif seen - {IF_MIB_OPER_STATUS_CODES["up"]}:
+            findings.append(
+                f'{oper}{{{IF_MIB_DESCR_TAG}="{port}"}} took {sorted(seen)}, want only up '
+                f'({IF_MIB_OPER_STATUS_CODES["up"]:g}): the port does not flap'
+            )
+
+    for field in IF_MIB_COUNTER_FIELDS:
+        for port in IF_MIB_PORTS:
+            pairs = in_window.get((series(field), port), [])
+            for (_, before), (ts, after) in zip(pairs, pairs[1:]):
+                if after <= before:
+                    findings.append(
+                        f'{series(field)}{{{IF_MIB_DESCR_TAG}="{port}"}} did not increase: '
+                        f"{before:g} then {after:g}, {(ts - start_ms) / 1000:.1f}s after "
+                        "sonda started"
+                    )
+                    break
+
+    for found in (
+        walk_finding(walk, golden, "walk", IF_MIB_WALK_GOLDEN, mask_if_mib_walk),
+        walk_finding(ifx_walk, ifx_golden, "ifMIB walk", IF_MIB_IFX_WALK_GOLDEN, mask_if_mib_walk),
+    ):
+        if found is not None:
+            findings.append(found)
+    return findings
+
+
+def verify_if_mib_row(
+    repo_root: Path, started_s: float, ended_s: float, during: IfMibWalks | str = ""
+) -> str:
+    """Collect IF_MIB_SERVICE's log, the run's samples matching
+    IF_MIB_EXPORT_MATCH, the fields of IF_MIB_TELEGRAF_CONF and both golden
+    walks, then apply :func:`if_mib_findings` with the walks
+    :func:`if_mib_during` returned; a text ``during`` (no hook, or the
+    hook's failure) stands for both, and is named first."""
+    telegraf_log = compose_logs_tail(repo_root, IF_MIB_SERVICE, tail_lines=None)
+    query = urllib.parse.urlencode(
+        {
+            "match[]": IF_MIB_EXPORT_MATCH,
+            "start": f"{started_s:.3f}",
+            "end": f"{ended_s:.3f}",
+        }
+    )
+    status, body = http_get(f"http://localhost:8428/api/v1/export?{query}")
+    if status != 200:
+        return f"VictoriaMetrics export answered {status}: {body[:200]!r}"
+    try:
+        fields = if_mib_conf_fields((repo_root / IF_MIB_TELEGRAF_CONF).read_text())
+        goldens = [
+            (repo_root / path).read_text()
+            for path in (IF_MIB_WALK_GOLDEN, IF_MIB_IFX_WALK_GOLDEN)
+        ]
+    except (OSError, ValueError) as e:
+        return f"cannot read the snmp-if-mib row's inputs: {e}"
+    not_taken = []
+    if isinstance(during, IfMibWalks):
+        walks = during
+    else:
+        walks = IfMibWalks(interfaces=during, ifx=during)
+        not_taken = [f"the walks were not taken: {during or 'the row has no during hook'}"]
+    return "\n".join(
+        not_taken
+        + if_mib_findings(
+            telegraf_log,
+            parse_vm_export(body, label=IF_MIB_DESCR_TAG),
+            walks.interfaces,
+            goldens[0],
+            started_s,
+            ended_s,
+            fields=fields,
+            ifx_walk=walks.ifx,
+            ifx_golden=goldens[1],
+        )
+    )
+
+
 # --- gNMI TLS certificates -----------------------------------------------------
 
 # Where the gnmi-tls row's certificates are made: gitignored, and mounted into
@@ -1561,6 +1913,28 @@ MATRIX: tuple[MatrixRow, ...] = (
         during_gets_sonda=True,
         post_verify=verify_snmp_row,
     ),
+    # -- SNMP, the if_mib pack: sonda is a 24-port switch's agent on
+    # sonda:1163, and the telegraf-if-mib service (profile snmp) polls it in
+    # Telegraf's documented interface-table layout. if_mib_during walks the
+    # interfaces group and the ifMIB subtree from inside that container.
+    # The verify URL proves an ifNumber sample arrived; verify_if_mib_row then
+    # checks the 24 rows, every column the conf names, ifNumber, the two
+    # flapping ports, the counters, and both walks against their goldens.
+    MatrixRow(
+        name="snmp-if-mib",
+        profiles=("snmp",),
+        subcommand="metrics",
+        scenario=Path("examples/if-mib-switch.yaml"),
+        verify_url=(
+            "http://localhost:8428/api/v1/query?"
+            + urllib.parse.urlencode({"query": IF_MIB_VERIFY_QUERY})
+        ),
+        failure_log_containers=(IF_MIB_SERVICE, "victoriametrics"),
+        extra_args=("--duration", f"{IF_MIB_RUN_S:.0f}s"),
+        timeout_s=IF_MIB_RUN_S + 60.0,
+        during=if_mib_during,
+        post_verify=verify_if_mib_row,
+    ),
 )
 
 # Backends keyed by compose profile. The empty-tuple key is for the default
@@ -1591,6 +1965,7 @@ BACKENDS_BY_PROFILE: dict[str, tuple[Backend, ...]] = {
     ),
     "snmp": (
         Backend(name="telegraf-snmp", health_url="http://localhost:8097/"),
+        Backend(name="telegraf-if-mib", health_url="http://localhost:8098/"),
     ),
 }
 
