@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::ops::Bound;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
@@ -98,9 +98,9 @@ pub(crate) enum Lookup {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RequestCounters {
-    /// `GetRequest` PDUs answered, SNMPv1 and SNMPv2c.
+    /// `GetRequest` PDUs answered, in any version.
     pub get: u64,
-    /// `GetNextRequest` PDUs answered, SNMPv1 and SNMPv2c.
+    /// `GetNextRequest` PDUs answered, in any version.
     pub get_next: u64,
     /// `GetBulkRequest` PDUs answered.
     pub get_bulk: u64,
@@ -150,6 +150,21 @@ pub struct RequestCounters {
     /// their user's privacy key. A reportable one is answered with a
     /// `usmStatsDecryptionErrors` report.
     pub usm_decryption_errors: u64,
+}
+
+/// The last datagram an agent's responder received, as
+/// [`SnmpAgent::last_request`] reports it, whatever became of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LastRequest {
+    /// When the responder read it.
+    pub at: SystemTime,
+    /// The address it came from.
+    pub peer: SocketAddr,
+    /// The SNMP version its message names; `None` when it is not an SNMP
+    /// message: an outer SEQUENCE spanning the datagram whose first field is
+    /// the INTEGER version 0 (SNMPv1), 1 (SNMPv2c) or 3 (SNMPv3).
+    pub version: Option<SnmpVersion>,
 }
 
 /// One of the counters [`RequestCounters`] reports.
@@ -282,9 +297,10 @@ struct SystemInstance {
 ///
 /// The socket is read by one responder task, which answers `Get`, `GetNext`,
 /// `GetBulk` and `Set` requests in the [`versions`](Self::versions) it
-/// serves from the table under its read lock, drops everything else, and
-/// counts each datagram in [`requests`](Self::requests). Dropping the last
-/// handle stops the task and closes the socket.
+/// serves from the table under its read lock, drops everything else,
+/// counts each datagram in [`requests`](Self::requests) and keeps the last
+/// as [`last_request`](Self::last_request). Dropping the last handle stops
+/// the task and closes the socket.
 ///
 /// For SNMPv3 the agent is the authoritative engine of
 /// [`engine_id`](Self::engine_id): its `engineBoots` is 1 from every bind,
@@ -304,6 +320,8 @@ pub struct SnmpAgent {
     /// Where `sysUpTime`'s `VarBind` is made on each read.
     uptime: Mutex<Vec<u8>>,
     counters: Counters,
+    /// The last datagram the responder received; `None` before the first.
+    last_request: Mutex<Option<LastRequest>>,
     /// When the last `tooBig` warning was logged.
     too_big_warned: Mutex<Option<Instant>>,
     token: CancellationToken,
@@ -376,6 +394,7 @@ impl SnmpAgent {
                 table: RwLock::new(table),
                 uptime: Mutex::new(Vec::with_capacity(UPTIME_VARBIND_MAX)),
                 counters: Counters::default(),
+                last_request: Mutex::new(None),
                 too_big_warned: Mutex::new(None),
                 token,
                 state,
@@ -393,14 +412,56 @@ impl SnmpAgent {
         self.read().slots.len()
     }
 
-    /// Whether a request must carry the agent's community. Always `true`.
+    /// Whether a request must carry the agent's community: whether the
+    /// agent answers SNMPv1 or SNMPv2c.
     pub fn community_required(&self) -> bool {
-        true
+        self.settings
+            .versions
+            .iter()
+            .any(|version| matches!(version, SnmpVersion::V1 | SnmpVersion::V2c))
     }
 
     /// The requests the agent has received, by kind.
     pub fn requests(&self) -> RequestCounters {
         self.counters.snapshot()
+    }
+
+    /// The last datagram the responder received, whatever became of it;
+    /// `None` before the first.
+    pub fn last_request(&self) -> Option<LastRequest> {
+        *self
+            .last_request
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Record a datagram from `peer` whose message names `version` as the
+    /// last the responder received, read now. Takes an uncontended lock and
+    /// allocates nothing.
+    pub(crate) fn note_request(&self, peer: SocketAddr, version: Option<SnmpVersion>) {
+        let request = LastRequest {
+            at: SystemTime::now(),
+            peer,
+            version,
+        };
+        *self
+            .last_request
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(request);
+    }
+
+    /// How long since the socket was bound.
+    pub fn uptime(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// The names of the agent's configured SNMPv3 users, sorted.
+    pub fn user_names(&self) -> Vec<String> {
+        self.settings
+            .users
+            .iter()
+            .map(|user| user.name.clone())
+            .collect()
     }
 
     /// The SNMP versions the agent answers, ascending.
@@ -871,7 +932,11 @@ impl Drop for ClosedOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sink::snmp::{instance_oid, SnmpAgentConfig, SystemGroup};
+    use crate::sink::snmp::tests::{NET_SNMP_GET, NET_SNMP_V3_DISCOVERY};
+    use crate::sink::snmp::{
+        instance_oid, AuthProtocol, PrivProtocol, SnmpAgentConfig, SystemGroup, UsmAuth, UsmPriv,
+        UsmUser,
+    };
 
     fn hex(text: &str) -> Vec<u8> {
         let digits: Vec<u8> = text.bytes().filter(u8::is_ascii_hexdigit).collect();
@@ -1047,6 +1112,128 @@ mod tests {
         assert!(err.to_string().contains("system group"), "{err}");
         assert_eq!(agent.instance_count(), 0);
         assert_eq!(agent.get(&oid(SYSTEM[4])), sys_name);
+    }
+
+    /// Poll `agent`'s counters for up to two seconds until `done` holds of
+    /// them; the last read.
+    async fn counted(agent: &SnmpAgent, done: fn(&RequestCounters) -> bool) -> RequestCounters {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let requests = agent.requests();
+            if done(&requests) || Instant::now() >= deadline {
+                return requests;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// `last_request` is `None` at bind. Each datagram the responder reads
+    /// replaces it with its peer, the version its message names and when it
+    /// was read: an answered SNMPv2c GET; an SNMPv3 message, which an agent
+    /// serving SNMPv2c only drops; bytes that are not an SNMP message.
+    #[tokio::test]
+    async fn last_request_is_none_at_bind_then_each_datagram_in_turn() {
+        let agent = agent().await;
+        let addr = agent.local_addr();
+        assert_eq!(agent.last_request(), None);
+
+        let get = hex(NET_SNMP_GET);
+        assert_eq!(get.first(), Some(&0x30), "fixture present");
+        let poller = UdpSocket::bind("127.0.0.1:0").await.expect("bind a poller");
+        let before = SystemTime::now();
+        poller.send_to(&get, addr).await.expect("sent");
+        let mut reply = [0; 1500];
+        tokio::time::timeout(Duration::from_secs(2), poller.recv(&mut reply))
+            .await
+            .expect("the GET is answered in time")
+            .expect("received");
+        let after = SystemTime::now();
+        let first = agent.last_request().expect("the GET is noted");
+        assert_eq!(first.peer, poller.local_addr().expect("an address"));
+        assert_eq!(first.version, Some(SnmpVersion::V2c));
+        assert!(
+            before <= first.at && first.at <= after,
+            "read between the send and the answer: {first:?}"
+        );
+
+        let other = UdpSocket::bind("127.0.0.1:0").await.expect("bind a socket");
+        let discovery = hex(NET_SNMP_V3_DISCOVERY);
+        assert_eq!(discovery.first(), Some(&0x30), "fixture present");
+        other.send_to(&discovery, addr).await.expect("sent");
+        let requests = counted(&agent, |r| r.unsupported_version == 1).await;
+        assert_eq!(requests.unsupported_version, 1, "the v3 message was read");
+        let second = agent.last_request().expect("noted");
+        assert_eq!(second.peer, other.local_addr().expect("an address"));
+        assert_eq!(second.version, Some(SnmpVersion::V3));
+        assert!(second.at >= first.at, "{second:?} after {first:?}");
+
+        poller
+            .send_to(b"not an snmp message", addr)
+            .await
+            .expect("sent");
+        let requests = counted(&agent, |r| r.malformed == 1).await;
+        assert_eq!(requests.malformed, 1, "the bytes were read");
+        let third = agent.last_request().expect("noted");
+        assert_eq!(third.peer, poller.local_addr().expect("an address"));
+        assert_eq!(third.version, None);
+    }
+
+    /// `uptime` is the time since the bind.
+    #[tokio::test(start_paused = true)]
+    async fn uptime_counts_from_the_bind() {
+        let agent = agent().await;
+        let start = agent.uptime();
+        tokio::time::advance(Duration::from_millis(5_500)).await;
+        assert_eq!(agent.uptime() - start, Duration::from_millis(5_500));
+    }
+
+    /// `user_names` is the configured users' names, sorted, and nothing else.
+    #[tokio::test]
+    async fn user_names_are_the_configured_users_sorted() {
+        let user = |name: &str| UsmUser {
+            name: name.to_string(),
+            auth: Some(UsmAuth {
+                protocol: AuthProtocol::Sha256,
+                password: "user-names-auth".to_string(),
+            }),
+            privacy: Some(UsmPriv {
+                protocol: PrivProtocol::Aes128,
+                password: "user-names-priv".to_string(),
+            }),
+        };
+        let agent = agent_with(SnmpAgentConfig {
+            versions: vec![SnmpVersion::V3],
+            users: vec![user("zeta"), user("alpha")],
+            ..SnmpAgentConfig::new("127.0.0.1:0")
+        })
+        .await;
+        assert_eq!(agent.user_names(), ["alpha", "zeta"]);
+        assert!(self::agent().await.user_names().is_empty());
+    }
+
+    /// A community is required while the agent answers SNMPv1 or SNMPv2c.
+    #[rstest::rstest]
+    #[case::v2c(&[SnmpVersion::V2c], true)]
+    #[case::v1(&[SnmpVersion::V1], true)]
+    #[case::v1_and_v3(&[SnmpVersion::V1, SnmpVersion::V3], true)]
+    #[case::v3_only(&[SnmpVersion::V3], false)]
+    #[tokio::test]
+    async fn a_community_is_required_while_v1_or_v2c_is_served(
+        #[case] versions: &[SnmpVersion],
+        #[case] required: bool,
+    ) {
+        let agent = agent_with(SnmpAgentConfig {
+            versions: versions.to_vec(),
+            users: vec![UsmUser {
+                name: "poller".to_string(),
+                auth: None,
+                privacy: None,
+            }],
+            ..SnmpAgentConfig::new("127.0.0.1:0")
+        })
+        .await;
+        assert_eq!(agent.versions(), versions);
+        assert_eq!(agent.community_required(), required);
     }
 
     #[tokio::test(start_paused = true)]

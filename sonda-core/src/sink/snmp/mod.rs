@@ -41,7 +41,7 @@ use crate::sink::Sink;
 use crate::{ConfigError, SondaError};
 
 use agent::Owner;
-pub use agent::{RequestCounters, SnmpAgent};
+pub use agent::{LastRequest, RequestCounters, SnmpAgent};
 
 /// `community` when it is not set.
 pub(crate) const DEFAULT_COMMUNITY: &str = "public";

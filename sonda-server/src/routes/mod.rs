@@ -8,6 +8,8 @@ pub mod metrics;
 pub mod ready;
 pub mod scenarios;
 pub mod sink_warnings;
+#[cfg(feature = "snmp")]
+pub mod snmp;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +66,8 @@ pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
         .route("/metrics", get(metrics::get_metrics));
     #[cfg(feature = "gnmi")]
     let observability = observability.route("/gnmi/targets", get(gnmi::list_targets));
+    #[cfg(feature = "snmp")]
+    let observability = observability.route("/snmp/agents", get(snmp::list_agents));
     let protected_observability = observability
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -119,6 +123,11 @@ pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
 #[cfg(all(test, feature = "gnmi"))]
 pub(crate) static GNMI_REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Serialises the tests that hold snmp agents, so each can say what the
+/// process-wide registry holds.
+#[cfg(all(test, feature = "snmp"))]
+pub(crate) static SNMP_REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +160,23 @@ mod tests {
         assert_eq!(metrics.status(), StatusCode::OK, "the premise");
         let targets = test_router().oneshot(get("/gnmi/targets")).await.unwrap();
         assert_eq!(targets.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Without the `snmp` feature `GET /snmp/agents` is an unknown route,
+    /// while `/metrics`, on the same sub-router, answers.
+    #[cfg(not(feature = "snmp"))]
+    #[tokio::test]
+    async fn snmp_agents_is_not_found_without_the_snmp_feature() {
+        let get = |uri: &'static str| {
+            Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let metrics = test_router().oneshot(get("/metrics")).await.unwrap();
+        assert_eq!(metrics.status(), StatusCode::OK, "the premise");
+        let agents = test_router().oneshot(get("/snmp/agents")).await.unwrap();
+        assert_eq!(agents.status(), StatusCode::NOT_FOUND);
     }
 
     /// GET /health returns HTTP 200.
@@ -430,6 +456,43 @@ mod tests {
             with.status(),
             StatusCode::OK,
             "GET /gnmi/targets with the key must return 200"
+        );
+    }
+
+    /// When auth is enabled, GET /snmp/agents needs the key: 401 without
+    /// it, 200 with it.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn snmp_agents_requires_the_api_key() {
+        let request = |key: Option<&str>| {
+            let mut builder = Request::builder().uri("/snmp/agents");
+            if let Some(key) = key {
+                builder = builder.header("authorization", format!("Bearer {key}"));
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        let without = test_router_with_key("snmp-secret")
+            .oneshot(request(None))
+            .await
+            .unwrap();
+        assert_eq!(
+            without.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET /snmp/agents without auth must return 401"
+        );
+        let body_bytes = without.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"], "unauthorized");
+
+        let with = test_router_with_key("snmp-secret")
+            .oneshot(request(Some("snmp-secret")))
+            .await
+            .unwrap();
+        assert_eq!(
+            with.status(),
+            StatusCode::OK,
+            "GET /snmp/agents with the key must return 200"
         );
     }
 

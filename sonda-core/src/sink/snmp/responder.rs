@@ -545,6 +545,25 @@ fn answer_v3(
     outcome
 }
 
+/// The SNMP version `datagram`'s message names: its outer SEQUENCE, which
+/// must span the datagram, and that SEQUENCE's first field, the INTEGER
+/// version 0 (SNMPv1), 1 (SNMPv2c) or 3 (SNMPv3). `None` for anything else,
+/// which is not an SNMP message. Reads nothing after the version and
+/// allocates nothing.
+fn message_version(datagram: &[u8]) -> Option<SnmpVersion> {
+    let mut outer = Reader::new(datagram);
+    let body = outer.expect(Tag::Sequence).ok()?;
+    if !outer.is_empty() {
+        return None;
+    }
+    match Reader::new(body).i64(Tag::Integer).ok()? {
+        V1 => Some(SnmpVersion::V1),
+        V2C => Some(SnmpVersion::V2c),
+        v3::VERSION => Some(SnmpVersion::V3),
+        _ => None,
+    }
+}
+
 /// Count a datagram that did not decode with `e`: an SNMPv3 message here is
 /// one the agent does not serve.
 fn undecodable(agent: &SnmpAgent, e: BerError) -> Outcome {
@@ -557,7 +576,8 @@ fn undecodable(agent: &SnmpAgent, e: BerError) -> Outcome {
     }
 }
 
-/// Read datagrams until `cancel` fires or the agent is gone, answering each
+/// Read datagrams until `cancel` fires or the agent is gone, noting each as
+/// the agent's [`last_request`](SnmpAgent::last_request) and answering it
 /// to its source, from the address it was sent to when the socket reports
 /// packet info ([`enable_pktinfo`]).
 ///
@@ -594,6 +614,7 @@ pub(crate) async fn serve(socket: UdpSocket, agent: Weak<SnmpAgent>, cancel: Can
                 continue;
             }
         };
+        strong.note_request(peer, message_version(bytes));
         let budget = strong.settings().max_message_size;
         out.clear();
         out.reserve(budget);
@@ -2053,6 +2074,52 @@ mod tests {
         #[case] expected: BerError,
     ) {
         assert_eq!(decode(&datagram), Err(expected));
+    }
+
+    /// The version a datagram's message names: each captured version, one
+    /// that is malformed after its version, and nothing for what is not an
+    /// SNMP message of a version the agent knows.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::v1(                       hex(NET_SNMP_V1_GET),                 Some(SnmpVersion::V1))]
+    #[case::v2c(                      hex(NET_SNMP_GET),                    Some(SnmpVersion::V2c))]
+    #[case::v3(                       hex(NET_SNMP_V3_DISCOVERY),           Some(SnmpVersion::V3))]
+    #[case::malformed_after_version(  edited(|d| d[5] = 0x05),              Some(SnmpVersion::V2c))]
+    #[case::version_2(                edited(|d| d[4] = 2),                 None)]
+    #[case::version_not_an_integer(   edited(|d| d[2] = 0x04),              None)]
+    #[case::truncated(                edited(|d| { d.pop(); }),             None)]
+    #[case::trailing_octet(           edited(|d| d.push(0)),                None)]
+    #[case::not_snmp(                 b"not an snmp message".to_vec(),      None)]
+    #[case::empty(                    Vec::new(),                           None)]
+    fn a_datagram_s_version_is_the_one_its_message_names(
+        #[case] datagram: Vec<u8>,
+        #[case] expected: Option<SnmpVersion>,
+    ) {
+        assert_eq!(message_version(&datagram), expected);
+    }
+
+    /// Noting a datagram as the agent's last request, as [`serve`] does for
+    /// each one it reads, allocates nothing, the first time included.
+    #[tokio::test]
+    async fn noting_a_datagram_allocates_nothing() {
+        let agent = agent().await;
+        let peer: SocketAddr = "127.0.0.1:40161".parse().expect("an address");
+        let datagrams = [
+            hex(NET_SNMP_V1_GET),
+            hex(NET_SNMP_GET),
+            hex(NET_SNMP_V3_DISCOVERY),
+            b"not an snmp message".to_vec(),
+        ];
+        assert_eq!(agent.last_request(), None);
+        counting::assert_count_allocations_counts();
+        for datagram in &datagrams {
+            let ((), allocations) = counting::count_allocations(|| {
+                agent.note_request(peer, message_version(datagram));
+            });
+            assert_eq!(allocations, 0);
+            let noted = agent.last_request().expect("noted");
+            assert_eq!(noted.version, message_version(datagram), "this datagram's");
+        }
     }
 
     /// How [`respond`] counts what it does not answer.
