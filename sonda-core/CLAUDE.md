@@ -54,13 +54,13 @@ src/
 │                          own; any other encoder unchanged), called by expand_pack and by
 │                          compiler/expand.rs once per pack entry. MetricSpec.snmp:
 │                          Option<SnmpHint { oid, type }>, MetricPackDef.snmp_label_columns
-│                          (label -> OID template; strings only, OidText; an extension's map
-│                          merged over its base's in extend.rs) and fold_snmp_hints(&mut
+│                          (label -> LabelColumn, the template read by OidText; an extension's
+│                          map merged over its base's in extend.rs) and fold_snmp_hints(&mut
 │                          encoder, pack), the same rules for an snmp encoder's oids:/types:/
 │                          label_columns:, applied right after the gnmi fold at both call
 │                          sites. validate_pack (snmp feature) refuses a label column whose key
-│                          is not a label key or whose OID is not an OidTemplate
-│                          (InvalidSnmpLabelColumn). resolve_override_keys() is the
+│                          is not a label key, whose type is the enum, or whose OID is not an
+│                          OidTemplate (InvalidSnmpLabelColumn). resolve_override_keys() is the
 │                          ONE definition of override keying — v1 expand_pack and the v2
 │                          compiler both call it, so they cannot drift; it also refuses two
 │                          keys reaching one spec, which addressability alone permits (a
@@ -208,7 +208,7 @@ src/
 │   │                       the Capability, Get and Subscribe request/response messages
 │   ├── snmp/           ← SNMP encoder (feature = "snmp"):
 │   │   ├── mod.rs      ←   SnmpEncoder, SnmpEncoderConfig (deny_unknown_fields; oids:,
-│   │   │                   label_columns: (label -> OID template, strings only), types:,
+│   │   │                   label_columns: (label -> LabelColumn, see value.rs), types:,
 │   │   │                   agent_label "device", drop_labels). Output is a PUBLISH RECORD,
 │   │   │                   not a bare VarBind: [index_arcs: u8][companions: u8][VarBind]
 │   │   │                   ([index_arcs: u8][VarBind])* (RECORD_HEADER = 2): the index
@@ -217,7 +217,10 @@ src/
 │   │   │                   count, the BER VarBind SEQUENCE { OID, value }, then one
 │   │   │                   companion per label_columns label the event carries, in label
 │   │   │                   order: its own index-arc count and VarBind { the column's
-│   │   │                   template rendered for the event, OCTET STRING label value }.
+│   │   │                   template rendered for the event, the label value as the column's
+│   │   │                   type: value::write_label_text, an OCTET STRING untyped }. A
+│   │   │                   column's write is part of the render, so a value its type cannot
+│   │   │                   serve rejects the series; new() refuses an enum column.
 │   │   │                   split_record (Record { index_arcs, varbind, companions:
 │   │   │                   Companions }, an iterator of Companion { index_arcs, varbind })
 │   │   │                   is the ONE reader: header, one SEQUENCE, exactly that many
@@ -317,7 +320,17 @@ src/
 │   │                       opaque_float when `as f32` is infinite; NoEnumEntry for an enum
 │   │                       code without a label, or outside i64) before writing anything;
 │   │                       ValueError names the type by name(). string writes the shortest
-│   │                       round-trip text, NaN/inf/-inf too.
+│   │                       round-trip text, NaN/inf/-inf too. LabelColumn: Text(template)
+│   │                       | Typed { oid, type } (YAML: a string, or { oid, type }; untagged,
+│   │                       deny_unknown_fields, schema marked x-sonda-no-widening; read by
+│   │                       LabelColumnSeed / deserialize_label_columns, the ONE reader of
+│   │                       both maps, errors naming <field>.<label>[.oid|.type], the oid via
+│   │                       OidText). write_label_text(type, label, text, out) (snmp only) is
+│   │                       the ONE column rule validation (static value, scratch buffer) and
+│   │                       the encoder (companion) both call: no type or string writes the
+│   │                       text as an OCTET STRING; another type str::parse()s an f64 and
+│   │                       write()s it; the enum is refused (ENUM_COLUMN_REFUSED); a
+│   │                       ColumnError names label, type and text; nothing written on error.
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent(SnmpAgentConfig)
@@ -984,7 +997,10 @@ src/
                            labels and every label_columns placeholder is one of every oids:
                            template, every label_columns label a STATIC label of the entry
                            (label_value_set is Static; dynamic, spike or absent refused: series
-                           differing only in it share the metric's OID), every value a {label} placeholder of the metric's or a
+                           differing only in it share the metric's OID) whose static value a
+                           typed column's type serves (write_label_text into a scratch
+                           buffer, the refusal naming label, type and value), every value a
+                           {label} placeholder of the metric's or a
                            label column's template takes is an index_arc (counters checked
                            at the first and last value, random spikes refused; {label:str}
                            not checked), coverage (label_columns labels covered), no two
