@@ -729,6 +729,13 @@ src/
 │   │   │                   versions() is the settings' versions, ascending. engine_id() is
 │   │   │                   the USM engine's; usm() the Usm built at bind (each user's key
 │   │   │                   localized there, once; the engine's clock is `started`).
+│   │   │                   community_required() is whether v1 or v2c is served; uptime() is
+│   │   │                   started.elapsed(); user_names() the configured users' names,
+│   │   │                   sorted. last_request() -> Option<LastRequest { at: SystemTime,
+│   │   │                   peer, version: Option<SnmpVersion> }> (#[non_exhaustive],
+│   │   │                   re-exported from sink::snmp): the last datagram serve read,
+│   │   │                   whatever became of it, set by note_request under a Mutex (no
+│   │   │                   allocation; asserted).
 │   │   │                   RequestCounters (#[non_exhaustive]): get, get_next, get_bulk,
 │   │   │                   set_refused, malformed, wrong_community, too_big,
 │   │   │                   unsupported_version, send_errors, v1 (answered as SNMPv1, also
@@ -821,6 +828,10 @@ src/
 │   │                       Scratch (name arcs, cursors) and out are reused, so a steady
 │   │                       request allocates nothing (asserted on a 10-varbind GETBULK and on
 │   │                       10-varbind v1 GET and GETNEXT).
+│   │                       serve notes each datagram it reads (agent.note_request) with
+│   │                       message_version(datagram): the outer SEQUENCE spanning the datagram
+│   │                       and its first INTEGER 0/1/3 as v1/v2c/v3, else None; nothing after
+│   │                       the version read. Then
 │   │                       respond_noting(…, refused) = decode + answer; a v3 message
 │   │                       (Message::decode's UnsupportedVersion(3)) goes to answer_v3 when
 │   │                       versions has v3, else counts as unsupported_version, unparsed;

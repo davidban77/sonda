@@ -31,7 +31,8 @@ src/
 ├── routes/
 │   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health, /ready),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
-│                         /scenarios/metrics, /metrics, and /gnmi/targets with the gnmi feature),
+│                         /scenarios/metrics, /metrics, /gnmi/targets with the gnmi feature, and
+│                         /snmp/agents with the snmp feature),
 │                         and protected control (/scenarios POST/GET,
 │                         /scenarios/{id} GET/DELETE, /events). Auth + request-metrics middleware
 │                         applied per protected sub-router; the control sub-router additionally
@@ -42,6 +43,16 @@ src/
 │                         stalled_subscribers_total, and subscriber_list (peer, mode,
 │                         encoding, since, last_drained, stalled; times RFC 3339 UTC to the
 │                         second, via chrono, which the gnmi feature enables). Read-only.
+│   ├── snmp.rs         ← (snmp feature) GET /snmp/agents → every live agent from
+│                         sonda_core's snmp registry().targets(), in address order: listen,
+│                         versions, community_required, engine_id (lower-case hex), users (names
+│                         only), instances, uptime_seconds, requests (one key per
+│                         RequestCounters field, by its name: RequestsBody and its From are
+│                         declared from one list by requests_body!), and last_request (at,
+│                         peer, version; null before the first datagram; at RFC 3339 UTC to the
+│                         second, via chrono, which the snmp feature enables). Read-only. Its
+│                         tests check the counter keys against RequestCounters' derived Debug
+│                         and the http-api.md example and field table against the body's keys.
 │   ├── health.rs       ← GET /health → {"status": "ok"} (static liveness signal)
 │   ├── ready.rs        ← GET /ready → sweep phase + started/expected counts. 200 when the
 │                         autostart sweep has nothing pending (not configured, or finished —
@@ -120,6 +131,7 @@ tests/
 | GET    | /scenarios/{id}/metrics | Latest metrics in Prometheus text format (scrapeable)   |
 | DELETE | /scenarios/{id}         | Stop a running scenario, return final stats, remove from map |
 | GET    | /gnmi/targets           | (`gnmi` feature; a 404 without it) The running gnmi targets with their settings, series and subscriber counts, Get and stall counters, and each subscriber's peer, mode, encoding, start and last drain. Read-only, behind the API key like the other observability routes. |
+| GET    | /snmp/agents            | (`snmp` feature; a 404 without it) The running SNMP agents with their versions, whether a community is required, engine ID, user names, instances, uptime, every request counter, and the last datagram's time, peer and version. Read-only, behind the API key like the other observability routes. |
 | POST   | /events                 | Emit one log or metric event synchronously. Body is a `signal_type`-tagged JSON object (`logs` or `metrics`) carrying `labels`, the per-branch payload (`log` or `metric`), `encoder`, and `sink`. The handler builds the event, delegates encoding + delivery to `sonda_core::emit::{emit_log, emit_metric}` inside `tokio::task::spawn_blocking`, and returns `{sent, signal_type, latency_ms, warnings}` once the sink ACKs. Sink-push 5xx → 502; sink/encoder config validation failure → 422; malformed body / unknown `signal_type` / missing per-branch field → 400. |
 
 ## Error Handling
