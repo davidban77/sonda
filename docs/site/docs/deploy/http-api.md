@@ -337,7 +337,7 @@ curl -s http://localhost:8080/snmp/agents | jq .
 }
 ```
 
-Agents are listed in address order. A datagram is counted once in `requests`: under the first check it fails (its shape, its version, its community, then for SNMPv3 the User-based Security Model's checks), or under its PDU type. `too_big`, `v1` and `v3` count again a request already counted under its PDU type.
+Agents are listed in address order. A datagram is counted once in `requests`: under the first check it fails (its shape, its version, its community, then for SNMPv3 the User-based Security Model's checks), or under its PDU type. `too_big`, `v1` and `v3` count again a request already counted under its PDU type. `send_errors` counts again an answer whose send fails: a request already counted under its PDU type, or a report already counted under its `usm_` counter.
 
 | Field | Type | Meaning |
 |---|---|---|
