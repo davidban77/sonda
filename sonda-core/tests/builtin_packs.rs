@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use sonda_core::catalog::builtin::{self, BuiltinPack, PACK_COUNT};
 use sonda_core::compile_scenario_file;
 use sonda_core::encoder::snmp::LabelColumn;
+use sonda_core::packs::MetricPackDef;
 use sonda_core::ScenarioEntry;
 
 /// A runnable scenario whose only entry is the pack under test.
@@ -55,6 +56,21 @@ fn entry_labels(entry: &ScenarioEntry) -> Option<&std::collections::HashMap<Stri
         ScenarioEntry::Metrics(config) => config.labels.as_ref(),
         other => panic!("a pack expanded to a non-metric entry: {other:?}"),
     }
+}
+
+/// The pack as expansion sees it: parsed and, when it `extends:` another
+/// builtin, folded over that base (resolved the same way) by the real
+/// [`materialize`](sonda_core::packs::extend::materialize) pre-pass.
+fn resolved(pack: &BuiltinPack) -> MetricPackDef {
+    let def = builtin::parse_pack(pack)
+        .unwrap_or_else(|e| panic!("builtin pack {} must parse: {e}", pack.file));
+    let Some(base) = def.extends.as_deref() else {
+        return def;
+    };
+    let base = builtin::find(base)
+        .unwrap_or_else(|| panic!("{} extends {base}, which is not a builtin", pack.file));
+    sonda_core::packs::extend::materialize(&def, &resolved(base))
+        .unwrap_or_else(|e| panic!("{} must fold over its base: {e}", pack.file))
 }
 
 /// A `CompileError`'s Display names the phase that failed; the reason is
@@ -119,16 +135,16 @@ fn every_builtin_pack_compiles_through_the_real_pipeline() {
     );
 }
 
-/// One entry per metric spec, so a pack that silently lost its metrics on
-/// the way through expansion is caught by count rather than by shape.
+/// One entry per metric spec of the resolved pack (an extension's base's
+/// included), so a pack that silently lost its metrics on the way through
+/// expansion is caught by count rather than by shape.
 #[test]
 fn each_pack_expands_to_one_entry_per_metric_spec() {
     assert_eq!(builtin::PACKS.len(), PACK_COUNT, "vacuous-pass guard");
 
     let resolver = builtin::BuiltinPackResolver::new();
     for pack in builtin::PACKS {
-        let def = builtin::parse_pack(pack)
-            .unwrap_or_else(|e| panic!("builtin pack {} must parse: {e}", pack.file));
+        let def = resolved(pack);
         let entries = compile_scenario_file(&scenario_referencing(pack), &resolver)
             .unwrap_or_else(|e| panic!("builtin pack {} must compile: {e}", pack.file));
 
@@ -148,16 +164,16 @@ fn each_pack_expands_to_one_entry_per_metric_spec() {
     }
 }
 
-/// The metric names a user would see. A pack whose specs expanded under the
-/// wrong names would still pass the count check above.
+/// The metric names a user would see, an extension's base's included. A pack
+/// whose specs expanded under the wrong names would still pass the count
+/// check above.
 #[test]
 fn every_metric_name_declared_by_a_pack_reaches_the_compiled_entries() {
     assert_eq!(builtin::PACKS.len(), PACK_COUNT, "vacuous-pass guard");
 
     let resolver = builtin::BuiltinPackResolver::new();
     for pack in builtin::PACKS {
-        let def = builtin::parse_pack(pack)
-            .unwrap_or_else(|e| panic!("builtin pack {} must parse: {e}", pack.file));
+        let def = resolved(pack);
         let entries = compile_scenario_file(&scenario_referencing(pack), &resolver)
             .unwrap_or_else(|e| panic!("builtin pack {} must compile: {e}", pack.file));
 
@@ -433,10 +449,10 @@ fn a_deviation_naming_no_metric_in_the_base_fails_the_compile() {
     );
 }
 
-/// How many builtins declare `extends:`. Zero today, and the message says
-/// so rather than the gate implying the corpus covers the graph path — the
-/// fixture above is what covers it. When the first builtin extension ships
-/// this starts asserting the corpus itself walks one.
+/// Which builtins declare `extends:`: `if_mib` (over
+/// `telegraf_snmp_interface`) today, so the corpus itself walks the graph
+/// path beside the fixture above. Each must compile through the chained
+/// resolver every surface builds.
 #[test]
 fn the_corpus_records_how_many_builtins_extend() {
     assert_eq!(builtin::PACKS.len(), PACK_COUNT, "vacuous-pass guard");
@@ -451,12 +467,7 @@ fn the_corpus_records_how_many_builtins_extend() {
         .map(|p| p.name)
         .collect();
 
-    if extending.is_empty() {
-        // Not a failure: no builtin extension has shipped. The assertion
-        // that matters is that the fixture test above exists and drives the
-        // graph path through the real pipeline.
-        return;
-    }
+    assert_eq!(extending, ["if_mib"], "the builtins that extend another");
     for name in extending {
         let pack = builtin::find(name).expect("just enumerated");
         let resolver = sonda_core::catalog::CatalogPackResolver::new(None);
@@ -648,14 +659,10 @@ fn no_builtin_pack_default_emits_a_negative_value() {
 
     // Exact, not a floor: `>= PACK_COUNT` would be satisfied by a walk that
     // reached one spec per pack and skipped the rest, which is most of them.
+    // An extension declares its base's specs too.
     let declared: usize = builtin::PACKS
         .iter()
-        .map(|pack| {
-            builtin::parse_pack(pack)
-                .unwrap_or_else(|e| panic!("builtin pack {} must parse: {e}", pack.file))
-                .metrics
-                .len()
-        })
+        .map(|pack| resolved(pack).metrics.len())
         .sum();
     assert_eq!(
         sampled, declared,
@@ -891,4 +898,375 @@ fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
     assert_eq!(owned, own.len(), "every value-type entry is present");
     sonda_core::schedule::launch::prepare_entries(entries)
         .unwrap_or_else(|e| panic!("the example validates: {e}"));
+}
+
+// ---- if_mib -----------------------------------------------------------------
+
+/// The IF-MIB columns `if_mib` adds to `telegraf_snmp_interface`, in the
+/// pack's order.
+const IF_MIB_ADDED_HINTS: [(&str, &str, sonda_core::encoder::snmp::SnmpValueType); 5] = {
+    use sonda_core::encoder::snmp::SnmpValueType::{Counter32, Gauge32, Integer};
+    [
+        ("ifSpeed", "1.3.6.1.2.1.2.2.1.5.{ifIndex}", Gauge32),
+        ("ifAdminStatus", "1.3.6.1.2.1.2.2.1.7.{ifIndex}", Integer),
+        ("ifInOctets", "1.3.6.1.2.1.2.2.1.10.{ifIndex}", Counter32),
+        ("ifOutOctets", "1.3.6.1.2.1.2.2.1.16.{ifIndex}", Counter32),
+        ("ifHighSpeed", "1.3.6.1.2.1.31.1.1.1.15.{ifIndex}", Gauge32),
+    ]
+};
+
+/// The five label columns of `if_mib` after the fold, in label order: the
+/// base's ifAlias and ifName, and its own ifDescr, ifIndex and ifType, the
+/// last two served as INTEGERs.
+fn if_mib_label_columns() -> Vec<(&'static str, LabelColumn)> {
+    use sonda_core::encoder::snmp::SnmpValueType::Integer;
+    let typed = |oid: &str| LabelColumn::Typed {
+        oid: oid.to_string(),
+        r#type: Integer,
+    };
+    vec![
+        (
+            "ifAlias",
+            LabelColumn::from("1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"),
+        ),
+        (
+            "ifDescr",
+            LabelColumn::from("1.3.6.1.2.1.2.2.1.2.{ifIndex}"),
+        ),
+        ("ifIndex", typed("1.3.6.1.2.1.2.2.1.1.{ifIndex}")),
+        (
+            "ifName",
+            LabelColumn::from("1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"),
+        ),
+        ("ifType", typed("1.3.6.1.2.1.2.2.1.3.{ifIndex}")),
+    ]
+}
+
+/// `(name, oid, type)` of each of `def`'s metrics, in order; every one must
+/// carry an `snmp:` hint and no `gnmi:` hint.
+fn snmp_hints_of(
+    def: &MetricPackDef,
+) -> Vec<(&str, &str, sonda_core::encoder::snmp::SnmpValueType)> {
+    def.metrics
+        .iter()
+        .map(|spec| {
+            assert!(spec.gnmi.is_none(), "{} carries a gnmi hint", spec.name);
+            let hint = spec
+                .snmp
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} carries no snmp hint", spec.name));
+            (spec.name.as_str(), hint.oid.as_str(), hint.r#type.clone())
+        })
+        .collect()
+}
+
+/// `if_mib` extends `telegraf_snmp_interface` with no deviation, adds the
+/// five IF-MIB columns, and after the fold has exactly ten metrics (the
+/// base's five, then its own), each with its `snmp:` hint, the five label
+/// columns, and the base's shared labels with `ifDescr` and `ifType` beside
+/// them. It loads, and is addressable after the fold. Runs without the
+/// `snmp` feature too.
+#[test]
+fn if_mib_extends_the_telegraf_pack_with_five_if_mib_columns() {
+    let pack = builtin::find("if_mib").expect("the pack is embedded");
+    let def = builtin::parse_pack(pack).expect("the pack parses");
+    assert_eq!(def.extends.as_deref(), Some("telegraf_snmp_interface"));
+    assert!(
+        def.deviations.is_empty(),
+        "the base's metrics stay as they are"
+    );
+    assert_eq!(sonda_core::packs::validate_pack(&def), Ok(()));
+    assert_eq!(
+        snmp_hints_of(&def),
+        IF_MIB_ADDED_HINTS,
+        "the metrics it adds"
+    );
+
+    let folded = resolved(pack);
+    assert_eq!(
+        sonda_core::packs::validate_pack(&folded),
+        Ok(()),
+        "addressable after the fold"
+    );
+    let expected: Vec<_> = TELEGRAF_SNMP_HINTS
+        .into_iter()
+        .chain(IF_MIB_ADDED_HINTS)
+        .collect();
+    assert_eq!(expected.len(), 10, "five inherited, five added");
+    assert_eq!(snmp_hints_of(&folded), expected);
+    assert_eq!(
+        sorted_columns(&folded.snmp_label_columns),
+        if_mib_label_columns()
+    );
+    let mut shared: Vec<(&str, &str)> = folded
+        .shared_labels
+        .as_ref()
+        .expect("shared labels")
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    shared.sort();
+    assert_eq!(
+        shared,
+        [
+            ("device", ""),
+            ("ifAlias", ""),
+            ("ifDescr", ""),
+            ("ifIndex", ""),
+            ("ifName", ""),
+            ("ifType", "6"),
+            ("job", "snmp"),
+        ]
+    );
+}
+
+/// The ports of `examples/if-mib-switch.yaml`.
+#[cfg(feature = "snmp")]
+const IF_MIB_PORTS: u32 = 24;
+
+/// The ifName and ifDescr the example gives port `n`.
+#[cfg(feature = "snmp")]
+fn if_mib_port(n: u32) -> String {
+    format!("GigabitEthernet1/0/{n}")
+}
+
+/// `examples/if-mib-switch.yaml` compiles to the 24 ports' ten metrics each
+/// and `ifNumber`, every port entry's encoder taking its OIDs, types and the
+/// five label columns (the typed ones with their type) from the pack, and
+/// validates with the example's labels; the same file with one port's
+/// `ifType` that an INTEGER column cannot serve does not.
+#[cfg(feature = "snmp")]
+#[test]
+fn the_if_mib_example_compiles_to_24_ports_and_if_number_and_validates() {
+    use sonda_core::encoder::snmp::SnmpValueType;
+    use sonda_core::encoder::EncoderConfig;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/if-mib-switch.yaml");
+    let yaml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()));
+    let file: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("the example is YAML");
+    let defaults = &file["defaults"]["encoder"];
+    assert_eq!(defaults["type"], "snmp", "the defaults' encoder is present");
+    for key in ["oids", "types", "label_columns"] {
+        assert!(
+            defaults.get(key).is_none(),
+            "the defaults' encoder names no {key}:"
+        );
+    }
+    let entries = compile_scenario_file(&yaml, &builtin::BuiltinPackResolver::new())
+        .unwrap_or_else(|e| panic!("the example compiles: {}", error_chain(&e)));
+    let if_mib = resolved(builtin::find("if_mib").expect("embedded"));
+    let names: Vec<&str> = if_mib
+        .metrics
+        .iter()
+        .map(|spec| spec.name.as_str())
+        .collect();
+    assert_eq!(names.len(), 10);
+    assert_eq!(
+        entries.len(),
+        IF_MIB_PORTS as usize * names.len() + 1,
+        "24 ports of ten metrics, and ifNumber"
+    );
+
+    let mut per_port: std::collections::BTreeMap<u32, Vec<&str>> = Default::default();
+    let mut if_number = 0;
+    for entry in &entries {
+        let ScenarioEntry::Metrics(config) = entry else {
+            panic!("a metrics entry: {entry:?}");
+        };
+        let EncoderConfig::Snmp(cfg) = &config.encoder else {
+            panic!("an snmp encoder: {:?}", config.encoder);
+        };
+        let labels = config.labels.as_ref().expect("labels");
+        if config.name == "ifNumber" {
+            if_number += 1;
+            assert_eq!(
+                cfg.oids,
+                std::collections::HashMap::from([(
+                    "ifNumber".to_string(),
+                    "1.3.6.1.2.1.2.1.0".to_string()
+                )])
+            );
+            assert_eq!(cfg.types.get("ifNumber"), Some(&SnmpValueType::Integer));
+            assert!(cfg.label_columns.is_empty());
+            assert!(
+                matches!(config.generator, sonda_core::generator::GeneratorConfig::Constant { value } if value == 24.0),
+                "{:?}",
+                config.generator
+            );
+            continue;
+        }
+        let n: u32 = labels["ifIndex"].parse().expect("an integer ifIndex");
+        per_port.entry(n).or_default().push(config.name.as_str());
+        assert_eq!(labels["ifName"], if_mib_port(n), "port {n}");
+        assert_eq!(labels["ifDescr"], if_mib_port(n), "port {n}");
+        assert_eq!(labels["ifType"], "6", "port {n}");
+        let alias = match n {
+            23 => "uplink to dist-01",
+            24 => "uplink to dist-02",
+            _ => "",
+        };
+        assert_eq!(labels["ifAlias"], alias, "port {n}");
+        assert_eq!(cfg.oids.len(), names.len(), "port {n}");
+        assert_eq!(
+            sorted_columns(&cfg.label_columns),
+            if_mib_label_columns(),
+            "port {n}"
+        );
+        assert_eq!(cfg.drop_labels, ["job"], "port {n}");
+    }
+    assert_eq!(if_number, 1, "the ifNumber entry is present");
+    assert_eq!(
+        per_port.keys().copied().collect::<Vec<_>>(),
+        (1..=IF_MIB_PORTS).collect::<Vec<_>>()
+    );
+    for (n, metrics) in &per_port {
+        let mut metrics = metrics.clone();
+        metrics.sort();
+        let mut want = names.clone();
+        want.sort();
+        assert_eq!(metrics, want, "port {n}");
+    }
+    sonda_core::schedule::launch::prepare_entries(entries)
+        .unwrap_or_else(|e| panic!("the example validates: {e}"));
+
+    let first = "{ device: sw-access-01, ifIndex: 1, ";
+    assert_eq!(yaml.matches(first).count(), 1, "the first port's labels");
+    let copper = yaml.replace(
+        first,
+        "{ device: sw-access-01, ifIndex: 1, ifType: copper, ",
+    );
+    let entries = compile_scenario_file(&copper, &builtin::BuiltinPackResolver::new())
+        .unwrap_or_else(|e| panic!("the mutated example compiles: {}", error_chain(&e)));
+    let err = sonda_core::schedule::launch::prepare_entries(entries)
+        .expect_err("an ifType an INTEGER column cannot serve is refused");
+    assert!(
+        err.to_string()
+            .contains("label `ifType` has value \"copper\", which its integer column cannot serve"),
+        "{err}"
+    );
+}
+
+/// What `MIBS= snmpbulkwalk -v2c -On` prints for the ifTable column `column`
+/// of `walk`: each instance's index and value, in walk order.
+#[cfg(feature = "snmp")]
+fn if_table_column(walk: &str, column: u32) -> Vec<(u32, String)> {
+    let prefix = format!(".1.3.6.1.2.1.2.2.1.{column}.");
+    walk.lines()
+        .filter_map(|line| {
+            let (oid, value) = line.split_once(" = ")?;
+            let index = oid.strip_prefix(&prefix)?.parse().ok()?;
+            Some((index, value.to_string()))
+        })
+        .collect()
+}
+
+/// net-snmp walks the example's ifTable: 24 rows, ifIndex 1 to 24 as
+/// INTEGERs, ifDescr each port's name and ifType 6. `snmptable` needs the
+/// IF-MIB file to know the table's columns, and the walk needs none. The
+/// example's agent settings are bound on `127.0.0.1:0` by a sink held for
+/// the test, and its entries join that agent.
+#[cfg(feature = "snmp")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs net-snmp's snmpbulkwalk on PATH; run with --ignored"]
+async fn net_snmp_walks_the_if_mib_examples_if_table() {
+    use sonda_core::sink::snmp::SnmpAgentSink;
+    use sonda_core::sink::SinkConfig;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/if-mib-switch.yaml");
+    let yaml = std::fs::read_to_string(&path).expect("the example is readable");
+    let mut entries = compile_scenario_file(&yaml, &builtin::BuiltinPackResolver::new())
+        .unwrap_or_else(|e| panic!("the example compiles: {}", error_chain(&e)));
+    let ScenarioEntry::Metrics(first) = &entries[0] else {
+        panic!("a metrics entry");
+    };
+    let SinkConfig::SnmpAgent(settings) = &first.base.sink else {
+        panic!("an snmp_agent sink");
+    };
+    let mut settings = settings.clone();
+    settings.listen = "127.0.0.1:0".to_string();
+    let held = SnmpAgentSink::new(&settings)
+        .await
+        .expect("bind an ephemeral port");
+    let agent = std::sync::Arc::clone(held.agent());
+    let listen = agent.local_addr().to_string();
+    for entry in &mut entries {
+        let ScenarioEntry::Metrics(config) = entry else {
+            panic!("a metrics entry");
+        };
+        let SinkConfig::SnmpAgent(cfg) = &mut config.base.sink else {
+            panic!("an snmp_agent sink");
+        };
+        cfg.listen = listen.clone();
+    }
+    let prepared = sonda_core::schedule::launch::prepare_entries(entries).expect("validates");
+    let cancel = sonda_core::CancellationToken::new();
+    let mut handles = sonda_core::schedule::launch::launch_prepared(prepared, "if-mib", &cancel)
+        .await
+        .expect("launches");
+
+    // 241 metric instances and five label columns of 24 ports.
+    let served = 24 * 10 + 1 + 24 * 5;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while agent.instance_count() < served && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        agent.instance_count(),
+        served,
+        "the agent serves every instance"
+    );
+
+    let walk = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("snmpbulkwalk")
+            .env("MIBS", "")
+            .args(["-v2c", "-c", "public", "-On", "-r", "0", "-t", "2", &listen])
+            .arg("1.3.6.1.2.1.2.2")
+            .output()
+    })
+    .await
+    .expect("joined")
+    .expect("snmpbulkwalk is on PATH");
+    assert!(
+        walk.status.success(),
+        "{}",
+        String::from_utf8_lossy(&walk.stderr)
+    );
+    let stdout = String::from_utf8(walk.stdout).expect("UTF-8");
+    println!("{stdout}");
+    assert_eq!(
+        stdout.lines().count(),
+        24 * 10,
+        "ten ifTable columns of 24 rows"
+    );
+
+    let rows: Vec<u32> = (1..=24).collect();
+    let if_index = if_table_column(&stdout, 1);
+    assert_eq!(if_index.iter().map(|(i, _)| *i).collect::<Vec<_>>(), rows);
+    for (index, value) in &if_index {
+        assert_eq!(value, &format!("INTEGER: {index}"), "ifIndex.{index}");
+    }
+    let if_descr = if_table_column(&stdout, 2);
+    assert_eq!(if_descr.len(), 24);
+    for (index, value) in &if_descr {
+        assert_eq!(
+            value,
+            &format!("STRING: \"GigabitEthernet1/0/{index}\""),
+            "ifDescr.{index}"
+        );
+    }
+    let if_type = if_table_column(&stdout, 3);
+    assert_eq!(if_type.iter().map(|(i, _)| *i).collect::<Vec<_>>(), rows);
+    for (index, value) in &if_type {
+        assert_eq!(value, "INTEGER: 6", "ifType.{index}");
+    }
+
+    cancel.cancel();
+    for handle in &mut handles {
+        handle
+            .join_async(Some(std::time::Duration::from_secs(2)))
+            .await
+            .expect("stops");
+    }
+    drop(held);
 }

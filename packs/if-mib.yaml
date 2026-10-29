@@ -1,0 +1,79 @@
+# IF-MIB interface pack: the ifTable and ifXTable columns.
+#
+# Extends telegraf_snmp_interface, whose five metrics are IF-MIB columns and
+# stay as they are, with five more ifTable and ifXTable columns, and serves
+# three more labels as ifTable columns: ifIndex and ifType as INTEGERs, and
+# ifDescr as an OCTET STRING, beside the base's ifName and ifAlias. Every
+# metric carries an `snmp:` hint, so a scenario that encodes this pack with
+# the snmp encoder needs no `oids:`, `types:` or `label_columns:` of its own:
+#
+#   encoder: { type: snmp, drop_labels: [job] }
+#
+# One pack entry is one interface, set by its ifIndex, ifName and ifDescr
+# labels. ifType defaults to 6, ethernetCsmacd. ifNumber, the number of
+# interfaces, is not a pack metric: it belongs to the scenario, which serves
+# it as a scalar of its own (1.3.6.1.2.1.2.1.0, integer).
+#
+# ifAdminStatus and ifOperStatus are enum codes: 1 up, 2 down. ifInOctets and
+# ifOutOctets are Counter32s and wrap at 2^32, as a device's do.
+
+version: 2
+kind: composable
+name: if_mib
+description: "IF-MIB ifTable and ifXTable, extending the Telegraf SNMP interface pack"
+category: network
+extends: telegraf_snmp_interface
+
+shared_labels:
+  ifDescr: ""
+  ifType: "6"
+
+snmp_label_columns:
+  ifIndex: { oid: "1.3.6.1.2.1.2.2.1.1.{ifIndex}", type: integer }
+  ifDescr: "1.3.6.1.2.1.2.2.1.2.{ifIndex}"
+  ifType: { oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer }
+
+metrics:
+  - name: ifSpeed
+    generator:
+      type: constant
+      value: 1000000000.0
+    snmp:
+      oid: "1.3.6.1.2.1.2.2.1.5.{ifIndex}"
+      type: gauge32
+
+  - name: ifAdminStatus
+    generator:
+      type: constant
+      value: 1.0
+    snmp:
+      oid: "1.3.6.1.2.1.2.2.1.7.{ifIndex}"
+      type: integer
+
+  - name: ifInOctets
+    generator:
+      type: step
+      start: 0.0
+      step_size: 125000.0
+      max: 4294967296.0
+    snmp:
+      oid: "1.3.6.1.2.1.2.2.1.10.{ifIndex}"
+      type: counter32
+
+  - name: ifOutOctets
+    generator:
+      type: step
+      start: 0.0
+      step_size: 62500.0
+      max: 4294967296.0
+    snmp:
+      oid: "1.3.6.1.2.1.2.2.1.16.{ifIndex}"
+      type: counter32
+
+  - name: ifHighSpeed
+    generator:
+      type: constant
+      value: 1000.0
+    snmp:
+      oid: "1.3.6.1.2.1.31.1.1.1.15.{ifIndex}"
+      type: gauge32

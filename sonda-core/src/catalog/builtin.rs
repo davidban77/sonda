@@ -34,7 +34,7 @@ pub struct BuiltinPack {
 /// Declared here beside the list so a half-finished edit — a new
 /// `include_str!` without its entry, or an entry deleted from the middle —
 /// fails the count gate instead of quietly shipping a shorter catalog.
-pub const PACK_COUNT: usize = 6;
+pub const PACK_COUNT: usize = 7;
 
 /// Every pack embedded in this binary, sorted by name.
 pub static PACKS: &[BuiltinPack] = &[
@@ -42,6 +42,11 @@ pub static PACKS: &[BuiltinPack] = &[
         name: "http_server_red",
         file: "http-server-red.yaml",
         yaml: include_str!("../../packs/http-server-red.yaml"),
+    },
+    BuiltinPack {
+        name: "if_mib",
+        file: "if-mib.yaml",
+        yaml: include_str!("../../packs/if-mib.yaml"),
     },
     BuiltinPack {
         name: "kube_state_metrics",
