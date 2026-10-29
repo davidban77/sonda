@@ -979,8 +979,8 @@ fn renders(exact: bool) -> &'static str {
 ///    that differ only in a label-column label share the metric's OID. A
 ///    typed column's type can serve that static value: it is written into
 ///    a scratch buffer by the encoder's own
-///    [`write_label_text`](crate::encoder::snmp::value::write_label_text),
-///    and the refusal names the label, the type and the value.
+///    `encoder::snmp::value::write_label_text`, and the refusal names the
+///    label, the type and the value.
 ///    O(placeholders × templates + columns).
 /// 4. **Index values are arcs.** Every value the label of each `{label}`
 ///    placeholder of the metric's template or a `label_columns:` template
