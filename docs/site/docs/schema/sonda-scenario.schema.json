@@ -871,10 +871,10 @@
               }
             },
             "label_columns": {
-              "description": "OID template per label whose value the agent serves as an OCTET\nSTRING, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`: a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry, and\nvalidation requires it to be a static label of the entry; a series\nwithout the label serves no instance of its column. Each is a string;\na YAML number is an error.",
+              "description": "Label column per label whose value the agent serves, such as\n`ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"` (an OCTET STRING) or\n`ifType: { oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\", type: integer }`\n(the label's text parsed as a number and served as that type): a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry, and\nvalidation requires it to be a static label of the entry, whose value\na typed column's type can serve; a series without the label serves no\ninstance of its column. Each template is a string; a YAML number is an\nerror. See [`LabelColumn`].",
               "type": "object",
               "additionalProperties": {
-                "type": "string"
+                "$ref": "#/$defs/LabelColumn"
               },
               "default": {}
             },
@@ -2545,6 +2545,34 @@
         "composable"
       ]
     },
+    "LabelColumn": {
+      "description": "A label whose value the agent serves as a table column: the OID template\nof the column's instances, and the type the label's text is served as.\n\nYAML forms: a string, the template, which serves the label's text as an\nOCTET STRING; or `{ oid: <template>, type: <value type> }`, which parses\nthe label's text as an `f64` (`str::parse`, nothing more lenient) and\nwrites it as that type, except `string`, which serves the text itself, as\nthe bare form does. Validation refuses the enum type for a column, and a\ntyped column whose static label value its type cannot serve.",
+      "anyOf": [
+        {
+          "description": "The OID template; the label's text is served as an OCTET STRING. A\nstring; a YAML number is an error.",
+          "type": "string"
+        },
+        {
+          "description": "The OID template, and the type the label's text is served as.",
+          "type": "object",
+          "properties": {
+            "oid": {
+              "description": "The OID template of the column's instances. A string; a YAML\nnumber is an error.",
+              "type": "string"
+            },
+            "type": {
+              "description": "The type the label's text is parsed and served as; any value\ntype but the enum.",
+              "$ref": "#/$defs/SnmpValueType"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "oid",
+            "type"
+          ]
+        }
+      ]
+    },
     "LogCsvColumns": {
       "description": "Column-role assignment for a [`LogCsvReplayGenerator`].\n\n`timestamp`, `severity`, and `message` map header column names to their\nsemantic role. Any header column not referenced here becomes a free-form\n`fields` entry on the emitted [`LogEvent`].",
       "type": "object",
@@ -2823,10 +2851,10 @@
           "default": null
         },
         "snmp_label_columns": {
-          "description": "OID template per label whose value an `snmp` encoder serves as a\ntable column, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`.\nUnder an `snmp` encoder each fills the encoder's `label_columns:`\nwhere it has no entry for the label (see [`fold_snmp_hints`]); under\nany other encoder they are not used. Each is a string; a YAML number\nis an error.\n\nAn extension's map is merged over its base's, so the extension wins.",
+          "description": "Label column per label whose value an `snmp` encoder serves as a\ntable column, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`\n(an OCTET STRING) or `ifType: { oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\",\ntype: integer }` (the label's text served as that type; see\n[`LabelColumn`]). Under an `snmp` encoder each fills the encoder's\n`label_columns:` where it has no entry for the label (see\n[`fold_snmp_hints`]); under any other encoder they are not used. Each\ntemplate is a string; a YAML number is an error.\n\nAn extension's map is merged over its base's, so the extension wins.",
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/$defs/LabelColumn"
           },
           "default": {}
         }

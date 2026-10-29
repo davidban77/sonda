@@ -371,11 +371,11 @@ fn label_columns_leave_steady_state_encode_at_zero() {
         label_columns: HashMap::from([
             (
                 "ifName".to_string(),
-                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
             ),
             (
                 "ifAlias".to_string(),
-                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".into(),
             ),
         ]),
         ..snmp_encoder_config()

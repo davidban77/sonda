@@ -21,12 +21,12 @@ pub mod prometheus;
 pub mod remote_write;
 #[cfg(feature = "snmp")]
 pub mod snmp;
-/// The SNMP value type alone, without the `snmp` feature.
+/// The SNMP value type and label column alone, without the `snmp` feature.
 #[cfg(not(feature = "snmp"))]
 pub mod snmp {
     pub mod value;
 
-    pub use value::SnmpValueType;
+    pub use value::{LabelColumn, SnmpValueType};
 }
 pub mod syslog;
 

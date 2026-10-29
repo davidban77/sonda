@@ -1103,6 +1103,112 @@ fn the_schema_and_the_parser_refuse_an_unquoted_numeric_object_id() {
     sonda_core::compiler::parse::parse(&dotted).expect("the parser takes a dotted OID");
 }
 
+/// Where a label column is written: the snmp encoder's `label_columns:`, or
+/// a pack's `snmp_label_columns:`.
+#[cfg(feature = "snmp")]
+#[derive(Debug, Clone, Copy)]
+enum ColumnMap {
+    Encoder,
+    Pack,
+}
+
+/// A document with the one label column `ifType: <column>` in `map`, and
+/// what the parser makes of it.
+#[cfg(feature = "snmp")]
+fn label_column_document(map: ColumnMap, column: &str) -> (String, Result<(), String>) {
+    match map {
+        ColumnMap::Encoder => {
+            let yaml = format!(
+                r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    oids:
+      ifInOctets: "1.3.6.1.2.1.2.2.1.10.{{ifIndex}}"
+    label_columns:
+      ifType: {column}
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1161
+scenarios:
+  - signal_type: metrics
+    name: ifInOctets
+    labels:
+      ifIndex: "1"
+      ifType: "6"
+    generator:
+      type: constant
+      value: 1.0
+"#
+            );
+            let parsed = sonda_core::compiler::parse::parse(&yaml)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            (yaml, parsed)
+        }
+        ColumnMap::Pack => {
+            let yaml = format!(
+                "version: 2
+kind: composable
+name: typed
+description: one typed column
+category: network
+snmp_label_columns:
+  ifType: {column}
+metrics:
+  - name: ifInOctets
+"
+            );
+            let parsed = serde_yaml_ng::from_str::<sonda_core::packs::MetricPackDef>(&yaml)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            (yaml, parsed)
+        }
+    }
+}
+
+/// The schema and the parser agree on a label column in both maps: a
+/// template string and the `{ oid, type }` object are accepted by both; an
+/// object without `oid:` or `type:`, with a key beside them, with an
+/// unquoted numeric template or an unknown type, and a bare unquoted number,
+/// are refused by both.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::template_string(r#""1.3.6.1.2.1.2.2.1.3.{ifIndex}""#, true)]
+#[case::typed_integer(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer }"#, true)]
+#[case::typed_string(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: string }"#, true)]
+#[case::object_missing_oid("{ type: integer }", false)]
+#[case::object_missing_type(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}" }"#, false)]
+#[case::object_misspelled_key(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", typ: integer }"#, false)]
+#[case::object_numeric_oid("{ oid: 1.30, type: integer }", false)]
+#[case::object_unknown_type(r#"{ oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: float }"#, false)]
+#[case::numeric_template("1.30", false)]
+fn the_schema_and_the_parser_agree_on_label_columns(
+    #[values(ColumnMap::Encoder, ColumnMap::Pack)] map: ColumnMap,
+    #[case] column: &str,
+    #[case] valid: bool,
+) {
+    let (yaml, parsed) = label_column_document(map, column);
+    assert_eq!(parsed.is_ok(), valid, "the parser, {map:?}: {parsed:?}");
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        let errors: Vec<String> = validator()
+            .iter_errors(&yaml_to_json(value))
+            .map(|e| format!("  at {}: {e}", e.instance_path()))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the schema rejected `{column}` in {map:?}:\n{}",
+            errors.join("\n")
+        );
+    } else {
+        assert_rejected(column, &yaml);
+    }
+}
+
 /// The schema bounds the sink's numeric settings where validation does, so
 /// an editor flags the values `sonda` refuses, and accepts the bounds.
 #[cfg(feature = "snmp")]
@@ -1289,9 +1395,9 @@ fn the_committed_schema_is_current() {
 
 /// The positive control for the two negatives below.
 ///
-/// No pack in `packs/` uses `extends:` or `deviations:` yet, so
-/// `every_repo_pack_validates` says nothing about those branches — a schema
-/// that got them wrong would still be green. This drives them directly.
+/// No pack in `packs/` uses `deviations:` (`if_mib` uses `extends:` alone),
+/// so `every_repo_pack_validates` says nothing about that branch — a schema
+/// that got it wrong would still be green. This drives both directly.
 #[test]
 fn the_schema_accepts_an_extension_with_both_deviation_forms() {
     let validator = validator();

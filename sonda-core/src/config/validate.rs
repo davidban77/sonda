@@ -967,8 +967,8 @@ fn renders(exact: bool) -> &'static str {
 ///    placeholder is a scalar and ends in `.0`) and every
 ///    `oids:` and `types:` key is a metric name
 ///    ([`SnmpEncoder::new`](crate::encoder::snmp::SnmpEncoder::new)).
-///    Every `label_columns:` key is a label key and every entry parses as
-///    a template too.
+///    Every `label_columns:` key is a label key, every entry's template
+///    parses too, and no entry's type is the enum.
 /// 3. **Placeholders are labels.** Every placeholder of the metric's
 ///    template names a key of the entry's `labels` or `dynamic_labels`. A
 ///    key only `cardinality_spikes` sets is refused: events carry it only
@@ -976,7 +976,11 @@ fn renders(exact: bool) -> &'static str {
 ///    `label_columns:` template is a placeholder of every `oids:` template.
 ///    Every `label_columns:` label is a static label of the entry, not a
 ///    `dynamic_labels` or `cardinality_spikes` label and not absent: series
-///    that differ only in a label-column label share the metric's OID.
+///    that differ only in a label-column label share the metric's OID. A
+///    typed column's type can serve that static value: it is written into
+///    a scratch buffer by the encoder's own
+///    [`write_label_text`](crate::encoder::snmp::value::write_label_text),
+///    and the refusal names the label, the type and the value.
 ///    O(placeholders × templates + columns).
 /// 4. **Index values are arcs.** Every value the label of each `{label}`
 ///    placeholder of the metric's template or a `label_columns:` template
@@ -1040,15 +1044,15 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     let template = encoder.template_for(name)?;
     let metrics: BTreeSet<&String> = cfg.oids.keys().collect();
     let mut columns: Vec<(&String, OidTemplate)> = Vec::new();
-    for (label, text) in cfg
+    for (label, column) in cfg
         .label_columns
         .iter()
         .collect::<std::collections::BTreeMap<_, _>>()
     {
         // SnmpEncoder::new parsed every one.
-        let column = OidTemplate::parse(text)
+        let template = OidTemplate::parse(column.oid())
             .map_err(|e| invalid(format!("snmp encoder label_columns.{label}: {e}")))?;
-        columns.push((label, column));
+        columns.push((label, template));
     }
 
     let mut entry_labels: Vec<&str> = Vec::new();
@@ -1094,9 +1098,16 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
             }
         }
     }
+    let mut scratch = Vec::new();
     for (label, _) in &columns {
         let source = match config.base.label_value_set(label) {
-            Some(LabelValueSet::Static(_)) => continue,
+            Some(LabelValueSet::Static(value)) => {
+                let ty = cfg.label_columns.get(*label).and_then(|c| c.value_type());
+                scratch.clear();
+                crate::encoder::snmp::value::write_label_text(ty, label, &value, &mut scratch)
+                    .map_err(|e| invalid(format!("snmp encoder label_columns.{label}: {e}")))?;
+                continue;
+            }
             Some(LabelValueSet::Values(_) | LabelValueSet::Counter { .. }) => {
                 "a dynamic_labels label"
             }
@@ -5305,7 +5316,24 @@ generator:
     fn set_column(config: &mut ScenarioConfig, label: &str, template: &str) {
         snmp_cfg(config)
             .label_columns
-            .insert(label.to_string(), template.to_string());
+            .insert(label.to_string(), template.into());
+    }
+
+    /// `label` served by `template` as `ty`.
+    #[cfg(feature = "snmp")]
+    fn set_typed_column(
+        config: &mut ScenarioConfig,
+        label: &str,
+        template: &str,
+        ty: crate::encoder::snmp::SnmpValueType,
+    ) {
+        snmp_cfg(config).label_columns.insert(
+            label.to_string(),
+            crate::encoder::snmp::LabelColumn::Typed {
+                oid: template.to_string(),
+                r#type: ty,
+            },
+        );
     }
 
     /// `ifIndex` a counter of `prefix` and `cardinality`, its column
@@ -5539,6 +5567,20 @@ generator:
         "label `ifName` is a cardinality_spikes label")]
     #[case::r3_label_column_of_a_label_the_entry_lacks(|c: &mut ScenarioConfig| set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"),
         "snmp encoder label_columns.ifName: label `ifName` is not a label of this entry")]
+    // 3, a typed column: its type serves the static value; never the enum.
+    #[case::r3_typed_column_of_text_that_is_not_a_number(|c: &mut ScenarioConfig| { set_label(c, "ifType", "GigabitEthernet");
+            set_typed_column(c, "ifType", "1.3.6.1.2.1.2.2.1.3.{ifIndex}", crate::encoder::snmp::SnmpValueType::Integer); },
+        "snmp encoder label_columns.ifType: label `ifType` has value \"GigabitEthernet\", which its integer column cannot serve: it is not a number")]
+    #[case::r3_typed_column_of_a_number_outside_its_type(|c: &mut ScenarioConfig| { set_label(c, "ifType", "3000000000");
+            set_typed_column(c, "ifType", "1.3.6.1.2.1.2.2.1.3.{ifIndex}", crate::encoder::snmp::SnmpValueType::Integer); },
+        "snmp encoder label_columns.ifType: label `ifType` has value \"3000000000\", which its integer column cannot serve: value 3000000000 is outside the integer range")]
+    #[case::r3_typed_gauge_column_of_a_negative_number(|c: &mut ScenarioConfig| { set_label(c, "speed", "-1");
+            set_typed_column(c, "speed", "1.3.6.1.2.1.2.2.1.5.{ifIndex}", crate::encoder::snmp::SnmpValueType::Gauge32); },
+        "label `speed` has value \"-1\", which its gauge32 column cannot serve: value -1 is outside the gauge32 range")]
+    #[case::r2_enum_label_column(|c: &mut ScenarioConfig| { set_label(c, "ifType", "6");
+            set_typed_column(c, "ifType", "1.3.6.1.2.1.2.2.1.3.{ifIndex}",
+                crate::encoder::snmp::SnmpValueType::Enum(std::collections::BTreeMap::from([(6, "ethernetCsmacd".to_string())]))); },
+        "snmp encoder label_columns.ifType: the enum type is refused for a label column")]
     // 3, a string placeholder is named as written.
     #[case::r3_spike_only_string_placeholder(|c: &mut ScenarioConfig| {
             c.base.cardinality_spikes = Some(vec![snmp_spike("ifName", crate::config::SpikeStrategy::Counter, None)]);
@@ -5632,6 +5674,13 @@ generator:
             set_label(c, "ifAlias", "uplink");
             set_column(c, "ifName", "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}");
             set_column(c, "ifAlias", "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}"); })]
+    // Typed label columns whose types serve the static values, the index's own among them.
+    #[case::typed_label_columns(|c: &mut ScenarioConfig| { set_label(c, "ifType", "6"); set_label(c, "ifDescr", "Gi1/0/1");
+            set_label(c, "speed", "1000");
+            set_typed_column(c, "ifIndex", "1.3.6.1.2.1.2.2.1.1.{ifIndex}", crate::encoder::snmp::SnmpValueType::Integer);
+            set_typed_column(c, "ifType", "1.3.6.1.2.1.2.2.1.3.{ifIndex}", crate::encoder::snmp::SnmpValueType::Integer);
+            set_typed_column(c, "ifDescr", "1.3.6.1.2.1.2.2.1.2.{ifIndex}", crate::encoder::snmp::SnmpValueType::String);
+            set_typed_column(c, "speed", "1.3.6.1.2.1.2.2.1.5.{ifIndex}", crate::encoder::snmp::SnmpValueType::Gauge32); })]
     #[case::scalar_label_column_beside_scalars(|c: &mut ScenarioConfig| { set_label(c, "site", "lab-1");
             set_oid(c, "ifHCInOctets", "1.3.6.1.4.1.8072.9999.1.1.0");
             set_oid(c, "ifHCOutOctets", "1.3.6.1.4.1.8072.9999.1.2.0");

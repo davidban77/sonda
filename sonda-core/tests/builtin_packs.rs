@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use sonda_core::catalog::builtin::{self, BuiltinPack, PACK_COUNT};
 use sonda_core::compile_scenario_file;
+use sonda_core::encoder::snmp::LabelColumn;
 use sonda_core::ScenarioEntry;
 
 /// A runnable scenario whose only entry is the pack under test.
@@ -765,13 +766,30 @@ fn telegraf_snmp_interface_serves_if_name_and_if_alias_as_columns() {
     let pack = builtin::find("telegraf_snmp_interface").expect("the pack is embedded");
     let def = builtin::parse_pack(pack).expect("the pack parses");
     assert_eq!(sonda_core::packs::validate_pack(&def), Ok(()));
-    let mut columns: Vec<(&str, &str)> = def
-        .snmp_label_columns
+    assert_eq!(
+        sorted_columns(&def.snmp_label_columns),
+        text_columns(&TELEGRAF_SNMP_LABEL_COLUMNS)
+    );
+}
+
+/// `columns` as (label, column) pairs in label order.
+fn sorted_columns(
+    columns: &std::collections::HashMap<String, LabelColumn>,
+) -> Vec<(&str, LabelColumn)> {
+    let mut sorted: Vec<(&str, LabelColumn)> = columns
         .iter()
-        .map(|(label, oid)| (label.as_str(), oid.as_str()))
+        .map(|(label, column)| (label.as_str(), column.clone()))
         .collect();
-    columns.sort();
-    assert_eq!(columns, TELEGRAF_SNMP_LABEL_COLUMNS);
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    sorted
+}
+
+/// `columns`, each an OCTET STRING column of its template.
+fn text_columns<'a>(columns: &[(&'a str, &str)]) -> Vec<(&'a str, LabelColumn)> {
+    columns
+        .iter()
+        .map(|(label, oid)| (*label, LabelColumn::from(*oid)))
+        .collect()
 }
 
 /// `examples/snmp-telegraf.yaml` expands the pack under an snmp encoder
@@ -862,13 +880,12 @@ fn the_snmp_example_takes_its_oids_from_the_pack_and_validates() {
         for (name, _, value_type) in TELEGRAF_SNMP_HINTS {
             assert_eq!(cfg.types.get(name), Some(&value_type), "{name}");
         }
-        let mut columns: Vec<(&str, &str)> = cfg
-            .label_columns
-            .iter()
-            .map(|(label, oid)| (label.as_str(), oid.as_str()))
-            .collect();
-        columns.sort();
-        assert_eq!(columns, TELEGRAF_SNMP_LABEL_COLUMNS, "{}", config.name);
+        assert_eq!(
+            sorted_columns(&cfg.label_columns),
+            text_columns(&TELEGRAF_SNMP_LABEL_COLUMNS),
+            "{}",
+            config.name
+        );
         assert_eq!(cfg.drop_labels, ["job"], "{}", config.name);
     }
     assert_eq!(owned, own.len(), "every value-type entry is present");

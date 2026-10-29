@@ -1,8 +1,9 @@
 //! The SNMP value type: which BER type a metric's value is encoded as, and
-//! its YAML shape.
+//! its YAML shape; and the label column, which serves a label's text as a
+//! value type.
 //!
-//! Compiled with or without the `snmp` feature: a pack's `snmp:` hints
-//! carry it. Writing a value needs the feature.
+//! Compiled with or without the `snmp` feature: a pack's `snmp:` hints and
+//! `snmp_label_columns:` carry them. Writing a value needs the feature.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -336,6 +337,282 @@ impl From<SnmpValueType> for SnmpValueTypeWire {
     }
 }
 
+/// A label whose value the agent serves as a table column: the OID template
+/// of the column's instances, and the type the label's text is served as.
+///
+/// YAML forms: a string, the template, which serves the label's text as an
+/// OCTET STRING; or `{ oid: <template>, type: <value type> }`, which parses
+/// the label's text as an `f64` (`str::parse`, nothing more lenient) and
+/// writes it as that type, except `string`, which serves the text itself, as
+/// the bare form does. Validation refuses the enum type for a column, and a
+/// typed column whose static label value its type cannot serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "config", serde(untagged, deny_unknown_fields))]
+#[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
+pub enum LabelColumn {
+    /// The OID template; the label's text is served as an OCTET STRING. A
+    /// string; a YAML number is an error.
+    Text(String),
+    /// The OID template, and the type the label's text is served as.
+    Typed {
+        /// The OID template of the column's instances. A string; a YAML
+        /// number is an error.
+        oid: String,
+        /// The type the label's text is parsed and served as; any value
+        /// type but the enum.
+        #[cfg_attr(feature = "config", serde(rename = "type"))]
+        r#type: SnmpValueType,
+    },
+}
+
+/// What validation and the snmp encoder say when a label column's type is
+/// the enum.
+#[cfg(feature = "snmp")]
+pub(crate) const ENUM_COLUMN_REFUSED: &str = "the enum type is refused for a label column: a \
+     column serves the label's own text, and an enum would map a code the label does not carry";
+
+impl LabelColumn {
+    /// The OID template of the column's instances.
+    pub fn oid(&self) -> &str {
+        match self {
+            LabelColumn::Text(oid) | LabelColumn::Typed { oid, .. } => oid,
+        }
+    }
+
+    /// The type the label's text is served as; `None` for the bare form,
+    /// which serves it as an OCTET STRING.
+    pub fn value_type(&self) -> Option<&SnmpValueType> {
+        match self {
+            LabelColumn::Text(_) => None,
+            LabelColumn::Typed { r#type, .. } => Some(r#type),
+        }
+    }
+
+    /// Whether the column's type is the enum, which a column refuses
+    /// ([`ENUM_COLUMN_REFUSED`]).
+    #[cfg(feature = "snmp")]
+    pub(crate) fn is_enum(&self) -> bool {
+        matches!(self.value_type(), Some(SnmpValueType::Enum(_)))
+    }
+}
+
+impl From<&str> for LabelColumn {
+    /// The bare form: `oid` serves the label's text as an OCTET STRING.
+    fn from(oid: &str) -> Self {
+        LabelColumn::Text(oid.to_string())
+    }
+}
+
+impl From<String> for LabelColumn {
+    /// The bare form: `oid` serves the label's text as an OCTET STRING.
+    fn from(oid: String) -> Self {
+        LabelColumn::Text(oid)
+    }
+}
+
+/// Reads a [`LabelColumn`]: a string, or `{ oid, type }`, every error naming
+/// `field`, such as `label_columns.ifType`. The template is read as
+/// [`OidText`](crate::config::scalar_text::OidText) reads one, so a YAML
+/// number is an error that says to quote it; an unknown key, a missing
+/// `oid:` or `type:`, and a key given twice are errors too.
+#[cfg(feature = "config")]
+pub(crate) struct LabelColumnSeed<'a> {
+    /// The field as the error names it, such as `label_columns.ifType`.
+    pub(crate) field: &'a str,
+}
+
+/// Read a map from labels to [`LabelColumn`]s, each value read by
+/// [`LabelColumnSeed`] with `<field>.<label>` as its field, such as
+/// `label_columns.ifType`.
+#[cfg(feature = "config")]
+pub(crate) fn deserialize_label_columns<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    field: &'static str,
+) -> Result<std::collections::HashMap<String, LabelColumn>, D::Error> {
+    struct Columns(&'static str);
+    impl<'de> serde::de::Visitor<'de> for Columns {
+        type Value = std::collections::HashMap<String, LabelColumn>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                f,
+                "a map from labels to label columns: {LABEL_COLUMN_EXPECTED}"
+            )
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut columns = std::collections::HashMap::new();
+            while let Some(label) = map.next_key::<String>()? {
+                let field = format!("{}.{label}", self.0);
+                let column = map.next_value_seed(LabelColumnSeed { field: &field })?;
+                columns.insert(label, column);
+            }
+            Ok(columns)
+        }
+    }
+    deserializer.deserialize_map(Columns(field))
+}
+
+/// What a label column may be, for error messages.
+#[cfg(feature = "config")]
+const LABEL_COLUMN_EXPECTED: &str = "an OID template string, or { oid: <OID template>, \
+     type: <value type> }";
+
+#[cfg(feature = "config")]
+impl<'de> serde::de::DeserializeSeed<'de> for LabelColumnSeed<'_> {
+    type Value = LabelColumn;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<LabelColumn, D::Error> {
+        use crate::config::scalar_text::OidText;
+        use serde::de::{Error, IntoDeserializer};
+
+        struct ColumnVisitor<'a>(&'a str);
+        impl ColumnVisitor<'_> {
+            /// `value` read as an OID, which [`OidText`] refuses with its
+            /// own message naming the field.
+            fn not_text<'de, E: Error, V: IntoDeserializer<'de, E>>(
+                &self,
+                value: V,
+            ) -> Result<LabelColumn, E> {
+                serde::de::DeserializeSeed::deserialize(
+                    OidText { field: self.0 },
+                    value.into_deserializer(),
+                )
+                .map(LabelColumn::Text)
+            }
+        }
+        impl<'de> serde::de::Visitor<'de> for ColumnVisitor<'_> {
+            type Value = LabelColumn;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}: {LABEL_COLUMN_EXPECTED}", self.0)
+            }
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(LabelColumn::Text(v.to_string()))
+            }
+            fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(LabelColumn::Text(v))
+            }
+            fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
+                self.not_text(v)
+            }
+            fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+                self.not_text(v)
+            }
+            fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+                self.not_text(v)
+            }
+            fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
+                self.not_text(v)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let field = self.0;
+                let mut oid: Option<String> = None;
+                let mut ty: Option<SnmpValueType> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "oid" if oid.is_none() => {
+                            let named = format!("{field}.oid");
+                            oid = Some(map.next_value_seed(OidText { field: &named })?);
+                        }
+                        "type" if ty.is_none() => {
+                            ty = Some(
+                                map.next_value::<SnmpValueType>()
+                                    .map_err(|e| A::Error::custom(format!("{field}.type: {e}")))?,
+                            );
+                        }
+                        "oid" | "type" => {
+                            return Err(A::Error::custom(format!(
+                                "{field}: `{key}` is given more than once; expected \
+                                 {LABEL_COLUMN_EXPECTED}"
+                            )))
+                        }
+                        other => {
+                            return Err(A::Error::custom(format!(
+                                "{field}: unknown key {other:?} in a label column; expected \
+                                 {LABEL_COLUMN_EXPECTED}"
+                            )))
+                        }
+                    }
+                }
+                match (oid, ty) {
+                    (Some(oid), Some(r#type)) => Ok(LabelColumn::Typed { oid, r#type }),
+                    (None, _) => Err(A::Error::custom(format!(
+                        "{field}: a typed label column has no `oid:`; expected \
+                         {LABEL_COLUMN_EXPECTED}"
+                    ))),
+                    (Some(_), None) => Err(A::Error::custom(format!(
+                        "{field}: a typed label column has no `type:`; write the template \
+                         alone to serve the label as an OCTET STRING, or expected \
+                         {LABEL_COLUMN_EXPECTED}"
+                    ))),
+                }
+            }
+        }
+        deserializer.deserialize_any(ColumnVisitor(self.field))
+    }
+}
+
+/// Why a label's text could not be served as its column's type.
+#[cfg(feature = "snmp")]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("label `{label}` has value {text:?}, which its {ty} column cannot serve: {reason}")]
+pub(crate) struct ColumnError {
+    /// The label.
+    pub(crate) label: String,
+    /// The column type's [name](SnmpValueType::name).
+    pub(crate) ty: &'static str,
+    /// The label's text.
+    pub(crate) text: String,
+    /// Why: the text is not a number, or the type refuses the number.
+    pub(crate) reason: String,
+}
+
+/// Write `label`'s text `text` as the value of its column, typed `ty`
+/// ([`LabelColumn::value_type`]), into `out`.
+///
+/// No type, and `string`, write the text as an OCTET STRING. Any other type
+/// parses the text as an `f64` with `str::parse` and writes it with
+/// [`SnmpValueType::write`]; the enum writes nothing and is refused
+/// ([`ENUM_COLUMN_REFUSED`]). On an error nothing is written. Validation and
+/// the snmp encoder both apply this one rule: validation writes the static
+/// value into a scratch buffer, the encoder writes the companion record.
+#[cfg(feature = "snmp")]
+pub(crate) fn write_label_text(
+    ty: Option<&SnmpValueType>,
+    label: &str,
+    text: &str,
+    out: &mut Vec<u8>,
+) -> Result<(), ColumnError> {
+    let refused = |ty: &SnmpValueType, reason: String| ColumnError {
+        label: label.to_string(),
+        ty: ty.name(),
+        text: text.to_string(),
+        reason,
+    };
+    match ty {
+        None | Some(SnmpValueType::String) => {
+            super::ber::write_string(out, text.as_bytes());
+            Ok(())
+        }
+        Some(ty @ SnmpValueType::Enum(_)) => Err(refused(ty, ENUM_COLUMN_REFUSED.to_string())),
+        Some(ty) => {
+            let value: f64 = text
+                .parse()
+                .map_err(|_| refused(ty, "it is not a number".to_string()))?;
+            ty.write(value, out).map_err(|e| refused(ty, e.to_string()))
+        }
+    }
+}
+
 /// Why a value could not be written as its type.
 #[cfg(feature = "snmp")]
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
@@ -487,6 +764,45 @@ mod tests {
             (1, "up".to_string()),
             (2, "down".to_string()),
         ]))
+    }
+
+    /// A column writes the label's text verbatim for no type and `string`,
+    /// and otherwise `str::parse`s it and writes it as its type; a refusal
+    /// names the label, the type and the text, and writes nothing.
+    #[cfg(feature = "snmp")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::bare_text(            None,                          "Gi0",  Ok("0403476930"))]
+    #[case::string_keeps_the_text(Some(SnmpValueType::String),   "06",   Ok("04023036"))]
+    #[case::integer(              Some(SnmpValueType::Integer),  "6",    Ok("020106"))]
+    #[case::integer_rounds(       Some(SnmpValueType::Integer),  "6.5",  Ok("020107"))]
+    #[case::gauge32_exponent(     Some(SnmpValueType::Gauge32),  "1e3",  Ok("420203e8"))]
+    #[case::empty_text(           Some(SnmpValueType::Integer),  "",     Err("label `l` has value \"\", which its integer column cannot serve: it is not a number"))]
+    #[case::text_is_not_trimmed(  Some(SnmpValueType::Integer),  " 6",   Err("it is not a number"))]
+    #[case::outside_the_type(     Some(SnmpValueType::Counter64), "-1",  Err("which its counter64 column cannot serve: value -1 is outside the counter64 range"))]
+    #[case::enum_refused(         Some(up_down()),               "1",    Err("which its enum column cannot serve: the enum type is refused for a label column"))]
+    fn write_label_text_is_the_column_rule(
+        #[case] ty: Option<SnmpValueType>,
+        #[case] text: &str,
+        #[case] expected: Result<&str, &str>,
+    ) {
+        let mut out = vec![0xAA];
+        let written = write_label_text(ty.as_ref(), "l", text, &mut out);
+        match expected {
+            Ok(tlv) => {
+                written.expect("served");
+                let tlv: Vec<u8> = (0..tlv.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&tlv[i..i + 2], 16).expect("hex digits"))
+                    .collect();
+                assert_eq!(&out[1..], &tlv[..]);
+            }
+            Err(fragment) => {
+                let shown = written.expect_err("refused").to_string();
+                assert!(shown.contains(fragment), "{fragment:?} in: {shown}");
+                assert_eq!(out, [0xAA], "a refusal writes nothing");
+            }
+        }
     }
 
     #[test]
