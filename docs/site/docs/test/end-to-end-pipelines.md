@@ -337,7 +337,7 @@ Pick the tab that matches your scenario.
     | Metrics | `gnmi` | `gnmi_target` (Telegraf → VM) | `examples/gnmi-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=ifcounters_in_octets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has subscribed |
     | Metrics | `gnmi` | `gnmi_target` over TLS with credentials (Telegraf → VM) | `examples/gnmi-telegraf-tls.yaml` | The same query, once Telegraf has subscribed over TLS with the example username and password |
     | Metrics | `snmp` | `snmp_agent` (Telegraf → VM) | `examples/snmp-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=interface_ifHCInOctets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has polled |
-| Metrics | `snmp` | `snmp_agent` with the `if_mib` pack (Telegraf → VM) | `examples/if-mib-switch.yaml` | `curl -sG 'http://localhost:8428/api/v1/query' --data-urlencode 'query=interface_ifType{ifDescr!=""}' \| jq '.data.result \| length'` — 24, one per port, once Telegraf has polled |
+    | Metrics | `snmp` | `snmp_agent` with the `if_mib` pack (Telegraf → VM) | `examples/if-mib-switch.yaml` | `curl -sG 'http://localhost:8428/api/v1/query' --data-urlencode 'query=interface_ifType{ifDescr!=""}' \| jq '.data.result \| length'` — 24, one per port, once Telegraf has polled |
 
     † These two rows need OTLP, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see [What the pre-built binaries include](#prebuilt-binaries) below.
 

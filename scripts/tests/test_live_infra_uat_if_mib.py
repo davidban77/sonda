@@ -684,13 +684,28 @@ class MatrixRowTests(unittest.TestCase):
     def test_the_row_comes_after_the_snmp_row_and_the_matrix_table_lists_it(self) -> None:
         names = [row.name for row in uat.MATRIX]
         self.assertEqual(names.index("snmp-if-mib"), names.index("snmp") + 1)
-        doc = (REPO_ROOT / "docs/site/docs/test/end-to-end-pipelines.md").read_text()
-        rows = [
+        lines = (REPO_ROOT / "docs/site/docs/test/end-to-end-pipelines.md").read_text().splitlines()
+        (at,) = [i for i, line in enumerate(lines) if "| Signal | Encoder |" in line]
+        indent = lines[at][: len(lines[at]) - len(lines[at].lstrip())]
+        # The table is the header and every line after it, without a break,
+        # that starts with the header's indentation and a pipe: Markdown
+        # ends it at the first line that does not.
+        end = at
+        while end < len(lines) and lines[end].startswith(f"{indent}|"):
+            end += 1
+        table = lines[at:end]
+        self.assertTrue(
+            any("`examples/snmp-telegraf.yaml`" in line for line in table),
+            "the block found is the matrix: it holds the snmp row",
+        )
+        rows = [line for line in table if "`examples/if-mib-switch.yaml`" in line]
+        self.assertEqual(len(rows), 1, "one row of the matrix table names the example")
+        stray = [
             line
-            for line in doc.splitlines()
-            if line.strip().startswith("|") and "`examples/if-mib-switch.yaml`" in line
+            for line in lines[:at] + lines[end:]
+            if line.lstrip().startswith("|") and "`examples/if-mib-switch.yaml`" in line
         ]
-        self.assertEqual(len(rows), 1, "one matrix row names the example")
+        self.assertEqual(stray, [], "no row naming the example sits outside the table")
 
 
 class Clock:
