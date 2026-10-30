@@ -18,9 +18,10 @@ src/
 │                          ConfigError. A joined write only overwrites a path the target
 │                          already serves and owns nothing; an unserved path is a
 │                          ConfigError. An snmp_agent sink joins the live agent the same
-│                          way and overwrites only an instance it serves; emit_log also
-│                          refuses the snmp encoder and snmp_agent sink (reject_snmp_for)
-│                          before building anything. Used by the sonda-server
+│                          way and overwrites only an instance it serves; emit_metric
+│                          refuses an snmp_trap sink, and emit_log the snmp encoder and
+│                          the snmp_agent and snmp_trap sinks (reject_snmp_for), before
+│                          building anything. Used by the sonda-server
 │                          `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash;
 │                          constant_time_eq under gnmi or snmp: length check, then an XOR-fold over
@@ -239,7 +240,7 @@ src/
 │   │   │                   truncates what the record wrote. uncovered_label (free fn over
 │   │   │                   the config; a label_columns label is covered) is the ONE coverage
 │   │   │                   rule validation also calls. Metrics only; validation pairs it
-│   │   │                   with the snmp_agent sink both ways.
+│   │   │                   with the snmp_agent and snmp_trap sinks both ways.
 │   │   ├── ber.rs      ←   pub(crate) BER subset: Tag, BerError (incl. UnsupportedVersion),
 │   │   │                   definite lengths (write_tlv back-patches, long form above 127),
 │   │   │                   write_i64/write_u64 and the typed writers the value layer uses
@@ -337,8 +338,10 @@ src/
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory. SinkConfig::SnmpAgent(SnmpAgentConfig)
-│   │                      (snmp feature) / SnmpAgentDisabled {}: validation pairs it with
-│   │                      the snmp encoder and runs its settings().
+│   │                      and SnmpTrap(SnmpTrapConfig) (snmp feature) / SnmpAgentDisabled {}
+│   │                      and SnmpTrapDisabled {}: validation pairs each with the snmp
+│   │                      encoder and runs its settings(). create_sink_in passes the
+│   │                      launch to both.
 │   ├── stdout.rs       ← BufWriter<Stdout>
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
@@ -649,7 +652,7 @@ src/
 │   │                       producer sends the status on a oneshot, and Responses yields it
 │   │                       after the queue drains. A publish wakes only ON_CHANGE
 │   │                       subscriber tasks, and only when the value changed.
-│   ├── snmp/           ← snmp_agent sink (feature = "snmp"):
+│   ├── snmp/           ← snmp_agent and snmp_trap sinks (feature = "snmp"):
 │   │   ├── mod.rs      ←   SnmpAgentConfig { listen, community "public", max_message_size
 │   │   │                   1472, system: SystemGroup, versions: Vec<SnmpVersion> [v2c],
 │   │   │                   users: Vec<UsmUser> [], engine_id: Option<String> }
@@ -815,6 +818,42 @@ src/
 │   │   │                   flag decrypt into `plain` and the context engine ID must be the
 │   │   │                   engine's (DecryptionErrors, authenticated). UsmStat knows its
 │   │   │                   OID body and its Counter.
+│   │   ├── trap.rs     ←   snmp_trap sink. SnmpTrapConfig { destination, community "public",
+│   │   │                   inform false, timeout "2s", retries 3 } (deny_unknown_fields; the
+│   │   │                   text fields scalar_text; Debug prints "***" for the community).
+│   │   │                   settings() is the ONE field check validation and the sink both
+│   │   │                   call: destination a socket address or host:port (port 1-65535,
+│   │   │                   no bare IPv6), timeout 100ms..=60s, retries <= 10 -> TrapSettings;
+│   │   │                   the host is resolved by the sink, once, at creation (lookup_host,
+│   │   │                   first address; none is SondaError::Sink). write_trap(out,
+│   │   │                   community, inform, request_id, uptime, TrapKind,
+│   │   │                   Option<LinkVars>) is the ONE message writer: SNMPv2c,
+│   │   │                   SNMPv2-Trap 0xA7 or InformRequest 0xA6, varbinds sysUpTime.0,
+│   │   │                   snmpTrapOID.0 (coldStart .5.1, linkDown .5.3, linkUp .5.4), then
+│   │   │                   ifIndex.N, ifAdminStatus.N, ifOperStatus.N as INTEGERs; pinned
+│   │   │                   byte for byte by four net-snmp 5.9.4.pre2 captures.
+│   │   │                   SnmpTrapSink: wants_metric_events() = true; write() is an error.
+│   │   │                   Reads each record (split_record) and its companions: an INTEGER
+│   │   │                   at ifOperStatus.N (1.3.6.1.2.1.2.2.1.8.N, N <= 2^31-1) is kept
+│   │   │                   per ifIndex in the sink (`oper`, never pruned): up (1) -> other
+│   │   │                   sends linkDown, other -> up linkUp, the first value nothing; an
+│   │   │                   INTEGER at ifAdminStatus.N goes into the device's shared
+│   │   │                   `admin` map, read when a link trap is built (else 1); anything
+│   │   │                   else is ignored. A device is a launch's sinks on one destination:
+│   │   │                   join_device (a process-wide map of Device { sinks, admin: Arc },
+│   │   │                   left on Drop, forgotten with its last sink) counts the sink in
+│   │   │                   and hands it the device's `admin`; only the first live sink
+│   │   │                   sends coldStart, so a pack entry's metrics, each a sink, send one
+│   │   │                   and see each other's ifAdminStatus. Request-ids count up from a
+│   │   │                   random start within 31 bits; sysUpTime is centiseconds since
+│   │   │                   creation. With inform, send() reads the socket until a v2c
+│   │   │                   Response from `destination` carries its request-id (anything
+│   │   │                   else counted in `ignored`), resends the same bytes every
+│   │   │                   timeout, retries times, then is SondaError::Sink, warned once a
+│   │   │                   minute per destination (process-wide map, agent::warn_due). A
+│   │   │                   coldStart failure does not fail new(); the first write returns
+│   │   │                   it. The wait is inside the write: timeout × (retries + 1) at
+│   │   │                   most. Never touches the agent registry.
 │   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
 │   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
 │   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every
@@ -1039,7 +1078,7 @@ src/
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
-| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication), `aes`, `cfb-mode`, `des` and `cbc` (SNMPv3 privacy, default features off) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg` and `sendmmsg` (Linux) or `sendmsg` (macOS) with packet info; `hostname`: the default engine ID) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv, authNoPriv and authPriv) responder. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` sink only, in both directions. |
+| `snmp` | no | Enables `bytes`, `runtime`, `hmac`, `md-5`, `sha1` and `sha2` (SNMPv3 key localization and HMAC authentication), `aes`, `cfb-mode`, `des` and `cbc` (SNMPv3 privacy, default features off) and, on Linux and macOS, `nix` (`socket`, `net`, `uio`: the responder's `recvmsg` and `sendmmsg` (Linux) or `sendmsg` (macOS) with packet info; `hostname`: the default engine ID) for the SNMP encoder (`encoder/snmp/`): its hand-written BER codec, the SNMPv3 message layer, OID templates and publish records, and the `snmp_agent` sink (`sink/snmp/`): the per-address agent, its UDP socket and the SNMPv1/SNMPv2c/SNMPv3 (USM: noAuthNoPriv, authNoPriv and authPriv) responder, and the `snmp_trap` sink (`sink/snmp/trap.rs`): SNMPv2c traps and INFORMs to a receiver. `SnmpValueType` and the `snmp:` pack hint compile without it. Validation pairs the encoder with the `snmp_agent` and `snmp_trap` sinks only, in both directions. |
 | `gnmi` | no | Enables `prost`, `tonic`, `bytes`, `http`, `tower`, `tokio-stream`, `rustls` and `rustls-pki-types` (both already built by tonic's TLS: the ring provider installed as the process default when none is, and the `tls` PEM files parsed) and `runtime` for the gNMI encoder (`encoder/gnmi/`) and the `gnmi_target` sink (`sink/gnmi/`). Validation pairs the encoder with the `gnmi_target` sink only, in both directions. |
 
 When the `config` feature is disabled:

@@ -271,7 +271,7 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
         "snmp_agent" => bail!("--sink snmp_agent cannot be created in this build"),
         // Sinks with no flag form; a kind added to `SinkConfig` without an
         // arm above reaches "unknown sink" instead.
-        kind @ ("memory" | "kafka") => bail!(
+        kind @ ("memory" | "kafka" | "snmp_trap") => bail!(
             "--sink {kind} cannot be set from the command line; configure it under sink: in \
              the scenario file"
         ),

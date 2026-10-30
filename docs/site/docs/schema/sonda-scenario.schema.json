@@ -846,7 +846,7 @@
           ]
         },
         {
-          "description": "SNMP publish records: one BER `VarBind` per event, behind a byte that\ncounts its index arcs.\n\nEach metric's OID is rendered from its `oids:` template. See\n[`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the\n`snmp_agent` sink. Requires the `snmp` feature flag.",
+          "description": "SNMP publish records: one BER `VarBind` per event, behind a byte that\ncounts its index arcs.\n\nEach metric's OID is rendered from its `oids:` template. See\n[`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the\n`snmp_agent` and `snmp_trap` sinks. Requires the `snmp` feature flag.",
           "type": "object",
           "properties": {
             "agent_label": {
@@ -3163,7 +3163,7 @@
       ]
     },
     "SinkConfig": {
-      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,\nor `snmp_agent`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`, `snmp_agent`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
+      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,\n`snmp_agent`, or `snmp_trap`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`, `snmp_agent`, `snmp_trap`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).",
@@ -3770,6 +3770,60 @@
           "required": [
             "type",
             "listen"
+          ]
+        },
+        {
+          "description": "Send SNMPv2c linkDown, linkUp and coldStart notifications, as traps\nor INFORMs, to a trap receiver at `destination`.\n\nWatches the `ifOperStatus` instances in the `snmp` encoder's records\nand pairs only with that encoder. See [`snmp::SnmpTrapConfig`] for\nthe fields. Requires the `snmp` feature flag.",
+          "type": "object",
+          "properties": {
+            "community": {
+              "description": "The SNMPv2c community every notification carries. Default\n`\"public\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "public"
+            },
+            "destination": {
+              "description": "The trap receiver, `\"host:port\"` or a socket address such as\n`\"127.0.0.1:162\"`. A host name is resolved once, when the sink is\ncreated.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "inform": {
+              "description": "Send each notification as an INFORM, which the receiver\nacknowledges, instead of a trap. Default `false`.",
+              "type": "boolean",
+              "default": false
+            },
+            "retries": {
+              "description": "How many times an unacknowledged INFORM is sent again, 0 to 10.\nDefault 3. Read only with `inform: true`.",
+              "type": "integer",
+              "format": "uint8",
+              "default": 3,
+              "maximum": 10,
+              "minimum": 0
+            },
+            "timeout": {
+              "description": "How long an INFORM waits for its acknowledgement before it is sent\nagain, from `\"100ms\"` to `\"60s\"`. Default `\"2s\"`. Read only with\n`inform: true`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "2s"
+            },
+            "type": {
+              "type": "string",
+              "const": "snmp_trap"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "destination"
           ]
         }
       ]

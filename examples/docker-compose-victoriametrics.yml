@@ -494,6 +494,12 @@ services:
   #   docker compose -f examples/docker-compose-victoriametrics.yml exec \
   #     telegraf-snmp snmpbulkwalk -v2c -c public -On sonda:1161 1.3.6.1
   #
+  # It is also the trap receiver of Sonda's snmp_trap sink, on UDP 1162, which
+  # examples/snmp-traps.yaml sends to; it prints each trap to its log:
+  #
+  #   sonda run examples/snmp-traps.yaml --duration 140s
+  #   docker compose -f examples/docker-compose-victoriametrics.yml logs telegraf-snmp
+  #
   # Its health endpoint is on port 8097.
   #
   # This service is only started with --profile snmp.
@@ -503,6 +509,7 @@ services:
     profiles: [snmp]
     ports:
       - "8097:8097"
+      - "1162:1162/udp"
     volumes:
       - ./telegraf/telegraf-snmp.conf:/etc/telegraf/telegraf.conf:ro
     extra_hosts:

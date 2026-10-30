@@ -1534,7 +1534,11 @@ class MatrixRowTests(unittest.TestCase):
     def test_only_the_snmp_rows_have_a_during_hook(self) -> None:
         self.assertEqual(
             {row.name: row.during for row in uat.MATRIX if row.during},
-            {"snmp": uat.snmp_during, "snmp-if-mib": uat.if_mib_during},
+            {
+                "snmp": uat.snmp_during,
+                "snmp-if-mib": uat.if_mib_during,
+                "snmp-traps-restart": uat.traps_restart_during,
+            },
         )
 
 

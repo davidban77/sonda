@@ -16,8 +16,8 @@ use crate::SondaError;
 /// Returns a [`SondaError::Config`] before building anything when the encoder
 /// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]), or
 /// when either is the `gnmi` encoder or the `gnmi_target` sink, which carry
-/// metric signals only, or the `snmp` encoder or the `snmp_agent` sink, which
-/// carry metrics only.
+/// metric signals only, or the `snmp` encoder or the `snmp_agent` or
+/// `snmp_trap` sink, which carry metrics only.
 pub async fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
@@ -38,7 +38,9 @@ pub async fn emit_log(
 /// Encode a [`MetricEvent`] and deliver it through a one-shot sink.
 ///
 /// Returns a [`SondaError::Config`] before building anything when the encoder
-/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]).
+/// cannot be paired with the sink (see [`validate_encoder_sink_pairing`]), or
+/// when the sink is `snmp_trap`, which sends notifications for the changes
+/// between a scenario's events and has none to send for a single event.
 ///
 /// A `gnmi_target` sink joins the live target on its address and never
 /// binds one: with no running scenario listening there, this is a
@@ -53,6 +55,13 @@ pub async fn emit_metric(
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
     validate_encoder_sink_pairing(encoder, sink)?;
+    #[cfg(feature = "snmp")]
+    if matches!(sink, SinkConfig::SnmpTrap(_)) {
+        return Err(SondaError::Config(crate::ConfigError::invalid(
+            "the snmp_trap sink sends linkDown and linkUp for the ifOperStatus changes between \
+             a scenario's events, and a single event has none: run it in a scenario",
+        )));
+    }
     let encoder = create_encoder(encoder)?;
     let mut sink: Box<dyn crate::sink::Sink> = match sink {
         #[cfg(feature = "gnmi")]
@@ -767,5 +776,41 @@ mod tests {
                 .contains("snmp_agent sink carries metrics entries only"),
             "{err}"
         );
+    }
+
+    /// `emit_metric` refuses an `snmp_trap` sink before building it: the
+    /// destination receives nothing, where a trap sink built there sends
+    /// coldStart at once.
+    #[cfg(feature = "snmp")]
+    #[tokio::test]
+    async fn emit_metric_refuses_the_snmp_trap_sink() {
+        use crate::sink::snmp::{SnmpTrapConfig, SnmpTrapSink};
+        use std::time::Duration;
+
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind a receiver");
+        let addr = receiver.local_addr().expect("an address").to_string();
+        let sink = SinkConfig::SnmpTrap(SnmpTrapConfig::new(addr.clone()));
+        let err = emit_metric(&octets("1", 1.0), &snmp_encoder(), &sink, None)
+            .await
+            .expect_err("a single event on snmp_trap must be refused");
+        assert!(matches!(err, SondaError::Config(_)), "got: {err:?}");
+        assert!(err.to_string().contains("snmp_trap sink"), "got: {err}");
+
+        let mut datagram = [0; 512];
+        let nothing = tokio::time::timeout(
+            Duration::from_millis(200),
+            receiver.recv_from(&mut datagram),
+        )
+        .await;
+        assert!(nothing.is_err(), "the refused call sent {nothing:?}");
+        let _built = SnmpTrapSink::new(&SnmpTrapConfig::new(addr))
+            .await
+            .expect("guard: a trap sink builds for the receiver");
+        tokio::time::timeout(Duration::from_secs(5), receiver.recv_from(&mut datagram))
+            .await
+            .expect("guard: a built sink's coldStart reaches the receiver")
+            .expect("received");
     }
 }

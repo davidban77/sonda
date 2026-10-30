@@ -187,7 +187,7 @@ pub enum EncoderConfig {
     ///
     /// Each metric's OID is rendered from its `oids:` template. See
     /// [`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the
-    /// `snmp_agent` sink. Requires the `snmp` feature flag.
+    /// `snmp_agent` and `snmp_trap` sinks. Requires the `snmp` feature flag.
     #[cfg(feature = "snmp")]
     #[cfg_attr(feature = "config", serde(rename = "snmp"))]
     Snmp(snmp::SnmpEncoderConfig),
