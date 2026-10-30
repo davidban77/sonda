@@ -342,14 +342,15 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
 }
 
 /// Require the `gnmi` encoder and the `gnmi_target` sink to be used together,
-/// and the `snmp` encoder and the `snmp_agent` sink.
+/// and the `snmp` encoder with the `snmp_agent` or the `snmp_trap` sink.
 ///
 /// The gnmi encoder's output is one unframed notification per event, which
 /// only the `gnmi_target` sink can carry: written back to back on a
 /// byte-stream sink, two notifications decode as one. The snmp encoder's
-/// output is a publish record only the `snmp_agent` sink reads. Each sink,
-/// in turn, needs the encoder that produces its input. Either one of a pair
-/// without the other is a [`SondaError::Config`] naming both.
+/// output is a publish record only the `snmp_agent` and `snmp_trap` sinks
+/// read. Each sink, in turn, needs the encoder that produces its input. An
+/// encoder without one of its sinks, or a sink without its encoder, is a
+/// [`SondaError::Config`] naming both.
 ///
 /// Returns `Ok(())` for any other pairing.
 pub fn validate_encoder_sink_pairing(
@@ -374,16 +375,20 @@ pub fn validate_encoder_sink_pairing(
     #[cfg(feature = "snmp")]
     {
         let snmp_encoder = matches!(encoder, crate::encoder::EncoderConfig::Snmp(_));
-        let snmp_sink = matches!(sink, SinkConfig::SnmpAgent(_));
-        if snmp_encoder && !snmp_sink {
+        let snmp_sink = match sink {
+            SinkConfig::SnmpAgent(_) => Some("snmp_agent"),
+            SinkConfig::SnmpTrap(_) => Some("snmp_trap"),
+            _ => None,
+        };
+        if snmp_encoder && snmp_sink.is_none() {
             return Err(SondaError::Config(ConfigError::invalid(
-                "the snmp encoder can only be used with the snmp_agent sink",
+                "the snmp encoder can only be used with the snmp_agent or snmp_trap sink",
             )));
         }
-        if snmp_sink && !snmp_encoder {
-            return Err(SondaError::Config(ConfigError::invalid(
-                "the snmp_agent sink can only be used with the snmp encoder",
-            )));
+        if let (Some(snmp_sink), false) = (snmp_sink, snmp_encoder) {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "the {snmp_sink} sink can only be used with the snmp encoder"
+            ))));
         }
     }
     let _ = (encoder, sink);
@@ -544,10 +549,10 @@ pub(crate) fn reject_gnmi_for_logs(
     Ok(())
 }
 
-/// Reject the `snmp` encoder and the `snmp_agent` sink on an entry of
-/// `kind` (`"logs"`, `"histogram"` or `"summary"`).
+/// Reject the `snmp` encoder and the `snmp_agent` and `snmp_trap` sinks on
+/// an entry of `kind` (`"logs"`, `"histogram"` or `"summary"`).
 ///
-/// Both carry metrics entries only: a log, a histogram's buckets and a
+/// All three carry metrics entries only: a log, a histogram's buckets and a
 /// summary's quantiles have no MIB shape.
 pub(crate) fn reject_snmp_for(
     kind: &str,
@@ -562,9 +567,14 @@ pub(crate) fn reject_snmp_for(
                  {kind} entry has no MIB shape"
             ))));
         }
-        if matches!(sink, SinkConfig::SnmpAgent(_)) {
+        let snmp_sink = match sink {
+            SinkConfig::SnmpAgent(_) => Some("snmp_agent"),
+            SinkConfig::SnmpTrap(_) => Some("snmp_trap"),
+            _ => None,
+        };
+        if let Some(snmp_sink) = snmp_sink {
             return Err(SondaError::Config(ConfigError::invalid(format!(
-                "the snmp_agent sink carries metrics entries only, not {kind} entries: a \
+                "the {snmp_sink} sink carries metrics entries only, not {kind} entries: a \
                  {kind} entry has no MIB shape"
             ))));
         }
@@ -958,8 +968,9 @@ fn renders(exact: bool) -> &'static str {
 /// The rules, in this order, each failure a [`SondaError::Config`] with its
 /// own message:
 ///
-/// 1. **Pairing.** When the encoder is `snmp` or the sink is `snmp_agent`,
-///    both are ([`validate_encoder_sink_pairing`]). Any other encoder is then
+/// 1. **Pairing.** When the encoder is `snmp` or the sink is `snmp_agent`
+///    or `snmp_trap`, the encoder is `snmp` and the sink one of those two
+///    ([`validate_encoder_sink_pairing`]). Any other encoder is then
 ///    `Ok(())`.
 /// 2. **Column present.** `oids:` has an entry for the entry's metric name.
 ///    Every `oids:` entry then parses as an
@@ -1024,7 +1035,10 @@ pub fn validate_snmp_encoder(config: &ScenarioConfig) -> Result<(), SondaError> 
     use crate::encoder::EncoderConfig;
     use std::collections::BTreeSet;
 
-    let snmp_sink = matches!(config.base.sink, SinkConfig::SnmpAgent(_));
+    let snmp_sink = matches!(
+        config.base.sink,
+        SinkConfig::SnmpAgent(_) | SinkConfig::SnmpTrap(_)
+    );
     if snmp_sink || matches!(config.encoder, EncoderConfig::Snmp(_)) {
         validate_encoder_sink_pairing(&config.encoder, &config.base.sink)?;
     }
@@ -2080,6 +2094,10 @@ pub fn validate_sink_config(sink: &SinkConfig) -> Result<(), SondaError> {
         SinkConfig::SnmpAgent(cfg) => cfg.settings().map(|_| ()),
         #[cfg(not(feature = "snmp"))]
         SinkConfig::SnmpAgentDisabled { .. } => Ok(()),
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpTrap(cfg) => cfg.settings().map(|_| ()),
+        #[cfg(not(feature = "snmp"))]
+        SinkConfig::SnmpTrapDisabled { .. } => Ok(()),
     }
 }
 
@@ -5431,15 +5449,43 @@ generator:
         validate_config(&snmp_config()).expect("and passes the whole metrics validation");
     }
 
+    /// The snmp encoder pairs with the `snmp_trap` sink as it does with the
+    /// `snmp_agent` sink, and validation runs the trap sink's field check.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn the_snmp_encoder_pairs_with_the_snmp_trap_sink() {
+        use crate::sink::snmp::SnmpTrapConfig;
+
+        let mut config = snmp_config();
+        config.base.sink = SinkConfig::SnmpTrap(SnmpTrapConfig::new("127.0.0.1:162"));
+        validate_snmp_encoder(&config).expect("the encoder takes the trap sink");
+        validate_config(&config).expect("and the entry validates");
+
+        let SinkConfig::SnmpTrap(sink) = &mut config.base.sink else {
+            unreachable!("set above");
+        };
+        sink.retries = 11;
+        let msg = err_msg(validate_config(&config));
+        assert!(
+            msg.contains("snmp_trap retries must be between 0 and 10, got 11"),
+            "got: {msg}"
+        );
+    }
+
     /// Each case adds exactly one defect to [`snmp_config`], which validates.
     #[cfg(feature = "snmp")]
     #[rustfmt::skip]
     #[rstest::rstest]
     // 1. Pairing, both directions.
     #[case::r1_encoder_without_agent_sink(|c: &mut ScenarioConfig| c.base.sink = SinkConfig::Stdout,
-        "the snmp encoder can only be used with the snmp_agent sink")]
+        "the snmp encoder can only be used with the snmp_agent or snmp_trap sink")]
     #[case::r1_agent_sink_without_encoder(|c: &mut ScenarioConfig| c.encoder = EncoderConfig::PrometheusText { precision: None },
         "the snmp_agent sink can only be used with the snmp encoder")]
+    #[case::r1_trap_sink_without_encoder(|c: &mut ScenarioConfig| {
+            c.base.sink = SinkConfig::SnmpTrap(crate::sink::snmp::SnmpTrapConfig::new("127.0.0.1:162"));
+            c.encoder = EncoderConfig::PrometheusText { precision: None };
+        },
+        "the snmp_trap sink can only be used with the snmp encoder")]
     // 2. Column present.
     #[case::r2_no_oids_entry(|c: &mut ScenarioConfig| { snmp_cfg(c).oids.remove("ifHCInOctets"); },
         "no oids: entry for metric \"ifHCInOctets\"")]
@@ -5989,9 +6035,30 @@ generator:
             msg.contains("snmp encoder carries metrics entries only, not logs entries"),
             "got: {msg}"
         );
-        let msg = err_msg(validate_log_config(&snmp_log_config(json, agent())));
+        let msg = err_msg(validate_log_config(&snmp_log_config(json.clone(), agent())));
         assert!(
             msg.contains("snmp_agent sink carries metrics entries only, not logs entries"),
+            "got: {msg}"
+        );
+
+        let trap = || SinkConfig::SnmpTrap(crate::sink::snmp::SnmpTrapConfig::new("127.0.0.1:162"));
+        let mut histogram = make_histogram_config();
+        histogram.base.sink = trap();
+        let msg = err_msg(validate_histogram_config(&histogram));
+        assert!(
+            msg.contains("snmp_trap sink carries metrics entries only, not histogram entries"),
+            "got: {msg}"
+        );
+        let mut summary = make_summary_config();
+        summary.base.sink = trap();
+        let msg = err_msg(validate_summary_config(&summary));
+        assert!(
+            msg.contains("snmp_trap sink carries metrics entries only, not summary entries"),
+            "got: {msg}"
+        );
+        let msg = err_msg(validate_log_config(&snmp_log_config(json, trap())));
+        assert!(
+            msg.contains("snmp_trap sink carries metrics entries only, not logs entries"),
             "got: {msg}"
         );
     }

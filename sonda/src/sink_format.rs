@@ -60,6 +60,8 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::GnmiTarget(cfg) => Some(cfg.listen.clone()),
         #[cfg(feature = "snmp")]
         SinkConfig::SnmpAgent(cfg) => Some(cfg.listen.clone()),
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpTrap(cfg) => Some(cfg.destination.clone()),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled {} | SinkConfig::LokiDisabled {} => {
             Some("disabled".to_string())
@@ -73,7 +75,9 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         #[cfg(not(feature = "gnmi"))]
         SinkConfig::GnmiTargetDisabled {} => Some("disabled".to_string()),
         #[cfg(not(feature = "snmp"))]
-        SinkConfig::SnmpAgentDisabled {} => Some("disabled".to_string()),
+        SinkConfig::SnmpAgentDisabled {} | SinkConfig::SnmpTrapDisabled {} => {
+            Some("disabled".to_string())
+        }
         // `stdout`, `memory` without capture, and any variant with no arm.
         _ => None,
     };
@@ -201,5 +205,22 @@ mod tests {
         let display = sink_display(&SinkConfig::SnmpAgentDisabled {});
         assert!(!display.contains("unknown ("), "got {display}");
         assert_eq!(display, "snmp_agent (disabled)");
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn snmp_trap_includes_destination_in_parens() {
+        let s = SinkConfig::SnmpTrap(sonda_core::sink::snmp::SnmpTrapConfig::new("host:162"));
+        let display = sink_display(&s);
+        assert!(!display.contains("unknown ("), "got {display}");
+        assert_eq!(display, "snmp_trap (host:162)");
+    }
+
+    #[cfg(not(feature = "snmp"))]
+    #[test]
+    fn snmp_trap_disabled_renders_disabled_marker() {
+        let display = sink_display(&SinkConfig::SnmpTrapDisabled {});
+        assert!(!display.contains("unknown ("), "got {display}");
+        assert_eq!(display, "snmp_trap (disabled)");
     }
 }

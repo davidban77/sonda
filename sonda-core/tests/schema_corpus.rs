@@ -1085,6 +1085,109 @@ fn the_parser_takes_every_scalar_the_schema_takes_for_snmp_agent_text_fields() {
     sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts what the schema accepts");
 }
 
+/// An `snmp_trap` sink whose block carries `extra`, one line under
+/// `destination`.
+#[cfg(feature = "snmp")]
+fn snmp_trap_document(extra: &str) -> String {
+    format!(
+        r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    oids:
+      ifOperStatus: "1.3.6.1.2.1.2.2.1.8.{{ifIndex}}"
+    types:
+      ifOperStatus: integer
+  sink:
+    type: snmp_trap
+    destination: 127.0.0.1:1162
+    {extra}
+scenarios:
+  - signal_type: metrics
+    name: ifOperStatus
+    labels:
+      ifIndex: "1"
+    generator:
+      type: constant
+      value: 1.0
+"#
+    )
+}
+
+/// The `snmp_trap` block denies unknown keys, in the schema and the parser.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::retries("retires: 2")]
+#[case::inform("infrom: true")]
+fn the_schema_rejects_a_misspelled_snmp_trap_key(#[case] extra: &str) {
+    let good = snmp_trap_document("retries: 2");
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&good).expect("loads");
+    assert!(
+        validator().is_valid(&yaml_to_json(value)),
+        "guard: the schema takes the block spelt right"
+    );
+    sonda_core::compiler::parse::parse(&good).expect("guard: so does the parser");
+    let yaml = snmp_trap_document(extra);
+    sonda_core::compiler::parse::parse(&yaml).expect_err("the parser refuses the key");
+    assert_rejected(extra, &yaml);
+}
+
+/// The schema accepts any scalar for the trap sink's text fields, so the
+/// parser must too: a numeric `community` or `timeout` is read as its text,
+/// which validation then judges.
+#[cfg(feature = "snmp")]
+#[test]
+fn the_parser_takes_every_scalar_the_schema_takes_for_snmp_trap_text_fields() {
+    let yaml = snmp_trap_document(
+        "community: 12345
+    timeout: 2",
+    );
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+    assert!(
+        validator().is_valid(&yaml_to_json(value)),
+        "the premise: the schema accepts numeric text fields"
+    );
+    sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts what the schema accepts");
+}
+
+/// The schema bounds `retries` where validation does, and accepts the
+/// bounds.
+#[cfg(feature = "snmp")]
+#[rstest::rstest]
+#[case::retries_zero(0, true)]
+#[case::retries_at_the_maximum(10, true)]
+#[case::retries_above_the_maximum(11, false)]
+fn the_schema_bounds_snmp_trap_retries_like_validation(#[case] retries: u8, #[case] valid: bool) {
+    use sonda_core::sink::snmp::SnmpTrapConfig;
+    use sonda_core::sink::SinkConfig;
+
+    let cfg = SnmpTrapConfig {
+        retries,
+        ..SnmpTrapConfig::new("127.0.0.1:1162")
+    };
+    let validated = sonda_core::config::validate::validate_sink_config(&SinkConfig::SnmpTrap(cfg));
+    assert_eq!(
+        validated.is_ok(),
+        valid,
+        "validation of {retries}: {validated:?}"
+    );
+
+    let extra = format!("retries: {retries}");
+    let yaml = snmp_trap_document(&extra);
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        assert!(
+            validator().is_valid(&yaml_to_json(value)),
+            "the schema refuses `{extra}`"
+        );
+    } else {
+        assert_rejected(&extra, &yaml);
+    }
+}
+
 /// `system.object_id` is an OID and not widened: an unquoted number is
 /// refused by both, and a dotted OID string is accepted by both.
 #[cfg(feature = "snmp")]

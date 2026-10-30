@@ -698,7 +698,8 @@ impl Encoder for SnmpEncoder {
     /// event without being rendered again. A record rejected for its value
     /// carries no companions, and the series' next written record does.
     ///
-    /// Validation pairs this encoder with the `snmp_agent` sink only.
+    /// Validation pairs this encoder with the `snmp_agent` and `snmp_trap`
+    /// sinks only.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         let name: &str = &event.name;
         let template = self.template_of(name)?;
