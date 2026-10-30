@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.29.0](https://github.com/davidban77/sonda/compare/v1.28.0...v1.29.0) (2026-10-30)
+
+
+### Features
+
+* **server:** GET /snmp/agents lists the running SNMP agents with their counters ([#708](https://github.com/davidban77/sonda/issues/708)) ([5dfb65a](https://github.com/davidban77/sonda/commit/5dfb65a712d9e0f33e3568d1ca0b462f0866f89d))
+* **snmp:** if_mib pack with the ifTable and ifXTable columns, and typed label columns ([#709](https://github.com/davidban77/sonda/issues/709)) ([32c98d9](https://github.com/davidban77/sonda/commit/32c98d9699ac92eae3a6ce84b360e226e3947d27))
+* **snmp:** snmp_trap sink sends linkDown, linkUp and coldStart as SNMPv2c traps or INFORMs ([#710](https://github.com/davidban77/sonda/issues/710)) ([1bd1220](https://github.com/davidban77/sonda/commit/1bd122042d4eed6b23ceb2deb86c1ddd9ffe8bad))
+
 ## [1.28.0](https://github.com/davidban77/sonda/compare/v1.27.0...v1.28.0) (2026-10-28)
 
 
