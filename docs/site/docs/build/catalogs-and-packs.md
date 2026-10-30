@@ -455,7 +455,7 @@ deviations:                     # changes to the base's metrics
     not_supported: true         # this platform does not implement it
 ```
 
-Run it like any other pack — `pack: cisco_iosxe_interface` — and the scenario sees one flat set of metrics.
+Run it like any other pack — `pack: cisco_iosxe_interface` — and the scenario sees one flat set of metrics. The builtin [`if_mib`](builtin-packs.md#if-mib) pack is an extension of the same base: it adds five IF-MIB columns and three label columns, and deviates from nothing.
 
 **`metrics:` only adds.** A metric whose selector the base already declares is an error, because adding and changing are different operations. Use a deviation to change one.
 
@@ -495,6 +495,7 @@ All pack fields are top-level keys in the file:
 | `metrics[].labels` | map | no | Per-metric labels (merged on top of `shared_labels`). |
 | `metrics[].generator` | object | no | Default generator. Falls back to `constant { value: 0.0 }` when absent. |
 | `metrics[].gnmi` | object | no | `path` and `value`: the metric's gNMI path template and value type. Under a `gnmi` encoder they fill the encoder's `paths:` and `values:` for this metric; entries the scenario writes win. Specs sharing a name carry the same hint or none. See [Encoders — paths and values from a pack](encoders.md#paths-and-values-from-a-pack). |
+| `snmp_label_columns` | map | no | Per label, the column an `snmp` encoder serves its value in: an OID template (`ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"`, an OCTET STRING), or `{ oid, type }` (`ifType: { oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer }`, the label's text served as that value type; never an enum). Under an `snmp` encoder they fill its `label_columns:`, typed columns with their type; entries the scenario writes win. An extension's map wins over its base's. See [Encoders — label columns](encoders.md#label-columns). |
 
 ## Pattern: catalog and packs together
 

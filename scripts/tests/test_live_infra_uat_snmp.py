@@ -1499,9 +1499,9 @@ class TelegrafConfTests(unittest.TestCase):
     def test_the_health_output_is_the_backend_the_harness_waits_for(self) -> None:
         (health,) = telegraf_conf()["outputs"]["health"]
         port = health["service_address"].rsplit(":", 1)[1]
-        (backend,) = uat.BACKENDS_BY_PROFILE["snmp"]
-        self.assertEqual(backend.name, "telegraf-snmp")
-        self.assertEqual(backend.health_url, f"http://localhost:{port}/")
+        backends = {backend.name: backend for backend in uat.BACKENDS_BY_PROFILE["snmp"]}
+        self.assertEqual(sorted(backends), ["telegraf-if-mib", "telegraf-snmp"])
+        self.assertEqual(backends["telegraf-snmp"].health_url, f"http://localhost:{port}/")
 
 
 class MatrixRowTests(unittest.TestCase):
@@ -1531,8 +1531,11 @@ class MatrixRowTests(unittest.TestCase):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(row.verify_url).query)
         self.assertEqual(query["query"], [uat.SNMP_EXPORT_MATCH])
 
-    def test_only_the_snmp_row_has_a_during_hook(self) -> None:
-        self.assertEqual([row.name for row in uat.MATRIX if row.during], ["snmp"])
+    def test_only_the_snmp_rows_have_a_during_hook(self) -> None:
+        self.assertEqual(
+            {row.name: row.during for row in uat.MATRIX if row.during},
+            {"snmp": uat.snmp_during, "snmp-if-mib": uat.if_mib_during},
+        )
 
 
 class VerifySnmpRowTests(unittest.TestCase):

@@ -25,6 +25,7 @@ composable  node_exporter_memory           Memory gauge metrics (node_exporter-c
 composable  kube_state_metrics             Pod phase, deployment replicas and restarts (kube-state-metrics)
 
 [network]
+composable  if_mib                         IF-MIB ifTable and ifXTable, extending the Telegraf SNMP interface pack
 composable  openconfig_interface           OpenConfig interface counters and status, with gNMI paths
 composable  telegraf_snmp_interface        Standard SNMP interface metrics (Telegraf-normalized)
 ```
@@ -63,6 +64,7 @@ Every pack uses the real upstream metric names and label keys, so a dashboard qu
 | Pack | Category | Models |
 |------|----------|--------|
 | `http_server_red` | application | Rate, Errors, Duration for a request-serving service |
+| `if_mib` | network | The IF-MIB ifTable and ifXTable columns of an interface, extending `telegraf_snmp_interface`, with typed label columns |
 | `kube_state_metrics` | kubernetes | Pod phase, the deployment replica gap, container restarts, node readiness |
 | `node_exporter_cpu` | infrastructure | `node_cpu_seconds_total` per CPU mode |
 | `node_exporter_memory` | infrastructure | node_exporter memory gauges |
@@ -150,6 +152,69 @@ scenarios:
 ```
 
 `ifHCInOctets` on interface 1 is served at `1.3.6.1.2.1.31.1.1.1.6.1` as a `Counter64`, and its name at `1.3.6.1.2.1.31.1.1.1.1.1` as the string `Ethernet1`. Every label is in the instance OID, is the agent label, is a label column, or is dropped: `ifIndex` is the index arc, `device` the agent label, `ifName` and `ifAlias` label columns, so only `job` is dropped. An `oids:`, `types:` or `label_columns:` entry in the encoder block wins over the pack's. Under any other encoder the hints are not used and the pack emits plain metrics. [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) runs it for four interfaces, polled by [Telegraf](sinks.md#snmp-telegraf).
+
+### `if_mib` { #if-mib }
+
+The interface as IF-MIB defines it: `if_mib` [extends](catalogs-and-packs.md#extend-a-pack) `telegraf_snmp_interface`, keeps its five metrics as they are, and adds five more ifTable and ifXTable columns. One pack entry is one interface. Every metric carries an `snmp:` hint, so under the [`snmp` encoder](encoders.md#snmp) the encoder block names no OIDs:
+
+| Metric | OID | Type | Default |
+|--------|-----|------|---------|
+| `ifOperStatus` | `1.3.6.1.2.1.2.2.1.8.{ifIndex}` | `integer` | 1, up |
+| `ifHCInOctets` | `1.3.6.1.2.1.31.1.1.1.6.{ifIndex}` | `counter64` | +125,000 a tick |
+| `ifHCOutOctets` | `1.3.6.1.2.1.31.1.1.1.10.{ifIndex}` | `counter64` | +62,500 a tick |
+| `ifInErrors` | `1.3.6.1.2.1.2.2.1.14.{ifIndex}` | `counter32` | 0 |
+| `ifOutErrors` | `1.3.6.1.2.1.2.2.1.20.{ifIndex}` | `counter32` | 0 |
+| `ifSpeed` | `1.3.6.1.2.1.2.2.1.5.{ifIndex}` | `gauge32` | 1,000,000,000 (bits/s) |
+| `ifAdminStatus` | `1.3.6.1.2.1.2.2.1.7.{ifIndex}` | `integer` | 1, up |
+| `ifInOctets` | `1.3.6.1.2.1.2.2.1.10.{ifIndex}` | `counter32` | +125,000 a tick, wrapping at 2³² |
+| `ifOutOctets` | `1.3.6.1.2.1.2.2.1.16.{ifIndex}` | `counter32` | +62,500 a tick, wrapping at 2³² |
+| `ifHighSpeed` | `1.3.6.1.2.1.31.1.1.1.15.{ifIndex}` | `gauge32` | 1,000 (Mb/s) |
+
+Its five label columns serve the interface's labels as ifTable and ifXTable columns: the base's two, and three of its own. `ifIndex` and `ifType` are [typed columns](encoders.md#label-columns): the label's text is served as an `INTEGER`, as IF-MIB defines those columns.
+
+| Label | OID | Served as | Default |
+|-------|-----|-----------|---------|
+| `ifIndex` | `1.3.6.1.2.1.2.2.1.1.{ifIndex}` | `integer` | — |
+| `ifDescr` | `1.3.6.1.2.1.2.2.1.2.{ifIndex}` | OCTET STRING | `""` |
+| `ifType` | `1.3.6.1.2.1.2.2.1.3.{ifIndex}` | `integer` | `6`, ethernetCsmacd |
+| `ifName` | `1.3.6.1.2.1.31.1.1.1.1.{ifIndex}` | OCTET STRING | `""` |
+| `ifAlias` | `1.3.6.1.2.1.31.1.1.1.18.{ifIndex}` | OCTET STRING | `""` |
+
+`ifNumber`, the number of interfaces (`1.3.6.1.2.1.2.1.0`), is not a pack metric: a pack entry is one interface, and the count belongs to the scenario, which serves it as a scalar entry of its own with its own encoder block.
+
+```yaml
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    drop_labels: [job]
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1163
+
+scenarios:
+  - signal_type: metrics
+    pack: if_mib
+    labels: { device: sw-access-01, ifIndex: 1, ifName: Gi1/0/1, ifDescr: GigabitEthernet1/0/1 }
+
+  - signal_type: metrics
+    pack: if_mib
+    labels: { device: sw-access-01, ifIndex: 2, ifName: Gi1/0/2, ifDescr: GigabitEthernet1/0/2 }
+
+  - signal_type: metrics
+    name: ifNumber
+    labels: { device: sw-access-01 }
+    encoder:
+      type: snmp
+      oids: { ifNumber: "1.3.6.1.2.1.2.1.0" }
+      types: { ifNumber: integer }
+    generator: { type: constant, value: 2 }
+```
+
+`ifType.1` is served at `1.3.6.1.2.1.2.2.1.3.1` as `INTEGER: 6`, and `ifIndex.2` at `1.3.6.1.2.1.2.2.1.1.2` as `INTEGER: 2`. A label a typed column cannot serve, such as `ifType: copper` or `ifType: "6.5"`, is refused when the scenario is validated, naming the label, the type and the value. The pack carries no `gnmi:` hints: [`openconfig_interface`](#openconfig_interface) is the gNMI pack. [`examples/if-mib-switch.yaml`](https://github.com/davidban77/sonda/blob/main/examples/if-mib-switch.yaml) serves a 24-port switch on port 1163, polled by Telegraf in the interface-table layout of its documentation ([`examples/telegraf/telegraf-if-mib.conf`](https://github.com/davidban77/sonda/blob/main/examples/telegraf/telegraf-if-mib.conf)).
 
 ## Change one metric without editing the pack
 

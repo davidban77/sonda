@@ -2983,8 +2983,14 @@ mod tests {
     fn column_encoder() -> SnmpEncoder {
         let mut cfg = encoder_config();
         cfg.label_columns = HashMap::from([
-            ("ifName".to_string(), format!("{IF_NAME}.{{ifIndex}}")),
-            ("ifAlias".to_string(), format!("{IF_ALIAS}.{{ifIndex}}")),
+            (
+                "ifName".to_string(),
+                format!("{IF_NAME}.{{ifIndex}}").into(),
+            ),
+            (
+                "ifAlias".to_string(),
+                format!("{IF_ALIAS}.{{ifIndex}}").into(),
+            ),
         ]);
         SnmpEncoder::new(&cfg).expect("a valid encoder")
     }

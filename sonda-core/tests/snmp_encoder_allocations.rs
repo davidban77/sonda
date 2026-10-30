@@ -361,21 +361,28 @@ fn steady_state_encode_allocates_nothing() {
     );
 }
 
-/// With `ifName` and `ifAlias` served as columns, a series' first record
-/// carries both companions and every later record none, so steady-state
-/// encode still allocates nothing. What the first record costs is printed as
-/// a figure.
+/// With `ifName` and `ifAlias` served as columns, and `ifType` as a typed
+/// INTEGER column, a series' first record carries the three companions and
+/// every later record none, so steady-state encode still allocates nothing.
+/// What the first record costs is printed as a figure.
 #[test]
 fn label_columns_leave_steady_state_encode_at_zero() {
     let encoder = SnmpEncoder::new(&SnmpEncoderConfig {
         label_columns: HashMap::from([
             (
                 "ifName".to_string(),
-                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
             ),
             (
                 "ifAlias".to_string(),
-                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".into(),
+            ),
+            (
+                "ifType".to_string(),
+                sonda_core::encoder::snmp::LabelColumn::Typed {
+                    oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                    r#type: sonda_core::encoder::snmp::SnmpValueType::Integer,
+                },
             ),
         ]),
         ..snmp_encoder_config()
@@ -387,6 +394,7 @@ fn label_columns_leave_steady_state_encode_at_zero() {
             ("ifIndex", "3"),
             ("ifName", "GigabitEthernet0/0/2"),
             ("ifAlias", "uplink to core"),
+            ("ifType", "6"),
         ],
         1_250_000.0,
     );
@@ -397,8 +405,13 @@ fn label_columns_leave_steady_state_encode_at_zero() {
             .encode_metric(&event, &mut buf)
             .expect("the first encode succeeds");
     });
-    // Guard: the first record carried both companions.
-    assert_eq!(buf[1], 2, "two companions on first sight");
+    // Guard: the first record carried the three companions, the typed one
+    // as an INTEGER.
+    assert_eq!(buf[1], 3, "three companions on first sight");
+    assert!(
+        buf.windows(3).any(|w| w == [0x02, 0x01, 0x06]),
+        "ifType's companion carries INTEGER 6"
+    );
     let first_record = buf.len();
     buf.clear();
     encoder
@@ -425,7 +438,7 @@ fn label_columns_leave_steady_state_encode_at_zero() {
     assert_eq!(buf.len(), one_record);
     assert_eq!(buf[1], 0);
     println!(
-        "first-sight record with two label columns: {first_sight} allocations, \
+        "first-sight record with three label columns, one typed: {first_sight} allocations, \
          {first_record} bytes; steady state: {allocs} over {calls} calls"
     );
     assert_eq!(
