@@ -1031,6 +1031,135 @@ docker compose -f examples/docker-compose-victoriametrics.yml exec telegraf-snmp
   -On sonda:1161 1.3.6.1.2.1.1.5.0
 ```
 
+## snmp_trap
+
+Sends SNMPv2c notifications to a trap receiver, the way a managed device reports a link that changes: linkDown when an interface goes down, linkUp when it comes back, and coldStart when Sonda starts. Unlike `snmp_agent`, this sink sends: a receiver such as Telegraf's `inputs.snmp_trap`, net-snmp's `snmptrapd` or a network management system listens on `destination` and Sonda sends to it over UDP.
+
+Pair this sink with the [`snmp` encoder](encoders.md#snmp), as `snmp_agent` is: the sink reads the instance OID and value of each record the encoder writes. It takes only that encoder, and it works for `metrics` entries.
+
+!!! note
+    This sink requires the `snmp` Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: `cargo build --features snmp -p sonda`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `destination` | string | yes | -- | The trap receiver, `"host:port"` or an address such as `"127.0.0.1:162"`. A host name is resolved once, when the sink is created; one that resolves to nothing fails the scenario's start. |
+| `community` | string | no | `public` | The community every notification carries. |
+| `inform` | boolean | no | `false` | Send INFORMs, which the receiver acknowledges, instead of traps. See [Traps and INFORMs](#snmp-trap-inform). |
+| `timeout` | duration | no | `2s` | How long an INFORM waits for its acknowledgement before it is sent again, `100ms` to `60s`. Read only with `inform: true`. |
+| `retries` | integer | no | `3` | How many times an unacknowledged INFORM is sent again, 0 to 10. Read only with `inform: true`. |
+
+```yaml title="An snmp_trap sink sending INFORMs"
+sink:
+  type: snmp_trap
+  destination: 127.0.0.1:1162
+  community: public
+  inform: true
+  timeout: 5s
+  retries: 10
+```
+
+SNMPv2c is the only version the sink sends: no SNMPv1 Trap-PDU and no SNMPv3 notification.
+
+### What it sends { #snmp-trap-notifications }
+
+The sink watches the IF-MIB interface table in the records it reads: `ifOperStatus` (`1.3.6.1.2.1.2.2.1.8.<ifIndex>`) and `ifAdminStatus` (`1.3.6.1.2.1.2.2.1.7.<ifIndex>`), each an `integer`, as the [`telegraf_snmp_interface`](builtin-packs.md#snmp-hints) and `if_mib` packs type them. Records of any other OID, or of another type, are ignored.
+
+| Notification | `snmpTrapOID.0` | Sent when | Varbinds after `sysUpTime.0` and `snmpTrapOID.0` |
+|--------------|-----------------|-----------|---------------------------------------------------|
+| coldStart | `1.3.6.1.6.3.1.1.5.1` | Once, when the sink is created (see below) | none |
+| linkDown | `1.3.6.1.6.3.1.1.5.3` | An interface's `ifOperStatus` changes from up (1) to any other value | `ifIndex.N`, `ifAdminStatus.N`, `ifOperStatus.N` |
+| linkUp | `1.3.6.1.6.3.1.1.5.4` | An interface's `ifOperStatus` changes to up (1) from any other value | `ifIndex.N`, `ifAdminStatus.N`, `ifOperStatus.N` |
+
+An interface's first `ifOperStatus` sends nothing, and a change between two values other than up, such as down to `lowerLayerDown`, sends nothing either. The varbinds are in the order RFC 3416 and RFC 2863 give them: `ifIndex.N` carries the interface's index, `ifOperStatus.N` its new value, and `ifAdminStatus.N` the last `ifAdminStatus` the sink read for it, or up (1) when it read none. Each entry has its own sink and reads only its own records: the `ifAdminStatus` an entry's link traps carry is the one that entry's records carry, so a pack, whose metrics become entries of their own, sends up (1). `sysUpTime.0` counts hundredths of a second from when the sink was created.
+
+The entries of one scenario file that send to one destination are one device: the first of their sinks to be created sends coldStart and the others do not. A pack entry becomes one entry, and one sink, per metric of the pack, so a pack on one interface sends one coldStart, not one per metric. A file run again, or another file, sends its own.
+
+### Traps and INFORMs { #snmp-trap-inform }
+
+Without `inform`, each notification is an `SNMPv2-Trap` PDU, sent once; nothing is waited for, and a socket error is a sink error of the scenario.
+
+With `inform: true`, each notification is an `InformRequest`. The sink waits up to `timeout` for a `Response` carrying the request-id it sent, ignoring anything else that arrives, and sends the same message again each time `timeout` passes, `retries` times at most. A notification that is never acknowledged is one sink error of the scenario, counted like any sink's, and logged at warn at most once a minute per destination; the scenario goes on with its next event.
+
+!!! warning "An unanswered INFORM stalls the scenario"
+    An INFORM is sent and waited for in the scenario's own write, so while the receiver does not answer, its entry emits nothing. One notification holds the entry for `timeout × (retries + 1)` at most: 8 seconds with the defaults, 11 minutes at the limits (`60s`, 10). coldStart is waited for while the sink is created, so its entry starts that much later; a link trap is waited for inside a write, and the events held back meanwhile are emitted late, one after another. Keep `timeout × (retries + 1)` short where a stalled scenario matters, or send traps, which never wait.
+
+### Telegraf { #snmp-trap-telegraf }
+
+[`examples/snmp-traps.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-traps.yaml) is one router interface whose `ifOperStatus` flaps, up for 60 seconds and down for 5, sending INFORMs to Telegraf:
+
+```yaml title="examples/snmp-traps.yaml (comments left out)"
+# sonda:static - an snmp_trap sink sends to a trap receiver, which the browser playground cannot provide
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    drop_labels: [job]
+  sink:
+    type: snmp_trap
+    destination: 127.0.0.1:1162
+    community: public
+    inform: true
+    timeout: 5s
+    retries: 10
+
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels: { device: rtr-edge-01, ifIndex: 1, ifName: GigabitEthernet0/0/0 }
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 5s
+          enum: oper_state
+```
+
+In 140 seconds it sends one coldStart, then linkDown at 60 seconds, linkUp at 65, linkDown at 125 and linkUp at 130. With `timeout: 5s` and `retries: 10`, a notification is sent 11 times at most, the last 50 seconds after the first, so a receiver that is back within 50 seconds still receives it.
+
+The compose stack's `telegraf-snmp` service (profile `snmp`) receives them with `inputs.snmp_trap` on UDP 1162, which it maps from the host, acknowledges each INFORM, and prints each trap as one JSON line:
+
+```toml title="examples/telegraf/telegraf-snmp.conf (excerpt)"
+[agent]
+  snmp_translator = "gosmi"
+
+[[inputs.snmp_trap]]
+  alias = "traps"
+  service_address = "udp://:1162"
+
+[[outputs.file]]
+  files = ["stdout"]
+  data_format = "json"
+  json_timestamp_units = "1ms"
+  namepass = ["snmp_trap"]
+```
+
+`inputs.snmp_trap` names each varbind by translating its OID, and drops a trap whose OIDs it cannot translate. The Telegraf image has no MIB files, so the config sets the `gosmi` translator, which names an OID it has no MIB for from its built-in nodes, `iso.3.6.1.2.1.1.3.0` for `sysUpTime.0`; with `netsnmp`, Telegraf's default, every trap would be dropped. The trap itself is in the `oid` tag:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile snmp up -d
+sonda run examples/snmp-traps.yaml --duration 140s
+docker compose -f examples/docker-compose-victoriametrics.yml logs telegraf-snmp | grep '"name":"snmp_trap"'
+```
+
+```text title="What Telegraf prints for the first linkDown (one line, wrapped here)"
+{"fields":{"iso.3.6.1.2.1.1.3.0":6000,"iso.3.6.1.2.1.2.2.1.1.1":1,"iso.3.6.1.2.1.2.2.1.7.1":1,
+"iso.3.6.1.2.1.2.2.1.8.1":2},"name":"snmp_trap","tags":{"community":"public","mib":"",
+"name":"iso.3.6.1.6.3.1.1.5.3","oid":".1.3.6.1.6.3.1.1.5.3","source":"172.18.0.1","version":"2c"},
+"timestamp":1793360325306}
+```
+
+Telegraf also writes the traps to VictoriaMetrics, one series per varbind named `snmp_trap_` and the varbind's name, each labelled with the trap's `oid`.
+
+net-snmp's `snmptrapd` receives them too. It listens on the standard port 162 unless told otherwise, and acknowledges INFORMs:
+
+```bash
+snmptrapd -f -Lo -On --disableAuthorization=yes udp:127.0.0.1:1162
+```
+
 ## Retry with backoff
 
 Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does **not** retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a `retry:` block to any network sink.
