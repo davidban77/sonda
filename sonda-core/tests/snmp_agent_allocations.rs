@@ -281,7 +281,7 @@ fn column_encoder_config() -> SnmpEncoderConfig {
     SnmpEncoderConfig {
         label_columns: HashMap::from([(
             "ifName".to_string(),
-            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
         )]),
         ..encoder_config()
     }

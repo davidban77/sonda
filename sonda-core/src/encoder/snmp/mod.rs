@@ -5,10 +5,11 @@
 //! the number of index arcs at the end of the instance OID, the number of
 //! companion records after the instance, the instance's BER `VarBind`
 //! SEQUENCE { OID, value }, then one companion record per label column the
-//! series serves: its index-arc count and its `VarBind` { OID, OCTET STRING
-//! holding the label's value }. The instance OID is rendered from the
-//! metric's [`OidTemplate`] the first time a series is seen and cached as its
-//! encoded OBJECT IDENTIFIER, with its companion records; later events copy
+//! series serves: its index-arc count and its `VarBind` { OID, the label's
+//! value as the column's type, an OCTET STRING unless the column names
+//! another }. The instance OID is rendered from the metric's [`OidTemplate`]
+//! the first time a series is seen and cached as its encoded OBJECT
+//! IDENTIFIER, with its companion records; later events copy
 //! those bytes and encode only the value. Only the series' first record that
 //! is written carries its companions; every other record carries none. A
 //! series is its metric name and the labels its template can see, so events
@@ -29,7 +30,7 @@ pub mod oid;
 pub(crate) mod v3;
 pub mod value;
 
-pub use value::SnmpValueType;
+pub use value::{LabelColumn, SnmpValueType};
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -82,20 +83,23 @@ pub struct SnmpEncoderConfig {
     #[cfg_attr(feature = "config", serde(default, deserialize_with = "oid_templates"))]
     #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
     pub oids: HashMap<String, String>,
-    /// OID template per label whose value the agent serves as an OCTET
-    /// STRING, such as `ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"`: a
+    /// Label column per label whose value the agent serves, such as
+    /// `ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"` (an OCTET STRING) or
+    /// `ifType: { oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer }`
+    /// (the label's text parsed as a number and served as that type): a
     /// column beside the metrics' columns, one instance per index. A
     /// template uses only placeholders every `oids:` template uses. A label
     /// named here needs no placeholder and no `drop_labels` entry, and
-    /// validation requires it to be a static label of the entry; a series
-    /// without the label serves no instance of its column. Each is a string;
-    /// a YAML number is an error.
+    /// validation requires it to be a static label of the entry, whose value
+    /// a typed column's type can serve; a series without the label serves no
+    /// instance of its column. Each template is a string; a YAML number is an
+    /// error. See [`LabelColumn`].
     #[cfg_attr(
         feature = "config",
         serde(default, deserialize_with = "label_column_templates")
     )]
     #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
-    pub label_columns: HashMap<String, String>,
+    pub label_columns: HashMap<String, LabelColumn>,
     /// Value type per metric name; default `gauge32`.
     #[cfg_attr(feature = "config", serde(default))]
     pub types: HashMap<String, SnmpValueType>,
@@ -129,16 +133,14 @@ fn oid_templates<'de, D: serde::Deserializer<'de>>(
     })
 }
 
-/// `deserialize_with` for `label_columns:`: each template is a string, and
-/// an error names its `label_columns.<label>` field.
+/// `deserialize_with` for `label_columns:`: each a [`LabelColumn`], whose
+/// template is a string, and an error names its `label_columns.<label>`
+/// field.
 #[cfg(feature = "config")]
 fn label_column_templates<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<HashMap<String, String>, D::Error> {
-    deserializer.deserialize_map(Templates {
-        field: "label_columns",
-        keys: "labels",
-    })
+) -> Result<HashMap<String, LabelColumn>, D::Error> {
+    value::deserialize_label_columns(deserializer, "label_columns")
 }
 
 /// A map of OID templates read as strings
@@ -227,8 +229,8 @@ pub(crate) struct Record<'a> {
 pub(crate) struct Companion<'a> {
     /// How many arcs at the end of the column instance's OID are its index.
     pub(crate) index_arcs: u8,
-    /// The column instance's `VarBind`: its OID and the label's value as an
-    /// OCTET STRING.
+    /// The column instance's `VarBind`: its OID and the label's value as the
+    /// column's type.
     pub(crate) varbind: &'a [u8],
 }
 
@@ -327,15 +329,15 @@ pub(crate) fn split_record(encoded: &[u8]) -> Result<Record<'_>, SondaError> {
 /// second the number of companion records that follow the instance's
 /// `VarBind` SEQUENCE { OBJECT IDENTIFIER, value }. A companion record is a
 /// label column's instance: its index-arc count, then a `VarBind` { the
-/// column's template rendered for the event, OCTET STRING holding the
-/// label's value }, one per `label_columns` label the event carries, in
-/// label order. A series' companions ride its first record that is written;
-/// every other record has none. Log events are not supported.
+/// column's template rendered for the event, the label's value as the
+/// column's type ([`LabelColumn`]) }, one per `label_columns` label the event
+/// carries, in label order. A series' companions ride its first record that
+/// is written; every other record has none. Log events are not supported.
 pub struct SnmpEncoder {
     cfg: SnmpEncoderConfig,
     templates: HashMap<String, Template>,
     /// The label columns, in label order.
-    columns: Vec<LabelColumn>,
+    columns: Vec<Column>,
     /// Each series' encoded OBJECT IDENTIFIER or rejection, filled on first
     /// sight, keyed by the series' [fingerprint](Template::fingerprint).
     oids: RwLock<HashMap<u64, Vec<CachedOid>>>,
@@ -344,11 +346,13 @@ pub struct SnmpEncoder {
     renders: std::sync::atomic::AtomicUsize,
 }
 
-/// A label column: the label whose value the agent serves, and the template
-/// of its instances.
-struct LabelColumn {
+/// A label column: the label whose value the agent serves, the template of
+/// its instances, and the type the value is served as (`None`: an OCTET
+/// STRING).
+struct Column {
     label: String,
     template: OidTemplate,
+    ty: Option<SnmpValueType>,
 }
 
 /// A metric's template, its value type, and the labels the template cannot
@@ -436,9 +440,10 @@ impl SnmpEncoder {
     ///
     /// Returns [`SondaError::Config`] when an `oids:` or `types:` key is not
     /// a valid metric name, a `label_columns:` key is not a valid label key,
-    /// an `oids:` or `label_columns:` entry is not a valid [`OidTemplate`],
-    /// or there are more than 255 label columns. Every map is checked in key
-    /// order, so the same config always reports the same first error.
+    /// an `oids:` or `label_columns:` template is not a valid
+    /// [`OidTemplate`], a label column's type is the enum, or there are more
+    /// than 255 label columns. Every map is checked in key order, so the same
+    /// config always reports the same first error.
     pub fn new(cfg: &SnmpEncoderConfig) -> Result<Self, SondaError> {
         let check_key = |field: &str, metric: &str| {
             if is_valid_metric_name(metric) {
@@ -487,21 +492,28 @@ impl SnmpEncoder {
             .iter()
             .collect::<BTreeMap<_, _>>()
             .into_iter()
-            .map(|(label, text)| {
+            .map(|(label, column)| {
                 if !is_valid_label_key(label) {
                     return Err(SondaError::Config(ConfigError::invalid(format!(
                         "snmp encoder label_columns key {label:?} is not a label key; keys \
                          are the labels whose values the agent serves"
                     ))));
                 }
-                let template = OidTemplate::parse(text).map_err(|e| {
+                let template = OidTemplate::parse(column.oid()).map_err(|e| {
                     SondaError::Config(ConfigError::invalid(format!(
                         "snmp encoder label_columns.{label}: {e}"
                     )))
                 })?;
-                Ok(LabelColumn {
+                if column.is_enum() {
+                    return Err(SondaError::Config(ConfigError::invalid(format!(
+                        "snmp encoder label_columns.{label}: {}",
+                        value::ENUM_COLUMN_REFUSED
+                    ))));
+                }
+                Ok(Column {
                     label: label.clone(),
                     template,
+                    ty: column.value_type().cloned(),
                 })
             })
             .collect::<Result<Vec<_>, SondaError>>()?;
@@ -547,7 +559,8 @@ impl SnmpEncoder {
     /// whose OID is rejected ([`EncoderError::EventRejected`]: a label the
     /// template does not cover, a placeholder whose label the event lacks,
     /// a label value that is not an index of its placeholder, or a label
-    /// column that cannot be rendered) is cached with the rejection's text,
+    /// column that cannot be rendered or whose type cannot serve the label's
+    /// value) is cached with the rejection's text,
     /// and each later event of it gets that text without the OID being
     /// rendered again.
     fn rendered(
@@ -614,13 +627,18 @@ impl SnmpEncoder {
             let Some(value) = label_value(&event.labels, &column.label) else {
                 continue;
             };
-            let (column_oid, column_arcs) = render_instance(&column.template, &event.labels)
-                .map_err(|e| format!("metric {name:?}: label column {}: {e}", column.label))?;
+            let refused = |e: &dyn fmt::Display| {
+                format!("metric {name:?}: label column {}: {e}", column.label)
+            };
+            let (column_oid, column_arcs) =
+                render_instance(&column.template, &event.labels).map_err(|e| refused(&e))?;
             companions.push(column_arcs);
+            let mut written = Ok(());
             ber::write_tlv(&mut companions, Tag::Sequence, |out| {
                 ber::write_oid(out, &column_oid);
-                ber::write_string(out, value.as_bytes());
+                written = value::write_label_text(column.ty.as_ref(), &column.label, value, out);
             });
+            written.map_err(|e| refused(&e))?;
             // new() caps the label columns at 255.
             companion_count += 1;
         }
@@ -667,7 +685,8 @@ impl Encoder for SnmpEncoder {
     ///   `u32`, or a `{label:str}` placeholder's is empty or would make the
     ///   OID longer than 128 arcs;
     /// - a label column the event carries cannot be rendered, for the same
-    ///   reasons;
+    ///   reasons, or its type cannot serve the label's value (the text is
+    ///   not a number, or the number does not fit the type);
     /// - the value is NaN or infinite and the type is not `string`;
     /// - the rounded value is outside the type's range, or an
     ///   `opaque_float` value is beyond the `f32` range;
@@ -884,11 +903,11 @@ mod tests {
             label_columns: HashMap::from([
                 (
                     "ifName".to_string(),
-                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
                 ),
                 (
                     "ifAlias".to_string(),
-                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".into(),
                 ),
             ]),
             drop_labels: vec!["job".to_string()],
@@ -1057,7 +1076,7 @@ mod tests {
         let mut cfg = with(|_| {});
         cfg.label_columns.insert(
             "ifName".to_string(),
-            "1.3.6.1.4.1.8072.9999.3.1.{slot}".to_string(),
+            "1.3.6.1.4.1.8072.9999.3.1.{slot}".into(),
         );
         let encoder = SnmpEncoder::new(&cfg).expect("valid");
         let reason = rejection(
@@ -1066,6 +1085,112 @@ mod tests {
         );
         assert!(reason.contains("label column ifName"), "{reason}");
         assert!(reason.contains("{slot}"), "{reason}");
+    }
+
+    /// `snmptrap -v2c -c public 127.0.0.1:<port> 0 1.3.6.1.4.1.8072.9999.0.2
+    /// 1.3.6.1.2.1.2.2.1.1.1 i 1 1.3.6.1.2.1.2.2.1.2.1 s GigabitEthernet1/0/1
+    /// 1.3.6.1.2.1.2.2.1.3.1 i 6 1.3.6.1.2.1.31.1.1.1.15.1 u 1000`, net-snmp
+    /// 5.9.4.pre2 (with `MIBS=`): ifIndex.1, ifDescr.1, ifType.1 and
+    /// ifHighSpeed.1 as net-snmp encodes them.
+    const NET_SNMP_IF_MIB_COLUMNS: &str =
+        "3081a002010104067075626c6963a7819202043fc7d7ac020100020100308183300d06082b060102\
+        010103004301003019060a2b060106030101040100060b2b06010401bf08ce0f0002300f060a2b06\
+        01020102020101010201013022060a2b06010201020201020104144769676162697445746865726e\
+        6574312f302f31300f060a2b0601020102020103010201063011060b2b060102011f0101010f0142\
+        0203e8";
+
+    /// ifInOctets on interface 1 with `label` served by `template` as
+    /// `column`'s type.
+    fn typed_column_encoder(label: &str, column: LabelColumn) -> SnmpEncoder {
+        SnmpEncoder::new(&SnmpEncoderConfig {
+            oids: HashMap::from([(
+                "ifInOctets".to_string(),
+                "1.3.6.1.2.1.2.2.1.10.{ifIndex}".to_string(),
+            )]),
+            types: HashMap::from([("ifInOctets".to_string(), SnmpValueType::Counter32)]),
+            label_columns: HashMap::from([(label.to_string(), column)]),
+            ..SnmpEncoderConfig::default()
+        })
+        .expect("a valid encoder")
+    }
+
+    /// A typed column serves the label's text as its type: the companion's
+    /// `VarBind` is, byte for byte, the one net-snmp sent for the same OID
+    /// and value, and ends in the value's TLV; `string` is the bare form's
+    /// OCTET STRING.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::integer_if_type(   "ifType",      "6",                    "1.3.6.1.2.1.2.2.1.3.{ifIndex}",     Some(SnmpValueType::Integer), "1.3.6.1.2.1.2.2.1.3.1",     "020106")]
+    #[case::integer_if_index(  "ifIndex",     "1",                    "1.3.6.1.2.1.2.2.1.1.{ifIndex}",     Some(SnmpValueType::Integer), "1.3.6.1.2.1.2.2.1.1.1",     "020101")]
+    #[case::gauge32(           "ifHighSpeed", "1000",                 "1.3.6.1.2.1.31.1.1.1.15.{ifIndex}", Some(SnmpValueType::Gauge32), "1.3.6.1.2.1.31.1.1.1.15.1", "420203e8")]
+    #[case::typed_string(      "ifDescr",     "GigabitEthernet1/0/1", "1.3.6.1.2.1.2.2.1.2.{ifIndex}",     Some(SnmpValueType::String),  "1.3.6.1.2.1.2.2.1.2.1",     "04144769676162697445746865726e6574312f302f31")]
+    #[case::bare_string(       "ifDescr",     "GigabitEthernet1/0/1", "1.3.6.1.2.1.2.2.1.2.{ifIndex}",     None,                         "1.3.6.1.2.1.2.2.1.2.1",     "04144769676162697445746865726e6574312f302f31")]
+    fn a_typed_column_serves_the_labels_text_as_its_type(
+        #[case] label: &str,
+        #[case] text: &str,
+        #[case] template: &str,
+        #[case] ty: Option<SnmpValueType>,
+        #[case] oid: &str,
+        #[case] value_tlv: &str,
+    ) {
+        let expected = ber::tests::captured_varbind(NET_SNMP_IF_MIB_COLUMNS, oid);
+        let value_tlv = hex(value_tlv);
+        assert!(
+            expected.len() > value_tlv.len() && expected.ends_with(&value_tlv),
+            "the fixture carries {oid} with the value {value_tlv:02x?}"
+        );
+        let column = match ty {
+            Some(r#type) => LabelColumn::Typed { oid: template.to_string(), r#type },
+            None => LabelColumn::from(template),
+        };
+        let encoder = typed_column_encoder(label, column);
+        let mut pairs = vec![("ifIndex", "1")];
+        if label != "ifIndex" {
+            pairs.push((label, text));
+        }
+        let out = record(&encoder, &event("ifInOctets", 7.0, &pairs));
+        let split = split_record(&out).expect("a record");
+        let companions: Vec<_> = split.companions.collect();
+        assert_eq!(companions.len(), 1, "one column, one companion");
+        assert_eq!(companions[0].index_arcs, 1);
+        assert_eq!(companions[0].varbind, &expected[..]);
+        assert!(companions[0].varbind.ends_with(&value_tlv));
+    }
+
+    /// A typed column whose type cannot serve the label's text rejects the
+    /// series, naming the label, the type and the value; an event with a
+    /// value the type takes is served on its own series.
+    #[rstest]
+    #[case::not_a_number("GigabitEthernet", "it is not a number")]
+    #[case::outside_the_type("2147483648", "value 2147483648 is outside the integer range")]
+    #[case::not_finite("NaN", "value NaN cannot be encoded as integer")]
+    fn a_typed_column_its_type_cannot_serve_rejects_the_series(
+        #[case] text: &str,
+        #[case] why: &str,
+    ) {
+        let encoder = typed_column_encoder(
+            "ifType",
+            LabelColumn::Typed {
+                oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                r#type: SnmpValueType::Integer,
+            },
+        );
+        let served = record(
+            &encoder,
+            &event("ifInOctets", 1.0, &[("ifIndex", "1"), ("ifType", "6")]),
+        );
+        assert_eq!(served[1], 1, "guard: the type serves \"6\"");
+        let reason = rejection(
+            &encoder,
+            &event("ifInOctets", 1.0, &[("ifIndex", "2"), ("ifType", text)]),
+        );
+        assert!(
+            reason.contains(&format!(
+                "label column ifType: label `ifType` has value {text:?}, which its integer \
+                 column cannot serve: {why}"
+            )),
+            "{reason}"
+        );
     }
 
     /// Series that differ only in a label-column label are two series.
@@ -1305,7 +1430,7 @@ mod tests {
         let mut columns = cfg.clone();
         columns.label_columns.insert(
             "ifName".to_string(),
-            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
         );
         assert_eq!(
             check(&columns, &["device", "ifName", "ifIndex"]),
@@ -1330,6 +1455,13 @@ mod tests {
     #[case::label_column_key_not_a_label(with(|c| { c.label_columns.insert("if-name".into(), "1.3.6.{ifIndex}".into()); }), "label_columns key \"if-name\"")]
     #[case::oids_key_not_a_metric(with(|c| { c.oids.insert("in-octets".into(), "1.3.6.1".into()); }), "oids key \"in-octets\"")]
     #[case::types_key_not_a_metric(with(|c| { c.types.insert("in-octets".into(), SnmpValueType::Integer); }), "types key \"in-octets\"")]
+    #[case::enum_label_column(with(|c| { c.label_columns.insert("ifType".into(), LabelColumn::Typed {
+        oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".into(),
+        r#type: SnmpValueType::Enum(BTreeMap::from([(6, "ethernetCsmacd".to_string())])) }); }),
+        "label_columns.ifType: the enum type is refused for a label column")]
+    #[case::typed_label_column_not_a_template(with(|c| { c.label_columns.insert("ifType".into(), LabelColumn::Typed {
+        oid: "1.3.6.1.2.1.2.2.1.3".into(), r#type: SnmpValueType::Integer }); }),
+        "label_columns.ifType: OID template")]
     fn new_rejects(#[case] cfg: SnmpEncoderConfig, #[case] fragment: &str) {
         let err = SnmpEncoder::new(&cfg).err().expect("must not build");
         assert!(matches!(err, SondaError::Config(_)), "{err}");
@@ -1353,7 +1485,7 @@ mod tests {
         .expect("parses");
         assert_eq!(
             columns.label_columns["ifName"],
-            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"
+            LabelColumn::from("1.3.6.1.2.1.31.1.1.1.1.{ifIndex}")
         );
         let empty: SnmpEncoderConfig = serde_yaml_ng::from_str("{}").expect("all fields default");
         assert_eq!(empty, SnmpEncoderConfig::default());
@@ -1445,6 +1577,73 @@ mod tests {
             assert!(shown.contains(field), "names the field: {shown}");
             assert!(shown.contains("quote it"), "says to quote it: {shown}");
         }
+    }
+
+    /// Both forms of a label column parse, inside the `type:`-tagged block
+    /// and outside it, and serialize back to the same form.
+    #[cfg(feature = "config")]
+    #[rstest]
+    #[case::config_alone("")]
+    #[case::encoder_block("type: snmp\n")]
+    fn both_label_column_forms_parse(#[case] prefix: &str) {
+        let yaml = format!(
+            "{prefix}label_columns:\n  ifDescr: \"1.3.6.1.2.1.2.2.1.2.{{ifIndex}}\"\n  \
+             ifType: {{ oid: \"1.3.6.1.2.1.2.2.1.3.{{ifIndex}}\", type: integer }}\n"
+        );
+        let cfg = if prefix.is_empty() {
+            serde_yaml_ng::from_str::<SnmpEncoderConfig>(&yaml).expect("parses")
+        } else {
+            match serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(&yaml).expect("parses") {
+                crate::encoder::EncoderConfig::Snmp(cfg) => cfg,
+                other => panic!("not the snmp variant: {other:?}"),
+            }
+        };
+        let expected = HashMap::from([
+            (
+                "ifDescr".to_string(),
+                LabelColumn::from("1.3.6.1.2.1.2.2.1.2.{ifIndex}"),
+            ),
+            (
+                "ifType".to_string(),
+                LabelColumn::Typed {
+                    oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                    r#type: SnmpValueType::Integer,
+                },
+            ),
+        ]);
+        assert_eq!(cfg.label_columns, expected);
+        let shown = serde_yaml_ng::to_string(&cfg).expect("serializes");
+        let back: SnmpEncoderConfig = serde_yaml_ng::from_str(&shown).expect("parses back");
+        assert_eq!(back.label_columns, expected, "{shown}");
+    }
+
+    /// Each refusal of the object form names its field, inside the
+    /// `type:`-tagged block and outside it.
+    #[cfg(feature = "config")]
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::no_oid(            "{ type: integer }",                                                   "label_columns.ifType: a typed label column has no `oid:`")]
+    #[case::empty_map(         "{}",                                                                  "label_columns.ifType: a typed label column has no `oid:`")]
+    #[case::no_type(           "{ oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\" }",                          "label_columns.ifType: a typed label column has no `type:`")]
+    #[case::misspelt_type(     "{ oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\", typ: integer }",            "label_columns.ifType: unknown key \"typ\"")]
+    #[case::extra_key(         "{ oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\", type: integer, extra: 1 }", "label_columns.ifType: unknown key \"extra\"")]
+    #[case::unquoted_oid(      "{ oid: 1.30, type: integer }",                                        "label_columns.ifType.oid: an OID is written as a string")]
+    #[case::unknown_type(      "{ oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\", type: float }",             "label_columns.ifType.type: unknown snmp value type \"float\"")]
+    #[case::oid_given_twice(   "{ oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\", oid: \"1.3.6.1.2.1.2.2.1.2.{ifIndex}\", type: integer }", "label_columns.ifType: ")]
+    fn a_label_column_object_that_is_not_one_is_refused_naming_its_field(
+        #[values("", "type: snmp\n")] prefix: &str,
+        #[case] column: &str,
+        #[case] fragment: &str,
+    ) {
+        let yaml = format!("{prefix}label_columns:\n  ifType: {column}\n");
+        let shown = if prefix.is_empty() {
+            serde_yaml_ng::from_str::<SnmpEncoderConfig>(&yaml).map(|_| ())
+        } else {
+            serde_yaml_ng::from_str::<crate::encoder::EncoderConfig>(&yaml).map(|_| ())
+        }
+        .expect_err("refused")
+        .to_string();
+        assert!(shown.contains(fragment), "{fragment:?} in: {shown}");
     }
 
     #[cfg(feature = "config")]

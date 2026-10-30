@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::compiler::{AfterClause, DelayClause, WhileClause};
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::encoder::gnmi::GnmiValueType;
-use crate::encoder::snmp::SnmpValueType;
+use crate::encoder::snmp::{LabelColumn, SnmpValueType};
 use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
 use crate::sink::SinkConfig;
@@ -215,12 +215,14 @@ pub struct MetricPackDef {
     /// Changes to the base's metrics. Meaningful only with `extends:`.
     #[cfg_attr(feature = "config", serde(default))]
     pub deviations: Vec<Deviation>,
-    /// OID template per label whose value an `snmp` encoder serves as a
-    /// table column, such as `ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"`.
-    /// Under an `snmp` encoder each fills the encoder's `label_columns:`
-    /// where it has no entry for the label (see [`fold_snmp_hints`]); under
-    /// any other encoder they are not used. Each is a string; a YAML number
-    /// is an error.
+    /// Label column per label whose value an `snmp` encoder serves as a
+    /// table column, such as `ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"`
+    /// (an OCTET STRING) or `ifType: { oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}",
+    /// type: integer }` (the label's text served as that type; see
+    /// [`LabelColumn`]). Under an `snmp` encoder each fills the encoder's
+    /// `label_columns:` where it has no entry for the label (see
+    /// [`fold_snmp_hints`]); under any other encoder they are not used. Each
+    /// template is a string; a YAML number is an error.
     ///
     /// An extension's map is merged over its base's, so the extension wins.
     #[cfg_attr(
@@ -228,37 +230,18 @@ pub struct MetricPackDef {
         serde(default, deserialize_with = "label_column_oids")
     )]
     #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
-    pub snmp_label_columns: HashMap<String, String>,
+    pub snmp_label_columns: HashMap<String, LabelColumn>,
 }
 
-/// `deserialize_with` for [`MetricPackDef::snmp_label_columns`]: each
-/// template a string, as [`OidText`](crate::config::scalar_text::OidText)
-/// reads it, an error naming its `snmp_label_columns.<label>` field.
+/// `deserialize_with` for [`MetricPackDef::snmp_label_columns`]: each a
+/// [`LabelColumn`], whose template is a string, as
+/// [`OidText`](crate::config::scalar_text::OidText) reads it, an error
+/// naming its `snmp_label_columns.<label>` field.
 #[cfg(feature = "config")]
 fn label_column_oids<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<HashMap<String, String>, D::Error> {
-    struct Columns;
-    impl<'de> serde::de::Visitor<'de> for Columns {
-        type Value = HashMap<String, String>;
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a map from labels to OID templates")
-        }
-        fn visit_map<A: serde::de::MapAccess<'de>>(
-            self,
-            mut map: A,
-        ) -> Result<Self::Value, A::Error> {
-            use crate::config::scalar_text::OidText;
-            let mut columns = HashMap::new();
-            while let Some(label) = map.next_key::<String>()? {
-                let field = format!("snmp_label_columns.{label}");
-                let template = map.next_value_seed(OidText { field: &field })?;
-                columns.insert(label, template);
-            }
-            Ok(columns)
-        }
-    }
-    deserializer.deserialize_map(Columns)
+) -> Result<HashMap<String, LabelColumn>, D::Error> {
+    crate::encoder::snmp::value::deserialize_label_columns(deserializer, "snmp_label_columns")
 }
 
 /// One change an extension makes to a metric its base declares.
@@ -496,8 +479,8 @@ pub enum PackValidationError {
         reason: String,
     },
 
-    /// An `snmp_label_columns:` key is not a label key, or its OID is not a
-    /// valid OID template.
+    /// An `snmp_label_columns:` key is not a label key, its OID is not a
+    /// valid OID template, or its type is the enum.
     #[error("pack '{pack_name}': snmp_label_columns.{label} {oid:?}: {reason}")]
     InvalidSnmpLabelColumn {
         pack_name: String,
@@ -526,7 +509,8 @@ pub enum PackValidationError {
 /// the same hint or none, and, with the `gnmi` feature, every `gnmi:` hint's
 /// path parses as a path template, and with the `snmp` feature, every
 /// `snmp:` hint's OID and every `snmp_label_columns:` OID parses as an OID
-/// template, each column keyed by a label key.
+/// template, each column keyed by a label key and typed as anything but the
+/// enum.
 pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
     for spec in &pack.metrics {
         if spec.name.contains('.') {
@@ -607,19 +591,21 @@ pub fn validate_pack(pack: &MetricPackDef) -> Result<(), PackValidationError> {
     }
 
     #[cfg(feature = "snmp")]
-    for (label, oid) in pack.snmp_label_columns.iter().collect::<BTreeMap<_, _>>() {
-        let reason = if crate::model::metric::is_valid_label_key(label) {
-            crate::encoder::snmp::oid::OidTemplate::parse(oid)
+    for (label, column) in pack.snmp_label_columns.iter().collect::<BTreeMap<_, _>>() {
+        let reason = if !crate::model::metric::is_valid_label_key(label) {
+            Some(format!("{label:?} is not a label key"))
+        } else if column.is_enum() {
+            Some(crate::encoder::snmp::value::ENUM_COLUMN_REFUSED.to_string())
+        } else {
+            crate::encoder::snmp::oid::OidTemplate::parse(column.oid())
                 .err()
                 .map(|e| e.to_string())
-        } else {
-            Some(format!("{label:?} is not a label key"))
         };
         if let Some(reason) = reason {
             return Err(PackValidationError::InvalidSnmpLabelColumn {
                 pack_name: pack.name.clone(),
                 label: label.clone(),
-                oid: oid.clone(),
+                oid: column.oid().to_string(),
                 reason,
             });
         }
@@ -661,7 +647,8 @@ pub fn fold_gnmi_hints(pack: &MetricPackDef, encoder: &EncoderConfig) -> Encoder
 /// For every spec carrying a hint, `oids[name]` is set to the hint's OID
 /// unless `oids` already has an entry for `name`, and `types[name]` to its
 /// type unless `types` already has one; `label_columns[label]` is set to the
-/// pack's template unless `label_columns` already has an entry for `label`:
+/// pack's column, its type included, unless `label_columns` already has an
+/// entry for `label`:
 /// the scenario's entries win, each map on its own. An encoder other than
 /// `snmp` is left unchanged.
 pub fn fold_snmp_hints(encoder: &mut EncoderConfig, pack: &MetricPackDef) {
@@ -676,10 +663,10 @@ pub fn fold_snmp_hints(encoder: &mut EncoderConfig, pack: &MetricPackDef) {
                 .entry(spec.name.clone())
                 .or_insert_with(|| hint.r#type.clone());
         }
-        for (label, template) in &pack.snmp_label_columns {
+        for (label, column) in &pack.snmp_label_columns {
             cfg.label_columns
                 .entry(label.clone())
-                .or_insert_with(|| template.clone());
+                .or_insert_with(|| column.clone());
         }
     }
     #[cfg(not(feature = "snmp"))]
@@ -2364,11 +2351,11 @@ metrics:
             snmp_label_columns: HashMap::from([
                 (
                     "ifName".to_string(),
-                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
                 ),
                 (
                     "ifAlias".to_string(),
-                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".into(),
                 ),
             ]),
             ..snmp_hinted_pack()
@@ -2390,6 +2377,95 @@ metrics:
         }
     }
 
+    /// [`label_column_pack`] serving ifType as an integer column too.
+    #[cfg(feature = "snmp")]
+    fn typed_label_column_pack() -> MetricPackDef {
+        let mut pack = label_column_pack();
+        pack.snmp_label_columns.insert(
+            "ifType".to_string(),
+            LabelColumn::Typed {
+                oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                r#type: SnmpValueType::Integer,
+            },
+        );
+        pack
+    }
+
+    /// A typed column folds into every pack entry's encoder with its type.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn a_typed_label_column_folds_into_the_encoder_with_its_type() {
+        use crate::encoder::snmp::SnmpEncoderConfig;
+        let pack = typed_label_column_pack();
+        assert_eq!(validate_pack(&pack), Ok(()), "guard: the pack loads");
+        let encoders = expanded_encoders(&pack, EncoderConfig::Snmp(SnmpEncoderConfig::default()));
+        assert_eq!(encoders.len(), 3, "the premise: one entry per metric");
+        for encoder in encoders {
+            let EncoderConfig::Snmp(cfg) = encoder else {
+                panic!("still an snmp encoder");
+            };
+            assert_eq!(
+                cfg.label_columns["ifType"].value_type(),
+                Some(&SnmpValueType::Integer)
+            );
+            assert_eq!(cfg.label_columns["ifName"].value_type(), None);
+            assert_eq!(cfg.label_columns, pack.snmp_label_columns);
+        }
+    }
+
+    /// A pack whose column is typed as the enum does not load.
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn a_label_column_typed_as_the_enum_does_not_load() {
+        let mut pack = typed_label_column_pack();
+        assert_eq!(validate_pack(&pack), Ok(()), "guard: the pack loads");
+        pack.snmp_label_columns.insert(
+            "ifType".to_string(),
+            LabelColumn::Typed {
+                oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                r#type: SnmpValueType::Enum(BTreeMap::from([(6, "ethernetCsmacd".to_string())])),
+            },
+        );
+        let err = validate_pack(&pack).expect_err("must refuse");
+        let shown = err.to_string();
+        assert!(
+            matches!(&err, PackValidationError::InvalidSnmpLabelColumn { label, .. } if label == "ifType")
+                && shown.contains("snmp_label_columns.ifType")
+                && shown.contains("the enum type is refused for a label column"),
+            "got: {shown}"
+        );
+    }
+
+    /// The object form parses in a pack, and its template is a string only.
+    #[cfg(feature = "config")]
+    #[test]
+    fn a_typed_snmp_label_column_parses_from_yaml() {
+        let yaml = |oid: &str| {
+            format!(
+                "name: p\ndescription: d\ncategory: network\n\
+                 snmp_label_columns:\n  ifType: {{ oid: {oid}, type: integer }}\n\
+                 metrics:\n  - name: m\n"
+            )
+        };
+        let pack: MetricPackDef =
+            serde_yaml_ng::from_str(&yaml("\"1.3.6.1.2.1.2.2.1.3.{ifIndex}\""))
+                .expect("the object form parses");
+        assert_eq!(
+            pack.snmp_label_columns["ifType"],
+            LabelColumn::Typed {
+                oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                r#type: SnmpValueType::Integer,
+            }
+        );
+        let shown = serde_yaml_ng::from_str::<MetricPackDef>(&yaml("1.30"))
+            .expect_err("a number")
+            .to_string();
+        assert!(
+            shown.contains("snmp_label_columns.ifType.oid") && shown.contains("quote it"),
+            "names the field and says to quote it: {shown}"
+        );
+    }
+
     #[cfg(feature = "snmp")]
     #[test]
     fn the_scenarios_label_column_wins_over_the_packs() {
@@ -2397,7 +2473,7 @@ metrics:
         let user = SnmpEncoderConfig {
             label_columns: HashMap::from([(
                 "ifName".to_string(),
-                "1.3.6.1.4.1.8072.9999.3.1.{ifIndex}".to_string(),
+                "1.3.6.1.4.1.8072.9999.3.1.{ifIndex}".into(),
             )]),
             ..SnmpEncoderConfig::default()
         };
@@ -2411,11 +2487,11 @@ metrics:
             HashMap::from([
                 (
                     "ifName".to_string(),
-                    "1.3.6.1.4.1.8072.9999.3.1.{ifIndex}".to_string(),
+                    "1.3.6.1.4.1.8072.9999.3.1.{ifIndex}".into(),
                 ),
                 (
                     "ifAlias".to_string(),
-                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                    "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".into(),
                 ),
             ]),
             "the user's ifName, the pack's ifAlias"
@@ -2442,7 +2518,7 @@ metrics:
         );
         let mut pack = label_column_pack();
         pack.snmp_label_columns
-            .insert(label.to_string(), oid.to_string());
+            .insert(label.to_string(), oid.into());
         let err = validate_pack(&pack).expect_err("must refuse");
         assert!(
             matches!(&err, PackValidationError::InvalidSnmpLabelColumn { label: named, .. } if named == label),
@@ -2462,7 +2538,7 @@ metrics:
     fn a_label_column_that_is_not_a_template_is_ignored_without_the_snmp_feature() {
         let mut pack = label_column_pack();
         pack.snmp_label_columns
-            .insert("ifName".to_string(), "1.3.6.1.2.1.31.1.1.1.1".to_string());
+            .insert("ifName".to_string(), "1.3.6.1.2.1.31.1.1.1.1".into());
         assert_eq!(validate_pack(&pack), Ok(()));
     }
 
@@ -2480,7 +2556,7 @@ metrics:
                 .expect("a quoted template parses");
         assert_eq!(
             pack.snmp_label_columns["ifName"],
-            "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"
+            LabelColumn::from("1.3.6.1.2.1.31.1.1.1.1.{ifIndex}")
         );
         let err = serde_yaml_ng::from_str::<MetricPackDef>(&yaml("1.30")).expect_err("a number");
         let shown = err.to_string();

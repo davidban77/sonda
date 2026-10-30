@@ -235,6 +235,7 @@ fn merge_shared_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoder::snmp::LabelColumn;
     use crate::generator::GeneratorConfig;
     use crate::packs::DeviationReplace;
 
@@ -388,22 +389,29 @@ mod tests {
         base.snmp_label_columns = HashMap::from([
             (
                 "ifName".to_string(),
-                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into(),
             ),
             (
                 "ifAlias".to_string(),
-                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.31.1.1.1.18.{ifIndex}".into(),
             ),
         ]);
         let mut ext = pack("ext", vec![]);
         ext.snmp_label_columns = HashMap::from([
             (
                 "ifAlias".to_string(),
-                "1.3.6.1.4.1.8072.9999.3.18.{ifIndex}".to_string(),
+                "1.3.6.1.4.1.8072.9999.3.18.{ifIndex}".into(),
             ),
             (
                 "ifDescr".to_string(),
-                "1.3.6.1.2.1.2.2.1.2.{ifIndex}".to_string(),
+                "1.3.6.1.2.1.2.2.1.2.{ifIndex}".into(),
+            ),
+            (
+                "ifType".to_string(),
+                LabelColumn::Typed {
+                    oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                    r#type: crate::encoder::snmp::SnmpValueType::Integer,
+                },
             ),
         ]);
         let out = materialize(&ext, &base).expect("materializes");
@@ -412,17 +420,25 @@ mod tests {
             HashMap::from([
                 (
                     "ifName".to_string(),
-                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".to_string()
+                    "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}".into()
                 ),
                 (
                     "ifAlias".to_string(),
-                    "1.3.6.1.4.1.8072.9999.3.18.{ifIndex}".to_string()
+                    "1.3.6.1.4.1.8072.9999.3.18.{ifIndex}".into()
                 ),
                 (
                     "ifDescr".to_string(),
-                    "1.3.6.1.2.1.2.2.1.2.{ifIndex}".to_string()
+                    "1.3.6.1.2.1.2.2.1.2.{ifIndex}".into()
                 ),
-            ])
+                (
+                    "ifType".to_string(),
+                    LabelColumn::Typed {
+                        oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}".to_string(),
+                        r#type: crate::encoder::snmp::SnmpValueType::Integer,
+                    }
+                ),
+            ]),
+            "the extension's ifAlias wins and its ifType keeps its type"
         );
     }
 
