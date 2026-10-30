@@ -1,0 +1,57 @@
+# A router interface whose link flaps, reported to a trap receiver as
+# SNMPv2c INFORMs.
+#
+# The telegraf_snmp_interface pack describes one interface, and its
+# ifOperStatus flaps: up for 60s, down for 5s. The snmp_trap sink watches
+# ifOperStatus: it sends linkDown when the interface leaves up and linkUp
+# when it comes back, and coldStart once when sonda starts. Every entry the
+# pack expands to sends to the same receiver, and the sinks of one file are
+# one device: they send one coldStart between them. In 140s that is one
+# coldStart, then linkDown and linkUp twice each.
+#
+# Each notification is an INFORM: the receiver acknowledges it, and one that
+# is not acknowledged within 5s is sent again, up to 10 more times, the last
+# 50s after the first. A receiver that is back within 50s still gets every
+# notification, and the scenario waits for it meanwhile.
+#
+# Prerequisites: Telegraf's inputs.snmp_trap listens on UDP 1162 in the
+# telegraf-snmp service and prints each trap it receives:
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile snmp up -d
+#
+# Usage (release binaries include the snmp feature):
+#   sonda run examples/snmp-traps.yaml --duration 140s
+#
+# Watch the traps arrive:
+#   docker compose -f examples/docker-compose-victoriametrics.yml logs -f telegraf-snmp \
+#     | grep '"name":"snmp_trap"'
+#
+# sonda:static - an snmp_trap sink sends to a trap receiver, which the browser playground cannot provide
+
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    # No OID carries this label, so it is dropped.
+    drop_labels: [job]
+  sink:
+    type: snmp_trap
+    destination: 127.0.0.1:1162
+    community: public
+    inform: true
+    timeout: 5s
+    retries: 10
+
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels: { device: rtr-edge-01, ifIndex: 1, ifName: GigabitEthernet0/0/0 }
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 5s
+          enum: oper_state

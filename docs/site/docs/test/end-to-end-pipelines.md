@@ -338,6 +338,7 @@ Pick the tab that matches your scenario.
     | Metrics | `gnmi` | `gnmi_target` over TLS with credentials (Telegraf → VM) | `examples/gnmi-telegraf-tls.yaml` | The same query, once Telegraf has subscribed over TLS with the example username and password |
     | Metrics | `snmp` | `snmp_agent` (Telegraf → VM) | `examples/snmp-telegraf.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=interface_ifHCInOctets' \| jq '.data.result \| length'` — 4, one per interface, once Telegraf has polled |
     | Metrics | `snmp` | `snmp_agent` with the `if_mib` pack (Telegraf → VM) | `examples/if-mib-switch.yaml` | `curl -sG 'http://localhost:8428/api/v1/query' --data-urlencode 'query=interface_ifType{ifDescr!=""}' \| jq '.data.result \| length'` — 24, one per port, once Telegraf has polled |
+    | Metrics | `snmp` | `snmp_trap` INFORMs (Telegraf's trap receiver) | `examples/snmp-traps.yaml` | `docker compose -f examples/docker-compose-victoriametrics.yml logs telegraf-snmp \| grep -c '"name":"snmp_trap"'` — 5 after `sonda run examples/snmp-traps.yaml --duration 140s`: one coldStart, then linkDown and linkUp twice each |
 
     † These two rows need OTLP, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see [What the pre-built binaries include](#prebuilt-binaries) below.
 
@@ -353,12 +354,12 @@ Pick the tab that matches your scenario.
 
         The gNMI-over-TLS row needs `--profile gnmi-tls`, whose Telegraf dials `sonda:57401` over TLS with the example credentials. Make its certificates first, as the header of `examples/gnmi-telegraf-tls.yaml` shows.
 
-        The two SNMP rows need `--profile snmp`. As with gNMI, Sonda runs on your host, here as the SNMP agent, and the profile's two Telegraf services poll it over UDP every 2 seconds and write what they read to VictoriaMetrics: `telegraf-snmp` at `sonda:1161` for `examples/snmp-telegraf.yaml`, and `telegraf-if-mib` at `sonda:1163` for `examples/if-mib-switch.yaml`, in the interface-table layout of Telegraf's documentation.
+        The three SNMP rows need `--profile snmp`. As with gNMI, Sonda runs on your host, here as the SNMP agent, and the profile's two Telegraf services poll it over UDP every 2 seconds and write what they read to VictoriaMetrics: `telegraf-snmp` at `sonda:1161` for `examples/snmp-telegraf.yaml`, and `telegraf-if-mib` at `sonda:1163` for `examples/if-mib-switch.yaml`, in the interface-table layout of Telegraf's documentation. For the trap row the direction is Sonda's again: `examples/snmp-traps.yaml` sends its INFORMs to `127.0.0.1:1162`, which the `telegraf-snmp` service maps to its `inputs.snmp_trap`; Telegraf acknowledges each and prints it as one JSON line to its log.
 
     <a id="prebuilt-binaries"></a>
 
     !!! tip "What the pre-built binaries include"
-        The `remote_write`, `kafka`, `gnmi_target` and `snmp_agent` sinks, and the `gnmi` and `snmp` encoders, are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
+        The `remote_write`, `kafka`, `gnmi_target`, `snmp_agent` and `snmp_trap` sinks, and the `gnmi` and `snmp` encoders, are included in the pre-built binaries from the install script and the published Docker image. The `otlp` encoder and the `otlp_grpc` sink are not.
 
         The two OTLP rows still work. How much setup they need depends on where Sonda runs:
 

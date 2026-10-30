@@ -16,10 +16,15 @@
 //! An instance, or a label column's instance, leaves the agent when the last
 //! sink of its launch that published it drops, and at no other time.
 //!
+//! The [`trap`] module holds the other sink the encoder pairs with: an
+//! [`SnmpTrapSink`] sends linkDown, linkUp and coldStart to a trap receiver
+//! and never touches an agent.
+//!
 //! Requires the `snmp` feature flag.
 
 pub mod agent;
 mod responder;
+pub mod trap;
 pub(crate) mod usm;
 
 use std::collections::HashMap;
@@ -42,6 +47,7 @@ use crate::{ConfigError, SondaError};
 
 use agent::Owner;
 pub use agent::{LastRequest, RequestCounters, SnmpAgent};
+pub use trap::{SnmpTrapConfig, SnmpTrapSink};
 
 /// `community` when it is not set.
 pub(crate) const DEFAULT_COMMUNITY: &str = "public";

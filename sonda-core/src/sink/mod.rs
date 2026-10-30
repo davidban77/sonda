@@ -154,10 +154,10 @@ impl std::fmt::Debug for KafkaSaslConfig {
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,
 /// `http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,
-/// or `snmp_agent`.
+/// `snmp_agent`, or `snmp_trap`.
 ///
 /// Feature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,
-/// `otlp_grpc`, `gnmi_target`, `snmp_agent`) have companion `*Disabled` variants that are compiled in
+/// `otlp_grpc`, `gnmi_target`, `snmp_agent`, `snmp_trap`) have companion `*Disabled` variants that are compiled in
 /// when their feature is absent. These accept the YAML tag so that
 /// deserialization succeeds with a descriptive error from [`create_sink`]
 /// instead of a generic "unknown variant" error from serde.
@@ -479,6 +479,25 @@ pub enum SinkConfig {
     #[cfg(not(feature = "snmp"))]
     #[cfg_attr(feature = "config", serde(rename = "snmp_agent"))]
     SnmpAgentDisabled {},
+
+    /// Send SNMPv2c linkDown, linkUp and coldStart notifications, as traps
+    /// or INFORMs, to a trap receiver at `destination`.
+    ///
+    /// Watches the `ifOperStatus` instances in the `snmp` encoder's records
+    /// and pairs only with that encoder. See [`snmp::SnmpTrapConfig`] for
+    /// the fields. Requires the `snmp` feature flag.
+    #[cfg(feature = "snmp")]
+    #[cfg_attr(feature = "config", serde(rename = "snmp_trap"))]
+    SnmpTrap(snmp::SnmpTrapConfig),
+
+    /// Placeholder variant when the `snmp` feature is not compiled in.
+    ///
+    /// Deserializes the `snmp_trap` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "snmp"))]
+    #[cfg_attr(feature = "config", serde(rename = "snmp_trap"))]
+    SnmpTrapDisabled {},
 }
 
 impl SinkConfig {
@@ -499,6 +518,7 @@ impl SinkConfig {
         "otlp_grpc",
         "gnmi_target",
         "snmp_agent",
+        "snmp_trap",
     ];
 
     /// The `type:` name this sink has in a scenario file, such as `"stdout"` or
@@ -540,6 +560,10 @@ impl SinkConfig {
             SinkConfig::SnmpAgent(_) => "snmp_agent",
             #[cfg(not(feature = "snmp"))]
             SinkConfig::SnmpAgentDisabled {} => "snmp_agent",
+            #[cfg(feature = "snmp")]
+            SinkConfig::SnmpTrap(_) => "snmp_trap",
+            #[cfg(not(feature = "snmp"))]
+            SinkConfig::SnmpTrapDisabled {} => "snmp_trap",
         }
     }
 }
@@ -558,7 +582,8 @@ pub async fn create_sink(
 
 /// [`create_sink`] for a scenario of `launch`: a `gnmi_target` sink shares
 /// its gnmi paths, and an `snmp_agent` sink its OIDs, with the other sinks of
-/// that launch only.
+/// that launch only, and an `snmp_trap` sink sends coldStart only when no
+/// other sink of that launch on its destination is live.
 #[cfg(feature = "runtime")]
 pub(crate) async fn create_sink_in(
     config: &SinkConfig,
@@ -750,6 +775,8 @@ pub(crate) async fn create_sink_in(
         }
         #[cfg(feature = "snmp")]
         SinkConfig::SnmpAgent(cfg) => Ok(Box::new(snmp::SnmpAgentSink::new_in(cfg, launch).await?)),
+        #[cfg(feature = "snmp")]
+        SinkConfig::SnmpTrap(cfg) => Ok(Box::new(snmp::SnmpTrapSink::new_in(cfg, launch).await?)),
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
@@ -787,6 +814,12 @@ pub(crate) async fn create_sink_in(
         SinkConfig::SnmpAgentDisabled { .. } => {
             Err(SondaError::Config(crate::ConfigError::invalid(
                 "sink type 'snmp_agent' requires the 'snmp' feature: cargo build -F snmp",
+            )))
+        }
+        #[cfg(not(feature = "snmp"))]
+        SinkConfig::SnmpTrapDisabled { .. } => {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "sink type 'snmp_trap' requires the 'snmp' feature: cargo build -F snmp",
             )))
         }
     }
@@ -1870,6 +1903,10 @@ retry:
             SinkConfig::SnmpAgent(snmp::SnmpAgentConfig::new("127.0.0.1:0")),
             #[cfg(not(feature = "snmp"))]
             SinkConfig::SnmpAgentDisabled {},
+            #[cfg(feature = "snmp")]
+            SinkConfig::SnmpTrap(snmp::SnmpTrapConfig::new("127.0.0.1:162")),
+            #[cfg(not(feature = "snmp"))]
+            SinkConfig::SnmpTrapDisabled {},
         ]
     }
 
@@ -1929,6 +1966,95 @@ retry:
         let config = SinkConfig::SnmpAgent(snmp::SnmpAgentConfig::new("127.0.0.1:0"));
         let sink = create_sink(&config, None).await.expect("the agent binds");
         assert!(sink.wants_metric_events());
+    }
+
+    /// An `snmp_trap` block deserializes into its config, every field it
+    /// leaves out at its default.
+    #[cfg(all(feature = "snmp", feature = "config"))]
+    #[test]
+    fn snmp_trap_yaml_deserializes_into_its_config() {
+        let config: SinkConfig =
+            serde_yaml_ng::from_str("type: snmp_trap\ndestination: 127.0.0.1:162")
+                .expect("an snmp_trap sink parses");
+        let SinkConfig::SnmpTrap(cfg) = config else {
+            panic!("should deserialize as SnmpTrap, got {config:?}");
+        };
+        assert_eq!(cfg, snmp::SnmpTrapConfig::new("127.0.0.1:162"));
+        assert_eq!(
+            (
+                cfg.community.as_str(),
+                cfg.inform,
+                cfg.timeout.as_str(),
+                cfg.retries
+            ),
+            ("public", false, "2s", 3)
+        );
+    }
+
+    /// A misspelt key in an `snmp_trap` block is an error naming it; the same
+    /// block with the key spelt right parses.
+    #[cfg(all(feature = "snmp", feature = "config"))]
+    #[rstest::rstest]
+    #[case::retries("retires: 2", "retires", "retries")]
+    #[case::inform("infrom: true", "infrom", "inform")]
+    fn snmp_trap_yaml_rejects_unknown_keys(
+        #[case] line: &str,
+        #[case] key: &str,
+        #[case] right: &str,
+    ) {
+        let parse = |line: &str| {
+            serde_yaml_ng::from_str::<SinkConfig>(&format!(
+                "type: snmp_trap\ndestination: 127.0.0.1:162\n{line}"
+            ))
+        };
+        parse(&line.replace(key, right)).expect("the block parses with the key spelt right");
+        let err = parse(line).expect_err("a misspelt key is refused");
+        assert!(err.to_string().contains(key), "{err}");
+    }
+
+    #[cfg(all(not(feature = "snmp"), feature = "config"))]
+    #[test]
+    fn snmp_trap_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let config: SinkConfig =
+            serde_yaml_ng::from_str("type: snmp_trap\ndestination: 127.0.0.1:162")
+                .expect("type: snmp_trap must deserialize even without the snmp feature");
+        assert!(matches!(config, SinkConfig::SnmpTrapDisabled {}));
+    }
+
+    /// `create_sink` builds an `snmp_trap` sink that takes metric events and
+    /// has sent coldStart to its destination.
+    #[cfg(all(feature = "snmp", feature = "runtime"))]
+    #[tokio::test]
+    async fn create_sink_builds_an_snmp_trap_sink() {
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind a receiver");
+        let addr = receiver.local_addr().expect("an address").to_string();
+        let config = SinkConfig::SnmpTrap(snmp::SnmpTrapConfig::new(addr));
+        let sink = create_sink(&config, None)
+            .await
+            .expect("the sink is created");
+        assert!(sink.wants_metric_events());
+        let mut datagram = [0; 512];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            receiver.recv_from(&mut datagram),
+        )
+        .await
+        .expect("coldStart arrives")
+        .expect("received");
+    }
+
+    #[cfg(all(not(feature = "snmp"), feature = "runtime"))]
+    #[tokio::test]
+    async fn create_sink_snmp_trap_disabled_returns_feature_hint_error() {
+        let err = create_sink(&SinkConfig::SnmpTrapDisabled {}, None)
+            .await
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(msg.contains("snmp_trap"), "got: {msg}");
+        assert!(msg.contains("cargo build -F snmp"), "got: {msg}");
     }
 
     #[cfg(all(not(feature = "snmp"), feature = "runtime"))]

@@ -328,7 +328,7 @@ SNMP publish records. Each metric event becomes one BER-encoded `VarBind`:
 
 A record carries no timestamp: an SNMP agent answers each poll with the latest value it holds.
 
-Pair this encoder with the `snmp_agent` sink. Each takes only the other.
+Pair this encoder with the `snmp_agent` sink, or with the [`snmp_trap`](sinks.md#snmp_trap) sink, which sends linkDown and linkUp traps for the records' `ifOperStatus` changes. The encoder takes only these two sinks, and each takes only this encoder.
 
 !!! note
     This encoder requires the `snmp` Cargo feature flag.
