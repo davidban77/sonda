@@ -3023,7 +3023,7 @@
 </span><span id="__span-27-24"><a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ifHCOutOctets</span>
 </span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="w">    </span><span class="nt">not_supported</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">         </span><span class="c1"># this platform does not implement it</span>
 </span></code></pre></div>
-<p>Run it like any other <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> — <code>pack: cisco_iosxe_interface</code> — and the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> sees one flat set of metrics.</p>
+<p>Run it like any other <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> — <code>pack: cisco_iosxe_interface</code> — and the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> sees one flat set of metrics. The builtin <a href="../builtin-packs/#if-mib"><code>if_mib</code></a> <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> is an extension of the same base: it adds five IF-MIB columns and three label columns, and deviates from nothing.</p>
 <p><strong><code>metrics:</code> only adds.</strong> A metric whose selector the base already declares is an error, because adding and changing are different operations. Use a deviation to change one.</p>
 <p><strong>Each deviation gives exactly one action.</strong> <code>replace:</code> swaps the fields it names — a <code>generator:</code> replaces the base's <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> entirely, a <code>labels:</code> replaces the base's per-metric labels entirely, and a field you leave out is inherited. <code>not_supported: true</code> removes the metric. Giving both, or neither, is an error rather than a guess. Two deviations addressing the same metric is also an error — never last-wins.</p>
 <p>A <code>replace:</code> that names no field counts as <em>neither</em>, not as an action. That matters because <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> files cannot reject unknown keys — they carry <code>kind:</code> and <code>version:</code>, which are not <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> fields — so a misspelled <code>generatr:</code> is dropped and would otherwise leave a change that changes nothing.</p>
@@ -3137,6 +3137,12 @@
 <td>no</td>
 <td><code>path</code> and <code>value</code>: the metric's gNMI path template and value type. Under a <code>gnmi</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> they fill the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>'s <code>paths:</code> and <code>values:</code> for this metric; entries the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> writes win. Specs sharing a name carry the same hint or none. See <a href="../encoders/#paths-and-values-from-a-pack">Encoders — paths and values from a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr></a>.</td>
 </tr>
+<tr>
+<td><code>snmp_label_columns</code></td>
+<td>map</td>
+<td>no</td>
+<td>Per label, the column an <code>snmp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> serves its value in: an OID template (<code>ifName: "1.3.6.1.2.1.31.1.1.1.1.{ifIndex}"</code>, an OCTET STRING), or <code>{ oid, type }</code> (<code>ifType: { oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer }</code>, the label's text served as that value type; never an enum). Under an <code>snmp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> they fill its <code>label_columns:</code>, typed columns with their type; entries the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> writes win. An extension's map wins over its base's. See <a href="../encoders/#label-columns">Encoders — label columns</a>.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="pattern-catalog-and-packs-together">Pattern: <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> and packs together<a class="headerlink" href="#pattern-catalog-and-packs-together" title="Permanent link">&para;</a></h2>
@@ -3188,7 +3194,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 22, 2026 19:52:47 UTC">October 22, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 30, 2026 10:11:19 UTC">October 30, 2026</span>
   </span>
 
     

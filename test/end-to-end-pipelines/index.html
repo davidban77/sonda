@@ -3465,6 +3465,20 @@ Keep this running in a separate terminal to watch alerts arrive as the sine wave
 <td><code>examples/snmp-telegraf.yaml</code></td>
 <td><code>curl -s 'http://localhost:8428/api/v1/query?query=interface_ifHCInOctets' \| jq '.data.result \| length'</code> — 4, one per interface, once <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> has polled</td>
 </tr>
+<tr>
+<td>Metrics</td>
+<td><code>snmp</code></td>
+<td><code>snmp_agent</code> with the <code>if_mib</code> <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> (<abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> → VM)</td>
+<td><code>examples/if-mib-switch.yaml</code></td>
+<td><code>curl -sG 'http://localhost:8428/api/v1/query' --data-urlencode 'query=interface_ifType{ifDescr!=""}' \| jq '.data.result \| length'</code> — 24, one per port, once <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> has polled</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td><code>snmp</code></td>
+<td><code>snmp_trap</code> INFORMs (<abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s trap receiver)</td>
+<td><code>examples/snmp-traps.yaml</code></td>
+<td><code>docker compose -f examples/docker-compose-victoriametrics.yml logs telegraf-snmp \| grep -c '"name":"snmp_trap"'</code> — 5 after <code>sonda run examples/snmp-traps.yaml --duration 140s</code>: one coldStart, then linkDown and linkUp twice each</td>
+</tr>
 </tbody>
 </table>
 <p>† These two rows need <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>, which the pre-built binaries do not include. What you need to do depends on where Sonda runs — see <a href="#prebuilt-binaries">What the pre-built binaries include</a> below.</p>
@@ -3477,12 +3491,12 @@ Keep this running in a separate terminal to watch alerts arrive as the sine wave
 The <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr>-logs row needs both <code>--profile otel-collector</code> and <code>--profile loki</code> so the collector has somewhere to forward log records.</p>
 <p>The gNMI row needs <code>--profile gnmi</code>. Here the direction is reversed: Sonda runs on your host as the gNMI target, and the profile's <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> dials it at <code>sonda:57400</code> (mapped to the host) and writes what it receives to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr>.</p>
 <p>The gNMI-over-TLS row needs <code>--profile gnmi-tls</code>, whose <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> dials <code>sonda:57401</code> over TLS with the example credentials. Make its certificates first, as the header of <code>examples/gnmi-telegraf-tls.yaml</code> shows.</p>
-<p>The SNMP row needs <code>--profile snmp</code>. As with gNMI, Sonda runs on your host, here as the SNMP agent, and the profile's <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> polls it at <code>sonda:1161</code> over UDP every 2 seconds and writes what it reads to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr>.</p>
+<p>The three SNMP rows need <code>--profile snmp</code>. As with gNMI, Sonda runs on your host, here as the SNMP agent, and the profile's two <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> services poll it over UDP every 2 seconds and write what they read to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr>: <code>telegraf-snmp</code> at <code>sonda:1161</code> for <code>examples/snmp-telegraf.yaml</code>, and <code>telegraf-if-mib</code> at <code>sonda:1163</code> for <code>examples/if-mib-switch.yaml</code>, in the interface-table layout of <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s documentation. For the trap row the direction is Sonda's again: <code>examples/snmp-traps.yaml</code> sends its INFORMs to <code>127.0.0.1:1162</code>, which the <code>telegraf-snmp</code> service maps to its <code>inputs.snmp_trap</code>; <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> acknowledges each and prints it as one JSON line to its log.</p>
 </div>
 <p><a id="prebuilt-binaries"></a></p>
 <div class="admonition tip">
 <p class="admonition-title">What the pre-built binaries include</p>
-<p>The <code>remote_write</code>, <code>kafka</code>, <code>gnmi_target</code> and <code>snmp_agent</code> sinks, and the <code>gnmi</code> and <code>snmp</code> encoders, are included in the pre-built binaries from the install script and the published Docker image. The <code>otlp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and the <code>otlp_grpc</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> are not.</p>
+<p>The <code>remote_write</code>, <code>kafka</code>, <code>gnmi_target</code>, <code>snmp_agent</code> and <code>snmp_trap</code> sinks, and the <code>gnmi</code> and <code>snmp</code> encoders, are included in the pre-built binaries from the install script and the published Docker image. The <code>otlp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> and the <code>otlp_grpc</code> <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> are not.</p>
 <p>The two <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> rows still work. How much setup they need depends on where Sonda runs:</p>
 <ul>
 <li><strong>Sonda inside the Compose stack</strong> — nothing extra to do. The stack builds its own <code>sonda-server</code> image from the repository with <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> included, and rebuilds it on every <code>up</code>, so an image cached from a run that predates the <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> build args cannot leave <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs.">OTLP</abbr> out. POST <code>examples/otlp-metrics.yaml</code> or <code>examples/otlp-logs.yaml</code> to <code>http://localhost:8080/scenarios</code> and the data reaches the collector.</li>
@@ -4147,7 +4161,7 @@ The <abbr title="OpenTelemetry Protocol -- the wire format used by OpenTelemetry
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 25, 2026 11:12:47 UTC">October 25, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 30, 2026 18:19:20 UTC">October 30, 2026</span>
   </span>
 
     

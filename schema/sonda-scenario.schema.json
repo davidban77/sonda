@@ -846,7 +846,7 @@
           ]
         },
         {
-          "description": "SNMP publish records: one BER `VarBind` per event, behind a byte that\ncounts its index arcs.\n\nEach metric's OID is rendered from its `oids:` template. See\n[`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the\n`snmp_agent` sink. Requires the `snmp` feature flag.",
+          "description": "SNMP publish records: one BER `VarBind` per event, behind a byte that\ncounts its index arcs.\n\nEach metric's OID is rendered from its `oids:` template. See\n[`snmp::SnmpEncoderConfig`] for the fields. Pairs only with the\n`snmp_agent` and `snmp_trap` sinks. Requires the `snmp` feature flag.",
           "type": "object",
           "properties": {
             "agent_label": {
@@ -871,10 +871,10 @@
               }
             },
             "label_columns": {
-              "description": "OID template per label whose value the agent serves as an OCTET\nSTRING, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`: a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry, and\nvalidation requires it to be a static label of the entry; a series\nwithout the label serves no instance of its column. Each is a string;\na YAML number is an error.",
+              "description": "Label column per label whose value the agent serves, such as\n`ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"` (an OCTET STRING) or\n`ifType: { oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\", type: integer }`\n(the label's text parsed as a number and served as that type): a\ncolumn beside the metrics' columns, one instance per index. A\ntemplate uses only placeholders every `oids:` template uses. A label\nnamed here needs no placeholder and no `drop_labels` entry, and\nvalidation requires it to be a static label of the entry, whose value\na typed column's type can serve; a series without the label serves no\ninstance of its column. Each template is a string; a YAML number is an\nerror. See [`LabelColumn`].",
               "type": "object",
               "additionalProperties": {
-                "type": "string"
+                "$ref": "#/$defs/LabelColumn"
               },
               "default": {}
             },
@@ -2545,6 +2545,34 @@
         "composable"
       ]
     },
+    "LabelColumn": {
+      "description": "A label whose value the agent serves as a table column: the OID template\nof the column's instances, and the type the label's text is served as.\n\nYAML forms: a string, the template, which serves the label's text as an\nOCTET STRING; or `{ oid: <template>, type: <value type> }`, which parses\nthe label's text as an `f64` (`str::parse`, nothing more lenient) and\nwrites it as that type, except `string`, which serves the text itself, as\nthe bare form does. The integer types and `ipaddress` refuse a text with a\nfractional part rather than round it. Validation refuses the enum type for\na column, and a typed column whose static label value its type cannot\nserve.",
+      "anyOf": [
+        {
+          "description": "The OID template; the label's text is served as an OCTET STRING. A\nstring; a YAML number is an error.",
+          "type": "string"
+        },
+        {
+          "description": "The OID template, and the type the label's text is served as.",
+          "type": "object",
+          "properties": {
+            "oid": {
+              "description": "The OID template of the column's instances. A string; a YAML\nnumber is an error.",
+              "type": "string"
+            },
+            "type": {
+              "description": "The type the label's text is parsed and served as; any value\ntype but the enum.",
+              "$ref": "#/$defs/SnmpValueType"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "oid",
+            "type"
+          ]
+        }
+      ]
+    },
     "LogCsvColumns": {
       "description": "Column-role assignment for a [`LogCsvReplayGenerator`].\n\n`timestamp`, `severity`, and `message` map header column names to their\nsemantic role. Any header column not referenced here becomes a free-form\n`fields` entry on the emitted [`LogEvent`].",
       "type": "object",
@@ -2823,10 +2851,10 @@
           "default": null
         },
         "snmp_label_columns": {
-          "description": "OID template per label whose value an `snmp` encoder serves as a\ntable column, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`.\nUnder an `snmp` encoder each fills the encoder's `label_columns:`\nwhere it has no entry for the label (see [`fold_snmp_hints`]); under\nany other encoder they are not used. Each is a string; a YAML number\nis an error.\n\nAn extension's map is merged over its base's, so the extension wins.",
+          "description": "Label column per label whose value an `snmp` encoder serves as a\ntable column, such as `ifName: \"1.3.6.1.2.1.31.1.1.1.1.{ifIndex}\"`\n(an OCTET STRING) or `ifType: { oid: \"1.3.6.1.2.1.2.2.1.3.{ifIndex}\",\ntype: integer }` (the label's text served as that type; see\n[`LabelColumn`]). Under an `snmp` encoder each fills the encoder's\n`label_columns:` where it has no entry for the label (see\n[`fold_snmp_hints`]); under any other encoder they are not used. Each\ntemplate is a string; a YAML number is an error.\n\nAn extension's map is merged over its base's, so the extension wins.",
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/$defs/LabelColumn"
           },
           "default": {}
         }
@@ -3135,7 +3163,7 @@
       ]
     },
     "SinkConfig": {
-      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,\nor `snmp_agent`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`, `snmp_agent`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
+      "description": "Configuration selecting which sink to use for a scenario.\n\nThis enum is serde-deserializable from YAML scenario files.\nThe `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,\n`http_push`, `remote_write`, `kafka`, `loki`, `otlp_grpc`, `gnmi_target`,\n`snmp_agent`, or `snmp_trap`.\n\nFeature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,\n`otlp_grpc`, `gnmi_target`, `snmp_agent`, `snmp_trap`) have companion `*Disabled` variants that are compiled in\nwhen their feature is absent. These accept the YAML tag so that\ndeserialization succeeds with a descriptive error from [`create_sink`]\ninstead of a generic \"unknown variant\" error from serde.",
       "oneOf": [
         {
           "description": "Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).",
@@ -3742,6 +3770,60 @@
           "required": [
             "type",
             "listen"
+          ]
+        },
+        {
+          "description": "Send SNMPv2c linkDown, linkUp and coldStart notifications, as traps\nor INFORMs, to a trap receiver at `destination`.\n\nWatches the `ifOperStatus` instances in the `snmp` encoder's records\nand pairs only with that encoder. See [`snmp::SnmpTrapConfig`] for\nthe fields. Requires the `snmp` feature flag.",
+          "type": "object",
+          "properties": {
+            "community": {
+              "description": "The SNMPv2c community every notification carries. Default\n`\"public\"`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "public"
+            },
+            "destination": {
+              "description": "The trap receiver, `\"host:port\"` or a socket address such as\n`\"127.0.0.1:162\"`. A host name is resolved once, when the sink is\ncreated.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "inform": {
+              "description": "Send each notification as an INFORM, which the receiver\nacknowledges, instead of a trap. Default `false`.",
+              "type": "boolean",
+              "default": false
+            },
+            "retries": {
+              "description": "How many times an unacknowledged INFORM is sent again, 0 to 10.\nDefault 3. Read only with `inform: true`.",
+              "type": "integer",
+              "format": "uint8",
+              "default": 3,
+              "maximum": 10,
+              "minimum": 0
+            },
+            "timeout": {
+              "description": "How long an INFORM waits for its acknowledgement before it is sent\nagain, from `\"100ms\"` to `\"60s\"`. Default `\"2s\"`. Read only with\n`inform: true`.",
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "default": "2s"
+            },
+            "type": {
+              "type": "string",
+              "const": "snmp_trap"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "destination"
           ]
         }
       ]

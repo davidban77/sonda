@@ -1311,6 +1311,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#snmp_trap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        snmp_trap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="snmp_trap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#snmp-trap-notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it sends
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#snmp-trap-inform" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Traps and INFORMs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#snmp-trap-telegraf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Telegraf
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#retry-with-backoff" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2804,6 +2854,56 @@
         
           <li class="md-nav__item">
   <a href="#snmp-telegraf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Telegraf
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#snmp_trap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        snmp_trap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="snmp_trap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#snmp-trap-notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it sends
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#snmp-trap-inform" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Traps and INFORMs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#snmp-trap-telegraf" class="md-nav__link">
     <span class="md-ellipsis">
       
         Telegraf
@@ -4494,18 +4594,180 @@
 </span><span id="__span-46-9"><a id="__codelineno-46-9" name="__codelineno-46-9" href="#__codelineno-46-9"></a><span class="w">  </span>snmpget<span class="w"> </span>-v3<span class="w"> </span>-l<span class="w"> </span>authNoPriv<span class="w"> </span>-u<span class="w"> </span>monitor<span class="w"> </span>-a<span class="w"> </span>SHA-256<span class="w"> </span>-A<span class="w"> </span>lab-only-v3-password<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-46-10"><a id="__codelineno-46-10" name="__codelineno-46-10" href="#__codelineno-46-10"></a><span class="w">  </span>-On<span class="w"> </span>sonda:1161<span class="w"> </span><span class="m">1</span>.3.6.1.2.1.1.5.0
 </span></code></pre></div>
+<h2 id="snmp_trap">snmp_trap<a class="headerlink" href="#snmp_trap" title="Permanent link">&para;</a></h2>
+<p>Sends SNMPv2c notifications to a trap receiver, the way a managed device reports a link that changes: linkDown when an interface goes down, linkUp when it comes back, and coldStart when Sonda starts. Unlike <code>snmp_agent</code>, this <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> sends: a receiver such as <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s <code>inputs.snmp_trap</code>, net-snmp's <code>snmptrapd</code> or a network management system listens on <code>destination</code> and Sonda sends to it over UDP.</p>
+<p>Pair this <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> with the <a href="../encoders/#snmp"><code>snmp</code> <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr></a>, as <code>snmp_agent</code> is: the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> reads the instance OID and value of each record the <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> writes. It takes only that <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, and it works for <code>metrics</code> entries.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> requires the <code>snmp</code> Cargo feature flag. Pre-built release binaries and the published Docker image include this feature. To build from source: <code>cargo build --features snmp -p sonda</code>.</p>
+</div>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>destination</code></td>
+<td>string</td>
+<td>yes</td>
+<td>--</td>
+<td>The trap receiver, <code>"host:port"</code> or an address such as <code>"127.0.0.1:162"</code>. A host name is resolved once, when the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> is created; one that resolves to nothing fails the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s start.</td>
+</tr>
+<tr>
+<td><code>community</code></td>
+<td>string</td>
+<td>no</td>
+<td><code>public</code></td>
+<td>The community every notification carries.</td>
+</tr>
+<tr>
+<td><code>inform</code></td>
+<td>boolean</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Send INFORMs, which the receiver acknowledges, instead of traps. See <a href="#snmp-trap-inform">Traps and INFORMs</a>.</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>duration</td>
+<td>no</td>
+<td><code>2s</code></td>
+<td>How long an INFORM waits for its acknowledgement before it is sent again, <code>100ms</code> to <code>60s</code>. Read only with <code>inform: true</code>.</td>
+</tr>
+<tr>
+<td><code>retries</code></td>
+<td>integer</td>
+<td>no</td>
+<td><code>3</code></td>
+<td>How many times an unacknowledged INFORM is sent again, 0 to 10. Read only with <code>inform: true</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="language-yaml highlight"><span class="filename">An snmp_trap sink sending INFORMs</span><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp_trap</span>
+</span><span id="__span-47-3"><a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a><span class="w">  </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1:1162</span>
+</span><span id="__span-47-4"><a id="__codelineno-47-4" name="__codelineno-47-4" href="#__codelineno-47-4"></a><span class="w">  </span><span class="nt">community</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">public</span>
+</span><span id="__span-47-5"><a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a><span class="w">  </span><span class="nt">inform</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-47-6"><a id="__codelineno-47-6" name="__codelineno-47-6" href="#__codelineno-47-6"></a><span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span>
+</span><span id="__span-47-7"><a id="__codelineno-47-7" name="__codelineno-47-7" href="#__codelineno-47-7"></a><span class="w">  </span><span class="nt">retries</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+</span></code></pre></div>
+<p>SNMPv2c is the only version the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> sends: no SNMPv1 Trap-PDU and no SNMPv3 notification.</p>
+<h3 id="snmp-trap-notifications">What it sends<a class="headerlink" href="#snmp-trap-notifications" title="Permanent link">&para;</a></h3>
+<p>The <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> watches the IF-MIB interface table in the records it reads: <code>ifOperStatus</code> (<code>1.3.6.1.2.1.2.2.1.8.&lt;ifIndex&gt;</code>) and <code>ifAdminStatus</code> (<code>1.3.6.1.2.1.2.2.1.7.&lt;ifIndex&gt;</code>), each an <code>integer</code>, as the <a href="../builtin-packs/#snmp-hints"><code>telegraf_snmp_interface</code></a> and <code>if_mib</code> packs type them. Records of any other OID, or of another type, are ignored.</p>
+<table>
+<thead>
+<tr>
+<th>Notification</th>
+<th><code>snmpTrapOID.0</code></th>
+<th>Sent when</th>
+<th>Varbinds after <code>sysUpTime.0</code> and <code>snmpTrapOID.0</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>coldStart</td>
+<td><code>1.3.6.1.6.3.1.1.5.1</code></td>
+<td>Once, when the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> is created (see below)</td>
+<td>none</td>
+</tr>
+<tr>
+<td>linkDown</td>
+<td><code>1.3.6.1.6.3.1.1.5.3</code></td>
+<td>An interface's <code>ifOperStatus</code> changes from up (1) to any other value</td>
+<td><code>ifIndex.N</code>, <code>ifAdminStatus.N</code>, <code>ifOperStatus.N</code></td>
+</tr>
+<tr>
+<td>linkUp</td>
+<td><code>1.3.6.1.6.3.1.1.5.4</code></td>
+<td>An interface's <code>ifOperStatus</code> changes to up (1) from any other value</td>
+<td><code>ifIndex.N</code>, <code>ifAdminStatus.N</code>, <code>ifOperStatus.N</code></td>
+</tr>
+</tbody>
+</table>
+<p>An interface's first <code>ifOperStatus</code> sends nothing, and a change between two values other than up, such as down to <code>lowerLayerDown</code>, sends nothing either. The varbinds are in the order RFC 3416 and RFC 2863 give them: <code>ifIndex.N</code> carries the interface's index, <code>ifOperStatus.N</code> its new value, and <code>ifAdminStatus.N</code> the last <code>ifAdminStatus</code> seen for the index, up (1) until one is seen. <code>sysUpTime.0</code> counts hundredths of a second from when the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> was created.</p>
+<p>The entries of one <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file that send to one destination are one device: the first of their sinks to be created sends coldStart and the others do not, and an <code>ifAdminStatus</code> any of them reads is seen by all. A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> entry becomes one entry, and one <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>, per metric of the <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>, so a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> on one interface sends one coldStart, not one per metric, and the <code>if_mib</code> <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>'s <code>ifAdminStatus</code>, overridden to 2 (down) say, is the one its link traps carry. A file run again, or another file, sends its own.</p>
+<h3 id="snmp-trap-inform">Traps and INFORMs<a class="headerlink" href="#snmp-trap-inform" title="Permanent link">&para;</a></h3>
+<p>Without <code>inform</code>, each notification is an <code>SNMPv2-Trap</code> PDU, sent once; nothing is waited for, and a socket error is a <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> error of the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>.</p>
+<p>With <code>inform: true</code>, each notification is an <code>InformRequest</code>. The <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> waits up to <code>timeout</code> for a <code>Response</code> from <code>destination</code> carrying the request-id it sent, ignoring anything else that arrives, and sends the same message again each time <code>timeout</code> passes, <code>retries</code> times at most. A notification that is never acknowledged is one <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> error of the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, counted like any <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>'s, and logged at warn at most once a minute per destination; the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> goes on with its next event.</p>
+<div class="admonition warning">
+<p class="admonition-title">An unanswered INFORM stalls the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr></p>
+<p>An INFORM is sent and waited for in the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s own write, so while the receiver does not answer, its entry emits nothing. One notification holds the entry for <code>timeout × (retries + 1)</code> at most: 8 seconds with the defaults, 11 minutes at the limits (<code>60s</code>, 10). coldStart is waited for while the <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> is created, so its entry starts that much later; a link trap is waited for inside a write, and the events held back meanwhile are emitted late, one after another. Stopping a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> while the receiver is down waits for the INFORM in flight, up to <code>timeout × (retries + 1)</code>. Keep <code>timeout × (retries + 1)</code> short where a stalled <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> matters, or send traps, which never wait.</p>
+</div>
+<h3 id="snmp-trap-telegraf"><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr><a class="headerlink" href="#snmp-trap-telegraf" title="Permanent link">&para;</a></h3>
+<p><a href="https://github.com/davidban77/sonda/blob/main/examples/snmp-traps.yaml"><code>examples/snmp-traps.yaml</code></a> is one router interface whose <code>ifOperStatus</code> flaps, up for 60 seconds and down for 5, sending INFORMs to <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>:</p>
+<div class="language-yaml highlight"><span class="filename">examples/snmp-traps.yaml (comments left out)</span><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a><span class="c1"># sonda:static - an snmp_trap sink sends to a trap receiver, which the browser playground cannot provide</span>
+</span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-48-3"><a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">runnable</span>
+</span><span id="__span-48-4"><a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>
+</span><span id="__span-48-5"><a id="__codelineno-48-5" name="__codelineno-48-5" href="#__codelineno-48-5"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-48-6"><a id="__codelineno-48-6" name="__codelineno-48-6" href="#__codelineno-48-6"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-48-7"><a id="__codelineno-48-7" name="__codelineno-48-7" href="#__codelineno-48-7"></a><span class="w">  </span><span class="nt">encoder</span><span class="p">:</span>
+</span><span id="__span-48-8"><a id="__codelineno-48-8" name="__codelineno-48-8" href="#__codelineno-48-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp</span>
+</span><span id="__span-48-9"><a id="__codelineno-48-9" name="__codelineno-48-9" href="#__codelineno-48-9"></a><span class="w">    </span><span class="nt">drop_labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">job</span><span class="p p-Indicator">]</span>
+</span><span id="__span-48-10"><a id="__codelineno-48-10" name="__codelineno-48-10" href="#__codelineno-48-10"></a><span class="w">  </span><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-48-11"><a id="__codelineno-48-11" name="__codelineno-48-11" href="#__codelineno-48-11"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snmp_trap</span>
+</span><span id="__span-48-12"><a id="__codelineno-48-12" name="__codelineno-48-12" href="#__codelineno-48-12"></a><span class="w">    </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1:1162</span>
+</span><span id="__span-48-13"><a id="__codelineno-48-13" name="__codelineno-48-13" href="#__codelineno-48-13"></a><span class="w">    </span><span class="nt">community</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">public</span>
+</span><span id="__span-48-14"><a id="__codelineno-48-14" name="__codelineno-48-14" href="#__codelineno-48-14"></a><span class="w">    </span><span class="nt">inform</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-48-15"><a id="__codelineno-48-15" name="__codelineno-48-15" href="#__codelineno-48-15"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span>
+</span><span id="__span-48-16"><a id="__codelineno-48-16" name="__codelineno-48-16" href="#__codelineno-48-16"></a><span class="w">    </span><span class="nt">retries</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+</span><span id="__span-48-17"><a id="__codelineno-48-17" name="__codelineno-48-17" href="#__codelineno-48-17"></a>
+</span><span id="__span-48-18"><a id="__codelineno-48-18" name="__codelineno-48-18" href="#__codelineno-48-18"></a><span class="nt">scenarios</span><span class="p">:</span>
+</span><span id="__span-48-19"><a id="__codelineno-48-19" name="__codelineno-48-19" href="#__codelineno-48-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">signal_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">metrics</span>
+</span><span id="__span-48-20"><a id="__codelineno-48-20" name="__codelineno-48-20" href="#__codelineno-48-20"></a><span class="w">    </span><span class="nt">pack</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegraf_snmp_interface</span>
+</span><span id="__span-48-21"><a id="__codelineno-48-21" name="__codelineno-48-21" href="#__codelineno-48-21"></a><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> device</span><span class="p">:</span><span class="w"> </span><span class="nv">rtr-edge-01</span><span class="p p-Indicator">,</span><span class="nt"> ifIndex</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="nt"> ifName</span><span class="p">:</span><span class="w"> </span><span class="nv">GigabitEthernet0/0/0</span><span class="w"> </span><span class="p p-Indicator">}</span>
+</span><span id="__span-48-22"><a id="__codelineno-48-22" name="__codelineno-48-22" href="#__codelineno-48-22"></a><span class="w">    </span><span class="nt">overrides</span><span class="p">:</span>
+</span><span id="__span-48-23"><a id="__codelineno-48-23" name="__codelineno-48-23" href="#__codelineno-48-23"></a><span class="w">      </span><span class="nt">ifOperStatus</span><span class="p">:</span>
+</span><span id="__span-48-24"><a id="__codelineno-48-24" name="__codelineno-48-24" href="#__codelineno-48-24"></a><span class="w">        </span><span class="nt">generator</span><span class="p">:</span>
+</span><span id="__span-48-25"><a id="__codelineno-48-25" name="__codelineno-48-25" href="#__codelineno-48-25"></a><span class="w">          </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flap</span>
+</span><span id="__span-48-26"><a id="__codelineno-48-26" name="__codelineno-48-26" href="#__codelineno-48-26"></a><span class="w">          </span><span class="nt">up_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60s</span>
+</span><span id="__span-48-27"><a id="__codelineno-48-27" name="__codelineno-48-27" href="#__codelineno-48-27"></a><span class="w">          </span><span class="nt">down_duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span>
+</span><span id="__span-48-28"><a id="__codelineno-48-28" name="__codelineno-48-28" href="#__codelineno-48-28"></a><span class="w">          </span><span class="nt">enum</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oper_state</span>
+</span></code></pre></div>
+<p>In 140 seconds it sends one coldStart, then linkDown at 60 seconds, linkUp at 65, linkDown at 125 and linkUp at 130. With <code>timeout: 5s</code> and <code>retries: 10</code>, a notification is sent 11 times at most, the last 50 seconds after the first, so a receiver that is back within 50 seconds still receives it.</p>
+<p>The compose stack's <code>telegraf-snmp</code> service (profile <code>snmp</code>) receives them with <code>inputs.snmp_trap</code> on UDP 1162, which it maps from the host, acknowledges each INFORM, and prints each trap as one JSON line:</p>
+<div class="language-toml highlight"><span class="filename">examples/telegraf/telegraf-snmp.conf (excerpt)</span><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a><span class="k">[agent]</span>
+</span><span id="__span-49-2"><a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a><span class="w">  </span><span class="n">snmp_translator</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"gosmi"</span>
+</span><span id="__span-49-3"><a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a>
+</span><span id="__span-49-4"><a id="__codelineno-49-4" name="__codelineno-49-4" href="#__codelineno-49-4"></a><span class="k">[[inputs.snmp_trap]]</span>
+</span><span id="__span-49-5"><a id="__codelineno-49-5" name="__codelineno-49-5" href="#__codelineno-49-5"></a><span class="w">  </span><span class="n">alias</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"traps"</span>
+</span><span id="__span-49-6"><a id="__codelineno-49-6" name="__codelineno-49-6" href="#__codelineno-49-6"></a><span class="w">  </span><span class="n">service_address</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"udp://:1162"</span>
+</span><span id="__span-49-7"><a id="__codelineno-49-7" name="__codelineno-49-7" href="#__codelineno-49-7"></a>
+</span><span id="__span-49-8"><a id="__codelineno-49-8" name="__codelineno-49-8" href="#__codelineno-49-8"></a><span class="k">[[outputs.file]]</span>
+</span><span id="__span-49-9"><a id="__codelineno-49-9" name="__codelineno-49-9" href="#__codelineno-49-9"></a><span class="w">  </span><span class="n">files</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"stdout"</span><span class="p">]</span>
+</span><span id="__span-49-10"><a id="__codelineno-49-10" name="__codelineno-49-10" href="#__codelineno-49-10"></a><span class="w">  </span><span class="n">data_format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"json"</span>
+</span><span id="__span-49-11"><a id="__codelineno-49-11" name="__codelineno-49-11" href="#__codelineno-49-11"></a><span class="w">  </span><span class="n">json_timestamp_units</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1ms"</span>
+</span><span id="__span-49-12"><a id="__codelineno-49-12" name="__codelineno-49-12" href="#__codelineno-49-12"></a><span class="w">  </span><span class="n">namepass</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"snmp_trap"</span><span class="p">]</span>
+</span></code></pre></div>
+<p><code>inputs.snmp_trap</code> names each varbind by translating its OID, and drops a trap whose OIDs it cannot translate. The <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> image has no MIB files, so the config sets the <code>gosmi</code> translator, which names an OID it has no MIB for from its built-in nodes, <code>iso.3.6.1.2.1.1.3.0</code> for <code>sysUpTime.0</code>; with <code>netsnmp</code>, <abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr>'s default, every trap would be dropped. The trap itself is in the <code>oid</code> tag:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>--profile<span class="w"> </span>snmp<span class="w"> </span>up<span class="w"> </span>-d
+</span><span id="__span-50-2"><a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>sonda<span class="w"> </span>run<span class="w"> </span>examples/snmp-traps.yaml<span class="w"> </span>--duration<span class="w"> </span>140s
+</span><span id="__span-50-3"><a id="__codelineno-50-3" name="__codelineno-50-3" href="#__codelineno-50-3"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>examples/docker-compose-victoriametrics.yml<span class="w"> </span>logs<span class="w"> </span>telegraf-snmp<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s1">'"name":"snmp_trap"'</span>
+</span></code></pre></div>
+<div class="language-text highlight"><span class="filename">What Telegraf prints for the first linkDown (one line, wrapped here)</span><pre><span></span><code><span id="__span-51-1"><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>{"fields":{"iso.3.6.1.2.1.1.3.0":6000,"iso.3.6.1.2.1.2.2.1.1.1":1,"iso.3.6.1.2.1.2.2.1.7.1":1,
+</span><span id="__span-51-2"><a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>"iso.3.6.1.2.1.2.2.1.8.1":2},"name":"snmp_trap","tags":{"community":"public","mib":"",
+</span><span id="__span-51-3"><a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>"name":"iso.3.6.1.6.3.1.1.5.3","oid":".1.3.6.1.6.3.1.1.5.3","source":"172.18.0.1","version":"2c"},
+</span><span id="__span-51-4"><a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a>"timestamp":1793360325306}
+</span></code></pre></div>
+<p><abbr title="InfluxData's plugin-driven agent for collecting and shipping telemetry.">Telegraf</abbr> also writes the traps to <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr>, one series per varbind named <code>snmp_trap_</code> and the varbind's name, each labelled with the trap's <code>oid</code>.</p>
 <h2 id="retry-with-backoff">Retry with backoff<a class="headerlink" href="#retry-with-backoff" title="Permanent link">&para;</a></h2>
 <p>Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does <strong>not</strong> retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a <code>retry:</code> block to any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
 <p>Retry applies to these sinks: <code>http_push</code>, <code>remote_write</code>, <code>loki</code>, <code>otlp_grpc</code>, <code>kafka</code>, <code>tcp</code>. It does <strong>not</strong> apply to <code>stdout</code>, <code>file</code>, or <code>udp</code>.</p>
 <h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
 <p>Add the <code>retry:</code> block inside any network <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> definition:</p>
-<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a><span class="nt">sink</span><span class="p">:</span>
-</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
-</span><span id="__span-47-3"><a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
-</span><span id="__span-47-4"><a id="__codelineno-47-4" name="__codelineno-47-4" href="#__codelineno-47-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
-</span><span id="__span-47-5"><a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
-</span><span id="__span-47-6"><a id="__codelineno-47-6" name="__codelineno-47-6" href="#__codelineno-47-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
-</span><span id="__span-47-7"><a id="__codelineno-47-7" name="__codelineno-47-7" href="#__codelineno-47-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
+<div class="language-yaml highlight"><span class="filename">Retry configuration</span><pre><span></span><code><span id="__span-52-1"><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a><span class="nt">sink</span><span class="p">:</span>
+</span><span id="__span-52-2"><a id="__codelineno-52-2" name="__codelineno-52-2" href="#__codelineno-52-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http_push</span>
+</span><span id="__span-52-3"><a id="__codelineno-52-3" name="__codelineno-52-3" href="#__codelineno-52-3"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">"http://victoriametrics:8428/api/v1/import/prometheus"</span>
+</span><span id="__span-52-4"><a id="__codelineno-52-4" name="__codelineno-52-4" href="#__codelineno-52-4"></a><span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
+</span><span id="__span-52-5"><a id="__codelineno-52-5" name="__codelineno-52-5" href="#__codelineno-52-5"></a><span class="w">    </span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">          </span><span class="c1"># retries after initial failure (total = 4 attempts)</span>
+</span><span id="__span-52-6"><a id="__codelineno-52-6" name="__codelineno-52-6" href="#__codelineno-52-6"></a><span class="w">    </span><span class="nt">initial_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100ms</span><span class="w">   </span><span class="c1"># first retry delay</span>
+</span><span id="__span-52-7"><a id="__codelineno-52-7" name="__codelineno-52-7" href="#__codelineno-52-7"></a><span class="w">    </span><span class="nt">max_backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5s</span><span class="w">          </span><span class="c1"># backoff cap</span>
 </span></code></pre></div>
 <p>All three fields are required when <code>retry:</code> is present:</p>
 <table>
@@ -4536,13 +4798,13 @@
 </table>
 <h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
 <p>Sonda uses <strong>exponential backoff with full jitter</strong>:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
-</span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>sleep = random(0, base)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-53-1"><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>base  = min(max_backoff, initial_backoff * 2^attempt)
+</span><span id="__span-53-2"><a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>sleep = random(0, base)
 </span></code></pre></div>
 <p>The jitter prevents synchronized retries when several sinks retry at the same time ("thundering herd"). Each retry attempt is logged to stderr:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
-</span><span id="__span-49-2"><a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
-</span><span id="__span-49-3"><a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-54-1"><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>sonda: retry 1/3 after 127ms (error: connection refused)
+</span><span id="__span-54-2"><a id="__codelineno-54-2" name="__codelineno-54-2" href="#__codelineno-54-2"></a>sonda: retry 2/3 after 312ms (error: connection refused)
+</span><span id="__span-54-3"><a id="__codelineno-54-3" name="__codelineno-54-3" href="#__codelineno-54-3"></a>sonda: all 3 retries exhausted (last error: connection refused)
 </span></code></pre></div>
 <p>If every retry is exhausted, the batch is <strong>discarded</strong>. Sonda generates synthetic data, so losing a batch is acceptable and prevents unbounded buffer growth.</p>
 <h3 id="error-classification">Error classification<a class="headerlink" href="#error-classification" title="Permanent link">&para;</a></h3>
@@ -4603,7 +4865,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 27, 2026 21:56:21 UTC">October 27, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 30, 2026 18:19:20 UTC">October 30, 2026</span>
   </span>
 
     
