@@ -25,9 +25,6 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml logs -f telegraf-snmp \
 #     | grep '"name":"snmp_trap"'
 #
-# Or receive them with net-snmp instead of Telegraf:
-#   snmptrapd -f -Lo -On --disableAuthorization=yes udp:127.0.0.1:1162
-#
 # sonda:static - an snmp_trap sink sends to a trap receiver, which the browser playground cannot provide
 
 version: 2

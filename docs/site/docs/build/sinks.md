@@ -1154,12 +1154,6 @@ docker compose -f examples/docker-compose-victoriametrics.yml logs telegraf-snmp
 
 Telegraf also writes the traps to VictoriaMetrics, one series per varbind named `snmp_trap_` and the varbind's name, each labelled with the trap's `oid`.
 
-net-snmp's `snmptrapd` receives them too. It listens on the standard port 162 unless told otherwise, and acknowledges INFORMs:
-
-```bash
-snmptrapd -f -Lo -On --disableAuthorization=yes udp:127.0.0.1:1162
-```
-
 ## Retry with backoff
 
 Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does **not** retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a `retry:` block to any network sink.
