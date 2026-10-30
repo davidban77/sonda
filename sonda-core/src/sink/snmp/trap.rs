@@ -14,7 +14,8 @@
 //! scenario for `timeout × (retries + 1)` at most.
 //!
 //! The sinks of one launch that send to one destination are one device: the
-//! first of them to be created sends coldStart and the others do not, as a
+//! first of them to be created sends coldStart and the others do not, and
+//! the `ifAdminStatus` any of them reads reaches the link traps of all, as a
 //! pack entry's metrics, each an entry with a sink of its own, describe one
 //! interface.
 //!
@@ -25,7 +26,7 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -369,14 +370,6 @@ enum Column {
     OperStatus,
 }
 
-/// What the sink knows of one interface: the last `ifOperStatus` and
-/// `ifAdminStatus` it read.
-#[derive(Debug, Default, Clone, Copy)]
-struct Link {
-    oper: Option<i32>,
-    admin: Option<i32>,
-}
-
 /// Request-ids: a counter from a random start, kept within 0 to 2³¹−1.
 #[derive(Debug)]
 struct RequestIds(u32);
@@ -394,29 +387,42 @@ impl RequestIds {
     }
 }
 
-/// The live sinks of each launch on each destination, by launch id and
-/// destination, for every sink in the process.
-fn devices() -> &'static Mutex<HashMap<(u64, SocketAddr), usize>> {
-    static DEVICES: OnceLock<Mutex<HashMap<(u64, SocketAddr), usize>>> = OnceLock::new();
+/// Each interface's last `ifAdminStatus`, by ifIndex, as the sinks of one
+/// launch on one destination share it.
+type AdminStatus = Arc<Mutex<HashMap<u32, i32>>>;
+
+/// The live sinks of one launch on one destination, and the `ifAdminStatus`
+/// they share.
+#[derive(Debug, Default)]
+struct Device {
+    sinks: usize,
+    admin: AdminStatus,
+}
+
+/// Each launch's device on each destination, by launch id and destination,
+/// for every sink in the process.
+fn devices() -> &'static Mutex<HashMap<(u64, SocketAddr), Device>> {
+    static DEVICES: OnceLock<Mutex<HashMap<(u64, SocketAddr), Device>>> = OnceLock::new();
     DEVICES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Count one more live sink of `launch` on `destination`; `true` when it is
-/// the only one, which then sends coldStart.
-fn join_device(launch: u64, destination: SocketAddr) -> bool {
+/// Count one more live sink of `launch` on `destination`: `true` when it is
+/// the only one, which then sends coldStart, and the device's
+/// `ifAdminStatus`.
+fn join_device(launch: u64, destination: SocketAddr) -> (bool, AdminStatus) {
     let mut devices = devices().lock().unwrap_or_else(PoisonError::into_inner);
-    let sinks = devices.entry((launch, destination)).or_insert(0);
-    *sinks += 1;
-    *sinks == 1
+    let device = devices.entry((launch, destination)).or_default();
+    device.sinks += 1;
+    (device.sinks == 1, Arc::clone(&device.admin))
 }
 
 /// Count one live sink of `launch` on `destination` fewer, forgetting the
-/// pair at none.
+/// device, and its `ifAdminStatus`, at none.
 fn leave_device(launch: u64, destination: SocketAddr) {
     let mut devices = devices().lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(sinks) = devices.get_mut(&(launch, destination)) {
-        *sinks -= 1;
-        if *sinks == 0 {
+    if let Some(device) = devices.get_mut(&(launch, destination)) {
+        device.sinks -= 1;
+        if device.sinks == 0 {
             devices.remove(&(launch, destination));
         }
     }
@@ -457,24 +463,28 @@ fn warn_unacknowledged_due(destination: SocketAddr) -> bool {
 ///   interface has sends nothing; a change from up (1) to any other value
 ///   sends linkDown, a change from any other value to up sends linkUp, and
 ///   any other change sends nothing;
-/// - an INTEGER at `ifAdminStatus.N` is kept for interface `N`'s next link
-///   trap, which carries up (1) until one has been read;
+/// - an INTEGER at `ifAdminStatus.N` is kept as interface `N`'s
+///   `ifAdminStatus` for every sink of the launch on the destination: a link
+///   trap carries the last one any of them read before it is sent, up (1)
+///   until one has been read;
 /// - anything else is ignored.
 ///
-/// The interfaces it keeps are the ones its records name, never pruned.
-/// coldStart is sent when the sink is created, by the first sink of its
-/// launch on its destination: while that launch has a live sink on the
-/// destination, no other of its sinks sends one. Every notification's
-/// `sysUpTime` is the hundredths of a second since the sink was created.
+/// The interfaces kept are the ones the records name, never pruned: each
+/// sink's `ifOperStatus` while it lives, the shared `ifAdminStatus` while
+/// the launch has a live sink on the destination. coldStart is sent when the
+/// sink is created, by the first sink of its launch on its destination:
+/// while that launch has a live sink on the destination, no other of its
+/// sinks sends one. Every notification's `sysUpTime` is the hundredths of a
+/// second since the sink was created.
 ///
-/// With `inform`, a send waits up to `timeout` for a `Response` carrying the
-/// request-id it sent; any other datagram on the socket is ignored and
-/// counted. When none arrives, the same message is sent again, `retries`
-/// times at most, then the send fails: that write returns
-/// [`SondaError::Sink`], and the failure is logged at warn at most once a
-/// minute per destination. coldStart failing so is returned by the first
-/// write instead. Without `inform`, a send waits for nothing, and a socket
-/// error fails the write.
+/// With `inform`, a send waits up to `timeout` for a `Response` from
+/// `destination` carrying the request-id it sent; any other datagram on the
+/// socket is ignored and counted. When none arrives, the same message is
+/// sent again, `retries` times at most, then the send fails: that write
+/// returns [`SondaError::Sink`], and the failure is logged at warn at most
+/// once a minute per destination. coldStart failing so is returned by the
+/// first write instead. Without `inform`, a send waits for nothing, and a
+/// socket error fails the write.
 pub struct SnmpTrapSink {
     socket: UdpSocket,
     destination: SocketAddr,
@@ -482,8 +492,11 @@ pub struct SnmpTrapSink {
     settings: TrapSettings,
     created: Instant,
     request_ids: RequestIds,
-    /// Each interface's state, by ifIndex.
-    links: HashMap<u32, Link>,
+    /// Each interface's last `ifOperStatus`, by ifIndex.
+    oper: HashMap<u32, i32>,
+    /// Each interface's last `ifAdminStatus`, shared with the launch's other
+    /// sinks on the destination.
+    admin: AdminStatus,
     /// The message being sent.
     out: Vec<u8>,
     /// Where an INFORM's acknowledgement is read; empty without `inform`.
@@ -533,7 +546,7 @@ impl SnmpTrapSink {
             Vec::new()
         };
         let launch = launch.get();
-        let cold_start = join_device(launch, destination);
+        let (cold_start, admin) = join_device(launch, destination);
         let mut sink = Self {
             socket,
             destination,
@@ -541,7 +554,8 @@ impl SnmpTrapSink {
             settings,
             created: Instant::now(),
             request_ids: RequestIds::random(),
-            links: HashMap::new(),
+            oper: HashMap::new(),
+            admin,
             out: Vec::new(),
             received,
             arcs: Vec::new(),
@@ -572,26 +586,36 @@ impl SnmpTrapSink {
 
     /// Read one `VarBind` of a record: keep an `ifAdminStatus` or
     /// `ifOperStatus` INTEGER, and send the link trap a change of
-    /// `ifOperStatus` calls for.
+    /// `ifOperStatus` calls for, with the device's `ifAdminStatus` as it is
+    /// now.
     async fn watch(&mut self, varbind: &[u8]) -> Result<(), SondaError> {
         let Some((column, if_index, value)) = self.link_column(varbind)? else {
             return Ok(());
         };
-        let link = self.links.entry(if_index).or_default();
         let kind = match column {
             Column::AdminStatus => {
-                link.admin = Some(value);
+                self.admin
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(if_index, value);
                 return Ok(());
             }
-            Column::OperStatus => match link.oper.replace(value) {
+            Column::OperStatus => match self.oper.insert(if_index, value) {
                 Some(UP) if value != UP => TrapKind::LinkDown,
                 Some(before) if before != UP && value == UP => TrapKind::LinkUp,
                 _ => return Ok(()),
             },
         };
+        let admin = self
+            .admin
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&if_index)
+            .copied()
+            .unwrap_or(UP);
         let link = LinkVars {
             if_index,
-            admin: link.admin.unwrap_or(UP),
+            admin,
             oper: value,
         };
         self.send(kind, Some(link)).await
@@ -695,17 +719,19 @@ impl SnmpTrapSink {
         )))
     }
 
-    /// Read datagrams until one is a `Response` carrying `request_id`
-    /// (`true`), or until `deadline` (`false`). Every other datagram is
-    /// ignored and counted.
+    /// Read datagrams until one from `destination` is a `Response` carrying
+    /// `request_id` (`true`), or until `deadline` (`false`). Every other
+    /// datagram is ignored and counted.
     async fn acknowledged(&mut self, request_id: i32, deadline: Instant) -> bool {
         loop {
             let received =
                 tokio::time::timeout_at(deadline, self.socket.recv_from(&mut self.received)).await;
             match received {
                 Err(_elapsed) => return false,
-                Ok(Ok((len, _peer))) => {
-                    if is_acknowledgement(&self.received[..len], request_id) {
+                Ok(Ok((len, peer))) => {
+                    if peer == self.destination
+                        && is_acknowledgement(&self.received[..len], request_id)
+                    {
                         return true;
                     }
                     self.ignored += 1;
@@ -1513,7 +1539,12 @@ mod tests {
                     .expect("read");
             }
         }
-        assert!(sink.links.is_empty(), "no interface kept: {:?}", sink.links);
+        assert!(sink.oper.is_empty(), "no interface kept: {:?}", sink.oper);
+        assert!(
+            sink.admin.lock().expect("unpoisoned").is_empty(),
+            "no ifAdminStatus kept: {:?}",
+            sink.admin
+        );
         assert_eq!(
             finish(&mut sink, &encoder, &receiver).await,
             [
@@ -1590,6 +1621,51 @@ mod tests {
             finish(&mut other, &encoder, &receiver).await,
             [Sent::trap(TrapKind::LinkDown, link(99, 1, 2))],
             "guard: the other launch's sink is still live and sent nothing more"
+        );
+    }
+
+    /// The sinks of one launch on one destination share each interface's
+    /// ifAdminStatus: a record one of them reads reaches the next link trap
+    /// of another, which carries the last value read before it is sent. A
+    /// sink of another launch on the destination still carries up.
+    #[tokio::test]
+    async fn the_sinks_of_one_launch_share_admin_status() {
+        let receiver = Receiver::bind().await;
+        let encoder = encoder(&[]);
+        let cfg = SnmpTrapConfig::new(receiver.destination());
+        let launch = LaunchId::next();
+        let mut admin = SnmpTrapSink::new_in(&cfg, launch)
+            .await
+            .expect("the sink that reads ifAdminStatus");
+        let mut links = SnmpTrapSink::new_in(&cfg, launch)
+            .await
+            .expect("the sink that reads ifOperStatus");
+        let mut other = SnmpTrapSink::new(&cfg)
+            .await
+            .expect("a sink of another launch");
+        let index = [("ifIndex", "3")];
+        oper(&mut links, &encoder, "3", &[1.0]).await;
+        oper(&mut other, &encoder, "3", &[1.0]).await;
+        write(&mut admin, &encoder, "ifAdminStatus", 2.0, &index)
+            .await
+            .expect("read");
+        oper(&mut links, &encoder, "3", &[2.0]).await;
+        oper(&mut other, &encoder, "3", &[2.0]).await;
+        write(&mut admin, &encoder, "ifAdminStatus", 1.0, &index)
+            .await
+            .expect("read");
+        oper(&mut links, &encoder, "3", &[1.0]).await;
+        assert_eq!(
+            finish(&mut links, &encoder, &receiver).await,
+            [
+                Sent::trap(TrapKind::ColdStart, None),
+                Sent::trap(TrapKind::ColdStart, None),
+                Sent::trap(TrapKind::LinkDown, link(3, 2, 2)),
+                Sent::trap(TrapKind::LinkDown, link(3, 1, 2)),
+                Sent::trap(TrapKind::LinkUp, link(3, 1, 1)),
+                Sent::trap(TrapKind::LinkDown, link(99, 1, 2)),
+            ],
+            "the launch's coldStart, the other launch's, then the link traps"
         );
     }
 
@@ -1771,6 +1847,35 @@ mod tests {
             "a third send"
         );
         assert_eq!(sink.ignored(), 3);
+        assert!(sink.pending.is_none(), "coldStart was acknowledged");
+    }
+
+    /// While an INFORM waits, a `Response` carrying its request-id from an
+    /// address other than the destination is ignored and counted; the same
+    /// answer from the destination, to the next send, is taken.
+    #[tokio::test]
+    async fn a_response_from_another_address_is_ignored() {
+        let receiver = Receiver::bind().await;
+        let stranger = Receiver::bind().await;
+        let destination = receiver.destination();
+        let answering = tokio::spawn(async move {
+            let (first, peer) = receiver.next().await;
+            let (_, request_id, _) = decode(&first);
+            stranger.answer(&first, peer, request_id).await;
+            let (second, peer) = receiver.next().await;
+            assert_eq!(second, first, "the same message, sent again");
+            receiver.answer(&second, peer, request_id).await;
+            receiver
+        });
+        let sink = SnmpTrapSink::new(&config(destination, true, "200ms", 3))
+            .await
+            .expect("the sink is created");
+        let receiver = answering.await.expect("the receiver answered");
+        assert!(
+            receiver.silent(Duration::from_millis(400)).await,
+            "a third send"
+        );
+        assert_eq!(sink.ignored(), 1);
         assert!(sink.pending.is_none(), "coldStart was acknowledged");
     }
 

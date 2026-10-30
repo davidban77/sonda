@@ -835,22 +835,25 @@ src/
 │   │   │                   SnmpTrapSink: wants_metric_events() = true; write() is an error.
 │   │   │                   Reads each record (split_record) and its companions: an INTEGER
 │   │   │                   at ifOperStatus.N (1.3.6.1.2.1.2.2.1.8.N, N <= 2^31-1) is kept
-│   │   │                   per ifIndex (HashMap<u32, Link>, never pruned): up (1) -> other
+│   │   │                   per ifIndex in the sink (`oper`, never pruned): up (1) -> other
 │   │   │                   sends linkDown, other -> up linkUp, the first value nothing; an
-│   │   │                   INTEGER at ifAdminStatus.N is kept for the varbind (else 1);
-│   │   │                   anything else is ignored. new_in(cfg, launch) sends coldStart only
-│   │   │                   when join_device counts it the first live sink of its launch on
-│   │   │                   its destination (a process-wide refcount map; Drop leaves it), so
-│   │   │                   a pack entry's metrics, each a sink, send one. Request-ids count
-│   │   │                   up from a random start within 31 bits; sysUpTime is centiseconds
-│   │   │                   since creation. With inform, send() reads the socket until a
-│   │   │                   v2c Response carries its request-id (anything else counted in
-│   │   │                   `ignored`), resends the same bytes every timeout, retries times,
-│   │   │                   then is SondaError::Sink, warned once a minute per destination
-│   │   │                   (process-wide map, agent::warn_due). A coldStart failure does
-│   │   │                   not fail new(); the first write returns it. The wait is inside
-│   │   │                   the write: timeout × (retries + 1) at most. Never touches the
-│   │   │                   agent registry.
+│   │   │                   INTEGER at ifAdminStatus.N goes into the device's shared
+│   │   │                   `admin` map, read when a link trap is built (else 1); anything
+│   │   │                   else is ignored. A device is a launch's sinks on one destination:
+│   │   │                   join_device (a process-wide map of Device { sinks, admin: Arc },
+│   │   │                   left on Drop, forgotten with its last sink) counts the sink in
+│   │   │                   and hands it the device's `admin`; only the first live sink
+│   │   │                   sends coldStart, so a pack entry's metrics, each a sink, send one
+│   │   │                   and see each other's ifAdminStatus. Request-ids count up from a
+│   │   │                   random start within 31 bits; sysUpTime is centiseconds since
+│   │   │                   creation. With inform, send() reads the socket until a v2c
+│   │   │                   Response from `destination` carries its request-id (anything
+│   │   │                   else counted in `ignored`), resends the same bytes every
+│   │   │                   timeout, retries times, then is SondaError::Sink, warned once a
+│   │   │                   minute per destination (process-wide map, agent::warn_due). A
+│   │   │                   coldStart failure does not fail new(); the first write returns
+│   │   │                   it. The wait is inside the write: timeout × (retries + 1) at
+│   │   │                   most. Never touches the agent registry.
 │   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
 │   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
 │   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every
