@@ -118,6 +118,10 @@ class MatrixRow:
     # it, as `sonda=`, to stop and start again; the run ends when the last
     # sonda it started exits.
     during_gets_sonda: bool = False
+    # Called with repo_root before sonda starts, for a state the run must
+    # begin in. Returns "" when it holds; anything else fails the row with
+    # it, and sonda does not run.
+    before: Callable[[Path], str] | None = None
 
 
 @dataclasses.dataclass
@@ -1583,6 +1587,258 @@ def verify_if_mib_row(
     )
 
 
+# --- The snmp-traps rows checks -------------------------------------------------
+
+# How long the snmp-traps rows' `sonda run` sends (its --duration): two of
+# the example's flap cycles, up TRAPS_FLAP_UP_S then down TRAPS_FLAP_DOWN_S,
+# whose last change, 130 s in, is 10 s before the end.
+TRAPS_RUN_S = 140.0
+TRAPS_SCENARIO = Path("examples/snmp-traps.yaml")
+TRAPS_FLAP_UP_S = 60.0
+TRAPS_FLAP_DOWN_S = 5.0
+# The compose service whose inputs.snmp_trap receives the traps, on the
+# host's UDP 1162, and prints each as one JSON line (its outputs.file).
+TRAPS_SERVICE = "telegraf-snmp"
+# The snmp_trap metric's `oid` tag of each notification the sink sends.
+TRAP_COLD_START = ".1.3.6.1.6.3.1.1.5.1"
+TRAP_LINK_DOWN = ".1.3.6.1.6.3.1.1.5.3"
+TRAP_LINK_UP = ".1.3.6.1.6.3.1.1.5.4"
+TRAP_NAMES = {TRAP_COLD_START: "coldStart", TRAP_LINK_DOWN: "linkDown", TRAP_LINK_UP: "linkUp"}
+# Every error Telegraf's inputs.snmp_trap logs, such as an OID it cannot
+# translate (the trap is then dropped).
+TRAPS_ERROR_LINE = re.compile(r"E! \[inputs\.snmp_trap(?:::[^\]]*)?\]")
+# The plugin name Telegraf's startup line lists among its loaded inputs.
+TRAPS_INPUT = "snmp_trap"
+# A coldStart sample, which only the trap input writes; the verify URL.
+TRAPS_VERIFY_QUERY = f'{{__name__=~"snmp_trap_.*",oid="{TRAP_COLD_START}"}}'
+# How long the restart row's receiver is down from sonda's start: the
+# example's INFORMs are sent 11 times 5 s apart, so a receiver back within
+# 55 s acknowledges the coldStart sonda first sent with it down.
+TRAPS_RECEIVER_DOWN_S = 30.0
+TRAPS_RECEIVER_READY_S = 30.0
+
+
+def implied_link_traps(
+    run_s: float = TRAPS_RUN_S,
+    up_s: float = TRAPS_FLAP_UP_S,
+    down_s: float = TRAPS_FLAP_DOWN_S,
+) -> list[tuple[float, str]]:
+    """The link traps a flap of ``up_s`` up then ``down_s`` down implies in a
+    run of ``run_s``, as (seconds into the run, oid): linkDown at each move
+    to down, linkUp at each move back, in order."""
+    traps, at = [], up_s
+    while at < run_s:
+        traps.append((at, TRAP_LINK_DOWN))
+        if at + down_s < run_s:
+            traps.append((at + down_s, TRAP_LINK_UP))
+        at += down_s + up_s
+    return traps
+
+
+def parse_traps(telegraf_log: str) -> list[dict]:
+    """The snmp_trap metrics outputs.file printed in ``telegraf_log``, in
+    log order: each line whose text from its first "{" is a JSON object
+    named snmp_trap."""
+    traps = []
+    for line in telegraf_log.splitlines():
+        at = line.find("{")
+        if at < 0:
+            continue
+        try:
+            metric = json.loads(line[at:])
+        except ValueError:
+            continue
+        if isinstance(metric, dict) and metric.get("name") == "snmp_trap":
+            traps.append(metric)
+    return traps
+
+
+@dataclasses.dataclass(frozen=True)
+class ReceiverRestart:
+    """When the snmp-traps-restart row's during hook started TRAPS_SERVICE
+    again, and when its health endpoint answered, in seconds since the
+    epoch."""
+
+    started_s: float
+    healthy_s: float
+
+
+def traps_findings(
+    telegraf_log: str,
+    started_s: float,
+    ended_s: float,
+    *,
+    restart: ReceiverRestart | None = None,
+) -> list[str]:
+    """Every way the snmp-traps rows' evidence falls short, in check order;
+    empty when all hold.
+
+    Only the traps (:func:`parse_traps`) and errors stamped within
+    [started_s, ended_s] count. In order: Telegraf logged a
+    SNMP_LOADED_INPUTS line naming TRAPS_INPUT; no TRAPS_ERROR_LINE is
+    stamped within the window; some trap arrived (with none, the checks
+    after this one do not run); every trap is SNMPv2c with the community
+    public; exactly one is coldStart, and it is the first; every other is a
+    link trap, linkDown and linkUp alternating from linkDown, as many as
+    :func:`implied_link_traps` gives; with ``restart``, the coldStart
+    arrived no earlier than the receiver was started again, so it was a
+    send after the first.
+    """
+    findings: list[str] = []
+    loaded = any(
+        SNMP_LOADED_INPUTS in line
+        and TRAPS_INPUT in line.split(SNMP_LOADED_INPUTS, 1)[1].split()
+        for line in telegraf_log.splitlines()
+    )
+    if not loaded:
+        findings.append(f"telegraf log has no {SNMP_LOADED_INPUTS!r} line naming {TRAPS_INPUT}")
+
+    for line in telegraf_log.splitlines():
+        if TRAPS_ERROR_LINE.search(line) is None:
+            continue
+        stamp = telegraf_log_stamp(line)
+        if stamp is None or math.floor(started_s) <= stamp <= ended_s:
+            findings.append(f"telegraf logged a trap input error during the run: {line.strip()}")
+
+    start_ms, end_ms = int(started_s * 1000), int(ended_s * 1000)
+    traps = sorted(
+        (trap for trap in parse_traps(telegraf_log) if start_ms <= trap.get("timestamp", -1) <= end_ms),
+        key=lambda trap: trap["timestamp"],
+    )
+    if not traps:
+        findings.append(f"no snmp_trap line from {TRAPS_SERVICE} within the run's window")
+        return findings
+
+    def name(trap: dict) -> str:
+        oid = trap.get("tags", {}).get("oid", "")
+        return TRAP_NAMES.get(oid, oid or "<no oid>")
+
+    def at(trap: dict) -> str:
+        return f"{(trap['timestamp'] - start_ms) / 1000:.1f}s"
+
+    for trap in traps:
+        tags = trap.get("tags", {})
+        if (tags.get("version"), tags.get("community")) != ("2c", "public"):
+            findings.append(
+                f"{name(trap)} at {at(trap)} is version {tags.get('version')!r} with community "
+                f"{tags.get('community')!r}, want '2c' and 'public'"
+            )
+    received = " ".join(name(trap) for trap in traps)
+    cold_starts = [trap for trap in traps if name(trap) == "coldStart"]
+    if len(cold_starts) != 1:
+        findings.append(
+            f"{len(cold_starts)} coldStart traps, want exactly one; received: {received}"
+        )
+    elif traps[0] is not cold_starts[0]:
+        findings.append(f"a trap came before coldStart; received: {received}")
+    links = [trap for trap in traps if name(trap) != "coldStart"]
+    for trap in links:
+        if name(trap) not in ("linkDown", "linkUp"):
+            findings.append(f"a trap the sink does not send, {name(trap)}, at {at(trap)}")
+    if links and name(links[0]) != "linkDown":
+        findings.append(f"the first link trap is {name(links[0])} at {at(links[0])}, want linkDown")
+    for before, after in zip(links, links[1:]):
+        if name(before) == name(after):
+            findings.append(f"{name(after)} twice in a row, at {at(before)} and {at(after)}")
+    implied = implied_link_traps()
+    if len(links) != len(implied):
+        want = " ".join(TRAP_NAMES[oid] for _, oid in implied)
+        findings.append(
+            f"{len(links)} link traps, the schedule implies {len(implied)} in "
+            f"{TRAPS_RUN_S:.0f}s ({want}); received: {received}"
+        )
+    if restart is not None and cold_starts:
+        arrived_s = cold_starts[0]["timestamp"] / 1000
+        if arrived_s < restart.started_s:
+            findings.append(
+                f"coldStart arrived {arrived_s - started_s:.1f}s into the run, before the "
+                f"receiver was started again at {restart.started_s - started_s:.1f}s"
+            )
+    return findings
+
+
+def verify_traps_row(repo_root: Path, started_s: float, ended_s: float) -> str:
+    """Collect TRAPS_SERVICE's log and apply :func:`traps_findings`."""
+    telegraf_log = compose_logs_tail(repo_root, TRAPS_SERVICE, tail_lines=None)
+    return "\n".join(traps_findings(telegraf_log, started_s, ended_s))
+
+
+def verify_traps_restart_row(
+    repo_root: Path, started_s: float, ended_s: float, during: ReceiverRestart | str = ""
+) -> str:
+    """:func:`verify_traps_row` with the restart :func:`traps_restart_during`
+    returned; a text ``during`` (no hook, or the hook's failure) is named
+    first, and the checks run without a restart."""
+    telegraf_log = compose_logs_tail(repo_root, TRAPS_SERVICE, tail_lines=None)
+    if isinstance(during, ReceiverRestart):
+        return "\n".join(traps_findings(telegraf_log, started_s, ended_s, restart=during))
+    reason = during or "the row has no during hook"
+    return "\n".join(
+        [f"the receiver was not started again: {reason}"]
+        + traps_findings(telegraf_log, started_s, ended_s)
+    )
+
+
+def stop_trap_receiver(
+    repo_root: Path,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> str:
+    """The snmp-traps-restart row's before hook: stop TRAPS_SERVICE, so the
+    run's first notifications find no receiver. Returns "" once it has
+    stopped, otherwise why not."""
+    argv = compose_command(repo_root, "stop", TRAPS_SERVICE, profiles=("snmp",))
+    try:
+        proc = run(argv, capture_output=True, text=True, timeout=COMPOSE_DOWN_TIMEOUT_S, check=False)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return f"docker compose stop {TRAPS_SERVICE} failed: {e}"
+    if proc.returncode != 0:
+        return (
+            f"docker compose stop {TRAPS_SERVICE} exited {proc.returncode}: "
+            f"{(proc.stderr or '').strip()}"
+        )
+    return ""
+
+
+def traps_restart_during(
+    repo_root: Path,
+    *,
+    down_s: float = TRAPS_RECEIVER_DOWN_S,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    ready: Callable[[], bool] | None = None,
+    now: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ReceiverRestart | str:
+    """The snmp-traps-restart row's during hook: ``down_s`` after it is
+    called, as sonda starts, start TRAPS_SERVICE, which
+    :func:`stop_trap_receiver` stopped, and wait up to
+    TRAPS_RECEIVER_READY_S for its health endpoint (``ready``, by default
+    :func:`wait_for_backend_ready` of the service's backend). A start that
+    fails, or a service that does not answer, is returned as its reason."""
+    deadline = now() + down_s
+    sleep(max(deadline - now(), 0.0))
+    started_s = wall()
+    argv = compose_command(repo_root, "start", TRAPS_SERVICE, profiles=("snmp",))
+    try:
+        proc = run(argv, capture_output=True, text=True, timeout=COMPOSE_UP_TIMEOUT_S, check=False)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return f"<docker compose start {TRAPS_SERVICE} failed: {e}>"
+    if proc.returncode != 0:
+        return (
+            f"<docker compose start {TRAPS_SERVICE} exited {proc.returncode}: "
+            f"{(proc.stderr or '').strip()}>"
+        )
+    if ready is None:
+        (backend,) = [b for b in BACKENDS_BY_PROFILE["snmp"] if b.name == TRAPS_SERVICE]
+        ready = functools.partial(
+            wait_for_backend_ready, backend, timeout_s=TRAPS_RECEIVER_READY_S
+        )
+    if not ready():
+        return f"<{TRAPS_SERVICE} was not healthy within {TRAPS_RECEIVER_READY_S:.0f}s of its start>"
+    return ReceiverRestart(started_s=started_s, healthy_s=wall())
+
+
 # --- gNMI TLS certificates -----------------------------------------------------
 
 # Where the gnmi-tls row's certificates are made: gitignored, and mounted into
@@ -1935,6 +2191,49 @@ MATRIX: tuple[MatrixRow, ...] = (
         during=if_mib_during,
         post_verify=verify_if_mib_row,
     ),
+    # -- SNMP traps: sonda's snmp_trap sink sends examples/snmp-traps.yaml's
+    # coldStart and link traps, as INFORMs, to the telegraf-snmp service's
+    # inputs.snmp_trap on the host's UDP 1162, which acknowledges each and
+    # prints it as a JSON line. The verify URL proves a coldStart reached
+    # VictoriaMetrics; verify_traps_row then reads the log and checks one
+    # coldStart, then linkDown and linkUp alternating, as many as the flap
+    # implies in the run.
+    MatrixRow(
+        name="snmp-traps",
+        profiles=("snmp",),
+        subcommand="metrics",
+        scenario=TRAPS_SCENARIO,
+        verify_url=(
+            "http://localhost:8428/api/v1/query?"
+            + urllib.parse.urlencode({"query": TRAPS_VERIFY_QUERY})
+        ),
+        failure_log_containers=(TRAPS_SERVICE,),
+        extra_args=("--duration", f"{TRAPS_RUN_S:.0f}s"),
+        timeout_s=TRAPS_RUN_S + 60.0,
+        post_verify=verify_traps_row,
+    ),
+    # -- The same run with the receiver down for its first
+    # TRAPS_RECEIVER_DOWN_S: stop_trap_receiver stops the telegraf-snmp
+    # service before sonda starts and traps_restart_during starts it again,
+    # so the coldStart INFORM is only acknowledged once its sends after the
+    # first reach the receiver. The same checks, and the coldStart arrived
+    # after the restart, once.
+    MatrixRow(
+        name="snmp-traps-restart",
+        profiles=("snmp",),
+        subcommand="metrics",
+        scenario=TRAPS_SCENARIO,
+        verify_url=(
+            "http://localhost:8428/api/v1/query?"
+            + urllib.parse.urlencode({"query": TRAPS_VERIFY_QUERY})
+        ),
+        failure_log_containers=(TRAPS_SERVICE,),
+        extra_args=("--duration", f"{TRAPS_RUN_S:.0f}s"),
+        timeout_s=TRAPS_RUN_S + TRAPS_RECEIVER_DOWN_S + 90.0,
+        before=stop_trap_receiver,
+        during=traps_restart_during,
+        post_verify=verify_traps_restart_row,
+    ),
 )
 
 # Backends keyed by compose profile. The empty-tuple key is for the default
@@ -2256,6 +2555,16 @@ def run_row(
             message=f"scenario file missing: {row.scenario}",
             duration_s=_now_s() - start,
         )
+
+    if row.before is not None:
+        failure = row.before(repo_root)
+        if failure:
+            return RowResult(
+                row=row,
+                ok=False,
+                message=f"the before hook failed: {failure}",
+                duration_s=_now_s() - start,
+            )
 
     started_wall_s = time.time()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
