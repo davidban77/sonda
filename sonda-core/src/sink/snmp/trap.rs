@@ -1969,6 +1969,77 @@ mod tests {
         assert_eq!(stats.errors, 1);
     }
 
+    /// A scenario stopped 100 ms into an INFORM's wait for a receiver that
+    /// never answers (`timeout: 5s`, `retries: 10`) ends within a second,
+    /// having sent the INFORM once.
+    #[tokio::test]
+    async fn a_stop_ends_an_inform_wait_at_once() {
+        let receiver = Receiver::bind().await;
+        let destination = receiver.destination();
+        let scenario = ScenarioConfig {
+            base: BaseScheduleConfig {
+                gap_windows: None,
+                name: "ifOperStatus".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: Some(HashMap::from([("ifIndex".to_string(), "1".to_string())])),
+                sink: SinkConfig::SnmpTrap(config(destination, true, "5s", 10)),
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: OnSinkError::Warn,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::Snmp(SnmpEncoderConfig {
+                oids: HashMap::from([(
+                    "ifOperStatus".to_string(),
+                    "1.3.6.1.2.1.2.2.1.8.{ifIndex}".to_string(),
+                )]),
+                types: HashMap::from([("ifOperStatus".to_string(), SnmpValueType::Integer)]),
+                ..SnmpEncoderConfig::default()
+            }),
+            metric_type: None,
+            help: None,
+        };
+        crate::config::validate::validate_config(&scenario).expect("the entry validates");
+        let mut handle = crate::schedule::launch::launch_scenario(
+            "stopped-inform".to_string(),
+            crate::config::ScenarioEntry::Metrics(scenario),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("the scenario launches");
+
+        let (cold_start, _) = receiver.next().await;
+        assert_eq!(
+            decode(&cold_start).0,
+            Sent::inform(TrapKind::ColdStart, None),
+            "guard: the sink is waiting for coldStart's acknowledgement"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let stopped = Instant::now();
+        handle.stop();
+        handle
+            .join_async(Some(Duration::from_secs(1)))
+            .await
+            .expect("the scenario ends without an error");
+        let took = stopped.elapsed();
+        assert!(!handle.is_alive(), "still running {took:?} after the stop");
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+        assert!(
+            receiver.silent(Duration::from_millis(300)).await,
+            "something was sent after the stop"
+        );
+    }
+
     // ---- what the sink refuses ----------------------------------------------
 
     #[tokio::test]

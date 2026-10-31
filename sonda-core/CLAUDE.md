@@ -135,6 +135,7 @@ src/
 │   │                      PreparedEntry, shared expand→validate→phase_offset pipeline).
 │   │                      launch_prepared launches a file's entries as one launch, ids
 │   │                      `{prefix}-{i}`, failing fast (stops what it launched).
+│   │                      A stop drops the runner, in-flight sink waits included.
 │   │                      validate_file is the ONE home of cross-entry rules, run by
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
