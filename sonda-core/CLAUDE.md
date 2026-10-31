@@ -967,7 +967,8 @@ src/
 │   │                      Feature-gated (config).
 │   ├── timing.rs       ← Pure threshold-crossing math per generator
 │   │                      (sawtooth, step, sequence, spike, flap, saturation,
-│   │                      leak, degradation, spike_event, constant). Returns
+│   │                      leak, degradation, spike_event, constant; flap's
+│   │                      crossing counts from where its phase starts it). Returns
 │   │                      crossing time in seconds or a typed TimingError
 │   │                      (OutOfRange | Ambiguous | Unsupported). Used by the
 │   │                      v2 compiler's Phase 4 `after` resolution. No
@@ -1019,9 +1020,9 @@ src/
     │                      expand_log_scenario (log_csv_replay rate derivation),
     │                      expand_entry (entry-level wrapper covering both)
     ├── scalar_text.rs  ← ScalarText (config feature) + required (gnmi or snmp feature) and
-    │                      optional (gnmi feature) deserialize_with: a string, number or
+    │                      optional (config feature) deserialize_with: a string, number or
     │                      boolean read as text. The ONE rule for text fields the schema
-    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor,
+    │                      widens (flap's phase, gnmi enum labels, gnmi_target listen and sample_floor,
     │                      snmp_agent listen, the snmp encoder's agent_label and
     │                      drop_labels items). OidText is its exception, for OID fields
     │                      (oids: values, the snmp.oid hint): a string only, read through
@@ -1031,6 +1032,9 @@ src/
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
+    │                      flap's `phase` (parse_offset_duration: zero accepted, negative
+    │                      refused naming the field) rotates the desugared sequence left by
+    │                      round(phase × rate) mod its tick count.
     │                      Jitter-implying aliases (steady, degradation) set jitter on
     │                      BaseScheduleConfig. Integrated into prepare_entries pipeline.
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),

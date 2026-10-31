@@ -134,7 +134,7 @@ use super::timing::{
     uniform_crossing_secs, Operator, TimingError,
 };
 use super::{AfterOp, ClauseKind, DelayClause, WhileClause};
-use crate::config::validate::parse_duration;
+use crate::config::validate::{parse_duration, parse_offset_duration};
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
     GapWindowConfig, OnSinkError,
@@ -941,14 +941,18 @@ fn crossing_secs(
             up_value,
             down_value,
             enum_kind,
+            phase,
         } => {
             let up_secs = duration_or_default(up_duration.as_deref(), 10.0, "flap.up_duration")?;
             let down_secs =
                 duration_or_default(down_duration.as_deref(), 5.0, "flap.down_duration")?;
+            let phase_secs = offset_or_zero(phase.as_deref(), "flap.phase")?;
             let (up_default, down_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
             let up_val = up_value.unwrap_or(up_default);
             let down_val = down_value.unwrap_or(down_default);
-            timing::flap_crossing_secs(op, threshold, up_secs, down_secs, up_val, down_val)
+            timing::flap_crossing_secs(
+                op, threshold, up_secs, down_secs, up_val, down_val, phase_secs,
+            )
         }
         GeneratorConfig::Saturation {
             baseline,
@@ -1377,6 +1381,21 @@ fn duration_or_default(
                 })
         }
         None => Ok(default_secs),
+    }
+}
+
+/// [`duration_or_default`] for an offset, where zero is a value
+/// ([`parse_offset_duration`]): `None` is `0.0`.
+fn offset_or_zero(input: Option<&str>, field: &'static str) -> Result<f64, TimingError> {
+    match input {
+        Some(s) => parse_offset_duration(s)
+            .map(|d| d.as_secs_f64())
+            .map_err(|e| TimingError::InvalidDuration {
+                field,
+                input: s.to_string(),
+                reason: e.to_string(),
+            }),
+        None => Ok(0.0),
     }
 }
 
@@ -2157,6 +2176,30 @@ scenarios:
         assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("1m"));
     }
 
+    /// A phased flap's first drop comes `phase` earlier: 60s up, 30s in.
+    #[test]
+    fn a_phased_flap_moves_the_after_offset_earlier_by_the_phase() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: s
+    rate: 1
+    generator: { type: flap, up_duration: 60s, down_duration: 5s, phase: 30s }
+  - id: follower
+    signal_type: metrics
+    name: f
+    rate: 1
+    generator: { type: constant, value: 1 }
+    duration: 5m
+    after: { ref: link, op: "<", value: 1 }
+"#;
+        let compiled = compile(yaml).expect("compile");
+        assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("30s"));
+    }
+
     // -----------------------------------------------------------------------
     // Pack sub-signal refs (matrix 11.7, 11.12, 11.13)
     // -----------------------------------------------------------------------
@@ -2331,6 +2374,23 @@ scenarios:
     duration: 5m
     after: { ref: src, op: "<", value: 1 }
 "#, "follower", "flap.up_duration", "oops")]
+    #[case::alias_flap_phase(r#"
+version: 2
+kind: runnable
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: a
+    rate: 1
+    generator: { type: flap, up_duration: 60s, down_duration: 30s, phase: "-5s" }
+  - id: follower
+    signal_type: metrics
+    name: b
+    rate: 1
+    generator: { type: constant, value: 1 }
+    duration: 5m
+    after: { ref: src, op: "<", value: 1 }
+"#, "follower", "flap.phase", "-5s")]
     fn invalid_duration_surfaces_invalid_duration(
         #[case] yaml: &str,
         #[case] expected_source_id: &str,

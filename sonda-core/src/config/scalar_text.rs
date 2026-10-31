@@ -55,7 +55,6 @@ pub(crate) fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Str
 }
 
 /// `deserialize_with` for an optional text field; `null` is `None`.
-#[cfg(feature = "gnmi")]
 pub(crate) fn optional<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {

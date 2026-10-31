@@ -552,6 +552,7 @@ Models a binary signal toggling between two states — an interface going up and
 | `up_value` | float | `1.0` | Value emitted during the "up" state. |
 | `down_value` | float | `0.0` | Value emitted during the "down" state. |
 | `enum` | string | unset | Domain shortcut for `(up_value, down_value)`. See the table below. Mutually exclusive with explicit `up_value`/`down_value`. |
+| `phase` | duration | `"0s"` | How far into the cycle the signal starts. See [`phase:`](#phase) below. |
 
 ```yaml title="Interface flap"
 generator:
@@ -583,6 +584,21 @@ generator:
 ```
 
 `enum:` is mutually exclusive with explicit `up_value` / `down_value`. Combining them is rejected when the scenario is loaded, with the message `flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one`.
+
+#### `phase:`
+
+Two flaps with the same durations go down together. `phase:` starts one of them that far into its cycle, so they flap apart: the ticks of one cycle are rotated by `round(phase × rate)`, taken modulo the cycle, the same rounding the durations get. Port 15 of [`examples/if-mib-switch.yaml`](https://github.com/davidban77/sonda/blob/main/examples/if-mib-switch.yaml) flaps like port 7, started 30 seconds into the cycle, so the two ports are never down at the same time:
+
+```yaml title="Port 15: port 7's flap, 30s into the cycle"
+generator:
+  type: flap
+  up_duration: "60s"
+  down_duration: "5s"
+  enum: oper_state
+  phase: "30s"
+```
+
+At `rate: 1` the cycle is 65 ticks. Port 7, with no phase, is down at ticks 60 to 64 of every cycle; port 15 is down at ticks 30 to 34. A phase of a whole number of cycles is the same as none (`65s` here), a longer one wraps (`70s` is `5s`), and a phase in the down state (`62s`) starts the signal down. `0s` is accepted; a negative phase is rejected when the scenario is loaded, with a message naming `phase`. An [`after:`](scenario-files.md#temporal-chains-with-after) clause on a phased flap counts from where the phase starts it: `op: "<"` resolves to `up_duration` minus the phase, `30s` for port 15.
 
 ??? tip "Custom values"
     When the metric does not match a documented enum, use explicit `up_value` and `down_value` instead. For example, a link that alternates between full speed and degraded throughput:

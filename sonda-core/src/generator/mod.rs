@@ -290,6 +290,10 @@ pub enum GeneratorConfig {
     /// BGP neighbor-state). Mutually exclusive with explicit `up_value` /
     /// `down_value`.
     ///
+    /// The optional `phase` starts the cycle that far in: the desugared
+    /// sequence is rotated left by `round(phase × rate)` ticks, modulo the
+    /// cycle's tick count.
+    ///
     /// # Example YAML
     ///
     /// ```yaml
@@ -298,6 +302,7 @@ pub enum GeneratorConfig {
     ///   up_duration: "10s"
     ///   down_duration: "5s"
     ///   enum: oper_state    # up_value=1.0, down_value=2.0
+    ///   phase: "5s"         # starts 5s into the cycle
     /// ```
     #[cfg_attr(feature = "config", serde(rename = "flap"))]
     Flap {
@@ -323,6 +328,19 @@ pub enum GeneratorConfig {
             serde(default, rename = "enum", skip_serializing_if = "Option::is_none")
         )]
         enum_kind: Option<FlapEnum>,
+        /// How far into the cycle the signal starts, a duration. Defaults to
+        /// `"0s"`, the start of the "up" state. Zero is accepted; a negative
+        /// value is refused. A phase of a whole number of cycles is the same
+        /// as none. Any YAML scalar is read as its text, so `0` is `"0"`.
+        #[cfg_attr(
+            feature = "config",
+            serde(
+                default,
+                skip_serializing_if = "Option::is_none",
+                deserialize_with = "crate::config::scalar_text::optional"
+            )
+        )]
+        phase: Option<String>,
     },
 
     /// Resource filling up and resetting on a repeating cycle (e.g. disk usage
