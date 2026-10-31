@@ -11,7 +11,8 @@
 //! A trap is sent once and waits for nothing. An INFORM waits for the
 //! receiver's `Response` and is sent again each `timeout` until one arrives
 //! or `retries` more sends have gone unanswered, so a send stalls the
-//! scenario for `timeout × (retries + 1)` at most.
+//! scenario for `timeout × (retries + 1)` at most. A stop of the scenario
+//! ends the wait at once.
 //!
 //! The sinks of one launch that send to one destination are one device: the
 //! first of them to be created sends coldStart and the others do not, and
@@ -32,6 +33,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use super::agent::warn_due;
 use crate::config::validate::parse_duration;
@@ -484,7 +486,9 @@ fn warn_unacknowledged_due(destination: SocketAddr) -> bool {
 /// returns [`SondaError::Sink`], and the failure is logged at warn at most
 /// once a minute per destination. coldStart failing so is returned by the
 /// first write instead. Without `inform`, a send waits for nothing, and a
-/// socket error fails the write.
+/// socket error fails the write. Once the token [`Sink::set_cancel`] handed
+/// over is cancelled, a wait ends at once and no INFORM is sent: the write
+/// returns `Ok(())`, and nothing is counted as a failure.
 pub struct SnmpTrapSink {
     socket: UdpSocket,
     destination: SocketAddr,
@@ -507,6 +511,9 @@ pub struct SnmpTrapSink {
     ignored: u64,
     /// coldStart's failure, returned by the first write.
     pending: Option<SondaError>,
+    /// The token that stops the sink's scenario, once [`Sink::set_cancel`]
+    /// has handed it over.
+    cancel: Option<CancellationToken>,
 }
 
 impl SnmpTrapSink {
@@ -561,6 +568,7 @@ impl SnmpTrapSink {
             arcs: Vec::new(),
             ignored: 0,
             pending: None,
+            cancel: None,
         };
         if cold_start {
             if let Err(e) = sink.send(TrapKind::ColdStart, None).await {
@@ -588,9 +596,9 @@ impl SnmpTrapSink {
     /// `ifOperStatus` INTEGER, and send the link trap a change of
     /// `ifOperStatus` calls for, with the device's `ifAdminStatus` as it is
     /// now.
-    async fn watch(&mut self, varbind: &[u8]) -> Result<(), SondaError> {
+    async fn watch(&mut self, varbind: &[u8]) -> Result<Outcome, SondaError> {
         let Some((column, if_index, value)) = self.link_column(varbind)? else {
-            return Ok(());
+            return Ok(Outcome::Done);
         };
         let kind = match column {
             Column::AdminStatus => {
@@ -598,12 +606,12 @@ impl SnmpTrapSink {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .insert(if_index, value);
-                return Ok(());
+                return Ok(Outcome::Done);
             }
             Column::OperStatus => match self.oper.insert(if_index, value) {
                 Some(UP) if value != UP => TrapKind::LinkDown,
                 Some(before) if before != UP && value == UP => TrapKind::LinkUp,
-                _ => return Ok(()),
+                _ => return Ok(Outcome::Done),
             },
         };
         let admin = self
@@ -653,8 +661,14 @@ impl SnmpTrapSink {
 
     /// Send one notification: once as a trap; as an INFORM, until a
     /// `Response` carrying its request-id arrives, `retries + 1` times at
-    /// most, `timeout` apart.
-    async fn send(&mut self, kind: TrapKind, link: Option<LinkVars>) -> Result<(), SondaError> {
+    /// most, `timeout` apart. An INFORM is not sent once the sink's token is
+    /// cancelled, and a cancel during its wait ends the send with nothing
+    /// more sent: both are [`Outcome::Stopped`].
+    async fn send(
+        &mut self,
+        kind: TrapKind,
+        link: Option<LinkVars>,
+    ) -> Result<Outcome, SondaError> {
         let request_id = self.request_ids.next();
         let uptime = self.uptime_ticks();
         let TrapSettings {
@@ -675,7 +689,7 @@ impl SnmpTrapSink {
         );
         if !inform {
             return match self.socket.send_to(&self.out, self.destination).await {
-                Ok(_) => Ok(()),
+                Ok(_) => Ok(Outcome::Done),
                 Err(e) => Err(SondaError::Sink(io::Error::new(
                     e.kind(),
                     format!(
@@ -685,16 +699,25 @@ impl SnmpTrapSink {
                 ))),
             };
         }
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Ok(Outcome::Stopped);
+        }
         let mut send_error = None;
         for _ in 0..=retries {
             if let Err(e) = self.socket.send_to(&self.out, self.destination).await {
                 send_error = Some(e);
             }
-            if self
+            match self
                 .acknowledged(request_id, Instant::now() + timeout)
                 .await
             {
-                return Ok(());
+                Wait::Acknowledged => return Ok(Outcome::Done),
+                Wait::Stopped => return Ok(Outcome::Stopped),
+                Wait::Unanswered => {}
             }
         }
         let sends = u32::from(retries) + 1;
@@ -720,30 +743,67 @@ impl SnmpTrapSink {
     }
 
     /// Read datagrams until one from `destination` is a `Response` carrying
-    /// `request_id` (`true`), or until `deadline` (`false`). Every other
-    /// datagram is ignored and counted.
-    async fn acknowledged(&mut self, request_id: i32, deadline: Instant) -> bool {
+    /// `request_id` ([`Wait::Acknowledged`]), until `deadline`
+    /// ([`Wait::Unanswered`]), or until the sink's token is cancelled
+    /// ([`Wait::Stopped`]). Every other datagram is ignored and counted.
+    async fn acknowledged(&mut self, request_id: i32, deadline: Instant) -> Wait {
         loop {
-            let received =
-                tokio::time::timeout_at(deadline, self.socket.recv_from(&mut self.received)).await;
+            let received = tokio::select! {
+                biased;
+                () = stopped(self.cancel.as_ref()) => return Wait::Stopped,
+                received = tokio::time::timeout_at(
+                    deadline,
+                    self.socket.recv_from(&mut self.received),
+                ) => received,
+            };
             match received {
-                Err(_elapsed) => return false,
+                Err(_elapsed) => return Wait::Unanswered,
                 Ok(Ok((len, peer))) => {
                     if peer == self.destination
                         && is_acknowledgement(&self.received[..len], request_id)
                     {
-                        return true;
+                        return Wait::Acknowledged;
                     }
                     self.ignored += 1;
                 }
                 // A receive error (an ICMP report on some platforms) ends
                 // this send's wait without an acknowledgement.
                 Ok(Err(_)) => {
-                    tokio::time::sleep_until(deadline).await;
-                    return false;
+                    return tokio::select! {
+                        biased;
+                        () = stopped(self.cancel.as_ref()) => Wait::Stopped,
+                        () = tokio::time::sleep_until(deadline) => Wait::Unanswered,
+                    };
                 }
             }
         }
+    }
+}
+
+/// How a write's notifications went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Every notification it called for was sent, and acknowledged with
+    /// `inform`.
+    Done,
+    /// The sink's token was cancelled: an INFORM was left unsent or its wait
+    /// ended, and nothing more is sent.
+    Stopped,
+}
+
+/// How an INFORM's wait for its acknowledgement ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    Acknowledged,
+    Unanswered,
+    Stopped,
+}
+
+/// Resolve once `cancel` is cancelled; never without a token.
+async fn stopped(cancel: Option<&CancellationToken>) {
+    match cancel {
+        Some(cancel) => cancel.cancelled().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -813,6 +873,10 @@ impl Sink for SnmpTrapSink {
     /// Read the record `encoded`, its `VarBind` and then each companion's,
     /// sending the link traps their `ifOperStatus` changes call for.
     ///
+    /// Once the token [`Sink::set_cancel`] handed over is cancelled, an
+    /// INFORM this write calls for is not sent, or its wait ends: the write
+    /// returns `Ok(())` at once and sends nothing more.
+    ///
     /// # Errors
     ///
     /// [`SondaError::Sink`] when `encoded` is not a publish record, when a
@@ -824,14 +888,28 @@ impl Sink for SnmpTrapSink {
         encoded: &[u8],
     ) -> Result<(), SondaError> {
         let record = split_record(encoded)?;
-        self.watch(record.varbind).await?;
+        let mut outcome = self.watch(record.varbind).await?;
         for companion in record.companions {
-            self.watch(companion.varbind).await?;
+            if outcome == Outcome::Stopped {
+                break;
+            }
+            outcome = self.watch(companion.varbind).await?;
+        }
+        if outcome == Outcome::Stopped {
+            tracing::debug!(
+                destination = %self.destination,
+                "snmp_trap: the scenario stopped while an INFORM waited; nothing more is sent"
+            );
+            return Ok(());
         }
         match self.pending.take() {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    fn set_cancel(&mut self, cancel: CancellationToken) {
+        self.cancel = Some(cancel);
     }
 }
 
@@ -2025,6 +2103,10 @@ mod tests {
             "guard: the sink is waiting for coldStart's acknowledgement"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            handle.is_alive(),
+            "guard: the scenario is running when stopped"
+        );
         let stopped = Instant::now();
         handle.stop();
         handle
@@ -2038,6 +2120,90 @@ mod tests {
             receiver.silent(Duration::from_millis(300)).await,
             "something was sent after the stop"
         );
+    }
+
+    /// A scenario stopped 100 ms into a linkDown INFORM's wait, inside a
+    /// write, for a receiver that acknowledged coldStart and then went
+    /// silent (`timeout: 5s`, `retries: 10`), ends within a second, having
+    /// sent the linkDown once and counted no sink failure.
+    #[tokio::test]
+    async fn a_stop_ends_a_link_trap_inform_wait_inside_a_write() {
+        let receiver = Receiver::bind().await;
+        let destination = receiver.destination();
+        let scenario = ScenarioConfig {
+            base: BaseScheduleConfig {
+                gap_windows: None,
+                name: "ifOperStatus".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: Some(HashMap::from([("ifIndex".to_string(), "1".to_string())])),
+                sink: SinkConfig::SnmpTrap(config(destination, true, "5s", 10)),
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: OnSinkError::Warn,
+            },
+            generator: GeneratorConfig::Sequence {
+                values: vec![1.0, 2.0],
+                repeat: Some(true),
+            },
+            encoder: EncoderConfig::Snmp(SnmpEncoderConfig {
+                oids: HashMap::from([(
+                    "ifOperStatus".to_string(),
+                    "1.3.6.1.2.1.2.2.1.8.{ifIndex}".to_string(),
+                )]),
+                types: HashMap::from([("ifOperStatus".to_string(), SnmpValueType::Integer)]),
+                ..SnmpEncoderConfig::default()
+            }),
+            metric_type: None,
+            help: None,
+        };
+        crate::config::validate::validate_config(&scenario).expect("the entry validates");
+        let mut handle = crate::schedule::launch::launch_scenario(
+            "stopped-link-trap".to_string(),
+            crate::config::ScenarioEntry::Metrics(scenario),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("the scenario launches");
+
+        let (cold_start, peer) = receiver.next().await;
+        let (sent, request_id, _) = decode(&cold_start);
+        assert_eq!(sent, Sent::inform(TrapKind::ColdStart, None));
+        receiver.answer(&cold_start, peer, request_id).await;
+        let (link_down, _) = receiver.next().await;
+        assert_eq!(
+            decode(&link_down).0,
+            Sent::inform(TrapKind::LinkDown, link(1, 1, 2)),
+            "guard: the sink is waiting for the linkDown's acknowledgement"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            handle.is_alive(),
+            "guard: the scenario is running when stopped"
+        );
+        let stopped = Instant::now();
+        handle.stop();
+        handle
+            .join_async(Some(Duration::from_secs(1)))
+            .await
+            .expect("the scenario ends without an error");
+        let took = stopped.elapsed();
+        assert!(!handle.is_alive(), "still running {took:?} after the stop");
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+        assert!(
+            receiver.silent(Duration::from_millis(300)).await,
+            "something was sent after the stop"
+        );
+        assert_eq!(handle.stats_snapshot().total_sink_failures, 0);
     }
 
     // ---- what the sink refuses ----------------------------------------------

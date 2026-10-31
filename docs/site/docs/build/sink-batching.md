@@ -206,7 +206,7 @@ sink:
 
 ## Flush on exit
 
-When a scenario completes — whether by reaching its configured `duration`, running out of events, or receiving a Ctrl+C (SIGINT/SIGTERM) — Sonda always calls `flush()` on the sink. Any data in the buffer is sent, so you never lose a partial batch under normal circumstances.
+When a scenario completes — whether by reaching its configured `duration`, running out of events, or receiving a Ctrl+C (SIGINT/SIGTERM) — Sonda always calls `flush()` on the sink. Any data in the buffer is sent, so you never lose a partial batch under normal circumstances. On a stop, a flush that cannot finish within 5 s (a backend that does not answer, for example) is abandoned and counted as a sink failure.
 
 !!! warning "SIGKILL bypasses flush"
     If you terminate Sonda with `kill -9` (SIGKILL), the process is killed immediately with no chance to flush. Any data in the buffer is lost. Use Ctrl+C or `kill` (SIGTERM) instead for a clean shutdown.

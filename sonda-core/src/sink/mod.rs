@@ -99,6 +99,15 @@ pub trait Sink: Send + Sync {
     ) -> Result<(), SondaError> {
         self.write(encoded).await
     }
+
+    /// Hand the sink the token that stops its scenario.
+    ///
+    /// A launched scenario calls this once, right after creating the sink,
+    /// with the entry's token. A sink that waits on a peer inside a write
+    /// can end that wait when the token is cancelled, so a stop is not held
+    /// by it. The default ignores the token.
+    #[cfg(feature = "runtime")]
+    fn set_cancel(&mut self, _cancel: tokio_util::sync::CancellationToken) {}
 }
 
 /// TLS configuration for Kafka broker connections.

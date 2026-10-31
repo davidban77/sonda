@@ -135,7 +135,13 @@ src/
 │   │                      PreparedEntry, shared expand→validate→phase_offset pipeline).
 │   │                      launch_prepared launches a file's entries as one launch, ids
 │   │                      `{prefix}-{i}`, failing fast (stops what it launched).
-│   │                      A stop drops the runner, in-flight sink waits included.
+│   │                      A stop ends the loop at its next check, runs the shutdown
+│   │                      flush under a 5 s grace (STOP_GRACE; a task still running
+│   │                      then is dropped, warned about and counted as one sink
+│   │                      failure), and gives sinks the token through set_cancel. A
+│   │                      stop while the sink is being created ends the task at once.
+│   │                      Tests set the grace and hand a launch its sink through the
+│   │                      cfg(test) test_hooks, so they still call launch_scenario.
 │   │                      validate_file is the ONE home of cross-entry rules, run by
 │   │                      prepare_entries and the gated path: gnmi_target entries on one
 │   │                      address agree on settings, a wildcard and another address never
@@ -342,7 +348,8 @@ src/
 │   │                      and SnmpTrap(SnmpTrapConfig) (snmp feature) / SnmpAgentDisabled {}
 │   │                      and SnmpTrapDisabled {}: validation pairs each with the snmp
 │   │                      encoder and runs its settings(). create_sink_in passes the
-│   │                      launch to both.
+│   │                      launch to both. Sink::set_cancel (runtime feature; default
+│   │                      no-op) is how a launch hands a sink its entry's token.
 │   ├── stdout.rs       ← BufWriter<Stdout>
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
@@ -854,7 +861,10 @@ src/
 │   │   │                   minute per destination (process-wide map, agent::warn_due). A
 │   │   │                   coldStart failure does not fail new(); the first write returns
 │   │   │                   it. The wait is inside the write: timeout × (retries + 1) at
-│   │   │                   most. Never touches the agent registry.
+│   │   │                   most. set_cancel stores the entry's token: once it is
+│   │   │                   cancelled a wait ends and no INFORM is sent, and the write
+│   │   │                   returns Ok (no failure counted). Never touches the agent
+│   │   │                   registry.
 │   │   └── responder.rs ←  decode(datagram) = Message::decode + PDU classified into
 │   │                       Request { version: V1 | V2c, community, pdu: Pdu::{Get, GetNext,
 │   │                       GetBulk, Set, Other(Tag)} } (request-id must fit i32; every

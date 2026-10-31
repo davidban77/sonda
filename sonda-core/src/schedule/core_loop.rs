@@ -825,7 +825,7 @@ async fn drain_writes(
 
 /// Count one failed sink call in `st` and keep `error` as the last sink
 /// error.
-fn record_sink_failure(st: &mut ScenarioStats, error: &dyn std::fmt::Display) {
+pub(crate) fn record_sink_failure(st: &mut ScenarioStats, error: &dyn std::fmt::Display) {
     st.errors = st.errors.saturating_add(1);
     st.total_sink_failures = st.total_sink_failures.saturating_add(1);
     st.consecutive_failures = st.consecutive_failures.saturating_add(1);
