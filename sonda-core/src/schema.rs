@@ -258,6 +258,40 @@ pub fn scenario_file_schema_json() -> String {
     text
 }
 
+/// The pattern every key of an `enum:` value map must match, for both value
+/// types that have one ([`GnmiValueType`](crate::encoder::gnmi::GnmiValueType)
+/// and [`SnmpValueType`](crate::encoder::snmp::SnmpValueType)): an integer with
+/// an optional `-`, no leading zero, and at most 19 digits.
+///
+/// No leading zero gives each code one spelling, so `"01"` beside `1` (one code
+/// given twice, which the parser refuses) is refused here too. The digit bound
+/// refuses every code of 20 digits or more, none of which fits an `i64`. What
+/// it cannot refuse is a 19-digit code outside the `i64` range
+/// (`9223372036854775808` to `9999999999999999999`, and their negatives below
+/// `i64::MIN`): the schema accepts it and the parser refuses it, which
+/// [`ENUM_CODE_COMMENT`] says on the pattern.
+pub(crate) const ENUM_CODE_PATTERN: &str = "^-?(0|[1-9][0-9]{0,18})$";
+
+/// The `$comment` beside [`ENUM_CODE_PATTERN`] in the published schema.
+const ENUM_CODE_COMMENT: &str =
+    "must fit a signed 64-bit integer; the pattern bounds the digit count, not the value";
+
+/// Schema of an `enum:` value map: keys match [`ENUM_CODE_PATTERN`], values
+/// are labels (text, widened to any scalar by [`widen_scalar_strings`]).
+///
+/// The `schema_with` of both value types' `enum:` field, so the two maps
+/// cannot carry different key rules.
+pub(crate) fn enum_code_map(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "propertyNames": {
+            "pattern": ENUM_CODE_PATTERN,
+            "$comment": ENUM_CODE_COMMENT,
+        },
+        "additionalProperties": { "type": "string" },
+    })
+}
+
 /// Put a schema into `$defs` under `name` and return a `$ref` to it.
 ///
 /// `ScenarioFile::json_schema` returns the object inline rather than a
@@ -492,6 +526,28 @@ mod tests {
             !scenario_file_schema_json().contains(NO_WIDENING),
             "the marker is removed"
         );
+    }
+
+    /// Both value types' `enum:` maps take their key rule from
+    /// `enum_code_map`, so neither can carry a pattern of its own.
+    #[test]
+    fn both_enum_maps_carry_the_one_key_pattern() {
+        let value = scenario_file_schema().to_value();
+        for def in ["GnmiEnumWire", "SnmpEnumWire"] {
+            let map = &value["$defs"][def]["properties"]["enum"];
+            assert_eq!(
+                map["propertyNames"]["pattern"], ENUM_CODE_PATTERN,
+                "{def}: {map}"
+            );
+            assert_eq!(
+                map["propertyNames"]["$comment"], ENUM_CODE_COMMENT,
+                "{def}: {map}"
+            );
+            assert!(
+                map["additionalProperties"]["type"].is_array(),
+                "{def}: the labels are widened: {map}"
+            );
+        }
     }
 
     /// Byte-for-byte what the generator writes. If this drifts from the

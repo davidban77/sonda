@@ -995,6 +995,34 @@ scenarios:
     )
 }
 
+/// An snmp scenario whose `ifOperStatus` value type is `{TYPE}`, which each
+/// case replaces. Everything else is valid, so a refusal can only come from
+/// the replacement.
+#[cfg(feature = "snmp")]
+const SNMP_WITH_TYPE: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  encoder:
+    type: snmp
+    oids:
+      ifOperStatus: "1.3.6.1.2.1.2.2.1.8.{ifIndex}"
+    types:
+      ifOperStatus: {TYPE}
+  sink:
+    type: snmp_agent
+    listen: 0.0.0.0:1161
+scenarios:
+  - signal_type: metrics
+    name: ifOperStatus
+    labels:
+      ifIndex: "1"
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
 /// The schema and the parser agree on a `types:` entry: the value type
 /// names and the `enum:` map with integer keys, bare or quoted, are
 /// accepted by both; a map with a non-integer key, an empty map, a key
@@ -1012,31 +1040,7 @@ scenarios:
 #[case::enum_map_extra_key("{ enum: { 1: up }, extra: 1 }", false)]
 #[case::unknown_name("float", false)]
 fn the_schema_and_the_parser_agree_on_snmp_value_types(#[case] ty: &str, #[case] valid: bool) {
-    let yaml = format!(
-        r#"
-version: 2
-kind: runnable
-defaults:
-  rate: 1
-  encoder:
-    type: snmp
-    oids:
-      ifOperStatus: "1.3.6.1.2.1.2.2.1.8.{{ifIndex}}"
-    types:
-      ifOperStatus: {ty}
-  sink:
-    type: snmp_agent
-    listen: 0.0.0.0:1161
-scenarios:
-  - signal_type: metrics
-    name: ifOperStatus
-    labels:
-      ifIndex: "1"
-    generator:
-      type: constant
-      value: 1.0
-"#
-    );
+    let yaml = SNMP_WITH_TYPE.replace("{TYPE}", ty);
     let parsed = sonda_core::compiler::parse::parse(&yaml);
     assert_eq!(parsed.is_ok(), valid, "the parser: {parsed:?}");
     if valid {
@@ -1789,8 +1793,8 @@ fn the_parser_and_schema_accept_scalar_gnmi_enum_labels(
     );
 }
 
-/// Enum keys the schema's `^-?\d+$` refuses are refused by the parser too, so
-/// neither accepts what the other rejects.
+/// Enum keys that are not digits with an optional `-` are refused by the
+/// schema's key pattern and by the parser alike.
 #[rustfmt::skip]
 #[rstest::rstest]
 #[case::plus_sign("\"+1\"")]
@@ -1806,4 +1810,143 @@ fn the_parser_and_schema_both_reject_non_integer_enum_codes(#[case] key: &str) {
         "the parser accepted enum key {key}"
     );
     assert_rejected(&format!("enum key {key}"), &yaml);
+}
+
+/// One document per value type that has an `enum:` map (the gnmi encoder's
+/// `values:` and, with `snmp`, the snmp encoder's `types:`), the map holding
+/// `entries`. Everything else is valid, so a refusal can only come from them.
+fn enum_documents(entries: &str) -> Vec<(&'static str, String)> {
+    #[cfg_attr(not(feature = "snmp"), allow(unused_mut))]
+    let mut documents = vec![(
+        "gnmi",
+        GNMI_WITH_EXTRA.replace(
+            "{EXTRA}",
+            &format!("values: {{ in_octets: {{ enum: {{ {entries} }} }} }}"),
+        ),
+    )];
+    #[cfg(feature = "snmp")]
+    documents.push((
+        "snmp",
+        SNMP_WITH_TYPE.replace("{TYPE}", &format!("{{ enum: {{ {entries} }} }}")),
+    ));
+    documents
+}
+
+/// The codes the parser read from the enum map of an [`enum_documents`]
+/// document written for the value type `ty`, or the parser's refusal.
+fn parsed_enum_codes(ty: &str, yaml: &str) -> Result<Vec<i64>, String> {
+    use sonda_core::encoder::EncoderConfig;
+    let file = sonda_core::compiler::parse::parse(yaml).map_err(|e| e.to_string())?;
+    let encoder = file
+        .defaults
+        .and_then(|d| d.encoder)
+        .expect("the defaults carry the encoder");
+    let codes = match (ty, encoder) {
+        ("gnmi", EncoderConfig::Gnmi(cfg)) => match cfg.values.get("in_octets") {
+            Some(sonda_core::encoder::gnmi::GnmiValueType::Enum(map)) => {
+                map.keys().copied().collect()
+            }
+            other => panic!("gnmi: not an enum value type: {other:?}"),
+        },
+        #[cfg(feature = "snmp")]
+        ("snmp", EncoderConfig::Snmp(cfg)) => match cfg.types.get("ifOperStatus") {
+            Some(sonda_core::encoder::snmp::SnmpValueType::Enum(map)) => {
+                map.keys().copied().collect()
+            }
+            other => panic!("snmp: not an enum value type: {other:?}"),
+        },
+        (ty, encoder) => panic!("{ty}: not the expected encoder: {encoder:?}"),
+    };
+    Ok(codes)
+}
+
+/// Enum keys both value types' schemas and parsers accept, read as the code
+/// they spell: a negative code, zero, and both ends of the `i64` range.
+#[rustfmt::skip]
+#[rstest::rstest]
+#[case::negative(      "\"-5\": a",                   -5)]
+#[case::zero(          "\"0\": a",                    0)]
+#[case::i64_max_bare(  "9223372036854775807: a",      i64::MAX)]
+#[case::i64_max_quoted("\"9223372036854775807\": a",  i64::MAX)]
+#[case::i64_min_quoted("\"-9223372036854775808\": a", i64::MIN)]
+fn the_schema_and_the_parser_accept_an_enum_code_that_fits_i64(
+    #[case] entries: &str,
+    #[case] code: i64,
+) {
+    for (ty, yaml) in enum_documents(entries) {
+        assert_eq!(
+            parsed_enum_codes(ty, &yaml),
+            Ok(vec![code]),
+            "{ty}: the parser on {{ {entries} }}"
+        );
+        let errors = schema_errors(&yaml);
+        assert!(
+            errors.is_empty(),
+            "{ty}: the schema rejected {{ {entries} }}:\n{}",
+            errors.join("\n")
+        );
+    }
+}
+
+/// Enum keys both value types' schemas refuse: a code spelled with a leading
+/// zero, and every code of 20 digits or more. `parses` is the parser's verdict
+/// on the same map. To it `"01"` alone is code 1, which the schema refuses so
+/// that one code has one spelling; beside `1` it is that code given twice,
+/// which the parser refuses as well, as it refuses every code too long for an
+/// `i64`. The same document with the key `1` is accepted by both, so each
+/// refusal is the key's.
+#[rustfmt::skip]
+#[rstest::rstest]
+#[case::leading_zero(                "\"01\": a",                    true)]
+#[case::zero_padded(                 "\"00\": a",                    true)]
+#[case::negative_leading_zero(       "\"-01\": a",                   true)]
+#[case::leading_zero_beside_its_code("1: a, \"01\": b",              false)]
+#[case::twenty_digits(               "\"12345678901234567890\": a",  false)]
+#[case::twenty_digits_negative(      "\"-12345678901234567890\": a", false)]
+fn the_schema_refuses_an_enum_key_with_a_leading_zero_or_twenty_digits(
+    #[case] entries: &str,
+    #[case] parses: bool,
+) {
+    let documents = enum_documents(entries);
+    for ((ty, control), (_, yaml)) in enum_documents("1: a").into_iter().zip(documents) {
+        assert_eq!(parsed_enum_codes(ty, &control), Ok(vec![1]), "{ty}: the control parses");
+        let errors = schema_errors(&control);
+        assert!(errors.is_empty(), "{ty}: the control is schema-valid:\n{}", errors.join("\n"));
+        assert_eq!(
+            parsed_enum_codes(ty, &yaml).is_ok(),
+            parses,
+            "{ty}: the parser on {{ {entries} }}: {:?}",
+            parsed_enum_codes(ty, &yaml)
+        );
+        assert_rejected(&format!("{ty} enum {{ {entries} }}"), &yaml);
+    }
+}
+
+/// The one documented residue of the enum key pattern: a 19-digit code outside
+/// the `i64` range passes the schema, whose pattern bounds the digit count,
+/// and fails the parser, which reads an `i64`. The schema says so in the
+/// pattern's `$comment`.
+#[rustfmt::skip]
+#[rstest::rstest]
+#[case::i64_max_plus_one_bare(  "9223372036854775808: a")]
+#[case::i64_max_plus_one_quoted("\"9223372036854775808\": a")]
+#[case::largest_19_digits(      "\"9999999999999999999\": a")]
+#[case::i64_min_minus_one(      "\"-9223372036854775809\": a")]
+fn the_documented_residue_a_19_digit_code_outside_i64_passes_the_schema_and_fails_the_parser(
+    #[case] entries: &str,
+) {
+    for (ty, yaml) in enum_documents(entries) {
+        let errors = schema_errors(&yaml);
+        assert!(
+            errors.is_empty(),
+            "{ty}: the schema refused {{ {entries} }}, so it is no longer the residue:\n{}",
+            errors.join("\n")
+        );
+        let refusal = parsed_enum_codes(ty, &yaml)
+            .expect_err("the parser refuses a code outside the i64 range");
+        assert!(
+            refusal.contains("does not fit in i64"),
+            "{ty}: refused for another reason: {refusal}"
+        );
+    }
 }

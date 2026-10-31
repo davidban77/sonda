@@ -140,7 +140,13 @@ struct SnmpEnumWire {
     /// The label of each integer code, served as an OCTET STRING; at least
     /// one entry.
     #[serde(rename = "enum")]
-    #[cfg_attr(feature = "schema", schemars(extend("minProperties" = 1)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            schema_with = "crate::schema::enum_code_map",
+            extend("minProperties" = 1)
+        )
+    )]
     map: BTreeMap<i64, String>,
 }
 
@@ -280,8 +286,10 @@ impl<'de> serde::Deserialize<'de> for EnumCode {
                     .map(EnumCode)
                     .map_err(|_| E::custom(format!("enum code {v} does not fit in i64")))
             }
-            /// Accepts exactly the schema's `^-?\\d+$`: digits with an
-            /// optional leading `-`, no sign, spaces or decimal point.
+            /// Accepts digits with an optional leading `-` (no `+`, spaces or
+            /// decimal point) that fit an `i64`. The schema's key pattern is
+            /// narrower, refusing a leading zero too, so every key it accepts
+            /// parses but a 19-digit code outside the `i64` range.
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
                 let digits = v.strip_prefix('-').unwrap_or(v);
                 if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
