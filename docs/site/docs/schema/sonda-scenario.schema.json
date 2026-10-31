@@ -2390,7 +2390,7 @@
           },
           "propertyNames": {
             "$comment": "must fit a signed 64-bit integer; the pattern bounds the digit count, not the value",
-            "pattern": "^-?(0|[1-9][0-9]{0,18})$"
+            "pattern": "^(0|-?[1-9][0-9]{0,18})$"
           }
         }
       },
@@ -3846,7 +3846,7 @@
           "minProperties": 1,
           "propertyNames": {
             "$comment": "must fit a signed 64-bit integer; the pattern bounds the digit count, not the value",
-            "pattern": "^-?(0|[1-9][0-9]{0,18})$"
+            "pattern": "^(0|-?[1-9][0-9]{0,18})$"
           }
         }
       },

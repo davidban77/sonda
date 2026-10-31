@@ -1889,21 +1889,22 @@ fn the_schema_and_the_parser_accept_an_enum_code_that_fits_i64(
 }
 
 /// Enum keys both value types' schemas refuse: a code spelled with a leading
-/// zero, and every code of 20 digits or more. `parses` is the parser's verdict
-/// on the same map. To it `"01"` alone is code 1, which the schema refuses so
-/// that one code has one spelling; beside `1` it is that code given twice,
-/// which the parser refuses as well, as it refuses every code too long for an
-/// `i64`. The same document with the key `1` is accepted by both, so each
-/// refusal is the key's.
+/// zero or as a signed zero, and every code of 20 digits or more. `parses` is
+/// the parser's verdict on the same map. To it `"01"` alone is code 1 and
+/// `"-0"` alone code 0, which the schema refuses so that one code has one
+/// spelling; beside `1` `"01"` is that code given twice, which the parser
+/// refuses as well, as it refuses every code too long for an `i64`. The same
+/// document with the key `1` is accepted by both, so each refusal is the key's.
 #[rustfmt::skip]
 #[rstest::rstest]
 #[case::leading_zero(                "\"01\": a",                    true)]
 #[case::zero_padded(                 "\"00\": a",                    true)]
 #[case::negative_leading_zero(       "\"-01\": a",                   true)]
+#[case::signed_zero(                 "\"-0\": a",                    true)]
 #[case::leading_zero_beside_its_code("1: a, \"01\": b",              false)]
 #[case::twenty_digits(               "\"12345678901234567890\": a",  false)]
 #[case::twenty_digits_negative(      "\"-12345678901234567890\": a", false)]
-fn the_schema_refuses_an_enum_key_with_a_leading_zero_or_twenty_digits(
+fn the_schema_refuses_an_enum_key_with_a_leading_zero_a_signed_zero_or_twenty_digits(
     #[case] entries: &str,
     #[case] parses: bool,
 ) {
@@ -1922,17 +1923,17 @@ fn the_schema_refuses_an_enum_key_with_a_leading_zero_or_twenty_digits(
     }
 }
 
-/// The one documented residue of the enum key pattern: a 19-digit code outside
-/// the `i64` range passes the schema, whose pattern bounds the digit count,
-/// and fails the parser, which reads an `i64`. The schema says so in the
-/// pattern's `$comment`.
+/// The first documented residue, the enum key pattern's: a 19-digit code
+/// outside the `i64` range passes the schema, whose pattern bounds the digit
+/// count, and fails the parser, which reads an `i64`. The schema says so in
+/// the pattern's `$comment`.
 #[rustfmt::skip]
 #[rstest::rstest]
 #[case::i64_max_plus_one_bare(  "9223372036854775808: a")]
 #[case::i64_max_plus_one_quoted("\"9223372036854775808\": a")]
 #[case::largest_19_digits(      "\"9999999999999999999\": a")]
 #[case::i64_min_minus_one(      "\"-9223372036854775809\": a")]
-fn the_documented_residue_a_19_digit_code_outside_i64_passes_the_schema_and_fails_the_parser(
+fn the_first_documented_residue_a_19_digit_code_outside_i64_passes_the_schema_and_fails_the_parser(
     #[case] entries: &str,
 ) {
     for (ty, yaml) in enum_documents(entries) {
@@ -1946,6 +1947,41 @@ fn the_documented_residue_a_19_digit_code_outside_i64_passes_the_schema_and_fail
             .expect_err("the parser refuses a code outside the i64 range");
         assert!(
             refusal.contains("does not fit in i64"),
+            "{ty}: refused for another reason: {refusal}"
+        );
+    }
+}
+
+/// The second documented residue: one code written bare and quoted,
+/// `{ 1: a, "1": b }`, passes the schema and fails the parser. YAML keeps the
+/// two keys apart, but as JSON both are `"1"`, one key, so no key rule sees
+/// the second; the parser reads both as code 1 and refuses the code as given
+/// twice.
+#[test]
+fn the_second_documented_residue_a_code_written_bare_and_quoted_passes_the_schema_and_fails_the_parser(
+) {
+    for (ty, yaml) in enum_documents("1: a, \"1\": b") {
+        let json = yaml_to_json(serde_yaml_ng::from_str(&yaml).expect("loads"));
+        let map = match ty {
+            "gnmi" => &json["defaults"]["encoder"]["values"]["in_octets"]["enum"],
+            _ => &json["defaults"]["encoder"]["types"]["ifOperStatus"]["enum"],
+        };
+        assert_eq!(
+            map.as_object().map(|keys| keys.len()),
+            Some(1),
+            "{ty}: the schema sees one key: {map}"
+        );
+        let errors = schema_errors(&yaml);
+        assert!(
+            errors.is_empty(),
+            "{ty}: the schema refused a code written bare and quoted, so it is no longer the \
+             residue:\n{}",
+            errors.join("\n")
+        );
+        let refusal = parsed_enum_codes(ty, &yaml)
+            .expect_err("the parser refuses a code written bare and quoted");
+        assert!(
+            refusal.contains("enum code 1 is given more than once"),
             "{ty}: refused for another reason: {refusal}"
         );
     }

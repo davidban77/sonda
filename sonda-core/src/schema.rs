@@ -260,17 +260,20 @@ pub fn scenario_file_schema_json() -> String {
 
 /// The pattern every key of an `enum:` value map must match, for both value
 /// types that have one ([`GnmiValueType`](crate::encoder::gnmi::GnmiValueType)
-/// and [`SnmpValueType`](crate::encoder::snmp::SnmpValueType)): an integer with
-/// an optional `-`, no leading zero, and at most 19 digits.
+/// and [`SnmpValueType`](crate::encoder::snmp::SnmpValueType)): integers
+/// without a leading zero or a signed zero that fit a signed 64-bit integer,
+/// as far as a pattern can say it: `0`, or a nonzero code with an optional `-`
+/// and at most 19 digits.
 ///
-/// No leading zero gives each code one spelling, so `"01"` beside `1` (one code
-/// given twice, which the parser refuses) is refused here too. The digit bound
-/// refuses every code of 20 digits or more, none of which fits an `i64`. What
-/// it cannot refuse is a 19-digit code outside the `i64` range
-/// (`9223372036854775808` to `9999999999999999999`, and their negatives below
-/// `i64::MIN`): the schema accepts it and the parser refuses it, which
-/// [`ENUM_CODE_COMMENT`] says on the pattern.
-pub(crate) const ENUM_CODE_PATTERN: &str = "^-?(0|[1-9][0-9]{0,18})$";
+/// Without a leading zero or a signed zero each code has one spelling, so
+/// `"01"` beside `1` or `"-0"` beside `0` (one code given twice, which the
+/// parser refuses) is refused here too. The digit bound refuses every code of
+/// 20 digits or more, none of which fits an `i64`. What it cannot refuse is a
+/// 19-digit code outside the `i64` range (`9223372036854775808` to
+/// `9999999999999999999`, and their negatives below `i64::MIN`): the schema
+/// accepts it and the parser refuses it, which [`ENUM_CODE_COMMENT`] says on
+/// the pattern.
+pub(crate) const ENUM_CODE_PATTERN: &str = "^(0|-?[1-9][0-9]{0,18})$";
 
 /// The `$comment` beside [`ENUM_CODE_PATTERN`] in the published schema.
 const ENUM_CODE_COMMENT: &str =
