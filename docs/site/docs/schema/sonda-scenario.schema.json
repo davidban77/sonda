@@ -2381,15 +2381,16 @@
       "properties": {
         "enum": {
           "type": "object",
-          "additionalProperties": false,
-          "patternProperties": {
-            "^-?\\d+$": {
-              "type": [
-                "string",
-                "number",
-                "boolean"
-              ]
-            }
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "propertyNames": {
+            "$comment": "must fit a signed 64-bit integer; the pattern bounds the digit count, not the value",
+            "pattern": "^(0|-?[1-9][0-9]{0,18})$"
           }
         }
       },
@@ -3835,16 +3836,17 @@
         "enum": {
           "description": "The label of each integer code, served as an OCTET STRING; at least\none entry.",
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
           "minProperties": 1,
-          "patternProperties": {
-            "^-?\\d+$": {
-              "type": [
-                "string",
-                "number",
-                "boolean"
-              ]
-            }
+          "propertyNames": {
+            "$comment": "must fit a signed 64-bit integer; the pattern bounds the digit count, not the value",
+            "pattern": "^(0|-?[1-9][0-9]{0,18})$"
           }
         }
       },

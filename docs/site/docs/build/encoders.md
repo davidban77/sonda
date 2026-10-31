@@ -313,7 +313,7 @@ Every path the metric's events can write is checked against every other metric's
 | `string` | `string_val` | The shortest decimal text that reads back as the same value. |
 | `enum: { 1: UP, 2: DOWN }` | `string_val` | The label for the rounded value. A value with no entry, or a non-finite value, is rejected. |
 
-`enum` keys are integers (`1` or `"1"`). Generators that emit gNMI states, such as `flap` with `enum: oper_state` (UP = 1, DOWN = 2), pair with an `enum` map of the same codes.
+`enum` keys are integers without a leading zero or a signed zero that fit a signed 64-bit integer (`1` or `"1"`). Generators that emit gNMI states, such as `flap` with `enum: oper_state` (UP = 1, DOWN = 2), pair with an `enum` map of the same codes.
 
 A rejected event is skipped and counted in the scenario's errors, and the scenario keeps running.
 
@@ -465,7 +465,7 @@ Histogram, summary and logs entries refuse both this encoder and the `snmp_agent
 
 The integer types, `ipaddress` and the enum round the value to the nearest integer, halves away from zero. Every type but `string` rejects a value that is not finite, and the integer types and `ipaddress` one that rounds outside the type's range. `string` writes a value that is not finite as its text: `NaN`, `inf` or `-inf`. The encoder does not wrap a counter: give the generator a `max`, as the `step` generator takes, for a counter that wraps.
 
-The enum form gives the label of each code, as the `gnmi` encoder's `values:` enum does. Codes are integers, written bare or quoted (`1` or `"1"`); labels are text. The map needs at least one entry. A `flap` generator with `enum:` drives one, as `link_state` in [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) does:
+The enum form gives the label of each code, as the `gnmi` encoder's `values:` enum does. Codes are integers without a leading zero or a signed zero that fit a signed 64-bit integer, written bare or quoted (`1` or `"1"`); labels are text. The map needs at least one entry. A `flap` generator with `enum:` drives one, as `link_state` in [`examples/snmp-telegraf.yaml`](https://github.com/davidban77/sonda/blob/main/examples/snmp-telegraf.yaml) does:
 
 ```yaml title="An enum string"
 encoder:
