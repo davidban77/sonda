@@ -33,7 +33,7 @@
 //!
 //! | Alias         | Lowered form                    | Crossing formula                                                |
 //! |---------------|---------------------------------|-----------------------------------------------------------------|
-//! | `flap`        | `sequence` of up/down values    | `up_duration_secs` for `<` when the drop is observable          |
+//! | `flap`        | `sequence` of up/down values    | `up_duration_secs - phase` for `<` when the drop is observable  |
 //! | `saturation`  | `sawtooth(min, max, period)`    | linear interpolation, `period_secs = time_to_saturate`          |
 //! | `leak`        | `sawtooth(min, max, period)`    | linear interpolation, `period_secs = time_to_ceiling`           |
 //! | `degradation` | `sawtooth(min, max, period)`    | linear interpolation, `period_secs = time_to_degrade`           |
@@ -140,16 +140,21 @@ impl fmt::Display for TimingError {
 
 /// Compute the crossing time for a **flap** signal.
 ///
-/// A flap signal alternates between `up_value` (default 1.0) and
-/// `down_value` (default 0.0). The `<` operator detects the transition to
-/// the down state at `up_duration_secs`. The `>` operator on a standard
-/// flap is satisfied at `t=0` and therefore ambiguous.
+/// A flap signal alternates between `up_value` (default 1.0) for
+/// `up_duration_secs` and `down_value` (default 0.0) for
+/// `down_duration_secs`, starting `phase_secs` into that cycle (taken modulo
+/// the cycle; a negative or non-finite phase reads as 0). For a threshold
+/// between `down_value` and a higher `up_value`:
 ///
-/// Kept on the public surface of the module so callers that work directly
-/// with alias-level parameters (rather than the desugared sequence form)
-/// can compute crossing times without replicating the math. In the v2
-/// compiler, `flap` is first desugared to a [`GeneratorConfig::Sequence`]
-/// and handled by [`sequence_crossing_secs`].
+/// - Starting in the up state (a phase of 0, or less than
+///   `up_duration_secs`), the `<` operator detects the transition to the down state at
+///   `up_duration_secs - phase`, and `>` is satisfied at `t=0`.
+/// - Starting in the down state, `<` is satisfied at `t=0`, and `>` detects
+///   the return to the up state at `up_duration_secs + down_duration_secs -
+///   phase`.
+///
+/// The `after:` resolution in [`super::compile_after`] calls this with the
+/// alias parameters of an undesugared `flap`.
 ///
 /// # Errors
 ///
@@ -160,10 +165,19 @@ pub fn flap_crossing_secs(
     op: Operator,
     threshold: f64,
     up_duration_secs: f64,
-    _down_duration_secs: f64,
+    down_duration_secs: f64,
     up_value: f64,
     down_value: f64,
+    phase_secs: f64,
 ) -> Result<f64, TimingError> {
+    let cycle_secs = up_duration_secs + down_duration_secs;
+    let into_cycle = if cycle_secs > 0.0 && phase_secs.is_finite() && phase_secs > 0.0 {
+        phase_secs.rem_euclid(cycle_secs)
+    } else {
+        0.0
+    };
+    let starts_up = into_cycle == 0.0 || into_cycle < up_duration_secs;
+
     let (lo, hi) = if up_value >= down_value {
         (down_value, up_value)
     } else {
@@ -189,7 +203,17 @@ pub fn flap_crossing_secs(
                 });
             }
             if down_value < threshold {
-                Ok(up_duration_secs)
+                if starts_up {
+                    Ok(up_duration_secs - into_cycle)
+                } else {
+                    Err(TimingError::Ambiguous {
+                        message: format!(
+                            "\"flap_signal < {threshold}\" is satisfied at t=0 \
+                             (the phase starts it {into_cycle}s into the cycle, \
+                             in the down state at down_value {down_value})"
+                        ),
+                    })
+                }
             } else {
                 Err(TimingError::OutOfRange {
                     message: format!(
@@ -215,6 +239,9 @@ pub fn flap_crossing_secs(
                          the flap signal is always above it (satisfied at t=0)"
                     ),
                 });
+            }
+            if up_value > threshold && !starts_up {
+                return Ok(cycle_secs - into_cycle);
             }
             if up_value > threshold {
                 return Err(TimingError::Ambiguous {
@@ -789,13 +816,23 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case::less_than_one_returns_up_duration(                Operator::LessThan,    1.0,  60.0, 30.0, 1.0,   0.0,  Expect::Ok(60.0))]
-    #[case::less_than_half_returns_up_duration(               Operator::LessThan,    0.5,  10.0,  5.0, 1.0,   0.0,  Expect::Ok(10.0))]
-    #[case::greater_than_zero_is_ambiguous(                   Operator::GreaterThan, 0.0,  10.0,  5.0, 1.0,   0.0,  Expect::Ambiguous)]
-    #[case::less_than_zero_is_out_of_range(                   Operator::LessThan,    0.0,  10.0,  5.0, 1.0,   0.0,  Expect::OutOfRange)]
-    #[case::threshold_above_up_value_less_than_is_ambiguous(  Operator::LessThan,    2.0,  10.0,  5.0, 1.0,   0.0,  Expect::Ambiguous)]
-    #[case::threshold_above_up_value_greater_than_out_of_range(Operator::GreaterThan, 2.0,  10.0,  5.0, 1.0,   0.0,  Expect::OutOfRange)]
-    #[case::custom_values(                                    Operator::LessThan,    75.0, 20.0, 10.0, 100.0, 50.0, Expect::Ok(20.0))]
+    #[case::less_than_one_returns_up_duration(                Operator::LessThan,    1.0,  60.0, 30.0, 1.0,   0.0,  0.0,   Expect::Ok(60.0))]
+    #[case::less_than_half_returns_up_duration(               Operator::LessThan,    0.5,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::Ok(10.0))]
+    #[case::greater_than_zero_is_ambiguous(                   Operator::GreaterThan, 0.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::Ambiguous)]
+    #[case::less_than_zero_is_out_of_range(                   Operator::LessThan,    0.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::OutOfRange)]
+    #[case::threshold_above_up_value_less_than_is_ambiguous(  Operator::LessThan,    2.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::Ambiguous)]
+    #[case::threshold_above_up_value_greater_than_out_of_range(Operator::GreaterThan, 2.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::OutOfRange)]
+    #[case::custom_values(                                    Operator::LessThan,    75.0, 20.0, 10.0, 100.0, 50.0, 0.0,   Expect::Ok(20.0))]
+    // Phased: the 60s up / 5s down flap of port 15 of examples/if-mib-switch.yaml.
+    #[case::phase_moves_the_first_drop_earlier(               Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  30.0,  Expect::Ok(30.0))]
+    #[case::phase_is_taken_modulo_the_cycle(                  Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  95.0,  Expect::Ok(30.0))]
+    #[case::phase_of_whole_cycles_is_no_phase(                Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  130.0, Expect::Ok(60.0))]
+    #[case::phase_in_the_up_state_greater_than_is_ambiguous(  Operator::GreaterThan, 0.5,  60.0,  5.0, 1.0,   0.0,  30.0,  Expect::Ambiguous)]
+    #[case::phase_at_the_drop_less_than_is_ambiguous(         Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  60.0,  Expect::Ambiguous)]
+    #[case::phase_in_the_down_state_less_than_is_ambiguous(   Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  62.0,  Expect::Ambiguous)]
+    #[case::phase_at_the_drop_greater_than_returns_the_rise(  Operator::GreaterThan, 0.5,  60.0,  5.0, 1.0,   0.0,  60.0,  Expect::Ok(5.0))]
+    #[case::phase_in_the_down_state_greater_than_the_rise(    Operator::GreaterThan, 0.5,  60.0,  5.0, 1.0,   0.0,  62.0,  Expect::Ok(3.0))]
+    #[case::phase_does_not_move_an_out_of_range_threshold(    Operator::LessThan,    0.0,  60.0,  5.0, 1.0,   0.0,  30.0,  Expect::OutOfRange)]
     fn flap_crossing(
         #[case] op: Operator,
         #[case] threshold: f64,
@@ -803,6 +840,7 @@ mod tests {
         #[case] down_duration: f64,
         #[case] up_value: f64,
         #[case] down_value: f64,
+        #[case] phase: f64,
         #[case] expect: Expect,
     ) {
         let result = flap_crossing_secs(
@@ -812,6 +850,7 @@ mod tests {
             down_duration,
             up_value,
             down_value,
+            phase,
         );
         assert_outcome(result, expect);
     }

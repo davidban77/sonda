@@ -2031,7 +2031,7 @@
           ]
         },
         {
-          "description": "Binary up/down toggle modeling an interface flap.\n\nDesugars into a [`Sequence`](GeneratorConfig::Sequence) generator that\nalternates between `up_value` (default 1.0) and `down_value` (default 0.0).\nThe number of consecutive up/down ticks is derived from `up_duration` and\n`down_duration` relative to the scenario `rate`.\n\nThe optional `enum:` shorthand selects up/down values aligned with\ncommon gNMI / openconfig conventions (oper-state, admin-state,\nBGP neighbor-state). Mutually exclusive with explicit `up_value` /\n`down_value`.\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: flap\n  up_duration: \"10s\"\n  down_duration: \"5s\"\n  enum: oper_state    # up_value=1.0, down_value=2.0\n```",
+          "description": "Binary up/down toggle modeling an interface flap.\n\nDesugars into a [`Sequence`](GeneratorConfig::Sequence) generator that\nalternates between `up_value` (default 1.0) and `down_value` (default 0.0).\nThe number of consecutive up/down ticks is derived from `up_duration` and\n`down_duration` relative to the scenario `rate`.\n\nThe optional `enum:` shorthand selects up/down values aligned with\ncommon gNMI / openconfig conventions (oper-state, admin-state,\nBGP neighbor-state). Mutually exclusive with explicit `up_value` /\n`down_value`.\n\nThe optional `phase` starts the cycle that far in: the desugared\nsequence is rotated left by `round(phase × rate)` ticks, modulo the\ncycle's tick count.\n\n# Example YAML\n\n```yaml\ngenerator:\n  type: flap\n  up_duration: \"10s\"\n  down_duration: \"5s\"\n  enum: oper_state    # up_value=1.0, down_value=2.0\n  phase: \"5s\"         # starts 5s into the cycle\n```",
           "type": "object",
           "properties": {
             "down_duration": {
@@ -2062,6 +2062,15 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "phase": {
+              "description": "How far into the cycle the signal starts, a duration. Defaults to\n`\"0s\"`, the start of the \"up\" state. Zero is accepted; a negative\nvalue is refused. A phase of a whole number of cycles is the same\nas none. Any YAML scalar is read as its text, so `0` is `\"0\"`.",
+              "type": [
+                "string",
+                "null",
+                "number",
+                "boolean"
               ]
             },
             "type": {

@@ -622,6 +622,64 @@ scenarios:
     );
 }
 
+/// A flap's `phase:` passes the schema and the parser, written as a quoted
+/// or bare duration or as a YAML number, which the schema widens to and the
+/// parser reads as its text (`0` is a zero phase; `30` is then refused by
+/// validation for its missing unit). The generator branches do not deny
+/// unknown keys, so the schema accepting the document says nothing until the
+/// flap branch is shown to declare `phase`, typed as its other durations.
+#[rstest::rstest]
+#[case::bare("30s")]
+#[case::quoted("\"30s\"")]
+#[case::numeric_zero("0")]
+#[case::numeric("30")]
+fn the_schema_and_the_parser_take_a_flap_phase(#[case] phase: &str) {
+    let schema = sonda_core::schema::scenario_file_schema().to_value();
+    let flap = schema["$defs"]["GeneratorConfig"]["oneOf"]
+        .as_array()
+        .expect("GeneratorConfig is a oneOf")
+        .iter()
+        .find(|branch| branch["properties"]["type"]["const"] == "flap")
+        .expect("the schema has a flap branch");
+    let types = flap["properties"]["phase"]["type"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the flap branch declares a typed `phase`: {flap}"));
+    assert!(types.contains(&serde_json::json!("string")), "{types:?}");
+    assert_eq!(
+        flap["properties"]["phase"]["type"], flap["properties"]["up_duration"]["type"],
+        "`phase` is typed as `up_duration` is"
+    );
+
+    let yaml = format!(
+        r#"
+version: 2
+kind: runnable
+scenarios:
+  - signal_type: metrics
+    name: ifOperStatus
+    rate: 1
+    duration: 10s
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 5s
+      enum: oper_state
+      phase: {phase}
+"#
+    );
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+    let errors: Vec<String> = validator()
+        .iter_errors(&yaml_to_json(value))
+        .map(|e| format!("  at {}: {e}", e.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the schema rejected `phase: {phase}`:\n{}",
+        errors.join("\n")
+    );
+    sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts what the schema accepts");
+}
+
 /// The three-branch `anyOf` must not degenerate into "anything goes". A
 /// document matching none of the shapes has to fail.
 #[test]

@@ -10,7 +10,9 @@ use sonda_core::compiler::timing::{
     uniform_crossing_secs, Operator, TimingError,
 };
 use sonda_core::compiler::{DelayClause, WhileClause, WhileOp};
-use sonda_core::config::validate::{parse_duration, parse_start_time, validate_sink_config};
+use sonda_core::config::validate::{
+    parse_duration, parse_offset_duration, parse_start_time, validate_sink_config,
+};
 use sonda_core::generator::GeneratorConfig;
 
 use crate::sink_format::sink_display;
@@ -194,14 +196,19 @@ fn generator_display(gen: &sonda_core::generator::GeneratorConfig) -> String {
             up_value,
             down_value,
             enum_kind,
+            phase,
         } => {
             let up_d = up_duration.as_deref().unwrap_or("10s");
             let dn_d = down_duration.as_deref().unwrap_or("5s");
             let (up_default, dn_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
             let up_v = up_value.unwrap_or(up_default);
             let dn_v = down_value.unwrap_or(dn_default);
+            let phase = phase
+                .as_deref()
+                .map(|p| format!(", phase: {p}"))
+                .unwrap_or_default();
             format!(
-                "flap (up_duration: {up_d}, down_duration: {dn_d}, up_value: {up_v}, down_value: {dn_v})"
+                "flap (up_duration: {up_d}, down_duration: {dn_d}, up_value: {up_v}, down_value: {dn_v}{phase})"
             )
         }
         GeneratorConfig::Saturation {
@@ -575,9 +582,20 @@ fn crossing_secs(
             up_value,
             down_value,
             enum_kind,
+            phase,
         } => {
             let up_secs = duration_or_default(up_duration.as_deref(), 10.0)?;
             let down_secs = duration_or_default(down_duration.as_deref(), 5.0)?;
+            let phase_secs = match phase.as_deref() {
+                Some(s) => parse_offset_duration(s)
+                    .map(|d| d.as_secs_f64())
+                    .map_err(|e| TimingError::InvalidDuration {
+                        field: "flap.phase",
+                        input: s.to_string(),
+                        reason: e.to_string(),
+                    })?,
+                None => 0.0,
+            };
             let (up_default, dn_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
             timing::flap_crossing_secs(
                 op,
@@ -586,6 +604,7 @@ fn crossing_secs(
                 down_secs,
                 up_value.unwrap_or(up_default),
                 down_value.unwrap_or(dn_default),
+                phase_secs,
             )
         }
         GeneratorConfig::Saturation {
@@ -1151,6 +1170,60 @@ scenarios:
             out.contains("first_open:") && out.contains("~30s"),
             "must render analytical first_open, got:\n{out}"
         );
+    }
+
+    /// A phased flap renders its phase, and a `while:` on it first opens
+    /// `phase` before the unphased drop: 60s up, 30s in.
+    #[test]
+    fn text_renders_a_flap_phase_and_its_earlier_first_open() {
+        let compiled = compile(
+            r#"version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 5s
+      phase: 30s
+
+  - id: traffic
+    signal_type: metrics
+    name: backup_traffic
+    generator:
+      type: constant
+      value: 50.0
+    while:
+      ref: link
+      op: "<"
+      value: 1
+"#,
+        );
+        let mut buf = Vec::new();
+        let runnable = runnable_of(&compiled);
+        let views = views(&compiled, &runnable);
+        write_text_compiled(&mut buf, "while-phased-flap.yaml", &compiled, &views).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        let line = |field: &str, value: &str| {
+            out.lines()
+                .map(str::trim)
+                .find(|l| {
+                    l.strip_prefix(field)
+                        .is_some_and(|rest| rest.trim_start().starts_with(value))
+                })
+                .unwrap_or_else(|| panic!("a {field} {value} line must render, got:\n{out}"))
+                .to_string()
+        };
+        assert_eq!(
+            line("generator:", "flap"),
+            "generator:      flap (up_duration: 60s, down_duration: 5s, up_value: 1, down_value: 0, phase: 30s)"
+        );
+        assert_eq!(line("first_open:", "~"), "first_open:     ~30s");
     }
 
     #[test]
