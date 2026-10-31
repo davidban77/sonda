@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.29.1](https://github.com/davidban77/sonda/compare/v1.29.0...v1.29.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **schema:** enum map keys the schema accepts parse ([#714](https://github.com/davidban77/sonda/issues/714)) ([1365e71](https://github.com/davidban77/sonda/commit/1365e716a4328d229df2e282c56e4878c3ef5012))
+
 ## [1.29.0](https://github.com/davidban77/sonda/compare/v1.28.0...v1.29.0) (2026-10-30)
 
 
