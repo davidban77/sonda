@@ -147,8 +147,9 @@ impl fmt::Display for TimingError {
 /// between `down_value` and a higher `up_value`:
 ///
 /// - Starting in the up state (a phase of 0, or less than
-///   `up_duration_secs`), the `<` operator detects the transition to the down state at
-///   `up_duration_secs - phase`, and `>` is satisfied at `t=0`.
+///   `up_duration_secs`), the `<` operator detects the transition to the
+///   down state at `up_duration_secs - phase`, and `>` is satisfied at
+///   `t=0`.
 /// - Starting in the down state, `<` is satisfied at `t=0`, and `>` detects
 ///   the return to the up state at `up_duration_secs + down_duration_secs -
 ///   phase`.
@@ -816,33 +817,33 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case::less_than_one_returns_up_duration(                Operator::LessThan,    1.0,  60.0, 30.0, 1.0,   0.0,  0.0,   Expect::Ok(60.0))]
-    #[case::less_than_half_returns_up_duration(               Operator::LessThan,    0.5,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::Ok(10.0))]
-    #[case::greater_than_zero_is_ambiguous(                   Operator::GreaterThan, 0.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::Ambiguous)]
-    #[case::less_than_zero_is_out_of_range(                   Operator::LessThan,    0.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::OutOfRange)]
-    #[case::threshold_above_up_value_less_than_is_ambiguous(  Operator::LessThan,    2.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::Ambiguous)]
-    #[case::threshold_above_up_value_greater_than_out_of_range(Operator::GreaterThan, 2.0,  10.0,  5.0, 1.0,   0.0,  0.0,   Expect::OutOfRange)]
-    #[case::custom_values(                                    Operator::LessThan,    75.0, 20.0, 10.0, 100.0, 50.0, 0.0,   Expect::Ok(20.0))]
+    #[case::less_than_one_returns_up_duration(                Operator::LessThan,    1.0,  60.0, 30.0, (1.0, 0.0),   0.0,   Expect::Ok(60.0))]
+    #[case::less_than_half_returns_up_duration(               Operator::LessThan,    0.5,  10.0,  5.0, (1.0, 0.0),   0.0,   Expect::Ok(10.0))]
+    #[case::greater_than_zero_is_ambiguous(                   Operator::GreaterThan, 0.0,  10.0,  5.0, (1.0, 0.0),   0.0,   Expect::Ambiguous)]
+    #[case::less_than_zero_is_out_of_range(                   Operator::LessThan,    0.0,  10.0,  5.0, (1.0, 0.0),   0.0,   Expect::OutOfRange)]
+    #[case::threshold_above_up_value_less_than_is_ambiguous(  Operator::LessThan,    2.0,  10.0,  5.0, (1.0, 0.0),   0.0,   Expect::Ambiguous)]
+    #[case::threshold_above_up_value_greater_than_out_of_range(Operator::GreaterThan, 2.0,  10.0,  5.0, (1.0, 0.0),   0.0,   Expect::OutOfRange)]
+    #[case::custom_values(                                    Operator::LessThan,    75.0, 20.0, 10.0, (100.0, 50.0), 0.0,  Expect::Ok(20.0))]
     // Phased: the 60s up / 5s down flap of port 15 of examples/if-mib-switch.yaml.
-    #[case::phase_moves_the_first_drop_earlier(               Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  30.0,  Expect::Ok(30.0))]
-    #[case::phase_is_taken_modulo_the_cycle(                  Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  95.0,  Expect::Ok(30.0))]
-    #[case::phase_of_whole_cycles_is_no_phase(                Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  130.0, Expect::Ok(60.0))]
-    #[case::phase_in_the_up_state_greater_than_is_ambiguous(  Operator::GreaterThan, 0.5,  60.0,  5.0, 1.0,   0.0,  30.0,  Expect::Ambiguous)]
-    #[case::phase_at_the_drop_less_than_is_ambiguous(         Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  60.0,  Expect::Ambiguous)]
-    #[case::phase_in_the_down_state_less_than_is_ambiguous(   Operator::LessThan,    0.5,  60.0,  5.0, 1.0,   0.0,  62.0,  Expect::Ambiguous)]
-    #[case::phase_at_the_drop_greater_than_returns_the_rise(  Operator::GreaterThan, 0.5,  60.0,  5.0, 1.0,   0.0,  60.0,  Expect::Ok(5.0))]
-    #[case::phase_in_the_down_state_greater_than_the_rise(    Operator::GreaterThan, 0.5,  60.0,  5.0, 1.0,   0.0,  62.0,  Expect::Ok(3.0))]
-    #[case::phase_does_not_move_an_out_of_range_threshold(    Operator::LessThan,    0.0,  60.0,  5.0, 1.0,   0.0,  30.0,  Expect::OutOfRange)]
+    #[case::phase_moves_the_first_drop_earlier(               Operator::LessThan,    0.5,  60.0,  5.0, (1.0, 0.0),   30.0,  Expect::Ok(30.0))]
+    #[case::phase_is_taken_modulo_the_cycle(                  Operator::LessThan,    0.5,  60.0,  5.0, (1.0, 0.0),   95.0,  Expect::Ok(30.0))]
+    #[case::phase_of_whole_cycles_is_no_phase(                Operator::LessThan,    0.5,  60.0,  5.0, (1.0, 0.0),   130.0, Expect::Ok(60.0))]
+    #[case::phase_in_the_up_state_greater_than_is_ambiguous(  Operator::GreaterThan, 0.5,  60.0,  5.0, (1.0, 0.0),   30.0,  Expect::Ambiguous)]
+    #[case::phase_at_the_drop_less_than_is_ambiguous(         Operator::LessThan,    0.5,  60.0,  5.0, (1.0, 0.0),   60.0,  Expect::Ambiguous)]
+    #[case::phase_in_the_down_state_less_than_is_ambiguous(   Operator::LessThan,    0.5,  60.0,  5.0, (1.0, 0.0),   62.0,  Expect::Ambiguous)]
+    #[case::phase_at_the_drop_greater_than_returns_the_rise(  Operator::GreaterThan, 0.5,  60.0,  5.0, (1.0, 0.0),   60.0,  Expect::Ok(5.0))]
+    #[case::phase_in_the_down_state_greater_than_the_rise(    Operator::GreaterThan, 0.5,  60.0,  5.0, (1.0, 0.0),   62.0,  Expect::Ok(3.0))]
+    #[case::phase_does_not_move_an_out_of_range_threshold(    Operator::LessThan,    0.0,  60.0,  5.0, (1.0, 0.0),   30.0,  Expect::OutOfRange)]
     fn flap_crossing(
         #[case] op: Operator,
         #[case] threshold: f64,
         #[case] up_duration: f64,
         #[case] down_duration: f64,
-        #[case] up_value: f64,
-        #[case] down_value: f64,
+        #[case] values: (f64, f64),
         #[case] phase: f64,
         #[case] expect: Expect,
     ) {
+        let (up_value, down_value) = values;
         let result = flap_crossing_secs(
             op,
             threshold,
