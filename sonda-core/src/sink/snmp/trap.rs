@@ -2025,6 +2025,10 @@ mod tests {
             "guard: the sink is waiting for coldStart's acknowledgement"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            handle.is_alive(),
+            "guard: the scenario is running when stopped"
+        );
         let stopped = Instant::now();
         handle.stop();
         handle
