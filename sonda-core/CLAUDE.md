@@ -983,7 +983,10 @@ src/
 │   ├── timing.rs       ← Pure threshold-crossing math per generator
 │   │                      (sawtooth, step, sequence, spike, flap, saturation,
 │   │                      leak, degradation, spike_event, constant; flap's
-│   │                      crossing counts from where its phase starts it). Returns
+│   │                      crossing is the first change into the state its
+│   │                      predicate holds in, counted from where its phase
+│   │                      starts it, whichever of up and down is higher:
+│   │                      oper_state's down 2 is above its up 1). Returns
 │   │                      crossing time in seconds or a typed TimingError
 │   │                      (OutOfRange | Ambiguous | Unsupported). Used by the
 │   │                      v2 compiler's Phase 4 `after` resolution. No

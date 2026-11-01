@@ -235,3 +235,51 @@ fn dry_run_rejects_entries_that_share_an_address_with_different_settings() {
         "{stderr}"
     );
 }
+
+/// Port 15 of `examples/if-mib-switch.yaml` is an `oper_state` flap (down 2
+/// above up 1; 60s up, 5s down, 30s in). The example with port 15 given an
+/// id and an entry waiting for the port to go down (`>` 1.5) dry-runs, and
+/// the follower's `phase_offset` is `up_duration` minus the phase.
+#[cfg(feature = "snmp")]
+#[test]
+fn dry_run_resolves_an_after_on_port_15_of_the_if_mib_switch() {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/if-mib-switch.yaml");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()));
+    let port_15 = "    labels: { device: sw-access-01, ifIndex: 15, ";
+    assert_eq!(source.matches(port_15).count(), 1, "port 15's entry");
+    let flap = "      ifOperStatus:\n        generator:\n          type: flap\n          up_duration: 60s\n          down_duration: 5s\n          enum: oper_state\n          phase: 30s\n";
+    let entry = &source[source.find(port_15).expect("port 15's entry")..];
+    let flap_at = entry.find(flap).expect("the phased oper_state flap");
+    let next_entry = entry
+        .find("  - signal_type:")
+        .expect("an entry after port 15");
+    assert!(
+        flap_at < next_entry,
+        "the flap overrides port 15's ifOperStatus, not a later port's"
+    );
+    let follower = "\n  - id: port15_down\n    signal_type: metrics\n    name: port15_down\n    labels: { device: sw-access-01 }\n    duration: 1m\n    encoder: { type: prometheus_text }\n    sink: { type: stdout }\n    generator: { type: constant, value: 1 }\n    after: { ref: port15.ifOperStatus, op: \">\", value: 1.5 }\n";
+    let file = source.replacen(port_15, &format!("    id: port15\n{port_15}"), 1) + follower;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = dir.path().join("if-mib-switch-after.yaml");
+    std::fs::write(&fixture, file).expect("write the example with the follower");
+
+    let output = Command::new(sonda_bin())
+        .args(["run"])
+        .arg(&fixture)
+        .arg("--dry-run")
+        .output()
+        .expect("must spawn sonda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let section = stderr
+        .split("\n---\n")
+        .find(|block| block.contains("] port15_down\n"))
+        .unwrap_or_else(|| panic!("the follower's section:\n{stderr}"));
+    let offset = section
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("phase_offset:"))
+        .unwrap_or_else(|| panic!("the follower's phase_offset:\n{section}"));
+    assert_eq!(offset.trim(), "30s", "{section}");
+}
