@@ -463,7 +463,9 @@ jobs:
   # cannot reproduce.
   docs-browser-smoke:
     name: Docs site browser smoke suite
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.58.1 refuses to install Chromium's system
+    # dependencies on ubuntu 26.04, which ubuntu-latest now is.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
