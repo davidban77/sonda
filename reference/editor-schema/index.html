@@ -2470,7 +2470,7 @@ with <code>encoder precision must be 0..=17, got 99</code>. There is no single c
 everything short of running the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>.</p>
 </div>
 <h3 id="scalar-types-are-deliberately-loose">Scalar types are deliberately loose<a class="headerlink" href="#scalar-types-are-deliberately-loose" title="Permanent link">&para;</a></h3>
-<p>You will notice the schema accepts a number or a boolean anywhere it accepts a string — so
+<p>You will notice the schema accepts a number or a boolean almost anywhere it accepts a string — so
 <code>status: 200</code> under <code>labels:</code> is not flagged, even though a label value is a string.</p>
 <p>That is on purpose, and it matches the parser. Sonda's YAML loader coerces any plain scalar into
 a string field, so <code>status: 200</code> becomes the label value <code>"200"</code> and the file runs. A schema that
@@ -2478,6 +2478,11 @@ insisted on <code>"type": "string"</code> would underline working scenarios in r
 this repository's own <code>examples/</code> directory. Over-rejection is the one failure that makes a schema
 worse than no schema, so the schema follows what Sonda accepts rather than what the Rust types
 declare.</p>
+<p>The exceptions are fields whose parser takes a string only, where the schema takes a string only
+too. Durations are the largest group: a duration takes a unit everywhere, so Sonda refuses
+<code>duration: 10</code> and a flap's <code>phase: 0</code>; write <code>10s</code> and <code>0s</code>. <code>at</code> in <code>gap_windows:</code> and <code>open</code> in
+<code>delay:</code> also take a bare <code>0</code>. The OIDs and the SNMPv3 passwords and engine ID are strings only as
+well.</p>
 <h2 id="keeping-up-with-your-version">Keeping up with your version<a class="headerlink" href="#keeping-up-with-your-version" title="Permanent link">&para;</a></h2>
 <p>The published schema tracks the latest release. If you pin an older <code>sonda</code>, generate the schema
 from that version rather than fetching the published one — the <code>--example scenario_schema</code>
@@ -2505,7 +2510,7 @@ holds a test that fails if the committed copy falls behind them, plus a corpus c
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 14, 2026 09:37:12 UTC">August 14, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 1, 2026 18:30:36 UTC">November 1, 2026</span>
   </span>
 
     
