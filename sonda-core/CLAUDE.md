@@ -1020,9 +1020,9 @@ src/
     │                      expand_log_scenario (log_csv_replay rate derivation),
     │                      expand_entry (entry-level wrapper covering both)
     ├── scalar_text.rs  ← ScalarText (config feature) + required (gnmi or snmp feature) and
-    │                      optional (config feature) deserialize_with: a string, number or
+    │                      optional (gnmi feature) deserialize_with: a string, number or
     │                      boolean read as text. The ONE rule for text fields the schema
-    │                      widens (flap's phase, gnmi enum labels, gnmi_target listen and sample_floor,
+    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor,
     │                      snmp_agent listen, the snmp encoder's agent_label and
     │                      drop_labels items). OidText is its exception, for OID fields
     │                      (oids: values, the snmp.oid hint): a string only, read through
@@ -1032,9 +1032,10 @@ src/
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
-    │                      flap's `phase` (parse_offset_duration: zero accepted, negative
-    │                      refused naming the field) rotates the desugared sequence left by
-    │                      round(phase × rate) mod its tick count.
+    │                      flap's `phase` (a string only, x-sonda-no-widening;
+    │                      parse_offset_duration: zero accepted, negative refused naming the
+    │                      field) rotates the desugared sequence left by round(phase × rate)
+    │                      mod its tick count.
     │                      Jitter-implying aliases (steady, degradation) set jitter on
     │                      BaseScheduleConfig. Integrated into prepare_entries pipeline.
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),

@@ -331,15 +331,13 @@ pub enum GeneratorConfig {
         /// How far into the cycle the signal starts, a duration. Defaults to
         /// `"0s"`, the start of the "up" state. Zero is accepted; a negative
         /// value is refused. A phase of a whole number of cycles is the same
-        /// as none. Any YAML scalar is read as its text, so `0` is `"0"`.
+        /// as none. A string only: a YAML number such as `0` is refused, so
+        /// zero is written `0s`.
         #[cfg_attr(
             feature = "config",
-            serde(
-                default,
-                skip_serializing_if = "Option::is_none",
-                deserialize_with = "crate::config::scalar_text::optional"
-            )
+            serde(default, skip_serializing_if = "Option::is_none")
         )]
+        #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
         phase: Option<String>,
     },
 

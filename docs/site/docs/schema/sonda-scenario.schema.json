@@ -2065,12 +2065,10 @@
               ]
             },
             "phase": {
-              "description": "How far into the cycle the signal starts, a duration. Defaults to\n`\"0s\"`, the start of the \"up\" state. Zero is accepted; a negative\nvalue is refused. A phase of a whole number of cycles is the same\nas none. Any YAML scalar is read as its text, so `0` is `\"0\"`.",
+              "description": "How far into the cycle the signal starts, a duration. Defaults to\n`\"0s\"`, the start of the \"up\" state. Zero is accepted; a negative\nvalue is refused. A phase of a whole number of cycles is the same\nas none. A string only: a YAML number such as `0` is refused, so\nzero is written `0s`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ]
             },
             "type": {

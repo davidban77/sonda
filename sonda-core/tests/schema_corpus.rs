@@ -622,18 +622,18 @@ scenarios:
     );
 }
 
-/// A flap's `phase:` passes the schema and the parser, written as a quoted
-/// or bare duration or as a YAML number, which the schema widens to and the
-/// parser reads as its text (`0` is a zero phase; `30` is then refused by
-/// validation for its missing unit). The generator branches do not deny
-/// unknown keys, so the schema accepting the document says nothing until the
-/// flap branch is shown to declare `phase`, typed as its other durations.
+/// A flap's `phase:` is a string only, in the schema and the parser alike: a
+/// bare or quoted duration passes both, `"0s"` included, and a YAML number
+/// (`0`, `30`) is refused by both. The generator branches do not deny unknown
+/// keys, so the schema accepting a document says nothing until the flap
+/// branch is shown to declare `phase` with exactly that type.
 #[rstest::rstest]
-#[case::bare("30s")]
-#[case::quoted("\"30s\"")]
-#[case::numeric_zero("0")]
-#[case::numeric("30")]
-fn the_schema_and_the_parser_take_a_flap_phase(#[case] phase: &str) {
+#[case::bare("30s", true)]
+#[case::quoted("\"30s\"", true)]
+#[case::quoted_zero("\"0s\"", true)]
+#[case::numeric_zero("0", false)]
+#[case::numeric("30", false)]
+fn the_schema_and_the_parser_agree_on_a_flap_phase(#[case] phase: &str, #[case] valid: bool) {
     let schema = sonda_core::schema::scenario_file_schema().to_value();
     let flap = schema["$defs"]["GeneratorConfig"]["oneOf"]
         .as_array()
@@ -641,13 +641,10 @@ fn the_schema_and_the_parser_take_a_flap_phase(#[case] phase: &str) {
         .iter()
         .find(|branch| branch["properties"]["type"]["const"] == "flap")
         .expect("the schema has a flap branch");
-    let types = flap["properties"]["phase"]["type"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the flap branch declares a typed `phase`: {flap}"));
-    assert!(types.contains(&serde_json::json!("string")), "{types:?}");
     assert_eq!(
-        flap["properties"]["phase"]["type"], flap["properties"]["up_duration"]["type"],
-        "`phase` is typed as `up_duration` is"
+        flap["properties"]["phase"]["type"],
+        serde_json::json!(["string", "null"]),
+        "the flap branch declares `phase` as a string only: {flap}"
     );
 
     let yaml = format!(
@@ -667,17 +664,26 @@ scenarios:
       phase: {phase}
 "#
     );
-    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
-    let errors: Vec<String> = validator()
-        .iter_errors(&yaml_to_json(value))
-        .map(|e| format!("  at {}: {e}", e.instance_path()))
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "the schema rejected `phase: {phase}`:\n{}",
-        errors.join("\n")
+    let parsed = sonda_core::compiler::parse::parse(&yaml);
+    assert_eq!(
+        parsed.is_ok(),
+        valid,
+        "the parser on `phase: {phase}`: {parsed:?}"
     );
-    sonda_core::compiler::parse::parse(&yaml).expect("the parser accepts what the schema accepts");
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        let errors: Vec<String> = validator()
+            .iter_errors(&yaml_to_json(value))
+            .map(|e| format!("  at {}: {e}", e.instance_path()))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the schema rejected `phase: {phase}`:\n{}",
+            errors.join("\n")
+        );
+    } else {
+        assert_rejected(&format!("phase: {phase}"), &yaml);
+    }
 }
 
 /// The three-branch `anyOf` must not degenerate into "anything goes". A

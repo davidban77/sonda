@@ -548,17 +548,20 @@ generator:
         assert_eq!(desugared_flap(rate, up, down, phase), expected);
     }
 
-    /// An unquoted YAML `0` is read as its text, a zero phase.
+    /// `phase` is a string only: an unquoted YAML `0` is refused when the
+    /// scenario is parsed, and `0s` is the zero phase.
     #[test]
-    fn flap_phase_written_as_the_number_0_is_no_phase() {
-        let yaml = "name: f\nrate: 1\ngenerator:\n  type: flap\n  up_duration: 60s\n  \
-                    down_duration: 5s\n  enum: oper_state\n  phase: 0\n";
-        let mut config = parse_scenario(yaml);
-        assert!(
-            matches!(&config.generator, GeneratorConfig::Flap { phase: Some(p), .. } if p == "0"),
-            "{:?}",
-            config.generator
-        );
+    fn flap_phase_written_as_the_number_0_is_refused() {
+        let flap = |phase: &str| {
+            format!(
+                "name: f\nrate: 1\ngenerator:\n  type: flap\n  up_duration: 60s\n  \
+                 down_duration: 5s\n  enum: oper_state\n  phase: {phase}\n"
+            )
+        };
+        let err = serde_yaml_ng::from_str::<ScenarioConfig>(&flap("0"))
+            .expect_err("a YAML number is not a phase");
+        assert!(err.to_string().contains("expected a string"), "{err}");
+        let mut config = parse_scenario(&flap("0s"));
         desugar_scenario_config(&mut config).expect("desugar must succeed");
         assert!(
             matches!(&config.generator, GeneratorConfig::Sequence { values, .. } if *values == runs(&[(1.0, 60), (2.0, 5)])),

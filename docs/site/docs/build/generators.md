@@ -598,7 +598,7 @@ generator:
   phase: "30s"
 ```
 
-At `rate: 1` the cycle is 65 ticks. Port 7, with no phase, is down at ticks 60 to 64 of every cycle; port 15 is down at ticks 30 to 34. A phase of a whole number of cycles is the same as none (`65s` here), a longer one wraps (`70s` is `5s`), and a phase in the down state (`62s`) starts the signal down. `0s` is accepted; a negative phase is rejected when the scenario is loaded, with a message naming `phase`. An [`after:`](scenario-files.md#temporal-chains-with-after) clause on a phased flap counts from where the phase starts it: `op: "<"` resolves to `up_duration` minus the phase, `30s` for port 15.
+At `rate: 1` the cycle is 65 ticks. Port 7, with no phase, is down at ticks 60 to 64 of every cycle; port 15 is down at ticks 30 to 34. A phase of a whole number of cycles is the same as none (`65s` here), a longer one wraps (`70s` is `5s`), and a phase in the down state (`62s`) starts the signal down. `0s` is accepted; a negative phase is rejected when the scenario is loaded, with a message naming `phase`. An [`after:`](scenario-files.md#temporal-chains-with-after) clause on a phased flap counts from where the phase starts it: for a flap with the default values (up `1`, down `0`) and port 15's durations and phase, `op: "<", value: 1` resolves to `30s`, `up_duration` minus the phase.
 
 ??? tip "Custom values"
     When the metric does not match a documented enum, use explicit `up_value` and `down_value` instead. For example, a link that alternates between full speed and degraded throughput:
