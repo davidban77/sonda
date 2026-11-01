@@ -31,7 +31,8 @@ as a SKIP line:
   is reported as SKIP with the offending path.
 
 One assumption is load-bearing enough to state. This gate compiles a fence with
-the NATIVE binary, built with ``http,kafka,remote-write,otlp,gnmi`` — but the button
+the NATIVE binary, built with the docs job's feature list in ``ci.yml``
+(``http,kafka,remote-write,otlp,gnmi,snmp``) — but the button
 it certifies opens that fence in the WASM build, which has none of those
 features, and ``SinkConfig`` gates its variants with ``#[cfg(feature = ...)]``
 at the enum level rather than only at construction. If a gated variant were
@@ -46,8 +47,11 @@ Stdlib-only. Run from the repo root::
 
     python3 scripts/validate_docs_scenarios.py
 
-``--self-test`` runs the inline unit tests plus the shared case table without
-needing a ``sonda`` binary. ``--list`` prints what would be checked and exits.
+``--self-test`` runs the inline unit tests plus the shared case table. The
+tests that compile a wrapped fence need the same binary as a normal run
+(``--sonda`` or the default path) and fail without it; ``--self-test
+--no-binary`` skips exactly those, by name. ``--list`` prints what would be
+checked and exits.
 """
 
 from __future__ import annotations
@@ -60,6 +64,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -103,6 +108,9 @@ class ExtractedScenario:
     # Set by `extract_builtin_pack_scenarios`. Carried rather than recomputed
     # so the floor in `run_validation` counts what was actually extracted.
     builtin_pack: bool = False
+    # Set by `extract_fragments` for a fence `synthesize_block_fragment`
+    # wrapped: a bare `encoder:` and/or `sink:` block.
+    block: bool = False
 
 
 @dataclasses.dataclass
@@ -216,12 +224,23 @@ kind: runnable
 
 # Defaults, not content. Every key here is one the engine would otherwise
 # demand and that a prose fragment has no reason to carry.
-_FRAGMENT_DEFAULTS = """defaults:
+_FRAGMENT_SCHEDULE = """defaults:
   rate: 1
   duration: 10s
-  encoder: { type: json_lines }
-  sink: { type: stdout }
 """
+
+# The encoder and sink a fragment that names neither is compiled with. A
+# bare block fragment (below) takes the half it leaves out from here too.
+_DEFAULT_BLOCK = {
+    "encoder": "{ type: json_lines }",
+    "sink": "{ type: stdout }",
+}
+
+_FRAGMENT_DEFAULTS = (
+    _FRAGMENT_SCHEDULE
+    + f"  encoder: {_DEFAULT_BLOCK['encoder']}\n"
+    + f"  sink: {_DEFAULT_BLOCK['sink']}\n"
+)
 
 
 def _scenarios_is_a_sequence(body: str) -> bool:
@@ -275,7 +294,8 @@ def synthesize_fragment(text: str) -> str | None:
     Returns ``None`` for anything this gate cannot speak about honestly:
     complete scenarios (the gate above already compiles those), ``sonda:static``
     opt-outs, ``pack:`` references, Helm values maps, and any fence that is not
-    shaped like a scenario or a list of them.
+    shaped like a scenario or a list of them. A bare ``encoder:`` or ``sink:``
+    block is not either; :func:`synthesize_block_fragment` wraps those.
 
     Two shapes are handled, and the difference is how much has to be invented:
 
@@ -346,6 +366,288 @@ def synthesize_fragment(text: str) -> str | None:
         )
 
     return None
+
+
+# --- Encoder and sink blocks -------------------------------------------------
+#
+# The encoder and sink pages show their options as bare blocks:
+#
+#     sink:
+#       type: kafka
+#       brokers: "127.0.0.1:9092"
+#
+# A fence whose top-level keys are a non-empty subset of {encoder, sink}, each
+# a map with a `type:`, is a BLOCK FRAGMENT. It is wrapped under `defaults:`
+# in the same minimal file the fragments above use, the half it leaves out
+# defaulted, with constant metrics, and dry-run like any other fragment.
+#
+# Validation pairs some halves with each other in both directions, so the
+# default for the missing half would be refused for them. `_PAIRED_SINK` and
+# `_PAIRED_ENCODER` name the minimal partner instead.
+#
+# The wrapper has one metric, `doc_fragment` with no labels, except under a
+# fence's own `snmp` or `gnmi` encoder. Validation requires each of their
+# metrics to have a template and a label for each placeholder of it, and a
+# gnmi encoder's every `values:` and `paths:` key to name a metric the file
+# emits. There `_wrapper_metrics` gives the wrapper one metric per key of
+# `oids:` (snmp) or of `values:` and `paths:` (gnmi), each with a label "1"
+# for every required placeholder of its template and, for snmp, every
+# `label_columns:` key. Reading those keys takes `_block_entries` and
+# `_flow_entries`, a reader for the block and flow mappings these fences use,
+# not a YAML parser. What it cannot read leaves a metric without a template
+# or a label, or a gnmi key without a metric, which the engine refuses: a
+# misread turns the run red rather than passing it.
+
+# A paired encoder's minimal sink.
+_PAIRED_SINK = {
+    "snmp": '{ type: snmp_agent, listen: "127.0.0.1:0" }',
+    "gnmi": '{ type: gnmi_target, listen: "127.0.0.1:0" }',
+}
+
+# A paired sink's minimal encoder. The OID is a scalar in net-snmp's
+# experimental subtree, which the agent's system group does not cover.
+_PAIRED_ENCODER = {
+    "snmp_agent": '{ type: snmp, oids: { doc_fragment: "1.3.6.1.4.1.8072.9999.1.1.0" } }',
+    "snmp_trap": '{ type: snmp, oids: { doc_fragment: "1.3.6.1.4.1.8072.9999.1.1.0" } }',
+    "gnmi_target": '{ type: gnmi, path: "/sonda/doc-fragment" }',
+}
+
+_BLOCK_KEYS = ("encoder", "sink")
+
+# `key:` or `key: value` at the start of a stripped line. A key is plain or
+# quoted; the colon must be followed by a space or the end of the line.
+_MAP_LINE_RE = re.compile(
+    r"""^(?P<key>"[^"]*"|'[^']*'|[^\s"'#\-{\[][^:#]*?)[ \t]*:(?:[ \t]+(?P<value>.*?))?[ \t]*$"""
+)
+
+# A template placeholder: `{label}`, snmp's `{label:str}` or gnmi's optional
+# `{label?}`, which needs no label.
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(:str|\?)?\}")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _unquote(text: str) -> str:
+    """A scalar's text: a quoted scalar without its quotes, else as written."""
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
+def _strip_comment(value: str) -> str:
+    """``value`` without a trailing `` # comment`` outside quotes."""
+    quote = ""
+    for i, char in enumerate(value):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#" and (i == 0 or value[i - 1] in " \t"):
+            return value[:i].rstrip()
+    return value.rstrip()
+
+
+def _block_entries(lines: Sequence[str]) -> list[tuple[str, str, list[str]]] | None:
+    """The entries of the block mapping ``lines`` hold, or ``None``.
+
+    Each entry is ``(key, value, children)``: the key unquoted, the text after
+    its colon without a trailing comment, and the lines indented under it.
+    The mapping's indent is that of its first line that is neither blank nor
+    a comment. A line at that indent that is not ``key:`` or ``key: value``
+    (a sequence item, a document marker, a scalar), or a line indented less,
+    means the lines are not one block mapping.
+    """
+    entries: list[tuple[str, str, list[str]]] = []
+    indent: int | None = None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if entries:
+                entries[-1][2].append(line)
+            continue
+        level = _indent(line)
+        if indent is None:
+            indent = level
+        if level > indent and entries:
+            entries[-1][2].append(line)
+            continue
+        if level != indent:
+            return None
+        match = _MAP_LINE_RE.match(stripped)
+        if match is None:
+            return None
+        value = _strip_comment(match.group("value") or "")
+        entries.append((_unquote(match.group("key")), value, []))
+    return entries if indent is not None else None
+
+
+def _flow_entries(text: str) -> list[tuple[str, str]] | None:
+    """The top-level ``(key, value)`` pairs of a flow mapping ``{ k: v, ... }``.
+
+    Values are returned as written (a nested flow collection whole), keys
+    unquoted. ``None`` when ``text`` is not one flow mapping.
+    """
+    text = text.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    parts: list[str] = []
+    depth = 0
+    quote = ""
+    start = 1
+    for i, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0 and i != len(text) - 1:
+                return None  # text after the mapping's closing brace
+        elif char == "," and depth == 1:
+            parts.append(text[start:i])
+            start = i + 1
+    if depth != 0 or quote:
+        return None
+    parts.append(text[start:-1])
+    entries: list[tuple[str, str]] = []
+    for part in parts:
+        if not part.strip():
+            continue
+        match = _MAP_LINE_RE.match(part.strip())
+        if match is None:
+            return None
+        entries.append((_unquote(match.group("key")), (match.group("value") or "").strip()))
+    return entries
+
+
+def _map_entries(value: str, children: list[str]) -> list[tuple[str, str, list[str]]] | None:
+    """The entries of a mapping written as a block (``value`` empty) or a flow."""
+    if value == "":
+        return _block_entries(children)
+    flow = _flow_entries(value)
+    if flow is None:
+        return None
+    return [(key, inner, []) for key, inner in flow]
+
+
+def block_fragment_types(text: str) -> dict[str, str] | None:
+    """``{"encoder": type, "sink": type}`` for a block fragment, else ``None``.
+
+    A block fragment is a fence whose top-level keys are a non-empty subset
+    of ``{encoder, sink}``, each a map with a ``type:``. Only the halves the
+    fence carries are in the result. A ``# sonda:static`` fence is never one.
+    """
+    body = normalize_fence(text)
+    if re.search(r"^#[ \t]*sonda:static\b", body, re.MULTILINE):
+        return None
+    top = _block_entries(body.split("\n"))
+    if not top:
+        return None
+    types: dict[str, str] = {}
+    for key, value, children in top:
+        if key not in _BLOCK_KEYS:
+            return None
+        entries = _map_entries(value, children)
+        if entries is None:
+            return None
+        kind = next((_unquote(inner) for name, inner, _ in entries if name == "type"), "")
+        if not kind:
+            return None
+        types[key] = kind
+    return types
+
+
+def _wrapper_metrics(body: str, encoder_type: str | None) -> list[tuple[str, dict[str, str]]]:
+    """The wrapper's metrics, each ``(name, labels)``, in the order the fence names them.
+
+    ``encoder_type`` is the type of the fence's own ``encoder:``, or ``None``
+    when the fence has none. One ``doc_fragment`` with no labels, except for
+    an ``snmp`` or ``gnmi`` encoder: see the section note above.
+    """
+    fallback = [("doc_fragment", {})]
+    if encoder_type not in ("snmp", "gnmi"):
+        return fallback
+    top = _block_entries(body.split("\n")) or []
+    encoder = next(((v, c) for k, v, c in top if k == "encoder"), None)
+    if encoder is None:
+        return fallback
+    fields = {k: (v, c) for k, v, c in (_map_entries(*encoder) or [])}
+
+    def field_map(name: str) -> list[tuple[str, str]]:
+        if name not in fields:
+            return []
+        return [(k, _unquote(v)) for k, v, _ in (_map_entries(*fields[name]) or [])]
+
+    templates: dict[str, str] = {}
+    columns: list[str] = []
+    if encoder_type == "snmp":
+        templates = dict(field_map("oids"))
+        columns = [column for column, _ in field_map("label_columns")]
+    else:
+        path = _unquote(fields["path"][0]) if "path" in fields else ""
+        paths = dict(field_map("paths"))
+        for name, _ in field_map("values") + list(paths.items()):
+            templates.setdefault(name, paths.get(name, path))
+        if not templates:
+            templates["doc_fragment"] = path
+    metrics: list[tuple[str, dict[str, str]]] = []
+    for name, template in templates.items():
+        labels = {column: "1" for column in columns}
+        for match in _PLACEHOLDER_RE.finditer(template):
+            label, form = match.group(1), match.group(2)
+            if form == "?" or (encoder_type == "gnmi" and label == "name"):
+                continue
+            labels[label] = "1"
+        metrics.append((name, dict(sorted(labels.items()))))
+    return metrics or fallback
+
+
+def synthesize_block_fragment(text: str) -> str | None:
+    """Wrap a bare ``encoder:`` and/or ``sink:`` fence into a runnable file.
+
+    ``None`` for anything :func:`block_fragment_types` refuses. The fence is
+    indented under ``defaults:`` whole, so its own text is what is compiled;
+    the missing half is ``_PAIRED_SINK``/``_PAIRED_ENCODER`` for a paired
+    half, else ``_DEFAULT_BLOCK``.
+    """
+    types = block_fragment_types(text)
+    if types is None:
+        return None
+    body = normalize_fence(text).rstrip("\n")
+    added = []
+    if "encoder" not in types:
+        encoder = _PAIRED_ENCODER.get(types["sink"], _DEFAULT_BLOCK["encoder"])
+        added.append(f"  encoder: {encoder}")
+    if "sink" not in types:
+        sink = _PAIRED_SINK.get(types["encoder"], _DEFAULT_BLOCK["sink"])
+        added.append(f"  sink: {sink}")
+    indented = ["  " + line if line.strip() else "" for line in body.split("\n")]
+    entries: list[str] = []
+    for name, labels in _wrapper_metrics(body, types.get("encoder")):
+        entries += [
+            "  - signal_type: metrics",
+            f"    name: {json.dumps(name)}",
+            "    generator: { type: constant, value: 1.0 }",
+        ]
+        if labels:
+            pairs = ", ".join(f"{json.dumps(k)}: {json.dumps(v)}" for k, v in labels.items())
+            entries.append(f"    labels: {{ {pairs} }}")
+    return (
+        _FRAGMENT_PREAMBLE
+        + _FRAGMENT_SCHEDULE
+        + "\n".join(indented + added)
+        + "\nscenarios:\n"
+        + "\n".join(entries)
+        + "\n"
+    )
 
 
 # --- Markdown extraction -----------------------------------------------------
@@ -508,19 +810,87 @@ def extract_fragments(md_path: Path, markdown_text: str) -> list[ExtractedScenar
     The complement of :func:`extract_scenarios`: these fences carry no button
     and no gate could previously reach them, which is where three of this
     program's field-name bugs were found. See the module note above
-    :func:`synthesize_fragment` for why the wrapping is kept minimal.
+    :func:`synthesize_fragment` for why the wrapping is kept minimal. A bare
+    ``encoder:``/``sink:`` fence is wrapped by
+    :func:`synthesize_block_fragment` and marked ``block``.
     """
     out: list[ExtractedScenario] = []
     for line, body, info in extract_yaml_fences(markdown_text):
         document = synthesize_fragment(body)
+        block = False
+        if document is None:
+            document = synthesize_block_fragment(body)
+            block = document is not None
         if document is None:
             continue
         out.append(
             ExtractedScenario(
-                file=md_path, line=line, body=document, info=info, synthesized=True
+                file=md_path,
+                line=line,
+                body=document,
+                info=info,
+                synthesized=True,
+                block=block,
             )
         )
     return out
+
+
+def decline_reason(text: str) -> str:
+    """Why no tier compiles a fence: one line, the same for fences alike.
+
+    Called only for fences none of :func:`extract_scenarios`,
+    :func:`extract_builtin_pack_scenarios` and :func:`extract_fragments`
+    took, checked in the order :func:`synthesize_fragment` refuses them: the
+    opt-out marker, a ``pack:`` reference, a ``version:`` header, a
+    ``scenarios:`` key that does not open a block list, and otherwise the
+    fence's top-level keys, sorted, as written.
+    """
+    body = normalize_fence(text)
+    if re.search(r"^#[ \t]*sonda:static\b", body, re.MULTILINE):
+        return "marked # sonda:static"
+    if re.search(r"^[ \t]*(?:-[ \t]+)?pack:", body, re.MULTILINE):
+        return "pack: reference, not a complete scenario of builtin packs this run resolves"
+    if re.search(r"^version:", body, re.MULTILINE):
+        return "version: header, not a runnable scenario"
+    if re.search(r"^scenarios:", body, re.MULTILINE):
+        return "scenarios: is not a block list"
+    keys = sorted(
+        {
+            m.group(1)
+            for m in re.finditer(r"^([^\s#:\-][^:\n]*?):(?:[ \t]|$)", body, re.MULTILINE)
+        }
+    )
+    if not keys:
+        return "no top-level key"
+    return "top-level " + ", ".join(f"{key}:" for key in keys)
+
+
+@dataclasses.dataclass
+class MarkdownScan:
+    """What one markdown document holds for this gate."""
+
+    scenarios: list[ExtractedScenario]
+    # One entry per yaml fence no tier took: (first content line, reason).
+    declined: list[tuple[int, str]]
+
+
+def scan_markdown(
+    md_path: Path, markdown_text: str, builtins: frozenset[str]
+) -> MarkdownScan:
+    """Every fence of one document, either extracted by a tier or declined."""
+    scenarios = (
+        extract_scenarios(md_path, markdown_text)
+        + extract_builtin_pack_scenarios(md_path, markdown_text, builtins)
+        + extract_fragments(md_path, markdown_text)
+    )
+    taken = {scenario.line for scenario in scenarios}
+    declined = [
+        (line, decline_reason(body))
+        for line, body, _ in extract_yaml_fences(markdown_text)
+        if line not in taken
+    ]
+    return MarkdownScan(scenarios=scenarios, declined=declined)
 
 
 # --- Validation --------------------------------------------------------------
@@ -755,15 +1125,14 @@ def run_validation(
     sonda_bin: Path | None,
     subprocess_timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_S,
     skip_files: Iterable[str] = (),
-) -> tuple[list[ScenarioResult], list[ScenarioResult], int]:
+) -> tuple[list[ScenarioResult], list[ScenarioResult], Counter[str]]:
     """Validate every reachable fence.
 
     Returns ``(all_results, failures, declined)``, where ``declined`` counts the
-    yaml fences neither tier could speak about — Helm values, workflow files,
-    Alertmanager and vmalert configs, bare ``encoder:`` blocks. Reported rather
-    than inferred (review #545 M3): "52 fragments compiled" invites the
-    question "out of how many?", and a reader of the run cannot tell 45
-    declines from 5 without a script of their own.
+    yaml fences no tier could speak about by their :func:`decline_reason`.
+    Reported rather than inferred (review #545 M3): "52 fragments compiled"
+    invites the question "out of how many?", and a reader of the run cannot
+    tell 45 declines from 5 without a script of their own.
     """
     docs_root = repo_root / DOCS_GLOB_ROOT
     if not docs_root.is_dir():
@@ -772,16 +1141,14 @@ def run_validation(
     skip_set = {str(s) for s in skip_files}
     builtins = builtin_pack_names(sonda_bin)
     scenarios: list[ExtractedScenario] = []
-    fences = 0  # every yaml fence seen, so declines can be counted rather than inferred
+    declined: Counter[str] = Counter()
     for md in iter_markdown_files(docs_root):
         rel = str(md.relative_to(repo_root)) if md.is_absolute() else str(md)
         if rel in skip_set:
             continue
-        text = md.read_text(encoding="utf-8")
-        fences += len(extract_yaml_fences(text))
-        scenarios.extend(extract_scenarios(md, text))
-        scenarios.extend(extract_builtin_pack_scenarios(md, text, builtins))
-        scenarios.extend(extract_fragments(md, text))
+        scan = scan_markdown(md, md.read_text(encoding="utf-8"), builtins)
+        scenarios.extend(scan.scenarios)
+        declined.update(reason for _, reason in scan.declined)
 
     results = [
         validate_scenario(
@@ -803,7 +1170,7 @@ def run_validation(
                 "exactly this."
             )
 
-    return results, [r for r in results if not r.ok], fences - len(scenarios)
+    return results, [r for r in results if not r.ok], declined
 
 
 def format_failure(result: ScenarioResult, repo_root: Path) -> str:
@@ -877,10 +1244,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.self_test:
-        return _run_self_tests()
-
     repo_root = find_repo_root(Path(__file__).parent)
+
+    if args.self_test:
+        if args.no_binary:
+            return _run_self_tests(None)
+        raw_bin = args.sonda or (repo_root / DEFAULT_SONDA_BINARY)
+        return _run_self_tests(raw_bin if raw_bin.is_absolute() else repo_root / raw_bin)
 
     if args.list:
         docs_root = repo_root / DOCS_GLOB_ROOT
@@ -928,14 +1298,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     skipped = sum(1 for r in results if r.skipped_reason)
     fragments = sum(1 for r in results if r.scenario.synthesized)
+    blocks = sum(1 for r in results if r.scenario.block)
     print(
         f"{len(results) - fragments} runnable scenario fences and {fragments} "
-        f"fragments found, "
+        f"fragments ({blocks} encoder/sink blocks) found, "
         f"{len(results) - skipped - len(failures)} compiled, "
         f"{skipped} skipped, {len(failures)} failed; "
-        f"{declined} yaml fences declined (not Sonda scenarios)",
+        f"{sum(declined.values())} yaml fences declined:",
         file=sys.stderr,
     )
+    for reason, count in sorted(declined.items(), key=lambda item: (-item[1], item[0])):
+        print(f"  {count:3d}  {reason}", file=sys.stderr)
 
     gallery_failures = validate_gallery(
         repo_root=repo_root, sonda_bin=sonda_bin, subprocess_timeout=args.timeout
@@ -1092,8 +1465,9 @@ class _SynthesizeFragmentTests(unittest.TestCase):
             synthesize_fragment("name: Alert Rule Validation\non:\n  pull_request:\n")
         )
 
-    def test_bare_encoder_block_is_refused(self) -> None:
+    def test_bare_encoder_block_is_not_an_entry(self) -> None:
         # Not an entry: it carries no key that only a scenario entry has.
+        # `synthesize_block_fragment` is the tier that wraps it.
         self.assertIsNone(synthesize_fragment("encoder:\n  type: prometheus_text\n"))
 
     def test_static_and_pack_and_complete_are_refused(self) -> None:
@@ -1133,6 +1507,282 @@ class _SynthesizeFragmentTests(unittest.TestCase):
         # Continuation lines sit at the item's indent, not the item's dash.
         self.assertIn("\n    generator:\n", out)
         self.assertIn("\n      type: constant\n", out)
+
+
+#: Floor on the bare ``encoder:``/``sink:`` fences in ``docs/`` that the block
+#: tier wraps. Asserted by the self-test before it asserts they compile, so a
+#: tier that stops recognising them fails instead of compiling nothing.
+MIN_BLOCK_FRAGMENTS = 2
+
+# The binary the compiling self-tests use; `None` under --no-binary. Set by
+# `_run_self_tests` from the same flags a normal run reads.
+_SELF_TEST_BINARY: Path | None = None
+
+
+def _wrap(text: str) -> str:
+    """``synthesize_block_fragment(text)``, failing the calling test on ``None``."""
+    document = synthesize_block_fragment(text)
+    if document is None:
+        raise AssertionError(f"not wrapped as a block fragment:\n{text}")
+    return document
+
+
+class _BlockFragmentShapeTests(unittest.TestCase):
+    """Which fences the block tier wraps, and the file it wraps them into."""
+
+    def test_bare_encoder_is_wrapped_with_the_default_sink(self) -> None:
+        out = _wrap("encoder:\n  type: prometheus_text\n  precision: 2\n")
+        self.assertTrue(out.startswith("version: 2\nkind: runnable\ndefaults:\n"))
+        # The fence's own text, whole, one indent under defaults:.
+        self.assertIn("\n  encoder:\n    type: prometheus_text\n    precision: 2\n", out)
+        self.assertIn(f"\n  sink: {_DEFAULT_BLOCK['sink']}\n", out)
+        self.assertEqual(out.count("encoder:"), 1)
+        self.assertIn('    name: "doc_fragment"\n', out)
+        self.assertIn("    generator: { type: constant, value: 1.0 }\n", out)
+
+    def test_bare_sink_is_wrapped_with_the_default_encoder(self) -> None:
+        out = _wrap('sink:\n  type: kafka\n  brokers: "127.0.0.1:9092"\n  topic: t\n')
+        self.assertIn('\n  sink:\n    type: kafka\n    brokers: "127.0.0.1:9092"\n', out)
+        self.assertIn(f"\n  encoder: {_DEFAULT_BLOCK['encoder']}\n", out)
+        self.assertEqual(out.count("sink:"), 1)
+
+    def test_a_fence_with_both_halves_has_nothing_defaulted(self) -> None:
+        out = _wrap(
+            "encoder:\n  type: remote_write\nsink:\n  type: remote_write\n"
+            '  url: "http://localhost:8428/api/v1/write"\n'
+        )
+        self.assertEqual(out.count("encoder:"), 1)
+        self.assertEqual(out.count("sink:"), 1)
+        self.assertNotIn("json_lines", out)
+        self.assertNotIn("stdout", out)
+
+    def test_flow_halves_and_a_comment_are_read(self) -> None:
+        self.assertEqual(
+            block_fragment_types(
+                "# shown on the sinks page\nencoder: { type: otlp }\n"
+                "sink: { type: otlp_grpc, endpoint: 'http://x:4317' }  # local\n"
+            ),
+            {"encoder": "otlp", "sink": "otlp_grpc"},
+        )
+
+    def test_an_indented_fence_is_read_after_normalising(self) -> None:
+        self.assertEqual(
+            block_fragment_types("    sink:\n      type: stdout\n"), {"sink": "stdout"}
+        )
+
+    def test_an_snmp_encoder_gets_the_agent_partner_and_its_own_metrics(self) -> None:
+        out = _wrap(
+            "encoder:\n  type: snmp\n  oids:\n"
+            '    ifHCInOctets: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"\n'
+            '    sysDescrLike: "1.3.6.1.4.1.8072.9999.1.2.{ifName:str}"\n'
+            "  label_columns:\n"
+            '    ifType: { oid: "1.3.6.1.2.1.2.2.1.3.{ifIndex}", type: integer }\n'
+        )
+        self.assertIn(f"\n  sink: {_PAIRED_SINK['snmp']}\n", out)
+        self.assertIn("snmp_agent", _PAIRED_SINK["snmp"])
+        self.assertIn('127.0.0.1:0"', _PAIRED_SINK["snmp"])
+        # One metric per oids: key, a label for each placeholder and column.
+        self.assertIn(
+            '    name: "ifHCInOctets"\n    generator: { type: constant, value: 1.0 }\n'
+            '    labels: { "ifIndex": "1", "ifType": "1" }\n',
+            out,
+        )
+        self.assertIn('    labels: { "ifName": "1", "ifType": "1" }\n', out)
+        self.assertNotIn("doc_fragment", out)
+
+    def test_snmp_sinks_get_the_snmp_encoder_partner(self) -> None:
+        for sink in ("snmp_agent", "snmp_trap"):
+            with self.subTest(sink=sink):
+                out = _wrap(f"sink:\n  type: {sink}\n")
+                self.assertIn(f"\n  encoder: {_PAIRED_ENCODER[sink]}\n", out)
+                self.assertIn("type: snmp,", _PAIRED_ENCODER[sink])
+                self.assertIn('    name: "doc_fragment"\n', out)
+
+    def test_a_gnmi_encoder_gets_the_target_partner_and_one_metric_per_key(self) -> None:
+        out = _wrap(
+            "encoder:\n  type: gnmi\n"
+            '  path: "/interfaces/interface[name={ifName}]/state/counters/{name}"\n'
+            "  values:\n    in_octets: uint\n    oper_status:\n      enum: { 1: UP }\n"
+            "  paths:\n"
+            '    oper_status: "/interfaces/interface[name={ifName}]/state[le={le?}]"\n'
+            '    admin: "/admin[unit={unit}]"\n'
+        )
+        self.assertIn(f"\n  sink: {_PAIRED_SINK['gnmi']}\n", out)
+        names = re.findall(r'^    name: "([^"]+)"$', out, re.MULTILINE)
+        self.assertEqual(names, ["in_octets", "oper_status", "admin"])
+        # {name} is the metric name and {le?} is optional: neither is a label.
+        self.assertEqual(out.count('labels: { "ifName": "1" }'), 2)
+        self.assertIn('labels: { "unit": "1" }', out)
+
+    def test_a_gnmi_target_sink_gets_the_gnmi_encoder_partner(self) -> None:
+        out = _wrap('sink:\n  type: gnmi_target\n  listen: "127.0.0.1:57400"\n')
+        self.assertIn(f"\n  encoder: {_PAIRED_ENCODER['gnmi_target']}\n", out)
+
+    def test_a_third_top_level_key_is_not_a_block_fragment(self) -> None:
+        text = "encoder:\n  type: json_lines\nsink:\n  type: stdout\nrate: 1\n"
+        self.assertIsNone(block_fragment_types(text))
+        self.assertIsNone(synthesize_block_fragment(text))
+
+    def test_a_half_without_a_type_is_not_a_block_fragment(self) -> None:
+        self.assertIsNone(block_fragment_types("sink:\n  url: http://x\n"))
+        self.assertIsNone(block_fragment_types("sink: stdout\n"))
+        self.assertIsNone(block_fragment_types("encoder: { precision: 2 }\n"))
+        # A type: nested deeper is not the block's own.
+        self.assertIsNone(block_fragment_types("sink:\n  tls:\n    type: x\n"))
+
+    def test_other_shapes_are_not_block_fragments(self) -> None:
+        for text in (
+            "",
+            "# only a comment\n",
+            "- sink:\n    type: stdout\n",
+            "sink:\n  type: stdout\n---\nsink:\n  type: stdout\n",
+            "generator:\n  type: constant\n",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(block_fragment_types(text))
+
+    def test_a_static_block_stays_static(self) -> None:
+        text = "# sonda:static - excerpt\nsink:\n  type: gnmi_target\n  listen: 0.0.0.0:57401\n"
+        self.assertIsNone(synthesize_block_fragment(text))
+        self.assertEqual(decline_reason(text), "marked # sonda:static")
+
+
+class _ScanMarkdownTests(unittest.TestCase):
+    """Every fence of a document is extracted by one tier or declined, counted."""
+
+    def test_block_fragments_are_extracted_and_marked(self) -> None:
+        md = "```yaml\nsink:\n  type: stdout\n```\n\n```yaml\ngenerator:\n  type: sine\n```\n"
+        scan = scan_markdown(Path("x.md"), md, frozenset())
+        self.assertEqual([(s.line, s.block) for s in scan.scenarios], [(2, True), (7, False)])
+        self.assertTrue(all(s.synthesized for s in scan.scenarios))
+        self.assertEqual(scan.declined, [])
+
+    def test_a_third_top_level_key_is_declined_and_counted(self) -> None:
+        md = "```yaml\nencoder:\n  type: json_lines\nsink:\n  type: stdout\nrate: 1\n```\n"
+        scan = scan_markdown(Path("x.md"), md, frozenset())
+        self.assertEqual(scan.scenarios, [])
+        self.assertEqual(scan.declined, [(2, "top-level encoder:, rate:, sink:")])
+
+    def test_decline_reasons_follow_the_tiers_order(self) -> None:
+        cases = {
+            "# sonda:static\nversion: 2\nkind: runnable\n": "marked # sonda:static",
+            "scenarios:\n  - pack: my_own_pack\n": (
+                "pack: reference, not a complete scenario of builtin packs this run resolves"
+            ),
+            "version: 2\nkind: composable\n": "version: header, not a runnable scenario",
+            "scenarios:\n  cpu.yaml: |\n    x\n": "scenarios: is not a block list",
+            "groups:\n  - name: x\n": "top-level groups:",
+            "- just: a list\n": "no top-level key",
+        }
+        for text, reason in cases.items():
+            with self.subTest(reason=reason):
+                self.assertEqual(decline_reason(text), reason)
+
+
+class _RealDocsBlockFragmentTests(unittest.TestCase):
+    """The tier against the real docs: found, before anything is compiled."""
+
+    def test_the_real_docs_hold_block_fragments(self) -> None:
+        self.assertGreaterEqual(len(_real_docs_block_fragments()), MIN_BLOCK_FRAGMENTS)
+
+
+def _real_docs_block_fragments() -> list[ExtractedScenario]:
+    repo_root = find_repo_root(Path(__file__).parent)
+    found: list[ExtractedScenario] = []
+    for md in iter_markdown_files(repo_root / DOCS_GLOB_ROOT):
+        scan = scan_markdown(md, md.read_text(encoding="utf-8"), frozenset())
+        found.extend(s for s in scan.scenarios if s.block)
+    return found
+
+
+class _CompilingTestCase(unittest.TestCase):
+    """A test that compiles with the sonda binary a normal run uses."""
+
+    repo_root: Path
+
+    def setUp(self) -> None:
+        self.repo_root = find_repo_root(Path(__file__).parent)
+
+    def binary(self) -> Path:
+        if _SELF_TEST_BINARY is None:
+            self.skipTest("--no-binary: this test compiles with the sonda binary")
+        if not _SELF_TEST_BINARY.is_file():
+            self.fail(
+                f"sonda binary not found at {_SELF_TEST_BINARY}. Build it with the "
+                "docs job's features (task site:scenario-check does) or pass "
+                "--no-binary to skip the tests that compile."
+            )
+        return _SELF_TEST_BINARY
+
+    def compile_markdown(self, md: str) -> list[ScenarioResult]:
+        """Scan ``md`` as a file named ``page.md``; validate what it holds."""
+        scan = scan_markdown(Path("page.md"), md, frozenset())
+        self.assertTrue(scan.scenarios, "the document must hold something to compile")
+        sonda_bin = self.binary()
+        return [validate_scenario(s, self.repo_root, sonda_bin) for s in scan.scenarios]
+
+    def assert_compiles(self, fence: str) -> None:
+        results = self.compile_markdown(f"```yaml\n{fence}```\n")
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].scenario.block, "must be the block tier's")
+        self.assertTrue(results[0].ok, results[0].message)
+        self.assertEqual(results[0].skipped_reason, "")
+
+
+class _BlockFragmentCompileTests(_CompilingTestCase):
+    """Wrapped block fragments compile, and a broken one fails the run."""
+
+    def test_a_bare_encoder_compiles(self) -> None:
+        self.assert_compiles("encoder:\n  type: influx_lp\n  field_key: cpu_percent\n")
+
+    def test_a_bare_sink_compiles(self) -> None:
+        self.assert_compiles('sink:\n  type: tcp\n  address: "127.0.0.1:9999"\n')
+
+    def test_a_fence_with_both_halves_compiles(self) -> None:
+        self.assert_compiles(
+            "encoder:\n  type: remote_write\nsink:\n  type: remote_write\n"
+            '  url: "http://localhost:8428/api/v1/write"\n'
+        )
+
+    def test_an_snmp_encoder_compiles_with_its_agent_partner(self) -> None:
+        self.assert_compiles(
+            "encoder:\n  type: snmp\n  oids:\n"
+            '    ifHCInOctets: "1.3.6.1.2.1.31.1.1.1.6.{ifIndex}"\n'
+            "  types:\n    ifHCInOctets: counter64\n"
+        )
+
+    def test_paired_sinks_compile_with_their_encoder_partner(self) -> None:
+        self.binary()  # one skip under --no-binary, not one per fence
+        for fence in (
+            "sink:\n  type: snmp_agent\n  listen: 0.0.0.0:1161\n",
+            "sink:\n  type: snmp_trap\n  destination: 127.0.0.1:1162\n",
+            "sink:\n  type: gnmi_target\n  listen: 0.0.0.0:57400\n",
+        ):
+            with self.subTest(fence=fence):
+                self.assert_compiles(fence)
+
+    def test_a_broken_fence_fails_the_run_naming_file_and_line(self) -> None:
+        md = "# Agent\n\nProse.\n\n```yaml\nsink: { type: snmp_agent, listen: 999 }\n```\n"
+        self.assertEqual(md.splitlines()[5], "sink: { type: snmp_agent, listen: 999 }")
+        results = self.compile_markdown(md)
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].scenario.block)
+        self.assertFalse(results[0].ok, "the broken listen must fail the run")
+        self.assertIn('listen "999"', results[0].message)
+        report = format_failure(results[0], self.repo_root)
+        self.assertTrue(report.startswith("FAIL page.md:6\n"), report)
+
+    def test_every_block_fragment_in_the_real_docs_compiles(self) -> None:
+        found = _real_docs_block_fragments()
+        self.assertGreaterEqual(len(found), MIN_BLOCK_FRAGMENTS)
+        sonda_bin = self.binary()
+        failed = [
+            f"{s.file.relative_to(self.repo_root)}:{s.line}: {r.message}"
+            for s in found
+            for r in [validate_scenario(s, self.repo_root, sonda_bin)]
+            if not r.ok
+        ]
+        self.assertEqual(failed, [])
 
 
 class _ScenarioCountTests(unittest.TestCase):
@@ -1247,7 +1897,10 @@ class _GalleryTests(unittest.TestCase):
                 self.assertEqual(_b64.urlsafe_b64decode(padded).decode("utf-8"), text)
 
 
-def _run_self_tests() -> int:
+def _run_self_tests(sonda_bin: Path | None) -> int:
+    """Run every test in this module; ``sonda_bin`` ``None`` means --no-binary."""
+    global _SELF_TEST_BINARY
+    _SELF_TEST_BINARY = sonda_bin
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(sys.modules[__name__])
     runner = unittest.TextTestRunner(verbosity=2)
