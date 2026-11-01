@@ -33,7 +33,7 @@
 //!
 //! | Alias         | Lowered form                    | Crossing formula                                                |
 //! |---------------|---------------------------------|-----------------------------------------------------------------|
-//! | `flap`        | `sequence` of up/down values    | `up_duration_secs - phase` for `<` when the drop is observable  |
+//! | `flap`        | `sequence` of up/down values    | first change into the state the predicate holds in, after phase |
 //! | `saturation`  | `sawtooth(min, max, period)`    | linear interpolation, `period_secs = time_to_saturate`          |
 //! | `leak`        | `sawtooth(min, max, period)`    | linear interpolation, `period_secs = time_to_ceiling`           |
 //! | `degradation` | `sawtooth(min, max, period)`    | linear interpolation, `period_secs = time_to_degrade`           |
@@ -143,25 +143,32 @@ impl fmt::Display for TimingError {
 /// A flap signal alternates between `up_value` (default 1.0) for
 /// `up_duration_secs` and `down_value` (default 0.0) for
 /// `down_duration_secs`, starting `phase_secs` into that cycle (taken modulo
-/// the cycle; a negative or non-finite phase reads as 0). For a threshold
-/// between `down_value` and a higher `up_value`:
+/// the cycle; a negative or non-finite phase reads as 0). "Up" and "down"
+/// are states, not directions: `down_value` may be above `up_value`, as it
+/// is for the `oper_state` and `admin_state` enums (up 1, down 2).
 ///
-/// - Starting in the up state (a phase of 0, or less than
-///   `up_duration_secs`), the `<` operator detects the transition to the
-///   down state at `up_duration_secs - phase`, and `>` is satisfied at
-///   `t=0`.
-/// - Starting in the down state, `<` is satisfied at `t=0`, and `>` detects
-///   the return to the up state at `up_duration_secs + down_duration_secs -
-///   phase`.
+/// The crossing is the first instant `signal op threshold` becomes true,
+/// for either orientation. The predicate is evaluated on each of the two
+/// values:
+///
+/// - It holds in exactly one state, and the phase starts the signal in the
+///   other: the crossing is the first change into the state it holds in,
+///   `up_duration_secs - phase` from the up state, `up_duration_secs +
+///   down_duration_secs - phase` from the down state.
+/// - It holds in exactly one state, and the signal starts in that state: it
+///   is satisfied at `t=0`.
+/// - It holds in both states: it is satisfied at `t=0`, always.
+/// - It holds in neither: it never becomes true.
 ///
 /// The `after:` resolution in [`super::compile_after`] calls this with the
 /// alias parameters of an undesugared `flap`.
 ///
 /// # Errors
 ///
-/// - [`TimingError::Ambiguous`] when the condition holds at `t=0`.
-/// - [`TimingError::OutOfRange`] when the threshold is outside
-///   `[down_value, up_value]`.
+/// - [`TimingError::Ambiguous`] when the condition holds at `t=0`; the
+///   message names the state the signal starts in and its value.
+/// - [`TimingError::OutOfRange`] when the condition holds for neither value;
+///   the message names both values and the threshold.
 pub fn flap_crossing_secs(
     op: Operator,
     threshold: f64,
@@ -179,87 +186,66 @@ pub fn flap_crossing_secs(
     };
     let starts_up = into_cycle == 0.0 || into_cycle < up_duration_secs;
 
-    let (lo, hi) = if up_value >= down_value {
-        (down_value, up_value)
-    } else {
-        (up_value, down_value)
+    let holds = |value: f64| match op {
+        Operator::LessThan => value < threshold,
+        Operator::GreaterThan => value > threshold,
+    };
+    let (side, other_side) = match op {
+        Operator::LessThan => ("below", "at or above"),
+        Operator::GreaterThan => ("above", "at or below"),
     };
 
-    match op {
-        Operator::LessThan => {
-            if threshold <= lo {
-                return Err(TimingError::OutOfRange {
-                    message: format!(
-                        "threshold {threshold} is at or below the down_value {down_value}; \
-                         the flap signal never goes below it"
-                    ),
-                });
-            }
-            if threshold > hi {
-                return Err(TimingError::Ambiguous {
-                    message: format!(
-                        "threshold {threshold} is above up_value {up_value}; \
-                         the flap signal is always below it (satisfied at t=0)"
-                    ),
-                });
-            }
-            if down_value < threshold {
-                if starts_up {
-                    Ok(up_duration_secs - into_cycle)
-                } else {
-                    Err(TimingError::Ambiguous {
-                        message: format!(
-                            "\"flap_signal < {threshold}\" is satisfied at t=0 \
-                             (the phase starts it {into_cycle}s into the cycle, \
-                             in the down state at down_value {down_value})"
-                        ),
-                    })
-                }
+    let (up_holds, down_holds) = (holds(up_value), holds(down_value));
+    let starts_where_it_holds = if starts_up { up_holds } else { down_holds };
+
+    match (up_holds, down_holds) {
+        (false, false) => Err(TimingError::OutOfRange {
+            message: format!(
+                "up_value {up_value} and down_value {down_value} are both {other_side} \
+                 threshold {threshold}; the flap signal is never {side} it"
+            ),
+        }),
+        (true, true) => Err(TimingError::Ambiguous {
+            message: format!(
+                "up_value {up_value} and down_value {down_value} are both {side} \
+                 threshold {threshold}; the flap signal is always {side} it \
+                 (satisfied at t=0)"
+            ),
+        }),
+        _ if starts_where_it_holds => {
+            let (state, field, value, other_state, other_field, other_value) = if starts_up {
+                ("up", "up_value", up_value, "down", "down_value", down_value)
             } else {
-                Err(TimingError::OutOfRange {
-                    message: format!(
-                        "down_value {down_value} is not less than threshold {threshold}; \
-                         the flap signal never drops below {threshold}"
-                    ),
-                })
-            }
-        }
-        Operator::GreaterThan => {
-            if threshold >= hi {
-                return Err(TimingError::OutOfRange {
-                    message: format!(
-                        "threshold {threshold} is at or above up_value {up_value}; \
-                         the flap signal never exceeds it"
-                    ),
-                });
-            }
-            if threshold < lo {
-                return Err(TimingError::Ambiguous {
-                    message: format!(
-                        "threshold {threshold} is below down_value {down_value}; \
-                         the flap signal is always above it (satisfied at t=0)"
-                    ),
-                });
-            }
-            if up_value > threshold && !starts_up {
-                return Ok(cycle_secs - into_cycle);
-            }
-            if up_value > threshold {
-                return Err(TimingError::Ambiguous {
-                    message: format!(
-                        "\"flap_signal > {threshold}\" is satisfied at t=0 \
-                         (starts at up_value {up_value}). \
-                         Use \"<\" to detect the down event"
-                    ),
-                });
-            }
-            Err(TimingError::OutOfRange {
+                ("down", "down_value", down_value, "up", "up_value", up_value)
+            };
+            let start = if into_cycle > 0.0 {
+                format!("the phase starts it {into_cycle}s into the cycle, in the {state} state")
+            } else {
+                format!("it starts in the {state} state")
+            };
+            let opposite = match op {
+                Operator::LessThan => Operator::GreaterThan,
+                Operator::GreaterThan => Operator::LessThan,
+            };
+            // The predicate fails on the other value, so the opposite operator
+            // holds there unless that value equals the threshold.
+            let hint = if other_value != threshold {
+                format!(
+                    ". Use \"{opposite}\" to detect the change to the {other_state} state \
+                     ({other_field} {other_value})"
+                )
+            } else {
+                String::new()
+            };
+            Err(TimingError::Ambiguous {
                 message: format!(
-                    "up_value {up_value} equals threshold {threshold}; \
-                     the signal never strictly exceeds it"
+                    "\"flap_signal {op} {threshold}\" is satisfied at t=0 \
+                     ({start} at {field} {value}){hint}"
                 ),
             })
         }
+        _ if starts_up => Ok(up_duration_secs - into_cycle),
+        _ => Ok(cycle_secs - into_cycle),
     }
 }
 
@@ -854,6 +840,94 @@ mod tests {
             phase,
         );
         assert_outcome(result, expect);
+    }
+
+    /// `enum: oper_state`'s values: down (2) above up (1).
+    const INVERTED: (f64, f64) = (1.0, 2.0);
+    /// The same two values the other way round: up (2) above down (1).
+    const UPRIGHT: (f64, f64) = (2.0, 1.0);
+
+    // Both orientations of a 60s up / 5s down flap (port 15's durations),
+    // each op, thresholds below, at, between and above the two values, from
+    // the start of the cycle (phase 0), 30s into the up state, and 2s into
+    // the down state (phase 62). The crossing is the first instant the
+    // predicate becomes true, whichever value is the higher one.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::inverted_less_than_below_both_never_holds(              Operator::LessThan,    0.5, INVERTED, 0.0,  Expect::OutOfRange)]
+    #[case::inverted_less_than_below_both_phased_never_holds(       Operator::LessThan,    0.5, INVERTED, 30.0, Expect::OutOfRange)]
+    #[case::inverted_less_than_at_the_up_value_never_holds(         Operator::LessThan,    1.0, INVERTED, 30.0, Expect::OutOfRange)]
+    #[case::inverted_less_than_between_holds_in_the_up_start(       Operator::LessThan,    1.5, INVERTED, 0.0,  Expect::Ambiguous)]
+    #[case::inverted_less_than_between_phased_up_holds_at_t0(       Operator::LessThan,    1.5, INVERTED, 30.0, Expect::Ambiguous)]
+    #[case::inverted_less_than_between_from_down_is_the_rise(       Operator::LessThan,    1.5, INVERTED, 62.0, Expect::Ok(3.0))]
+    #[case::inverted_less_than_at_the_down_value_holds_up(          Operator::LessThan,    2.0, INVERTED, 0.0,  Expect::Ambiguous)]
+    #[case::inverted_less_than_at_the_down_value_from_down(         Operator::LessThan,    2.0, INVERTED, 62.0, Expect::Ok(3.0))]
+    #[case::inverted_less_than_above_both_always_holds(             Operator::LessThan,    2.5, INVERTED, 0.0,  Expect::Ambiguous)]
+    #[case::inverted_less_than_above_both_from_down_always_holds(   Operator::LessThan,    2.5, INVERTED, 62.0, Expect::Ambiguous)]
+    #[case::inverted_greater_than_below_both_always_holds(          Operator::GreaterThan, 0.5, INVERTED, 0.0,  Expect::Ambiguous)]
+    #[case::inverted_greater_than_below_both_phased_always_holds(   Operator::GreaterThan, 0.5, INVERTED, 30.0, Expect::Ambiguous)]
+    #[case::inverted_greater_than_at_the_up_value_is_the_drop(      Operator::GreaterThan, 1.0, INVERTED, 0.0,  Expect::Ok(60.0))]
+    #[case::inverted_greater_than_between_is_the_drop(              Operator::GreaterThan, 1.5, INVERTED, 0.0,  Expect::Ok(60.0))]
+    #[case::inverted_greater_than_between_phased_drop_comes_earlier(Operator::GreaterThan, 1.5, INVERTED, 30.0, Expect::Ok(30.0))]
+    #[case::inverted_greater_than_between_from_down_holds_at_t0(    Operator::GreaterThan, 1.5, INVERTED, 62.0, Expect::Ambiguous)]
+    #[case::inverted_greater_than_at_the_down_value_never_holds(    Operator::GreaterThan, 2.0, INVERTED, 0.0,  Expect::OutOfRange)]
+    #[case::inverted_greater_than_above_both_never_holds(           Operator::GreaterThan, 2.5, INVERTED, 0.0,  Expect::OutOfRange)]
+    #[case::inverted_greater_than_above_both_phased_never_holds(    Operator::GreaterThan, 2.5, INVERTED, 30.0, Expect::OutOfRange)]
+    #[case::upright_less_than_below_both_never_holds(               Operator::LessThan,    0.5, UPRIGHT,  0.0,  Expect::OutOfRange)]
+    #[case::upright_less_than_between_is_the_drop(                  Operator::LessThan,    1.5, UPRIGHT,  0.0,  Expect::Ok(60.0))]
+    #[case::upright_less_than_between_phased_drop_comes_earlier(    Operator::LessThan,    1.5, UPRIGHT,  30.0, Expect::Ok(30.0))]
+    #[case::upright_less_than_between_from_down_holds_at_t0(        Operator::LessThan,    1.5, UPRIGHT,  62.0, Expect::Ambiguous)]
+    #[case::upright_less_than_above_both_always_holds(              Operator::LessThan,    2.5, UPRIGHT,  0.0,  Expect::Ambiguous)]
+    #[case::upright_greater_than_below_both_always_holds(           Operator::GreaterThan, 0.5, UPRIGHT,  0.0,  Expect::Ambiguous)]
+    #[case::upright_greater_than_between_holds_in_the_up_start(     Operator::GreaterThan, 1.5, UPRIGHT,  0.0,  Expect::Ambiguous)]
+    #[case::upright_greater_than_between_phased_up_holds_at_t0(     Operator::GreaterThan, 1.5, UPRIGHT,  30.0, Expect::Ambiguous)]
+    #[case::upright_greater_than_between_from_down_is_the_rise(     Operator::GreaterThan, 1.5, UPRIGHT,  62.0, Expect::Ok(3.0))]
+    #[case::upright_greater_than_above_both_never_holds(            Operator::GreaterThan, 2.5, UPRIGHT,  0.0,  Expect::OutOfRange)]
+    fn flap_crossing_either_orientation(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] values: (f64, f64),
+        #[case] phase: f64,
+        #[case] expect: Expect,
+    ) {
+        let (up_value, down_value) = values;
+        let result = flap_crossing_secs(op, threshold, 60.0, 5.0, up_value, down_value, phase);
+        assert_outcome(result, expect);
+    }
+
+    // A refusal names the two values and the threshold as they are, whichever
+    // value is the higher one. Port 15's flap: oper_state, 60s up, 5s down.
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::never_below_names_both_values(Operator::LessThan, 1.0, 30.0,
+        "up_value 1 and down_value 2 are both at or above threshold 1; \
+         the flap signal is never below it")]
+    #[case::never_above_names_both_values(Operator::GreaterThan, 2.5, 30.0,
+        "up_value 1 and down_value 2 are both at or below threshold 2.5; \
+         the flap signal is never above it")]
+    #[case::always_below_names_both_values(Operator::LessThan, 2.5, 0.0,
+        "up_value 1 and down_value 2 are both below threshold 2.5; \
+         the flap signal is always below it (satisfied at t=0)")]
+    #[case::up_start_names_the_up_value_and_the_way_to_the_drop(Operator::LessThan, 1.5, 30.0,
+        "\"flap_signal < 1.5\" is satisfied at t=0 (the phase starts it 30s into the cycle, \
+         in the up state at up_value 1). Use \">\" to detect the change to the down state \
+         (down_value 2)")]
+    #[case::down_start_names_the_down_value_and_the_way_to_the_rise(Operator::GreaterThan, 1.5, 62.0,
+        "\"flap_signal > 1.5\" is satisfied at t=0 (the phase starts it 62s into the cycle, \
+         in the down state at down_value 2). Use \"<\" to detect the change to the up state \
+         (up_value 1)")]
+    #[case::no_way_out_when_the_other_value_is_the_threshold(Operator::LessThan, 2.0, 0.0,
+        "\"flap_signal < 2\" is satisfied at t=0 (it starts in the up state at up_value 1)")]
+    fn flap_refusal_names_the_values_and_the_threshold(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] phase: f64,
+        #[case] want: &str,
+    ) {
+        let (up_value, down_value) = INVERTED;
+        let err = flap_crossing_secs(op, threshold, 60.0, 5.0, up_value, down_value, phase)
+            .expect_err("the flap does not resolve");
+        assert_eq!(err.to_string(), want);
     }
 
     // -----------------------------------------------------------------------
