@@ -2200,6 +2200,65 @@ scenarios:
         assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("30s"));
     }
 
+    /// A file of port 15's flap (`examples/if-mib-switch.yaml`: `enum:
+    /// oper_state`, so down (2) is above up (1); 60s up, 5s down, 30s in)
+    /// and a follower waiting on it with `op` and `value`.
+    fn after_port_15(op: &str, value: &str) -> String {
+        format!(
+            r#"
+version: 2
+kind: runnable
+scenarios:
+  - id: port15
+    signal_type: metrics
+    name: ifOperStatus
+    rate: 1
+    generator: {{ type: flap, up_duration: 60s, down_duration: 5s, enum: oper_state, phase: 30s }}
+  - id: follower
+    signal_type: metrics
+    name: f
+    rate: 1
+    generator: {{ type: constant, value: 1 }}
+    duration: 5m
+    after: {{ ref: port15, op: "{op}", value: {value} }}
+"#
+        )
+    }
+
+    /// The port going down is the signal rising from 1 to 2: `>` 1.5
+    /// resolves at `up_duration` minus the phase.
+    #[test]
+    fn an_oper_state_flap_resolves_the_port_going_down() {
+        let compiled = compile(&after_port_15(">", "1.5")).expect("compile");
+        assert_eq!(compiled.entries[1].id.as_deref(), Some("follower"));
+        assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("30s"));
+    }
+
+    /// The port being up (`<` 1.5) holds from t=0, and nothing on it is
+    /// ever below its up value (`<` 1): both are refused, by the variant
+    /// that says which, naming both values or the starting one.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::up_holds_at_t0(       "<", "1.5", "is satisfied at t=0 (the phase starts it 30s into the cycle, in the up state at up_value 1)")]
+    #[case::below_up_never_holds( "<", "1",   "up_value 1 and down_value 2 are both at or above threshold 1")]
+    fn an_oper_state_flap_refuses_what_never_crosses(
+        #[case] op: &str,
+        #[case] value: &str,
+        #[case] needle: &str,
+    ) {
+        let err = match compile_after_from_yaml(&after_port_15(op, value)) {
+            Err(e) => e,
+            Ok(compiled) => panic!("{op} {value} must be refused: {:?}", compiled.entries[1].phase_offset),
+        };
+        match (value, &err) {
+            ("1.5", CompileAfterError::AmbiguousAtT0 { reason, .. })
+            | ("1", CompileAfterError::OutOfRangeThreshold { reason, .. }) => {
+                assert!(reason.contains(needle), "{reason}");
+            }
+            _ => panic!("{op} {value}: unexpected refusal {err:?}"),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Pack sub-signal refs (matrix 11.7, 11.12, 11.13)
     // -----------------------------------------------------------------------
