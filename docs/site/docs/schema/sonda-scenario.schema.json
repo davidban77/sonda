@@ -23,10 +23,9 @@
           "description": "Optional additional delay after the condition is met.",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
           "default": null
         },
         "op": {
@@ -83,11 +82,8 @@
         },
         "firing_within": {
           "description": "How long after scenario start the alert must reach `firing`\n(e.g. `\"2m\"`).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "labels": {
           "description": "Additional label matchers the firing alert must carry.",
@@ -107,10 +103,9 @@
           "description": "How long after scenario end the alert must stop firing. `None`\nskips the resolution check.",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
-          ]
+            "null"
+          ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         }
       },
       "additionalProperties": false,
@@ -138,19 +133,13 @@
       "properties": {
         "every": {
           "description": "How often the burst recurs (e.g. `\"10s\"`).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "for": {
           "description": "How long each burst lasts (e.g. `\"2s\"`). Must be less than `every`.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "multiplier": {
           "description": "Rate multiplier during the burst (must be strictly positive).",
@@ -176,19 +165,13 @@
         },
         "every": {
           "description": "How often the spike recurs (e.g. `\"2m\"`).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "for": {
           "description": "How long each spike lasts (e.g. `\"30s\"`). Must be less than `every`.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "label": {
           "description": "The label key to inject during the spike window.\n\nMust be a valid Prometheus label key: `[a-zA-Z_][a-zA-Z0-9_]*`.",
@@ -289,10 +272,9 @@
           "description": "Default total run duration (e.g. `\"30s\"`, `\"5m\"`). Applied per entry —\neach entry runs for this long from its own resolved start, so a cascade's\ntotal wall-clock is `max(phase_offset + duration)`, not `duration`.",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
           "default": null
         },
         "encoder": {
@@ -359,10 +341,9 @@
           "description": "Default emission-time anchor (absolute RFC 3339, signed offset, or `now`).",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "\"now\", an RFC 3339 timestamp, or a sign and a duration such as \"-5m\"; a bare number is refused",
           "default": null
         },
         "while": {
@@ -388,21 +369,15 @@
           "oneOf": [
             {
               "description": "Duration shorthand, e.g. \"5s\".",
-              "type": [
-                "string",
-                "number",
-                "boolean"
-              ]
+              "type": "string",
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
             },
             {
               "type": "object",
               "properties": {
                 "duration": {
-                  "type": [
-                    "string",
-                    "number",
-                    "boolean"
-                  ]
+                  "type": "string",
+                  "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
                 },
                 "snap_to": {
                   "type": "number"
@@ -417,10 +392,14 @@
         },
         "open": {
           "description": "Debounce for the false → true transition, e.g. \"250ms\", \"5s\".",
-          "type": [
-            "string",
-            "number",
-            "boolean"
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\", or 0; any other bare number is refused, and so is a zero written with a minus sign or a radix prefix (-0, 0x0), which a JSON value cannot tell from 0",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "const": 0
+            }
           ]
         }
       },
@@ -994,10 +973,9 @@
           "description": "Total run duration (e.g. `\"30s\"`, `\"5m\"`).",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
           "default": null
         },
         "dynamic_labels": {
@@ -1198,10 +1176,9 @@
           "description": "Phase offset for staggered start within a clock group.",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
           "default": null
         },
         "quantiles": {
@@ -1259,10 +1236,9 @@
           "description": "Emission-time anchor (absolute RFC 3339, signed offset, or `now`).",
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "\"now\", an RFC 3339 timestamp, or a sign and a duration such as \"-5m\"; a bare number is refused",
           "default": null
         },
         "while": {
@@ -1391,10 +1367,9 @@
         "duration": {
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
           "default": null
         },
         "dynamic_labels": {
@@ -1602,10 +1577,9 @@
         "phase_offset": {
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
           "default": null
         },
         "quantiles": {
@@ -1659,10 +1633,9 @@
         "start_time": {
           "type": [
             "string",
-            "null",
-            "number",
-            "boolean"
+            "null"
           ],
+          "$comment": "\"now\", an RFC 3339 timestamp, or a sign and a duration such as \"-5m\"; a bare number is refused",
           "default": null
         },
         "tags": {
@@ -1704,19 +1677,13 @@
       "properties": {
         "every": {
           "description": "How often the gap recurs (e.g. `\"2m\"`).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "for": {
           "description": "How long each gap lasts (e.g. `\"20s\"`). Must be less than `every`.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         }
       },
       "required": [
@@ -1730,19 +1697,20 @@
       "properties": {
         "at": {
           "description": "Offset from scenario start at which the silence begins (e.g. `\"60s\"`).\n\nAn offset, not a length: `\"0s\"` is a scenario that begins already\ninside the silence, which is what a capture taken during an outage\nlooks like.",
-          "type": [
-            "string",
-            "number",
-            "boolean"
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\", or 0; any other bare number is refused, and so is a zero written with a minus sign or a radix prefix (-0, 0x0), which a JSON value cannot tell from 0",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "const": 0
+            }
           ]
         },
         "for": {
           "description": "How long the silence lasts (e.g. `\"90s\"`).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         }
       },
       "required": [
@@ -2038,10 +2006,9 @@
               "description": "How long the signal stays in the \"down\" state per cycle.\nDefaults to `\"5s\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "down_value": {
@@ -2069,7 +2036,8 @@
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
             },
             "type": {
               "type": "string",
@@ -2079,10 +2047,9 @@
               "description": "How long the signal stays in the \"up\" state per cycle.\nDefaults to `\"10s\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "up_value": {
@@ -2125,10 +2092,9 @@
               "description": "Duration of one fill cycle. Defaults to `\"5m\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "type": {
@@ -2166,10 +2132,9 @@
               "description": "Time to grow from baseline to ceiling. Defaults to `\"10m\"`.\nThe sawtooth period is set to this value so values only ramp\nupward within the scenario duration.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "type": {
@@ -2226,10 +2191,9 @@
               "description": "Duration of the degradation ramp. Defaults to `\"5m\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "type": {
@@ -2286,10 +2250,9 @@
               "description": "Duration of one full oscillation cycle. Defaults to `\"60s\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "type": {
@@ -2318,10 +2281,9 @@
               "description": "How long each spike lasts. Defaults to `\"10s\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "spike_height": {
@@ -2337,10 +2299,9 @@
               "description": "Time between spike starts. Defaults to `\"30s\"`.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "type": {
@@ -3014,11 +2975,8 @@
       "properties": {
         "initial_backoff": {
           "description": "Duration string for the first retry delay (e.g. `\"100ms\"`, `\"1s\"`).\n\nParsed by [`parse_duration`](crate::config::validate::parse_duration).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         },
         "max_attempts": {
           "description": "Number of retry attempts after the initial failure.\n\nThe total number of calls is `max_attempts + 1` (one initial attempt\nplus up to `max_attempts` retries). Must be at least 1.",
@@ -3028,11 +2986,8 @@
         },
         "max_backoff": {
           "description": "Duration string for the maximum backoff cap (e.g. `\"5s\"`, `\"30s\"`).\n\nMust be greater than or equal to `initial_backoff`. Parsed by\n[`parse_duration`](crate::config::validate::parse_duration).",
-          "type": [
-            "string",
-            "number",
-            "boolean"
-          ]
+          "type": "string",
+          "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused"
         }
       },
       "required": [
@@ -3333,10 +3288,9 @@
               "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "retry": {
@@ -3387,10 +3341,9 @@
               "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "retry": {
@@ -3439,10 +3392,9 @@
               "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "retry": {
@@ -3518,10 +3470,9 @@
               "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "max_streams_per_push": {
@@ -3590,10 +3541,9 @@
               "description": "Maximum batch age before a time-based flush, e.g. `\"5s\"`. Defaults\nto `\"5s\"`; a zero value (e.g. `\"0s\"`) disables time-based flushing.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "retry": {
@@ -3661,10 +3611,9 @@
               "description": "Shortest sample and heartbeat interval the target serves, a duration\nof at least one microsecond such as `\"1s\"`: a SAMPLE subscription\nasking for less, or for 0, is sampled at this interval, and a shorter\nheartbeat interval is raised to it. Default `\"1s\"`. Every sink on one\naddress must use the same value.",
               "type": [
                 "string",
-                "null",
-                "number",
-                "boolean"
+                "null"
               ],
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": null
             },
             "subscriber_buffer": {
@@ -3816,11 +3765,8 @@
             },
             "timeout": {
               "description": "How long an INFORM waits for its acknowledgement before it is sent\nagain, from `\"100ms\"` to `\"60s\"`. Default `\"2s\"`. Read only with\n`inform: true`.",
-              "type": [
-                "string",
-                "number",
-                "boolean"
-              ],
+              "type": "string",
+              "$comment": "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused",
               "default": "2s"
             },
             "type": {

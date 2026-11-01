@@ -309,10 +309,18 @@ pub enum GeneratorConfig {
         /// How long the signal stays in the "up" state per cycle.
         /// Defaults to `"10s"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         up_duration: Option<String>,
         /// How long the signal stays in the "down" state per cycle.
         /// Defaults to `"5s"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         down_duration: Option<String>,
         /// Value emitted during the "up" state. Defaults to `1.0`.
         #[cfg_attr(feature = "config", serde(default))]
@@ -337,7 +345,10 @@ pub enum GeneratorConfig {
             feature = "config",
             serde(default, skip_serializing_if = "Option::is_none")
         )]
-        #[cfg_attr(feature = "schema", schemars(extend("x-sonda-no-widening" = true)))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         phase: Option<String>,
     },
 
@@ -376,6 +387,10 @@ pub enum GeneratorConfig {
         ceiling: Option<f64>,
         /// Duration of one fill cycle. Defaults to `"5m"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         time_to_saturate: Option<String>,
     },
 
@@ -418,6 +433,10 @@ pub enum GeneratorConfig {
         /// The sawtooth period is set to this value so values only ramp
         /// upward within the scenario duration.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         time_to_ceiling: Option<String>,
     },
 
@@ -447,6 +466,10 @@ pub enum GeneratorConfig {
         ceiling: Option<f64>,
         /// Duration of the degradation ramp. Defaults to `"5m"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         time_to_degrade: Option<String>,
         /// Jitter amplitude added as noise. Defaults to `1.0`.
         #[cfg_attr(feature = "config", serde(default))]
@@ -482,6 +505,10 @@ pub enum GeneratorConfig {
         amplitude: Option<f64>,
         /// Duration of one full oscillation cycle. Defaults to `"60s"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         period: Option<String>,
         /// Jitter amplitude added as noise. Defaults to `1.0`.
         #[cfg_attr(feature = "config", serde(default))]
@@ -516,9 +543,17 @@ pub enum GeneratorConfig {
         spike_height: Option<f64>,
         /// How long each spike lasts. Defaults to `"10s"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         spike_duration: Option<String>,
         /// Time between spike starts. Defaults to `"30s"`.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         spike_interval: Option<String>,
     },
 }

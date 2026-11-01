@@ -47,12 +47,20 @@ pub struct RetryConfig {
     /// Duration string for the first retry delay (e.g. `"100ms"`, `"1s"`).
     ///
     /// Parsed by [`parse_duration`](crate::config::validate::parse_duration).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub initial_backoff: String,
 
     /// Duration string for the maximum backoff cap (e.g. `"5s"`, `"30s"`).
     ///
     /// Must be greater than or equal to `initial_backoff`. Parsed by
     /// [`parse_duration`](crate::config::validate::parse_duration).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub max_backoff: String,
 }
 

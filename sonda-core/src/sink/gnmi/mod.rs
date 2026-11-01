@@ -119,6 +119,10 @@ pub struct GnmiTargetConfig {
         feature = "config",
         serde(default, deserialize_with = "crate::config::scalar_text::optional")
     )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub sample_floor: Option<String>,
     /// Serve over TLS from these PEM files. Every sink on one address must
     /// name the same files.

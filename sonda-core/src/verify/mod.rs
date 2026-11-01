@@ -74,12 +74,20 @@ pub struct AlertExpectation {
     pub labels: Option<BTreeMap<String, String>>,
     /// How long after scenario start the alert must reach `firing`
     /// (e.g. `"2m"`).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub firing_within: String,
     /// How long after scenario end the alert must stop firing. `None`
     /// skips the resolution check.
     #[cfg_attr(
         feature = "config",
         serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
     )]
     pub resolves_within: Option<String>,
 }

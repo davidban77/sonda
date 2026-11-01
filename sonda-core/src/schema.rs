@@ -172,6 +172,135 @@ fn require_metrics_or_extends(value: &mut serde_json::Value) {
 /// [`widen_scalar_strings`]; removed from the published schema.
 const NO_WIDENING: &str = "x-sonda-no-widening";
 
+/// The `$comment` of a duration field that refuses every bare number: its
+/// text is read by [`parse_duration`](crate::config::validate::parse_duration)
+/// or a reader built on it, and its position carries [`NO_WIDENING`], so its
+/// type is a string only.
+pub(crate) const DURATION_COMMENT: &str =
+    "a duration: a number and a unit (ms, s, m or h), such as \"5s\"; a bare number is refused";
+
+/// The `$comment` of `start_time`: `now`, an RFC 3339 timestamp, or a signed
+/// offset whose magnitude is a duration. A bare number is none of them, so its
+/// position carries [`NO_WIDENING`] too.
+pub(crate) const START_TIME_COMMENT: &str =
+    "\"now\", an RFC 3339 timestamp, or a sign and a duration such as \"-5m\"; \
+     a bare number is refused";
+
+/// The `$comment` of an offset that [`offset_duration`] describes.
+pub(crate) const OFFSET_COMMENT: &str =
+    "a duration: a number and a unit (ms, s, m or h), such as \"5s\", or 0; any other bare \
+     number is refused, and so is a zero written with a minus sign or a radix prefix \
+     (-0, 0x0), which a JSON value cannot tell from 0";
+
+/// Schema of an offset read by
+/// [`parse_offset_duration`](crate::config::validate::parse_offset_duration)
+/// from a field whose parser reads a YAML number as its text (`gap_windows`'
+/// `at`, `delay`'s `open`): a string, or the number 0, which that parser takes
+/// as zero. It carries [`OFFSET_COMMENT`] and [`NO_WIDENING`].
+pub(crate) fn offset_duration_value() -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "$comment": OFFSET_COMMENT,
+        "anyOf": [{ "type": "string" }, { "const": 0 }],
+    });
+    if let Some(map) = value.as_object_mut() {
+        map.insert(NO_WIDENING.to_string(), serde_json::Value::Bool(true));
+    }
+    value
+}
+
+/// [`offset_duration_value`] as a `schema_with` function.
+pub(crate) fn offset_duration(_: &mut SchemaGenerator) -> Schema {
+    Schema::try_from(offset_duration_value()).expect("an object literal is a schema")
+}
+
+/// The `$comment`s that mark a position as a duration, the ones
+/// [`duration_fields`] reports.
+const DURATION_MARKERS: [&str; 3] = [DURATION_COMMENT, START_TIME_COMMENT, OFFSET_COMMENT];
+
+/// Every position of [`scenario_file_schema`] whose value is a duration, as a
+/// dotted path, sorted.
+///
+/// A position is a duration when its `$comment` is one of the duration
+/// comments, which the fields read by the duration parser set beside
+/// `x-sonda-no-widening`. A path starts with the `$defs` name, then names
+/// each property; a `oneOf`, `anyOf` or `allOf` branch is named by its `type:`
+/// constant when it has one (`GeneratorConfig.flap.up_duration`), else by its
+/// index (`DelayClause.close.0`); any other keyword is named as itself.
+pub fn duration_fields() -> Vec<String> {
+    duration_positions(&scenario_file_schema().to_value())
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// [`duration_fields`] over `schema`, each path with the schema at it.
+fn duration_positions(schema: &serde_json::Value) -> Vec<(String, &serde_json::Value)> {
+    let mut found = Vec::new();
+    if let Some(defs) = schema.get("$defs").and_then(|d| d.as_object()) {
+        for (name, def) in defs {
+            let mut path = vec![name.clone()];
+            collect_durations(def, &mut path, &mut found);
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+/// The walk behind [`duration_positions`]: a position marked as a duration is
+/// recorded and not entered; every other object is entered key by key.
+fn collect_durations<'a>(
+    node: &'a serde_json::Value,
+    path: &mut Vec<String>,
+    found: &mut Vec<(String, &'a serde_json::Value)>,
+) {
+    use serde_json::Value as J;
+
+    match node {
+        J::Object(map) => {
+            let marked = map
+                .get("$comment")
+                .and_then(J::as_str)
+                .is_some_and(|comment| DURATION_MARKERS.contains(&comment));
+            if marked {
+                found.push((path.join("."), node));
+                return;
+            }
+            for (key, child) in map {
+                match (key.as_str(), child) {
+                    ("properties", J::Object(properties)) => {
+                        for (name, schema) in properties {
+                            path.push(name.clone());
+                            collect_durations(schema, path, found);
+                            path.pop();
+                        }
+                    }
+                    ("oneOf" | "anyOf" | "allOf", J::Array(branches)) => {
+                        for (index, branch) in branches.iter().enumerate() {
+                            let name = branch["properties"]["type"]["const"]
+                                .as_str()
+                                .map_or_else(|| index.to_string(), str::to_string);
+                            path.push(name);
+                            collect_durations(branch, path, found);
+                            path.pop();
+                        }
+                    }
+                    _ => {
+                        path.push(key.clone());
+                        collect_durations(child, path, found);
+                        path.pop();
+                    }
+                }
+            }
+        }
+        J::Array(items) => {
+            for item in items {
+                collect_durations(item, path, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Let every string-typed position also accept a YAML number or boolean.
 ///
 /// This is not a convenience. `serde_yaml_ng` coerces any plain scalar into a
@@ -528,6 +657,54 @@ mod tests {
         assert!(
             !scenario_file_schema_json().contains(NO_WIDENING),
             "the marker is removed"
+        );
+    }
+
+    /// Every position the schema marks as a duration is not widened: a
+    /// duration or a `start_time` is a string only, and an offset is a string
+    /// or the number 0, exactly. The anchors are asserted first, so a walk
+    /// that finds nothing, or a marker that stopped reaching the published
+    /// schema, fails here rather than passing over an empty list.
+    #[test]
+    fn every_duration_position_is_a_string_and_not_widened() {
+        let value = scenario_file_schema().to_value();
+        let positions = duration_positions(&value);
+        let paths: Vec<&str> = positions.iter().map(|(path, _)| path.as_str()).collect();
+        for anchor in [
+            "Entry.duration",
+            "Entry.start_time",
+            "GapWindowConfig.at",
+            "DelayClause.open",
+            "GeneratorConfig.flap.up_duration",
+        ] {
+            assert!(
+                paths.contains(&anchor),
+                "{anchor} is marked as a duration: {paths:?}"
+            );
+        }
+
+        let string_only = [
+            serde_json::json!("string"),
+            serde_json::json!(["string", "null"]),
+        ];
+        let offset = serde_json::json!([{ "type": "string" }, { "const": 0 }]);
+        let mut wrong = Vec::new();
+        for (path, schema) in &positions {
+            let ok = match schema["$comment"].as_str() {
+                Some(DURATION_COMMENT | START_TIME_COMMENT) => {
+                    string_only.contains(&schema["type"]) && schema.get("anyOf").is_none()
+                }
+                Some(OFFSET_COMMENT) => schema["anyOf"] == offset && schema.get("type").is_none(),
+                _ => false,
+            };
+            if !ok {
+                wrong.push(format!("{path}: {schema}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "a duration position does not have the type its $comment names:\n{}",
+            wrong.join("\n")
         );
     }
 
