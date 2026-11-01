@@ -11,7 +11,7 @@
 //! why desugaring operates at the scenario level rather than the generator
 //! level alone.
 
-use crate::config::validate::parse_duration;
+use crate::config::validate::{parse_duration, parse_offset_duration, prepend_context};
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::generator::GeneratorConfig;
 use crate::{ConfigError, SondaError};
@@ -67,6 +67,7 @@ pub fn desugar_scenario_config(config: &mut ScenarioConfig) -> Result<(), SondaE
             up_value,
             down_value,
             enum_kind,
+            phase,
         } => {
             if enum_kind.is_some() && (up_value.is_some() || down_value.is_some()) {
                 return Err(SondaError::Config(ConfigError::invalid(
@@ -101,6 +102,12 @@ pub fn desugar_scenario_config(config: &mut ScenarioConfig) -> Result<(), SondaE
             let mut values = Vec::with_capacity(up_ticks.max(1) + down_ticks.max(1));
             values.extend(std::iter::repeat_n(up_val, up_ticks.max(1)));
             values.extend(std::iter::repeat_n(down_val, down_ticks.max(1)));
+
+            // The phase starts the cycle that far in: rotate left by its
+            // tick count, rounded as the durations are, modulo the cycle.
+            let phase_secs = flap_phase_secs(phase.as_deref())?;
+            let shift = (phase_secs * rate).round().rem_euclid(values.len() as f64) as usize;
+            values.rotate_left(shift);
 
             config.generator = GeneratorConfig::Sequence {
                 values,
@@ -252,6 +259,22 @@ fn apply_jitter_if_unset(base: &mut BaseScheduleConfig, jitter: f64, seed: Optio
 fn duration_to_secs(s: &str) -> Result<f64, SondaError> {
     let dur = parse_duration(s)?;
     Ok(dur.as_secs_f64())
+}
+
+/// Read a flap's `phase` as fractional seconds: absent is `0.0`, and zero
+/// is accepted ([`parse_offset_duration`]).
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] naming `phase` for a negative or
+/// unparsable duration.
+fn flap_phase_secs(phase: Option<&str>) -> Result<f64, SondaError> {
+    match phase {
+        None => Ok(0.0),
+        Some(s) => parse_offset_duration(s)
+            .map(|d| d.as_secs_f64())
+            .map_err(|e| prepend_context("flap: invalid phase", s, e)),
+    }
 }
 
 #[cfg(all(test, feature = "config"))]
@@ -459,6 +482,115 @@ generator:
                 serde_yaml_ng::from_str(name).expect("FlapEnum scalar must deserialize");
             assert_eq!(parsed, expected, "variant {name} must round-trip");
         }
+    }
+
+    /// The sequence port 15 of `examples/if-mib-switch.yaml` was written as
+    /// by hand before flap had a phase: 60s up / 5s down at rate 1, started
+    /// 30s into the cycle.
+    #[rustfmt::skip]
+    const PORT_15_HAND_WRITTEN: [f64; 65] = [
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        2.0, 2.0, 2.0, 2.0, 2.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    ];
+
+    /// A sequence written as runs of `(value, count)`.
+    fn runs(spec: &[(f64, usize)]) -> Vec<f64> {
+        spec.iter()
+            .flat_map(|&(value, count)| std::iter::repeat_n(value, count))
+            .collect()
+    }
+
+    /// Desugar an `oper_state` flap (up 1, down 2) and return its values.
+    fn desugared_flap(rate: f64, up: &str, down: &str, phase: Option<&str>) -> Vec<f64> {
+        let phase = phase
+            .map(|p| format!("\n  phase: \"{p}\""))
+            .unwrap_or_default();
+        let yaml = format!(
+            "name: test_flap_phase\nrate: {rate}\ngenerator:\n  type: flap\n  \
+             up_duration: \"{up}\"\n  down_duration: \"{down}\"\n  enum: oper_state{phase}\n"
+        );
+        let mut config = parse_scenario(&yaml);
+        desugar_scenario_config(&mut config).expect("desugar must succeed");
+        match config.generator {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(repeat, Some(true));
+                values
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::no_phase_is_todays_sequence(          1.0, "60s", "5s", None,           runs(&[(1.0, 60), (2.0, 5)]))]
+    #[case::phase_zero_is_todays_sequence(        1.0, "60s", "5s", Some("0s"),     runs(&[(1.0, 60), (2.0, 5)]))]
+    #[case::phase_30s_is_port_15s_hand_written(   1.0, "60s", "5s", Some("30s"),    PORT_15_HAND_WRITTEN.to_vec())]
+    #[case::phase_of_one_cycle_is_phase_zero(     1.0, "60s", "5s", Some("65s"),    runs(&[(1.0, 60), (2.0, 5)]))]
+    #[case::phase_5s(                             1.0, "60s", "5s", Some("5s"),     runs(&[(1.0, 55), (2.0, 5), (1.0, 5)]))]
+    #[case::phase_70s_is_phase_5s(                1.0, "60s", "5s", Some("70s"),    runs(&[(1.0, 55), (2.0, 5), (1.0, 5)]))]
+    #[case::phase_in_the_down_state(              1.0, "60s", "5s", Some("62s"),    runs(&[(2.0, 3), (1.0, 60), (2.0, 2)]))]
+    #[case::phase_in_milliseconds_rounds_to_ticks(1.0, "60s", "5s", Some("1500ms"), runs(&[(1.0, 58), (2.0, 5), (1.0, 2)]))]
+    // At rate 0.5, 10s up is 5 ticks, 5s down rounds 2.5 to 3, and a 5s
+    // phase rounds 2.5 to 3 the same way.
+    #[case::rate_half_rounds_as_the_durations_do( 0.5, "10s", "5s", Some("5s"),     runs(&[(1.0, 2), (2.0, 3), (1.0, 3)]))]
+    fn flap_phase_rotates_the_desugared_sequence(
+        #[case] rate: f64,
+        #[case] up: &str,
+        #[case] down: &str,
+        #[case] phase: Option<&str>,
+        #[case] expected: Vec<f64>,
+    ) {
+        assert_eq!(desugared_flap(rate, up, down, phase), expected);
+    }
+
+    /// `phase` is a string only: an unquoted YAML `0` is refused when the
+    /// scenario is parsed, and `0s` is the zero phase.
+    #[test]
+    fn flap_phase_written_as_the_number_0_is_refused() {
+        let flap = |phase: &str| {
+            format!(
+                "name: f\nrate: 1\ngenerator:\n  type: flap\n  up_duration: 60s\n  \
+                 down_duration: 5s\n  enum: oper_state\n  phase: {phase}\n"
+            )
+        };
+        let err = serde_yaml_ng::from_str::<ScenarioConfig>(&flap("0"))
+            .expect_err("a YAML number is not a phase");
+        assert!(err.to_string().contains("expected a string"), "{err}");
+        let mut config = parse_scenario(&flap("0s"));
+        desugar_scenario_config(&mut config).expect("desugar must succeed");
+        assert!(
+            matches!(&config.generator, GeneratorConfig::Sequence { values, .. } if *values == runs(&[(1.0, 60), (2.0, 5)])),
+            "{:?}",
+            config.generator
+        );
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::negative(     "-5s",  "must be positive")]
+    #[case::negative_zero("-0s",  "must be positive")]
+    #[case::no_unit(      "30",   "unrecognized duration unit")]
+    #[case::unparsable(   "soon", "unrecognized duration unit")]
+    fn flap_phase_that_is_not_a_duration_is_refused_naming_the_field(
+        #[case] phase: &str,
+        #[case] reason: &str,
+    ) {
+        let yaml = format!(
+            "name: test_flap_phase\nrate: 1\ngenerator:\n  type: flap\n  phase: \"{phase}\"\n"
+        );
+        let mut config = parse_scenario(&yaml);
+        let err = desugar_scenario_config(&mut config).expect_err("the phase is refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("flap: invalid phase {phase:?}")),
+            "the error names the field and the value: {msg}"
+        );
+        assert!(msg.contains(reason), "the error says why: {msg}");
     }
 
     // -----------------------------------------------------------------------
@@ -885,6 +1017,7 @@ generator:
             up_value: None,
             down_value: None,
             enum_kind: None,
+            phase: None,
         }
         .is_alias());
         assert!(GeneratorConfig::Steady {

@@ -126,18 +126,15 @@ scenarios:
     pack: if_mib
     labels: { device: sw-access-01, ifIndex: 15, ifName: GigabitEthernet1/0/15, ifDescr: GigabitEthernet1/0/15 }
     overrides:
-      # The same 60s up / 5s down as port 7, half a cycle later: at one
-      # value a second, up for 30s, down (2) for 5s, up for 30s, repeated.
+      # The same 60s up / 5s down as port 7, started 30s into the cycle:
+      # down (2) from 30s to 34s of every 65s, while port 7 is up.
       ifOperStatus:
         generator:
-          type: sequence
-          values: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                   2, 2, 2, 2, 2,
-                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+          type: flap
+          up_duration: 60s
+          down_duration: 5s
+          enum: oper_state
+          phase: 30s
 
   - signal_type: metrics
     pack: if_mib

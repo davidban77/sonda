@@ -622,6 +622,70 @@ scenarios:
     );
 }
 
+/// A flap's `phase:` is a string only, in the schema and the parser alike: a
+/// bare or quoted duration passes both, `"0s"` included, and a YAML number
+/// (`0`, `30`) is refused by both. The generator branches do not deny unknown
+/// keys, so the schema accepting a document says nothing until the flap
+/// branch is shown to declare `phase` with exactly that type.
+#[rstest::rstest]
+#[case::bare("30s", true)]
+#[case::quoted("\"30s\"", true)]
+#[case::quoted_zero("\"0s\"", true)]
+#[case::numeric_zero("0", false)]
+#[case::numeric("30", false)]
+fn the_schema_and_the_parser_agree_on_a_flap_phase(#[case] phase: &str, #[case] valid: bool) {
+    let schema = sonda_core::schema::scenario_file_schema().to_value();
+    let flap = schema["$defs"]["GeneratorConfig"]["oneOf"]
+        .as_array()
+        .expect("GeneratorConfig is a oneOf")
+        .iter()
+        .find(|branch| branch["properties"]["type"]["const"] == "flap")
+        .expect("the schema has a flap branch");
+    assert_eq!(
+        flap["properties"]["phase"]["type"],
+        serde_json::json!(["string", "null"]),
+        "the flap branch declares `phase` as a string only: {flap}"
+    );
+
+    let yaml = format!(
+        r#"
+version: 2
+kind: runnable
+scenarios:
+  - signal_type: metrics
+    name: ifOperStatus
+    rate: 1
+    duration: 10s
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 5s
+      enum: oper_state
+      phase: {phase}
+"#
+    );
+    let parsed = sonda_core::compiler::parse::parse(&yaml);
+    assert_eq!(
+        parsed.is_ok(),
+        valid,
+        "the parser on `phase: {phase}`: {parsed:?}"
+    );
+    if valid {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
+        let errors: Vec<String> = validator()
+            .iter_errors(&yaml_to_json(value))
+            .map(|e| format!("  at {}: {e}", e.instance_path()))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the schema rejected `phase: {phase}`:\n{}",
+            errors.join("\n")
+        );
+    } else {
+        assert_rejected(&format!("phase: {phase}"), &yaml);
+    }
+}
+
 /// The three-branch `anyOf` must not degenerate into "anything goes". A
 /// document matching none of the shapes has to fail.
 #[test]

@@ -968,7 +968,8 @@ src/
 │   │                      Feature-gated (config).
 │   ├── timing.rs       ← Pure threshold-crossing math per generator
 │   │                      (sawtooth, step, sequence, spike, flap, saturation,
-│   │                      leak, degradation, spike_event, constant). Returns
+│   │                      leak, degradation, spike_event, constant; flap's
+│   │                      crossing counts from where its phase starts it). Returns
 │   │                      crossing time in seconds or a typed TimingError
 │   │                      (OutOfRange | Ambiguous | Unsupported). Used by the
 │   │                      v2 compiler's Phase 4 `after` resolution. No
@@ -1032,6 +1033,10 @@ src/
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
+    │                      flap's `phase` (a string only, x-sonda-no-widening;
+    │                      parse_offset_duration: zero accepted, negative refused naming the
+    │                      field) rotates the desugared sequence left by round(phase × rate)
+    │                      mod its tick count.
     │                      Jitter-implying aliases (steady, degradation) set jitter on
     │                      BaseScheduleConfig. Integrated into prepare_entries pipeline.
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
