@@ -11,9 +11,9 @@ use crate::config::aliases::desugar_entry;
 use crate::config::validate::{
     validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
 };
-use crate::config::{expand_entry, PromMeta, PromMetricType, ScenarioEntry};
+use crate::config::{expand_entry, OnSinkError, PromMeta, PromMetricType, ScenarioEntry};
 use crate::generator::GeneratorConfig;
-use crate::schedule::core_loop::GateContext;
+use crate::schedule::core_loop::{apply_shutdown_flush_policy, GateContext};
 use crate::schedule::gate_bus::{GateBus, GateBusResolver};
 use crate::schedule::handle::ScenarioHandle;
 use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
@@ -1045,6 +1045,14 @@ pub(crate) async fn launch_scenario_with_gates_in(
     let scenario_name_for_task = scenario_name.clone();
     let entry_id_for_task = id.clone();
 
+    let grace = stop_grace();
+    let stats_for_abandon = Arc::clone(&stats);
+    let id_for_abandon = id.clone();
+    let name_for_abandon = name.clone();
+    let policy_for_abandon = entry.base().on_sink_error;
+    #[cfg(test)]
+    let injected_sink = test_hooks::take_sink();
+
     // Cross-POST scenarios broadcast via resolver.unregister_entries; broadcasting
     // here too races the registry's subscriber migration.
     let bus_for_finish_guard = if scenario_name_for_task.is_some() && resolver_for_task.is_some() {
@@ -1094,7 +1102,23 @@ pub(crate) async fn launch_scenario_with_gates_in(
             }
 
             let sink_labels = entry.base().labels.clone();
-            let mut sink = create_sink_in(&entry.base().sink, sink_labels.as_ref(), launch).await?;
+            #[cfg(test)]
+            let created = async {
+                match injected_sink {
+                    Some(sink) => Ok(sink),
+                    None => create_sink_in(&entry.base().sink, sink_labels.as_ref(), launch).await,
+                }
+            };
+            #[cfg(not(test))]
+            let created = create_sink_in(&entry.base().sink, sink_labels.as_ref(), launch);
+            // Nothing is buffered before the sink exists, so a stop while it
+            // is being created ends the scenario at once.
+            let mut sink = tokio::select! {
+                biased;
+                () = cancel_for_task.cancelled() => return Ok(()),
+                created = created => created?,
+            };
+            sink.set_cancel(cancel_for_task.clone());
 
             match entry {
                 ScenarioEntry::Metrics(config) => {
@@ -1141,12 +1165,20 @@ pub(crate) async fn launch_scenario_with_gates_in(
             }
         };
 
-        // `biased` polls the cancel arm first, so an in-flight `tokio::time::sleep`
-        // inside the runner is dropped on cancel rather than awaited to completion.
+        // A stop ends the runner's loop at its next check, after which the
+        // runner flushes the sink and returns. A runner still going `grace`
+        // after the stop is dropped, its flush abandoned.
+        tokio::pin!(runner);
         tokio::select! {
             biased;
-            _ = cancel_for_outer.cancelled() => Ok::<_, SondaError>(()),
-            result = runner => result,
+            result = &mut runner => result,
+            () = grace_after_stop(&cancel_for_outer, grace) => abandon_shutdown_flush(
+                &stats_for_abandon,
+                &id_for_abandon,
+                &name_for_abandon,
+                policy_for_abandon,
+                grace,
+            ),
         }
     });
 
@@ -1185,6 +1217,97 @@ fn derive_prometheus_meta(entry: &ScenarioEntry) -> Option<Arc<PromMeta>> {
             c.help.clone(),
         ))),
         ScenarioEntry::Logs(_) => None,
+    }
+}
+
+/// How long a launched scenario may take to end after a stop.
+///
+/// A stop ends the scenario's loop at its next check; the scenario then
+/// flushes its sink and its task ends. A task still running `STOP_GRACE`
+/// after the stop is dropped: its shutdown flush is abandoned, warned about,
+/// and treated as a failed shutdown flush under the scenario's
+/// `on_sink_error` (counted as a sink failure by default, the scenario's
+/// error with `fail`). Five seconds lets a local flush finish and keeps a
+/// sink whose peer never answers from holding the stop. A caller joining a
+/// stopped scenario waits at least this long before treating it as stuck.
+pub const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// The grace a launch gives its scenario's stop: [`STOP_GRACE`], or in tests
+/// the one [`test_hooks::StopGrace`] set on the launching thread.
+fn stop_grace() -> Duration {
+    #[cfg(test)]
+    if let Some(grace) = test_hooks::STOP_GRACE.with(std::cell::Cell::get) {
+        return grace;
+    }
+    STOP_GRACE
+}
+
+/// Resolve `grace` after `cancel` is cancelled.
+async fn grace_after_stop(cancel: &CancellationToken, grace: Duration) {
+    cancel.cancelled().await;
+    tokio::time::sleep(grace).await;
+}
+
+/// Warn that the scenario `name` (entry `id`) was still running `grace`
+/// after its stop, and apply the shutdown-flush `policy` to its abandoned
+/// flush: counted in `stats` under `warn`, the scenario's error under
+/// `fail`.
+fn abandon_shutdown_flush(
+    stats: &Arc<RwLock<ScenarioStats>>,
+    id: &str,
+    name: &str,
+    policy: OnSinkError,
+    grace: Duration,
+) -> Result<(), SondaError> {
+    let error =
+        format!("shutdown flush abandoned: the sink did not finish within {grace:?} of the stop");
+    tracing::warn!(
+        scenario = name,
+        entry = id,
+        "scenario '{name}' ({id}): {error}"
+    );
+    let abandoned = SondaError::Sink(std::io::Error::new(std::io::ErrorKind::TimedOut, error));
+    apply_shutdown_flush_policy(name, policy, Some(stats), Err(abandoned))
+}
+
+/// What a test hands the next launches on its thread.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::{Cell, RefCell};
+    use std::time::Duration;
+
+    use crate::sink::Sink;
+
+    thread_local! {
+        pub(super) static STOP_GRACE: Cell<Option<Duration>> = const { Cell::new(None) };
+        static SINK: RefCell<Option<Box<dyn Sink>>> = const { RefCell::new(None) };
+    }
+
+    /// While held, every scenario launched on this thread gets this grace
+    /// instead of [`super::STOP_GRACE`].
+    pub(crate) struct StopGrace(());
+
+    impl StopGrace {
+        pub(crate) fn set(grace: Duration) -> Self {
+            STOP_GRACE.with(|cell| cell.set(Some(grace)));
+            Self(())
+        }
+    }
+
+    impl Drop for StopGrace {
+        fn drop(&mut self) {
+            STOP_GRACE.with(|cell| cell.set(None));
+        }
+    }
+
+    /// The next scenario launched on this thread writes to `sink` instead of
+    /// creating the one its config names.
+    pub(crate) fn next_sink(sink: Box<dyn Sink>) {
+        SINK.with(|cell| *cell.borrow_mut() = Some(sink));
+    }
+
+    pub(super) fn take_sink() -> Option<Box<dyn Sink>> {
+        SINK.with(|cell| cell.borrow_mut().take())
     }
 }
 
@@ -2822,6 +2945,225 @@ mod tests {
             exit_duration < Duration::from_millis(200),
             "cancel-to-exit must be under 200ms; took {exit_duration:?}"
         );
+    }
+
+    /// A file sink scenario stopped while it sleeps between ticks, then
+    /// joined, has every event it wrote on disk: one line per event the
+    /// stats counted, and at least three of them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_file_sink_scenario_has_every_written_event_on_disk() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("stopped.prom");
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                gap_windows: None,
+                name: "stopped_file_sink".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::File {
+                    path: path.to_string_lossy().into_owned(),
+                },
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
+        });
+        let mut handle = launch_scenario(
+            "stopped-file-sink".to_string(),
+            entry,
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("launch must succeed");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.stats_snapshot().total_events < 3 {
+            assert!(Instant::now() < deadline, "three events were not written");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Inside the 100 ms sleep that follows a tick.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        handle.stop();
+        handle
+            .join_async(Some(Duration::from_secs(1)))
+            .await
+            .expect("the scenario ends without an error");
+        assert!(!handle.is_alive(), "the scenario is still running");
+
+        let written = handle.stats_snapshot().total_events;
+        let on_disk = std::fs::read_to_string(&path).expect("the file exists");
+        assert!(written >= 3, "only {written} events were written");
+        assert_eq!(
+            on_disk.lines().count() as u64,
+            written,
+            "{written} events written, the file holds {on_disk:?}"
+        );
+    }
+
+    // ---- The stop sequence -----------------------------------------------------
+
+    /// A sink call the stop tests record.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Call {
+        Write,
+        Flush,
+    }
+
+    /// Records every call; `flush` never finishes when `hang` is set.
+    struct RecordingSink {
+        calls: Arc<std::sync::Mutex<Vec<Call>>>,
+        hang: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::sink::Sink for RecordingSink {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            self.calls.lock().expect("calls lock").push(Call::Write);
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            self.calls.lock().expect("calls lock").push(Call::Flush);
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    /// Launch `name`, a constant metric at `rate` under `on_sink_error`,
+    /// writing to a [`RecordingSink`] instead of the stdout its config names,
+    /// and wait until three events were written.
+    async fn launch_recorded(
+        name: &str,
+        rate: f64,
+        hang: bool,
+        on_sink_error: crate::OnSinkError,
+    ) -> (ScenarioHandle, Arc<std::sync::Mutex<Vec<Call>>>) {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        test_hooks::next_sink(Box::new(RecordingSink {
+            calls: Arc::clone(&calls),
+            hang,
+        }));
+        let mut entry = metrics_entry(name);
+        if let ScenarioEntry::Metrics(config) = &mut entry {
+            config.rate = rate;
+            config.duration = None;
+            config.on_sink_error = on_sink_error;
+        }
+        let handle = launch_scenario(name.to_string(), entry, CancellationToken::new(), None)
+            .await
+            .expect("launch must succeed");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.stats_snapshot().total_events < 3 {
+            assert!(Instant::now() < deadline, "three events were not written");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        (handle, calls)
+    }
+
+    /// A stop lets the sink see every write the scenario made and then
+    /// exactly one flush, and nothing after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_writes_every_event_then_flushes_once() {
+        let (mut handle, calls) =
+            launch_recorded("stop_order", 20.0, false, crate::OnSinkError::Warn).await;
+        // Inside the 50 ms sleep that follows a tick.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            handle.is_alive(),
+            "guard: the scenario is running when stopped"
+        );
+        handle.stop();
+        handle
+            .join_async(Some(Duration::from_secs(1)))
+            .await
+            .expect("the scenario ends without an error");
+        assert!(!handle.is_alive(), "the scenario is still running");
+
+        let written = handle.stats_snapshot().total_events;
+        let seen = calls.lock().expect("calls lock").clone();
+        let mut expected = vec![Call::Write; written as usize];
+        expected.push(Call::Flush);
+        assert_eq!(seen, expected, "{written} events written");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            calls.lock().expect("calls lock").len(),
+            expected.len(),
+            "the sink was called after the stop's flush"
+        );
+    }
+
+    /// A shutdown flush still running when the grace ends is abandoned: the
+    /// stop lands within a second of a 300 ms grace and a warn names the
+    /// entry. The abandoned flush is a failed shutdown flush: under `warn`
+    /// the entry counts one sink failure and ends without an error; under
+    /// `fail` the scenario ends with the abandon error and counts none.
+    #[rustfmt::skip]
+    #[tracing_test::traced_test]
+    #[rstest::rstest]
+    #[case::warn_counts_one_sink_failure(crate::OnSinkError::Warn)]
+    #[case::fail_ends_the_scenario_with_the_error(crate::OnSinkError::Fail)]
+    #[tokio::test]
+    async fn a_flush_that_never_finishes_is_abandoned_after_the_grace(
+        #[case] on_sink_error: crate::OnSinkError,
+    ) {
+        let grace = Duration::from_millis(300);
+        let _grace = test_hooks::StopGrace::set(grace);
+        let (mut handle, calls) =
+            launch_recorded("hanging_flush", 20.0, true, on_sink_error).await;
+        assert!(handle.is_alive(), "guard: the scenario is running when stopped");
+        let stopped = Instant::now();
+        handle.stop();
+        let joined = handle.join_async(Some(Duration::from_secs(2))).await;
+        let took = stopped.elapsed();
+        assert!(!handle.is_alive(), "still running {took:?} after the stop");
+        assert!(took >= grace, "the stop ended after {took:?}, inside the grace");
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+        assert_eq!(
+            calls.lock().expect("calls lock").last(),
+            Some(&Call::Flush),
+            "guard: the flush was reached"
+        );
+        assert!(logs_contain("WARN"));
+        assert!(logs_contain("scenario 'hanging_flush' (hanging_flush)"));
+        assert!(logs_contain("shutdown flush abandoned"));
+
+        let stats = handle.stats_snapshot();
+        match on_sink_error {
+            crate::OnSinkError::Warn => {
+                joined.expect("under warn the scenario ends without an error");
+                assert_eq!(stats.total_sink_failures, 1);
+                assert!(
+                    stats
+                        .last_sink_error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("shutdown flush abandoned")),
+                    "{:?}",
+                    stats.last_sink_error
+                );
+            }
+            crate::OnSinkError::Fail => {
+                let err = joined.expect_err("under fail the abandoned flush ends the scenario");
+                assert!(matches!(err, SondaError::Sink(_)), "{err:?}");
+                assert!(err.to_string().contains("shutdown flush abandoned"), "{err}");
+                assert_eq!(stats.total_sink_failures, 0);
+            }
+        }
     }
 
     // ---- Whole-file gnmi checks ------------------------------------------------

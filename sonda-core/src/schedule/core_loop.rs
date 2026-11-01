@@ -843,14 +843,22 @@ pub(crate) fn apply_flush_policy(
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     flush_result: Result<(), SondaError>,
 ) -> Result<(), SondaError> {
+    apply_shutdown_flush_policy(&schedule.name, schedule.on_sink_error, stats, flush_result)
+}
+
+/// [`apply_flush_policy`] for the scenario `name` under `policy`: the one
+/// shutdown-flush policy, also applied to a flush the stop's grace abandons.
+pub(crate) fn apply_shutdown_flush_policy(
+    name: &str,
+    policy: OnSinkError,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    flush_result: Result<(), SondaError>,
+) -> Result<(), SondaError> {
     match flush_result {
         Ok(()) => Ok(()),
-        Err(SondaError::Sink(io_err)) => match schedule.on_sink_error {
+        Err(SondaError::Sink(io_err)) => match policy {
             OnSinkError::Warn => {
-                eprintln!(
-                    "sonda: scenario '{}': flush failed at shutdown: {}",
-                    schedule.name, io_err
-                );
+                eprintln!("sonda: scenario '{name}': flush failed at shutdown: {io_err}");
                 if let Some(s) = stats {
                     if let Ok(mut st) = s.write() {
                         record_sink_failure(&mut st, &io_err);

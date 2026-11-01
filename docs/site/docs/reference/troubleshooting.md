@@ -218,7 +218,7 @@ Some sinks and encoders are optional features, selected when the binary is built
 
 ## Container and signal handling
 
-Sonda flushes all buffered data on clean shutdown (SIGTERM or SIGINT). If the process is killed with SIGKILL, any data still in the buffer is lost.
+Sonda flushes all buffered data on clean shutdown (SIGTERM or SIGINT). A flush that cannot finish within 5 s is abandoned and handled as a failed flush: counted as a sink failure, or, with `on_sink_error: fail`, the scenario's error. If the process is killed with SIGKILL, any data still in the buffer is lost.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|

@@ -377,7 +377,8 @@ async fn shutdown_signal(
     let ids_handles: Vec<(String, sonda_core::ScenarioHandle)> =
         state.scenarios.write().drain().collect();
     for (id, mut handle) in ids_handles {
-        match handle.join_async(Some(Duration::from_secs(5))).await {
+        let join_window = sonda_core::STOP_GRACE + routes::scenarios::STOP_JOIN_MARGIN;
+        match handle.join_async(Some(join_window)).await {
             Ok(_) => info!(scenario = %id, "scenario task joined"),
             Err(e) => warn!(scenario = %id, error = %e, "scenario task join failed"),
         }

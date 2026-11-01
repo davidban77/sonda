@@ -109,7 +109,7 @@ sonda run long-running.yaml
 # ■ cpu_usage  completed in 12.3s | events: 123 | bytes: 4.5 KB | errors: 0
 ```
 
-For sinks with `retry:` configured, in-progress retries finish or time out per the retry policy before the binary exits. Scenarios sent through `sonda-server` follow the same shutdown path. See [As a server](server.md).
+A flush that cannot finish within 5 s is abandoned and handled as a failed flush: counted as a sink failure, or, with `on_sink_error: fail`, the scenario's error. For sinks with `retry:` configured, in-progress retries run per the retry policy until they finish or those 5 seconds end. Scenarios sent through `sonda-server` follow the same shutdown path. See [As a server](server.md).
 
 ## Where to next
 
