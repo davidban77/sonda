@@ -698,21 +698,22 @@ scenarios:
 fn sonda_takes(yaml: &str) -> Result<(), String> {
     use sonda_core::compiler::expand::InMemoryPackResolver;
 
-    sonda_core::verify::parse_expectations(yaml).map_err(|e| format!("expect: {e}"))?;
+    sonda_core::verify::parse_expectations(yaml)
+        .map_err(|e| format!("expect: {}", with_sources(&e)))?;
     let compiled = sonda_core::compile_scenario_file_compiled(yaml, &InMemoryPackResolver::new())
-        .map_err(|e| format!("compile: {e}"))?;
+        .map_err(|e| format!("compile: {}", with_sources(&e)))?;
     let entries: Vec<sonda_core::config::ScenarioEntry> =
         if compiled.entries.iter().any(|e| e.while_clause.is_some()) {
             sonda_core::schedule::multi_runner::validate_compiled_gated(compiled)
-                .map_err(|e| format!("gated: {e}"))?
+                .map_err(|e| format!("gated: {}", with_sources(&e)))?
                 .into_iter()
                 .map(|(_, entry)| entry)
                 .collect()
         } else {
             let entries = sonda_core::compiler::prepare::prepare(compiled)
-                .map_err(|e| format!("prepare: {e}"))?;
+                .map_err(|e| format!("prepare: {}", with_sources(&e)))?;
             sonda_core::prepare_entries_grouped(entries)
-                .map_err(|e| format!("prepare_entries: {e}"))?
+                .map_err(|e| format!("prepare_entries: {}", with_sources(&e)))?
                 .into_iter()
                 .flatten()
                 .map(|prepared| prepared.entry)
@@ -720,10 +721,30 @@ fn sonda_takes(yaml: &str) -> Result<(), String> {
         };
     for entry in &entries {
         for window in entry.base().gap_windows.as_deref().unwrap_or_default() {
-            window.resolve().map_err(|e| format!("gap_windows: {e}"))?;
+            window
+                .resolve()
+                .map_err(|e| format!("gap_windows: {}", with_sources(&e)))?;
         }
     }
     Ok(())
+}
+
+/// `error` and each error in its source chain, joined by `: `, so a refusal
+/// shows the deserializer's message and not only the phase that reported it
+/// (`parse error`). A cause whose text its parent already ends with is not
+/// repeated.
+fn with_sources(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.ends_with(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
 }
 
 /// The schema's verdict on `yaml`, with its errors.

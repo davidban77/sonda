@@ -142,9 +142,10 @@ worse than no schema, so the schema follows what Sonda accepts rather than what 
 declare.
 
 The exceptions are fields whose parser takes a string only, where the schema takes a string only
-too. Every duration is one: a duration needs a unit, and Sonda refuses `duration: 10`, so write
-`10s`. The two offsets that may be zero, `at` in `gap_windows:` and `open` in `delay:`, also take
-the number `0`. The OIDs and the SNMPv3 passwords and engine ID are strings only as well.
+too. Durations are the largest group: a duration takes a unit everywhere, so Sonda refuses
+`duration: 10` and a flap's `phase: 0`; write `10s` and `0s`. `at` in `gap_windows:` and `open` in
+`delay:` also take a bare `0`. The OIDs and the SNMPv3 passwords and engine ID are strings only as
+well.
 
 ## Keeping up with your version
 

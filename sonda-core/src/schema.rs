@@ -226,6 +226,16 @@ const DURATION_MARKERS: [&str; 3] = [DURATION_COMMENT, START_TIME_COMMENT, OFFSE
 /// each property; a `oneOf`, `anyOf` or `allOf` branch is named by its `type:`
 /// constant when it has one (`GeneratorConfig.flap.up_duration`), else by its
 /// index (`DelayClause.close.0`); any other keyword is named as itself.
+///
+/// The list is only as complete as the markers. A new duration field that
+/// carries no duration `$comment` and has no row in `tests/schema_corpus.rs`
+/// is invisible to the three checks built on this list: the audit
+/// (`every_duration_position_is_a_string_and_not_widened`), the coverage test
+/// (`every_duration_field_has_a_corpus_row`) and the agreement test
+/// (`the_schema_and_sonda_agree_on_every_duration_field`). The marker is what
+/// adds a field to all three: with it the audit checks the field's type, and
+/// the coverage test fails until the field has a row, which the agreement
+/// test then runs.
 pub fn duration_fields() -> Vec<String> {
     duration_positions(&scenario_file_schema().to_value())
         .into_iter()
