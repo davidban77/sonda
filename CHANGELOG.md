@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.30.0](https://github.com/davidban77/sonda/compare/v1.29.0...v1.30.0) (2026-11-01)
+
+
+### Features
+
+* **generator:** flap takes a phase ([#716](https://github.com/davidban77/sonda/issues/716)) ([dde81dc](https://github.com/davidban77/sonda/commit/dde81dc29725d8a347f3c3642f6a7f62d3206dbe))
+
+
+### Bug Fixes
+
+* **compiler:** after: resolves on a flap whose down value is above its up value ([#719](https://github.com/davidban77/sonda/issues/719)) ([4c2edd3](https://github.com/davidban77/sonda/commit/4c2edd391caa914d602e848715cd0937463dea0a))
+* **schedule:** a stop flushes the sink before the task ends ([#718](https://github.com/davidban77/sonda/issues/718)) ([58fe9e9](https://github.com/davidban77/sonda/commit/58fe9e9a4a2a62434e4383f8f6a9886cb8d75506))
+* **schema:** duration fields take a string with a unit, in the schema as in the parser ([#720](https://github.com/davidban77/sonda/issues/720)) ([660525a](https://github.com/davidban77/sonda/commit/660525a6ec3dfc678788701d8cc80b62d630b51e))
+* **schema:** enum map keys the schema accepts parse ([#714](https://github.com/davidban77/sonda/issues/714)) ([1365e71](https://github.com/davidban77/sonda/commit/1365e716a4328d229df2e282c56e4878c3ef5012))
+
+
+### Documentation
+
+* **snmp:** a stop ends an INFORM wait at once, with the guard tests ([#717](https://github.com/davidban77/sonda/issues/717)) ([3d8895a](https://github.com/davidban77/sonda/commit/3d8895a37b787a65fb620fa231f52f64ba285432))
+
 ## [1.29.0](https://github.com/davidban77/sonda/compare/v1.28.0...v1.29.0) (2026-10-30)
 
 
