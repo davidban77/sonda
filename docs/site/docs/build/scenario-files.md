@@ -372,7 +372,7 @@ Validation: OK (3 scenarios)
 
 The `phase_offset` lines show the concrete delays Sonda computed from the threshold-crossing math. The `(auto)` suffix on `clock_group` shows that Sonda assigned the group automatically because of the `after:` relationship.
 
-A `flap`'s offset is computed from its durations and `phase:` as written, while the signal moves in whole ticks (each state lasts `round(duration × rate)` ticks), so when a duration or the phase is not a whole number of ticks (whole seconds at `rate: 1`), the offset can differ from the tick at which the value actually changes; at whole ticks the two agree.
+A `flap`'s offset is computed from its durations and `phase:` as written, while the signal moves in whole ticks (each state lasts `round(duration × rate)` ticks, at least one), so when a duration or the phase is not a whole number of ticks (whole seconds at `rate: 1`), the offset can differ from the tick at which the value actually changes; at whole ticks the two agree.
 
 !!! info "Duration is per-entry, not per-cascade"
     Each entry's `duration:` runs from that entry's own resolved start time (`phase_offset`), not from cascade registration. The cascade's total wall-clock is therefore `max(phase_offset + duration)` across every entry, which can exceed `defaults.duration`.
