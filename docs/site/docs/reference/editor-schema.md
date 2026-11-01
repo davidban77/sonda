@@ -131,7 +131,7 @@ Validation: OK (1 scenario)
 
 ### Scalar types are deliberately loose
 
-You will notice the schema accepts a number or a boolean anywhere it accepts a string — so
+You will notice the schema accepts a number or a boolean almost anywhere it accepts a string — so
 `status: 200` under `labels:` is not flagged, even though a label value is a string.
 
 That is on purpose, and it matches the parser. Sonda's YAML loader coerces any plain scalar into
@@ -140,6 +140,12 @@ insisted on `"type": "string"` would underline working scenarios in red — incl
 this repository's own `examples/` directory. Over-rejection is the one failure that makes a schema
 worse than no schema, so the schema follows what Sonda accepts rather than what the Rust types
 declare.
+
+The exceptions are fields whose parser takes a string only, where the schema takes a string only
+too. Durations are the largest group: a duration takes a unit everywhere, so Sonda refuses
+`duration: 10` and a flap's `phase: 0`; write `10s` and `0s`. `at` in `gap_windows:` and `open` in
+`delay:` also take a bare `0`. The OIDs and the SNMPv3 passwords and engine ID are strings only as
+well.
 
 ## Keeping up with your version
 

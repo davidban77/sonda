@@ -686,6 +686,388 @@ scenarios:
     }
 }
 
+// ---------------------------------------------------------------------------
+// Duration fields: a string with a unit, in the schema as in the parser
+// ---------------------------------------------------------------------------
+
+/// Everything sonda does to a scenario file before it emits, through the
+/// functions the CLI calls: `sonda test`'s read of `expect:`, the compile,
+/// the gated or ungated preparation `sonda run --dry-run` picks by the same
+/// test, and the scheduler's read of each entry's `gap_windows:`, which no
+/// earlier step reads.
+fn sonda_takes(yaml: &str) -> Result<(), String> {
+    use sonda_core::compiler::expand::InMemoryPackResolver;
+
+    sonda_core::verify::parse_expectations(yaml)
+        .map_err(|e| format!("expect: {}", with_sources(&e)))?;
+    let compiled = sonda_core::compile_scenario_file_compiled(yaml, &InMemoryPackResolver::new())
+        .map_err(|e| format!("compile: {}", with_sources(&e)))?;
+    let entries: Vec<sonda_core::config::ScenarioEntry> =
+        if compiled.entries.iter().any(|e| e.while_clause.is_some()) {
+            sonda_core::schedule::multi_runner::validate_compiled_gated(compiled)
+                .map_err(|e| format!("gated: {}", with_sources(&e)))?
+                .into_iter()
+                .map(|(_, entry)| entry)
+                .collect()
+        } else {
+            let entries = sonda_core::compiler::prepare::prepare(compiled)
+                .map_err(|e| format!("prepare: {}", with_sources(&e)))?;
+            sonda_core::prepare_entries_grouped(entries)
+                .map_err(|e| format!("prepare_entries: {}", with_sources(&e)))?
+                .into_iter()
+                .flatten()
+                .map(|prepared| prepared.entry)
+                .collect()
+        };
+    for entry in &entries {
+        for window in entry.base().gap_windows.as_deref().unwrap_or_default() {
+            window
+                .resolve()
+                .map_err(|e| format!("gap_windows: {}", with_sources(&e)))?;
+        }
+    }
+    Ok(())
+}
+
+/// `error` and each error in its source chain, joined by `: `, so a refusal
+/// shows the deserializer's message and not only the phase that reported it
+/// (`parse error`). A cause whose text its parent already ends with is not
+/// repeated.
+fn with_sources(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.ends_with(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
+}
+
+/// The schema's verdict on `yaml`, with its errors.
+fn schema_takes(validator: &Validator, yaml: &str) -> Result<(), String> {
+    let value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(yaml).map_err(|e| format!("YAML: {e}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(&yaml_to_json(value))
+        .map(|e| format!("at {}: {e}", e.instance_path()))
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// What a bare `0` is at a duration position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Zero {
+    /// Refused like any other bare number.
+    Refused,
+    /// An offset whose parser reads a YAML number as its text and takes `0`
+    /// as zero.
+    Taken,
+}
+
+/// One duration field and a scenario file that sets it.
+struct DurationRow {
+    /// The position, as `sonda_core::schema::duration_fields` names it.
+    field: &'static str,
+    /// A scenario file with `{v}` where the field's value goes.
+    document: String,
+    /// A value with a unit that the schema and sonda both take.
+    control: &'static str,
+    zero: Zero,
+}
+
+/// One entry, emitting for 10s, with `extra` (entry-level lines) after it.
+fn entry_document(extra: &str) -> String {
+    format!(
+        "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    name: cpu\n    \
+         rate: 1\n    duration: 10s\n    generator: {{ type: constant, value: 1.0 }}\n{extra}"
+    )
+}
+
+/// One entry whose `generator:` block is `generator` (indented lines).
+fn generator_document(duration: &str, generator: &str) -> String {
+    format!(
+        "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    name: cpu\n    \
+         rate: 1\n    duration: {duration}\n    generator:\n{generator}"
+    )
+}
+
+/// Two entries: `up`, and `cpu` gated on it by `while:` with `delay` (a flow
+/// mapping) beside it.
+fn gated_document(delay: &str) -> String {
+    format!(
+        "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    id: up\n    \
+         name: up\n    rate: 1\n    duration: 10s\n    generator: {{ type: constant, value: 1.0 }}\n  \
+         - signal_type: metrics\n    name: cpu\n    rate: 1\n    duration: 10s\n    \
+         generator: {{ type: constant, value: 1.0 }}\n    while: {{ ref: up, op: \">\", value: 0.5 }}\n    \
+         delay: {delay}\n"
+    )
+}
+
+/// The single-signal shorthand, with `extra` (top-level lines).
+fn flat_document(extra: &str) -> String {
+    format!(
+        "version: 2\nkind: runnable\nsignal_type: metrics\nname: cpu\nrate: 1\n\
+         generator: {{ type: constant, value: 1.0 }}\n{extra}"
+    )
+}
+
+/// Every duration field the published schema marks, with a document that
+/// sets it. `every_duration_field_has_a_corpus_row` holds this list to the
+/// schema's, so a field marked without a row, or a row whose field lost its
+/// marker, fails.
+fn duration_rows() -> Vec<DurationRow> {
+    use Zero::{Refused, Taken};
+    let row = |field, document: String, control, zero| DurationRow {
+        field,
+        document,
+        control,
+        zero,
+    };
+    let generator = |kind: &str, field: &str| {
+        generator_document(
+            "10s",
+            &format!("      type: {kind}\n      {field}: {{v}}\n"),
+        )
+    };
+    let sink = |lines: &str| entry_document(&format!("    sink:\n{lines}"));
+    let http = |lines: &str| {
+        sink(&format!(
+            "      type: http_push\n      url: http://127.0.0.1:1/write\n{lines}"
+        ))
+    };
+    let rows = vec![
+        row("Entry.duration", generator_document("{v}", "      type: constant\n      value: 1.0\n"), "5s", Refused),
+        row("Entry.phase_offset", entry_document("    phase_offset: {v}\n"), "5s", Refused),
+        row("Entry.start_time", entry_document("    start_time: {v}\n"), "\"+5s\"", Refused),
+        row(
+            "Defaults.duration",
+            "version: 2\nkind: runnable\ndefaults:\n  duration: {v}\nscenarios:\n  - signal_type: metrics\n    \
+             name: cpu\n    rate: 1\n    generator: { type: constant, value: 1.0 }\n"
+                .to_string(),
+            "5s",
+            Refused,
+        ),
+        row(
+            "Defaults.start_time",
+            "version: 2\nkind: runnable\ndefaults:\n  start_time: {v}\nscenarios:\n  - signal_type: metrics\n    \
+             name: cpu\n    rate: 1\n    duration: 10s\n    generator: { type: constant, value: 1.0 }\n"
+                .to_string(),
+            "\"+5s\"",
+            Refused,
+        ),
+        row("FlatFile.duration", flat_document("duration: {v}\n"), "5s", Refused),
+        row("FlatFile.phase_offset", flat_document("duration: 10s\nphase_offset: {v}\n"), "5s", Refused),
+        row("FlatFile.start_time", flat_document("duration: 10s\nstart_time: {v}\n"), "\"+5s\"", Refused),
+        row(
+            "AfterClause.delay",
+            "version: 2\nkind: runnable\nscenarios:\n  - signal_type: metrics\n    id: saw\n    name: saw\n    \
+             rate: 1\n    duration: 30s\n    generator: { type: sawtooth, min: 0, max: 10, period_secs: 10 }\n  \
+             - signal_type: metrics\n    name: cpu\n    rate: 1\n    duration: 10s\n    \
+             generator: { type: constant, value: 1.0 }\n    after: { ref: saw, op: \">\", value: 5, delay: {v} }\n"
+                .to_string(),
+            "5s",
+            Refused,
+        ),
+        row("DelayClause.open", gated_document("{ open: {v} }"), "5s", Taken),
+        row("DelayClause.close.0", gated_document("{ close: {v} }"), "5s", Refused),
+        row("DelayClause.close.1.duration", gated_document("{ close: { duration: {v} } }"), "5s", Refused),
+        row("GapConfig.every", entry_document("    gaps: { every: {v}, for: 1s }\n"), "5s", Refused),
+        row("GapConfig.for", entry_document("    gaps: { every: 10s, for: {v} }\n"), "5s", Refused),
+        row("BurstConfig.every", entry_document("    bursts: { every: {v}, for: 1s, multiplier: 2 }\n"), "5s", Refused),
+        row("BurstConfig.for", entry_document("    bursts: { every: 10s, for: {v}, multiplier: 2 }\n"), "5s", Refused),
+        row(
+            "CardinalitySpikeConfig.every",
+            entry_document("    cardinality_spikes:\n      - { label: pod, every: {v}, for: 1s, cardinality: 3 }\n"),
+            "5s",
+            Refused,
+        ),
+        row(
+            "CardinalitySpikeConfig.for",
+            entry_document("    cardinality_spikes:\n      - { label: pod, every: 10s, for: {v}, cardinality: 3 }\n"),
+            "5s",
+            Refused,
+        ),
+        row("GapWindowConfig.at", entry_document("    gap_windows:\n      - { at: {v}, for: 1s }\n"), "5s", Taken),
+        row("GapWindowConfig.for", entry_document("    gap_windows:\n      - { at: 1s, for: {v} }\n"), "5s", Refused),
+        row("GeneratorConfig.flap.up_duration", generator("flap", "up_duration"), "5s", Refused),
+        row("GeneratorConfig.flap.down_duration", generator("flap", "down_duration"), "5s", Refused),
+        row("GeneratorConfig.flap.phase", generator("flap", "phase"), "5s", Refused),
+        row("GeneratorConfig.saturation.time_to_saturate", generator("saturation", "time_to_saturate"), "5s", Refused),
+        row(
+            "GeneratorConfig.leak.time_to_ceiling",
+            generator_document("1s", "      type: leak\n      time_to_ceiling: {v}\n"),
+            "5s",
+            Refused,
+        ),
+        row("GeneratorConfig.degradation.time_to_degrade", generator("degradation", "time_to_degrade"), "5s", Refused),
+        row("GeneratorConfig.steady.period", generator("steady", "period"), "5s", Refused),
+        row("GeneratorConfig.spike_event.spike_duration", generator("spike_event", "spike_duration"), "5s", Refused),
+        row("GeneratorConfig.spike_event.spike_interval", generator("spike_event", "spike_interval"), "5s", Refused),
+        row(
+            "RetryConfig.initial_backoff",
+            http("      retry: { max_attempts: 2, initial_backoff: {v}, max_backoff: 10s }\n"),
+            "5s",
+            Refused,
+        ),
+        row(
+            "RetryConfig.max_backoff",
+            http("      retry: { max_attempts: 2, initial_backoff: 1ms, max_backoff: {v} }\n"),
+            "5s",
+            Refused,
+        ),
+        row("SinkConfig.http_push.max_buffer_age", http("      max_buffer_age: {v}\n"), "5s", Refused),
+        row(
+            "SinkConfig.remote_write.max_buffer_age",
+            sink("      type: remote_write\n      url: http://127.0.0.1:1/write\n      max_buffer_age: {v}\n"),
+            "5s",
+            Refused,
+        ),
+        row(
+            "SinkConfig.loki.max_buffer_age",
+            sink("      type: loki\n      url: http://127.0.0.1:1\n      max_buffer_age: {v}\n"),
+            "5s",
+            Refused,
+        ),
+        row(
+            "SinkConfig.kafka.max_buffer_age",
+            sink("      type: kafka\n      brokers: 127.0.0.1:1\n      topic: t\n      max_buffer_age: {v}\n"),
+            "5s",
+            Refused,
+        ),
+        row(
+            "SinkConfig.otlp_grpc.max_buffer_age",
+            sink(
+                "      type: otlp_grpc\n      endpoint: http://127.0.0.1:1\n      signal_type: metrics\n      \
+                 max_buffer_age: {v}\n",
+            ),
+            "5s",
+            Refused,
+        ),
+        row(
+            "SinkConfig.gnmi_target.sample_floor",
+            entry_document(
+                "    encoder: { type: gnmi, path: /a/b }\n    sink:\n      type: gnmi_target\n      \
+                 listen: 127.0.0.1:0\n      sample_floor: {v}\n",
+            ),
+            "5s",
+            Refused,
+        ),
+        row(
+            "AlertExpectation.firing_within",
+            entry_document("expect:\n  alerts:\n    - alert: A\n      firing_within: {v}\n"),
+            "5s",
+            Refused,
+        ),
+        row(
+            "AlertExpectation.resolves_within",
+            entry_document("expect:\n  alerts:\n    - alert: A\n      firing_within: 1m\n      resolves_within: {v}\n"),
+            "5s",
+            Refused,
+        ),
+    ];
+    #[cfg(feature = "snmp")]
+    let rows = {
+        let mut rows = rows;
+        rows.push(row(
+            "SinkConfig.snmp_trap.timeout",
+            snmp_trap_document("timeout: {v}"),
+            "5s",
+            Refused,
+        ));
+        rows
+    };
+    rows
+}
+
+/// The rows cover exactly the fields the published schema marks as
+/// durations, each once.
+#[test]
+fn every_duration_field_has_a_corpus_row() {
+    let marked = sonda_core::schema::duration_fields();
+    let mut rows: Vec<&str> = Vec::new();
+    let all = duration_rows();
+    for row in &all {
+        assert!(!rows.contains(&row.field), "{} has two rows", row.field);
+        rows.push(row.field);
+    }
+    rows.sort_unstable();
+    assert_eq!(
+        rows, marked,
+        "the duration rows and the schema's duration fields differ"
+    );
+}
+
+/// A duration field takes a string with a unit, in the schema as in the
+/// parser: a bare `5` is refused by both, the row's control is taken by both,
+/// and a bare `0` is refused by both, except at an offset whose parser reads
+/// the number as its text (`Zero::Taken`), where both take it. The control is
+/// asserted first, so a refusal of the number is the number's.
+#[test]
+fn the_schema_and_sonda_agree_on_every_duration_field() {
+    let validator = validator();
+    let mut disagreements = Vec::new();
+    for row in duration_rows() {
+        let cases = [
+            (row.control, true),
+            ("5", false),
+            ("0", row.zero == Zero::Taken),
+        ];
+        for (value, taken) in cases {
+            let yaml = row.document.replace("{v}", value);
+            let schema = schema_takes(&validator, &yaml);
+            let sonda = sonda_takes(&yaml);
+            if schema.is_ok() != taken || sonda.is_ok() != taken {
+                disagreements.push(format!(
+                    "{}: `{value}` should be {} by both; schema: {schema:?}; sonda: {sonda:?}",
+                    row.field,
+                    if taken { "taken" } else { "refused" }
+                ));
+            }
+        }
+    }
+    assert!(
+        disagreements.is_empty(),
+        "duration fields where the schema or sonda disagrees with the rule:\n{}",
+        disagreements.join("\n")
+    );
+}
+
+/// The documented residue of an offset (`OFFSET_COMMENT`): a YAML zero with a
+/// minus sign or a radix prefix is the JSON number 0 to the schema, which
+/// takes it, and text the duration parser refuses. Pinned so the residue is
+/// what the comment says and no wider.
+#[rstest::rstest]
+#[case::minus_zero("-0")]
+#[case::minus_zero_float("-0.0")]
+#[case::hex_zero("0x0")]
+#[case::octal_zero("0o0")]
+fn a_signed_or_radix_zero_offset_is_taken_by_the_schema_and_refused_by_sonda(#[case] zero: &str) {
+    let validator = validator();
+    let offsets: Vec<DurationRow> = duration_rows()
+        .into_iter()
+        .filter(|row| row.zero == Zero::Taken)
+        .collect();
+    assert_eq!(offsets.len(), 2, "the two offsets have rows");
+    for row in offsets {
+        let yaml = row.document.replace("{v}", zero);
+        assert!(
+            schema_takes(&validator, &yaml).is_ok(),
+            "{}: the schema takes `{zero}`",
+            row.field
+        );
+        let refused = sonda_takes(&yaml);
+        assert!(refused.is_err(), "{}: sonda refuses `{zero}`", row.field);
+    }
+}
+
 /// The three-branch `anyOf` must not degenerate into "anything goes". A
 /// document matching none of the shapes has to fail.
 #[test]
@@ -891,7 +1273,8 @@ scenarios:
 
 /// The schema accepts any scalar for the sink's text fields, so the parser
 /// must too: a numeric `listen` is a validation error naming the field, not
-/// a parse error the schema did not predict.
+/// a parse error the schema did not predict. `sample_floor` is a duration, a
+/// string only (`the_schema_and_sonda_agree_on_every_duration_field`).
 #[test]
 fn the_parser_takes_every_scalar_the_schema_takes_for_gnmi_target_text_fields() {
     const YAML: &str = r#"
@@ -905,7 +1288,6 @@ defaults:
   sink:
     type: gnmi_target
     listen: 57400
-    sample_floor: 5
 scenarios:
   - signal_type: metrics
     name: in_octets
@@ -1204,15 +1586,13 @@ fn the_schema_rejects_a_misspelled_snmp_trap_key(#[case] extra: &str) {
 }
 
 /// The schema accepts any scalar for the trap sink's text fields, so the
-/// parser must too: a numeric `community` or `timeout` is read as its text,
-/// which validation then judges.
+/// parser must too: a numeric `community` is read as its text, which
+/// validation then judges. `timeout` is a duration, a string only
+/// (`the_schema_and_sonda_agree_on_every_duration_field`).
 #[cfg(feature = "snmp")]
 #[test]
 fn the_parser_takes_every_scalar_the_schema_takes_for_snmp_trap_text_fields() {
-    let yaml = snmp_trap_document(
-        "community: 12345
-    timeout: 2",
-    );
+    let yaml = snmp_trap_document("community: 12345");
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).expect("loads");
     assert!(
         validator().is_valid(&yaml_to_json(value)),

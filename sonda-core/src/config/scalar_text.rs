@@ -8,6 +8,10 @@
 //!
 //! An OID is the exception: read as a number, `1.30` is `1.3`. [`OidText`]
 //! reads a string only, and its schema position is not widened.
+//!
+//! A duration read through this module (gnmi_target's `sample_floor`,
+//! snmp_trap's `timeout`) is not widened either: its validation refuses every
+//! number, so its schema position takes a string only.
 
 use std::fmt;
 

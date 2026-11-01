@@ -153,9 +153,17 @@ pub struct Defaults {
     /// each entry runs for this long from its own resolved start, so a cascade's
     /// total wall-clock is `max(phase_offset + duration)`, not `duration`.
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub duration: Option<String>,
     /// Default emission-time anchor (absolute RFC 3339, signed offset, or `now`).
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::START_TIME_COMMENT))
+    )]
     pub start_time: Option<String>,
     /// Default encoder configuration.
     #[cfg_attr(feature = "config", serde(default))]
@@ -213,9 +221,17 @@ pub struct Entry {
     pub rate: Option<f64>,
     /// Total run duration (e.g. `"30s"`, `"5m"`).
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub duration: Option<String>,
     /// Emission-time anchor (absolute RFC 3339, signed offset, or `now`).
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::START_TIME_COMMENT))
+    )]
     pub start_time: Option<String>,
     /// Value generator configuration (for metrics).
     #[cfg_attr(feature = "config", serde(default))]
@@ -258,6 +274,10 @@ pub struct Entry {
     pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
     /// Phase offset for staggered start within a clock group.
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub phase_offset: Option<String>,
     /// Clock group for coordinated timing across entries.
     #[cfg_attr(feature = "config", serde(default))]
@@ -372,6 +392,10 @@ pub struct AfterClause {
     pub value: f64,
     /// Optional additional delay after the condition is met.
     #[cfg_attr(feature = "config", serde(default))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub delay: Option<String>,
 }
 
@@ -540,16 +564,18 @@ impl schemars::JsonSchema for DelayClause {
     }
 
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // `open` is read from a YAML number as its text, so a bare 0 is zero
+        // there; `close` sits behind an untagged enum, which refuses a number.
+        let mut open = crate::schema::offset_duration_value();
+        open["description"] =
+            "Debounce for the false \u{2192} true transition, e.g. \"250ms\", \"5s\".".into();
         schemars::json_schema!({
             "type": "object",
             "description": "Open/close debounce windows applied to a `while:` transition. \
                             Requires a `while:` clause on the same entry.",
             "additionalProperties": false,
             "properties": {
-                "open": {
-                    "type": "string",
-                    "description": "Debounce for the false \u{2192} true transition, e.g. \"250ms\", \"5s\".",
-                },
+                "open": open,
                 "close": {
                     "description": "Debounce for the true \u{2192} false transition. \
                                     Either a duration string or an extended mapping.",
@@ -557,12 +583,18 @@ impl schemars::JsonSchema for DelayClause {
                         {
                             "type": "string",
                             "description": "Duration shorthand, e.g. \"5s\".",
+                            "$comment": crate::schema::DURATION_COMMENT,
+                            "x-sonda-no-widening": true,
                         },
                         {
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
-                                "duration": { "type": "string" },
+                                "duration": {
+                                    "type": "string",
+                                    "$comment": crate::schema::DURATION_COMMENT,
+                                    "x-sonda-no-widening": true,
+                                },
                                 "snap_to": { "type": "number" },
                                 "stale_marker": { "type": "boolean" },
                             },

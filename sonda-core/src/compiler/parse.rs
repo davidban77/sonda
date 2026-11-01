@@ -227,8 +227,16 @@ struct FlatFile {
     #[serde(default)]
     rate: Option<f64>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     duration: Option<String>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::START_TIME_COMMENT))
+    )]
     start_time: Option<String>,
     #[serde(default)]
     encoder: Option<crate::encoder::EncoderConfig>,
@@ -263,6 +271,10 @@ struct FlatFile {
     #[serde(default)]
     cardinality_spikes: Option<Vec<crate::config::CardinalitySpikeConfig>>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     phase_offset: Option<String>,
     #[serde(default)]
     clock_group: Option<String>,

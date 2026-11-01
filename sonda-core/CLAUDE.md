@@ -1040,13 +1040,20 @@ src/
     ├── scalar_text.rs  ← ScalarText (config feature) + required (gnmi or snmp feature) and
     │                      optional (gnmi feature) deserialize_with: a string, number or
     │                      boolean read as text. The ONE rule for text fields the schema
-    │                      widens (gnmi enum labels, gnmi_target listen and sample_floor,
-    │                      snmp_agent listen, the snmp encoder's agent_label and
-    │                      drop_labels items). OidText is its exception, for OID fields
-    │                      (oids: values, the snmp.oid hint): a string only, read through
-    │                      deserialize_any so an unquoted 1.30 is an error naming the
-    │                      field rather than 1.3; their schema positions carry
-    │                      x-sonda-no-widening, which schema.rs honours and strips.
+    │                      widens (gnmi enum labels, gnmi_target listen, snmp_agent listen,
+    │                      the snmp encoder's agent_label and drop_labels items). OidText is
+    │                      its exception, for OID fields (oids: values, the snmp.oid hint):
+    │                      a string only, read through deserialize_any so an unquoted 1.30
+    │                      is an error naming the field rather than 1.3; their schema
+    │                      positions carry x-sonda-no-widening, which schema.rs honours and
+    │                      strips. gnmi_target sample_floor and snmp_trap timeout are read
+    │                      through it too, but they are durations, and every field read by
+    │                      the duration parser is a string in the schema: it carries
+    │                      x-sonda-no-widening and a duration $comment (schema.rs
+    │                      DURATION_COMMENT, START_TIME_COMMENT, or schema_with
+    │                      offset_duration for gap_windows at and delay open, which take a
+    │                      bare 0). schema::duration_fields() lists them; schema_corpus.rs
+    │                      has a row per field and fails when the two lists differ.
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.

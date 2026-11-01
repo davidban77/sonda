@@ -132,6 +132,10 @@ pub struct SnmpTrapConfig {
             deserialize_with = "crate::config::scalar_text::required"
         )
     )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub timeout: String,
     /// How many times an unacknowledged INFORM is sent again, 0 to 10.
     /// Default 3. Read only with `inform: true`.

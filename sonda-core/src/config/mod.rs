@@ -27,8 +27,16 @@ use crate::{ConfigError, SondaError};
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GapConfig {
     /// How often the gap recurs (e.g. `"2m"`).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub every: String,
     /// How long each gap lasts (e.g. `"20s"`). Must be less than `every`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub r#for: String,
 }
 
@@ -52,8 +60,16 @@ pub struct GapWindowConfig {
     /// An offset, not a length: `"0s"` is a scenario that begins already
     /// inside the silence, which is what a capture taken during an outage
     /// looks like.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema::offset_duration")
+    )]
     pub at: String,
     /// How long the silence lasts (e.g. `"90s"`).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub r#for: String,
 }
 
@@ -128,8 +144,16 @@ pub struct CardinalitySpikeConfig {
     /// Must be a valid Prometheus label key: `[a-zA-Z_][a-zA-Z0-9_]*`.
     pub label: String,
     /// How often the spike recurs (e.g. `"2m"`).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub every: String,
     /// How long each spike lasts (e.g. `"30s"`). Must be less than `every`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub r#for: String,
     /// Number of unique label values generated during the spike.
     ///
@@ -235,8 +259,16 @@ pub struct DynamicLabelConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BurstConfig {
     /// How often the burst recurs (e.g. `"10s"`).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub every: String,
     /// How long each burst lasts (e.g. `"2s"`). Must be less than `every`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+    )]
     pub r#for: String,
     /// Rate multiplier during the burst (must be strictly positive).
     pub multiplier: f64,

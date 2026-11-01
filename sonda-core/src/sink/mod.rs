@@ -259,6 +259,10 @@ pub enum SinkConfig {
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         max_buffer_age: Option<String>,
 
         /// Optional extra HTTP headers to send with every POST request.
@@ -310,6 +314,10 @@ pub enum SinkConfig {
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
@@ -349,6 +357,10 @@ pub enum SinkConfig {
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
@@ -395,6 +407,10 @@ pub enum SinkConfig {
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
@@ -436,6 +452,10 @@ pub enum SinkConfig {
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
         #[cfg_attr(feature = "config", serde(default))]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(extend("x-sonda-no-widening" = true, "$comment" = crate::schema::DURATION_COMMENT))
+        )]
         max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
