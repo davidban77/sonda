@@ -72,7 +72,7 @@ pub use schedule::handle::ScenarioHandle;
 #[cfg(feature = "runtime")]
 pub use schedule::launch::{
     check_running_sinks, launch_prepared, launch_scenario, prepare_entries,
-    prepare_entries_grouped, validate_entry, PreparedEntry,
+    prepare_entries_grouped, validate_entry, PreparedEntry, STOP_GRACE,
 };
 #[cfg(feature = "runtime")]
 pub use schedule::stats::{ScenarioState, ScenarioStats};

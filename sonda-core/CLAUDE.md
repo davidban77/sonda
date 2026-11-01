@@ -136,10 +136,14 @@ src/
 │   │                      launch_prepared launches a file's entries as one launch, ids
 │   │                      `{prefix}-{i}`, failing fast (stops what it launched).
 │   │                      A stop ends the loop at its next check, runs the shutdown
-│   │                      flush under a 5 s grace (STOP_GRACE; a task still running
-│   │                      then is dropped, warned about and counted as one sink
-│   │                      failure), and gives sinks the token through set_cancel. A
-│   │                      stop while the sink is being created ends the task at once.
+│   │                      flush under a 5 s grace (STOP_GRACE, exported from the crate
+│   │                      root; a task still running then is dropped, warned about, and
+│   │                      its abandoned flush goes through core_loop's
+│   │                      apply_shutdown_flush_policy, the one shutdown-flush policy:
+│   │                      a sink failure under warn, the scenario's error under fail),
+│   │                      and gives sinks the token through set_cancel. A stop while
+│   │                      the sink is being created ends the task at once. sonda-server
+│   │                      joins a stopped scenario for STOP_GRACE + STOP_JOIN_MARGIN.
 │   │                      Tests set the grace and hand a launch its sink through the
 │   │                      cfg(test) test_hooks, so they still call launch_scenario.
 │   │                      validate_file is the ONE home of cross-entry rules, run by

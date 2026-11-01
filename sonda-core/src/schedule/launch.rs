@@ -11,9 +11,9 @@ use crate::config::aliases::desugar_entry;
 use crate::config::validate::{
     validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
 };
-use crate::config::{expand_entry, PromMeta, PromMetricType, ScenarioEntry};
+use crate::config::{expand_entry, OnSinkError, PromMeta, PromMetricType, ScenarioEntry};
 use crate::generator::GeneratorConfig;
-use crate::schedule::core_loop::{record_sink_failure, GateContext};
+use crate::schedule::core_loop::{apply_shutdown_flush_policy, GateContext};
 use crate::schedule::gate_bus::{GateBus, GateBusResolver};
 use crate::schedule::handle::ScenarioHandle;
 use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
@@ -1049,6 +1049,7 @@ pub(crate) async fn launch_scenario_with_gates_in(
     let stats_for_abandon = Arc::clone(&stats);
     let id_for_abandon = id.clone();
     let name_for_abandon = name.clone();
+    let policy_for_abandon = entry.base().on_sink_error;
     #[cfg(test)]
     let injected_sink = test_hooks::take_sink();
 
@@ -1171,10 +1172,13 @@ pub(crate) async fn launch_scenario_with_gates_in(
         tokio::select! {
             biased;
             result = &mut runner => result,
-            () = grace_after_stop(&cancel_for_outer, grace) => {
-                abandon_shutdown_flush(&stats_for_abandon, &id_for_abandon, &name_for_abandon, grace);
-                Ok(())
-            }
+            () = grace_after_stop(&cancel_for_outer, grace) => abandon_shutdown_flush(
+                &stats_for_abandon,
+                &id_for_abandon,
+                &name_for_abandon,
+                policy_for_abandon,
+                grace,
+            ),
         }
     });
 
@@ -1220,10 +1224,13 @@ fn derive_prometheus_meta(entry: &ScenarioEntry) -> Option<Arc<PromMeta>> {
 ///
 /// A stop ends the scenario's loop at its next check; the scenario then
 /// flushes its sink and its task ends. A task still running `STOP_GRACE`
-/// after the stop is dropped: its shutdown flush is abandoned, warned about
-/// and counted as one sink failure. Five seconds lets a local flush finish
-/// and keeps a sink whose peer never answers from holding the stop.
-pub(crate) const STOP_GRACE: Duration = Duration::from_secs(5);
+/// after the stop is dropped: its shutdown flush is abandoned, warned about,
+/// and treated as a failed shutdown flush under the scenario's
+/// `on_sink_error` (counted as a sink failure by default, the scenario's
+/// error with `fail`). Five seconds lets a local flush finish and keeps a
+/// sink whose peer never answers from holding the stop. A caller joining a
+/// stopped scenario waits at least this long before treating it as stuck.
+pub const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// The grace a launch gives its scenario's stop: [`STOP_GRACE`], or in tests
 /// the one [`test_hooks::StopGrace`] set on the launching thread.
@@ -1242,9 +1249,16 @@ async fn grace_after_stop(cancel: &CancellationToken, grace: Duration) {
 }
 
 /// Warn that the scenario `name` (entry `id`) was still running `grace`
-/// after its stop, and count its abandoned shutdown flush as one sink
-/// failure in `stats`.
-fn abandon_shutdown_flush(stats: &RwLock<ScenarioStats>, id: &str, name: &str, grace: Duration) {
+/// after its stop, and apply the shutdown-flush `policy` to its abandoned
+/// flush: counted in `stats` under `warn`, the scenario's error under
+/// `fail`.
+fn abandon_shutdown_flush(
+    stats: &Arc<RwLock<ScenarioStats>>,
+    id: &str,
+    name: &str,
+    policy: OnSinkError,
+    grace: Duration,
+) -> Result<(), SondaError> {
     let error =
         format!("shutdown flush abandoned: the sink did not finish within {grace:?} of the stop");
     tracing::warn!(
@@ -1252,9 +1266,8 @@ fn abandon_shutdown_flush(stats: &RwLock<ScenarioStats>, id: &str, name: &str, g
         entry = id,
         "scenario '{name}' ({id}): {error}"
     );
-    if let Ok(mut st) = stats.write() {
-        record_sink_failure(&mut st, &error);
-    }
+    let abandoned = SondaError::Sink(std::io::Error::new(std::io::ErrorKind::TimedOut, error));
+    apply_shutdown_flush_policy(name, policy, Some(stats), Err(abandoned))
 }
 
 /// What a test hands the next launches on its thread.
@@ -3032,13 +3045,14 @@ mod tests {
         }
     }
 
-    /// Launch `name`, a constant metric at `rate`, writing to a
-    /// [`RecordingSink`] instead of the stdout its config names, and wait
-    /// until three events were written.
+    /// Launch `name`, a constant metric at `rate` under `on_sink_error`,
+    /// writing to a [`RecordingSink`] instead of the stdout its config names,
+    /// and wait until three events were written.
     async fn launch_recorded(
         name: &str,
         rate: f64,
         hang: bool,
+        on_sink_error: crate::OnSinkError,
     ) -> (ScenarioHandle, Arc<std::sync::Mutex<Vec<Call>>>) {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         test_hooks::next_sink(Box::new(RecordingSink {
@@ -3049,6 +3063,7 @@ mod tests {
         if let ScenarioEntry::Metrics(config) = &mut entry {
             config.rate = rate;
             config.duration = None;
+            config.on_sink_error = on_sink_error;
         }
         let handle = launch_scenario(name.to_string(), entry, CancellationToken::new(), None)
             .await
@@ -3065,7 +3080,8 @@ mod tests {
     /// exactly one flush, and nothing after it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_stop_writes_every_event_then_flushes_once() {
-        let (mut handle, calls) = launch_recorded("stop_order", 20.0, false).await;
+        let (mut handle, calls) =
+            launch_recorded("stop_order", 20.0, false, crate::OnSinkError::Warn).await;
         // Inside the 50 ms sleep that follows a tick.
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
@@ -3093,50 +3109,61 @@ mod tests {
     }
 
     /// A shutdown flush still running when the grace ends is abandoned: the
-    /// stop lands within a second of a 300 ms grace, the entry counts one
-    /// sink failure, and a warn names the entry.
+    /// stop lands within a second of a 300 ms grace and a warn names the
+    /// entry. The abandoned flush is a failed shutdown flush: under `warn`
+    /// the entry counts one sink failure and ends without an error; under
+    /// `fail` the scenario ends with the abandon error and counts none.
+    #[rustfmt::skip]
     #[tracing_test::traced_test]
+    #[rstest::rstest]
+    #[case::warn_counts_one_sink_failure(crate::OnSinkError::Warn)]
+    #[case::fail_ends_the_scenario_with_the_error(crate::OnSinkError::Fail)]
     #[tokio::test]
-    async fn a_flush_that_never_finishes_is_abandoned_after_the_grace() {
+    async fn a_flush_that_never_finishes_is_abandoned_after_the_grace(
+        #[case] on_sink_error: crate::OnSinkError,
+    ) {
         let grace = Duration::from_millis(300);
         let _grace = test_hooks::StopGrace::set(grace);
-        let (mut handle, calls) = launch_recorded("hanging_flush", 20.0, true).await;
-        assert!(
-            handle.is_alive(),
-            "guard: the scenario is running when stopped"
-        );
+        let (mut handle, calls) =
+            launch_recorded("hanging_flush", 20.0, true, on_sink_error).await;
+        assert!(handle.is_alive(), "guard: the scenario is running when stopped");
         let stopped = Instant::now();
         handle.stop();
-        handle
-            .join_async(Some(Duration::from_secs(2)))
-            .await
-            .expect("the scenario ends without an error");
+        let joined = handle.join_async(Some(Duration::from_secs(2))).await;
         let took = stopped.elapsed();
         assert!(!handle.is_alive(), "still running {took:?} after the stop");
-        assert!(
-            took >= grace,
-            "the stop ended after {took:?}, inside the grace"
-        );
+        assert!(took >= grace, "the stop ended after {took:?}, inside the grace");
         assert!(took < Duration::from_secs(1), "the stop took {took:?}");
         assert_eq!(
             calls.lock().expect("calls lock").last(),
             Some(&Call::Flush),
             "guard: the flush was reached"
         );
-
-        let stats = handle.stats_snapshot();
-        assert_eq!(stats.total_sink_failures, 1);
-        assert!(
-            stats
-                .last_sink_error
-                .as_deref()
-                .is_some_and(|e| e.contains("shutdown flush abandoned")),
-            "{:?}",
-            stats.last_sink_error
-        );
         assert!(logs_contain("WARN"));
         assert!(logs_contain("scenario 'hanging_flush' (hanging_flush)"));
         assert!(logs_contain("shutdown flush abandoned"));
+
+        let stats = handle.stats_snapshot();
+        match on_sink_error {
+            crate::OnSinkError::Warn => {
+                joined.expect("under warn the scenario ends without an error");
+                assert_eq!(stats.total_sink_failures, 1);
+                assert!(
+                    stats
+                        .last_sink_error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("shutdown flush abandoned")),
+                    "{:?}",
+                    stats.last_sink_error
+                );
+            }
+            crate::OnSinkError::Fail => {
+                let err = joined.expect_err("under fail the abandoned flush ends the scenario");
+                assert!(matches!(err, SondaError::Sink(_)), "{err:?}");
+                assert!(err.to_string().contains("shutdown flush abandoned"), "{err}");
+                assert_eq!(stats.total_sink_failures, 0);
+            }
+        }
     }
 
     // ---- Whole-file gnmi checks ------------------------------------------------

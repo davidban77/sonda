@@ -901,11 +901,17 @@ pub async fn get_scenario(
     Ok(Json(detail))
 }
 
+/// How much longer than [`sonda_core::STOP_GRACE`] the server waits for a
+/// stopped scenario's task before treating it as stuck: the grace's own
+/// abandoned-flush failure then reaches the stats the server reads.
+pub(crate) const STOP_JOIN_MARGIN: Duration = Duration::from_secs(1);
+
 /// `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 ///
-/// Signals the scenario to stop via `handle.stop()`, then waits up to 5 seconds
-/// for the thread to exit via `handle.join()`. If the thread does not exit within
-/// the timeout, the response status is `"force_stopped"` and a warning is logged.
+/// Signals the scenario to stop via `handle.stop()`, then waits up to
+/// [`sonda_core::STOP_GRACE`] plus [`STOP_JOIN_MARGIN`] for its task to exit.
+/// If the task does not exit within that window, the response status is
+/// `"force_stopped"` and a warning is logged.
 ///
 /// After returning final stats, the scenario handle is removed from the map.
 /// A subsequent DELETE on the same ID returns `404 Not Found`.
@@ -929,12 +935,16 @@ pub async fn delete_scenario(
     // Release the slot before the join window — row cap, not task-CPU cap.
     drop(handle.take_permit());
 
-    if let Err(e) = handle.join_async(Some(Duration::from_secs(5))).await {
+    let join_window = sonda_core::STOP_GRACE + STOP_JOIN_MARGIN;
+    if let Err(e) = handle.join_async(Some(join_window)).await {
         warn!(id = %id, error = %e, "DELETE /scenarios/{id}: scenario task returned an error");
     }
 
     let status = if handle.is_running() {
-        warn!(id = %id, "DELETE /scenarios/{id}: join timed out after 5s, scenario force-stopped");
+        warn!(
+            id = %id,
+            "DELETE /scenarios/{id}: join timed out after {join_window:?}, scenario force-stopped"
+        );
         "force_stopped".to_string()
     } else {
         "stopped".to_string()
