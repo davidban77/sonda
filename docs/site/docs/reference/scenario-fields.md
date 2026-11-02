@@ -291,8 +291,8 @@ The tick that would have played inside a window is the tick that is suppressed, 
 
     `phase_offset:`, `start_time:`, `cardinality_spikes:` and `dynamic_labels:` are unaffected — none of them moves a row relative to its window.
 
-    !!! warning "`--dry-run` does not check these"
-        `sonda --dry-run run` stops before the step that expands a `csv_replay` scenario, so it reports `Validation: OK` for a file these rules would refuse. Run `sonda run` to check them. This is the one class of error `--dry-run` currently cannot see.
+    !!! note "`--dry-run` checks these too"
+        `sonda --dry-run run` expands a `csv_replay` scenario as `sonda run` does, so it refuses a file these rules would refuse, without emitting anything.
 
 ### Burst window
 
@@ -450,6 +450,8 @@ All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `burs
 | `h` | `1h` | Hours |
 
 Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds and `0.5m` means 30 seconds.
+
+A duration takes a unit everywhere: Sonda refuses `duration: 10` and a flap's `phase: 0`; write `10s` and `0s`. `at` in `gap_windows:` and `open` in `delay:` also take a bare `0`.
 
 ### Timestamp anchor
 

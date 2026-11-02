@@ -1064,6 +1064,15 @@ src/
     │                      Jitter-implying aliases (steady, degradation) set jitter on
     │                      BaseScheduleConfig. Integrated into prepare_entries pipeline.
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
+                           validate_gap_windows (all four signal validators): every gap_windows
+                           entry through GapWindowConfig::resolve, the schedule's own resolver, so
+                           validation refuses first; the refusal names gap_windows[i], the field
+                           (at when its offset parser refuses it, else for) and the value, then
+                           resolve's message; all four also parse start_time with
+                           parse_start_time, the schedule's parser, whose refusal names the
+                           field and the value (validate_config in every build, the logs,
+                           histogram and summary validators under runtime, so chrono's
+                           RFC 3339 parser stays out of the wasm bundle),
                            validate_snmp_encoder (snmp feature; from validate_config): pairing,
                            an oids: entry for the metric, placeholders are static or dynamic
                            labels and every label_columns placeholder is one of every oids:

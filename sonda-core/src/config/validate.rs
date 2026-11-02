@@ -9,8 +9,8 @@ use crate::{ConfigError, SondaError};
 
 use super::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig,
-    DynamicLabelStrategy, HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig,
-    SummaryScenarioConfig,
+    DynamicLabelStrategy, GapWindowConfig, HistogramScenarioConfig, LogScenarioConfig,
+    ScenarioConfig, SummaryScenarioConfig,
 };
 
 /// Parse a human-readable duration string into a [`Duration`].
@@ -175,6 +175,38 @@ pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
     })
 }
 
+/// Validate every `gap_windows` entry by resolving it through
+/// [`GapWindowConfig::resolve`], the function the schedule resolves it with,
+/// so validation refuses exactly the windows the schedule would.
+///
+/// A refusal names the entry, the field and its value, followed by
+/// `resolve`'s own message: `invalid gap_windows[1].for "1": unrecognized
+/// duration unit in "1": expected one of ms, s, m, h`. `resolve` reads `at`
+/// first, as an offset ([`parse_offset_duration`]), then `for`, as a length
+/// ([`parse_duration`]); the field named is `at` when its offset parser
+/// refuses it, and `for` otherwise.
+///
+/// # Errors
+///
+/// [`SondaError::Config`] for the first entry `resolve` refuses.
+pub(crate) fn validate_gap_windows(windows: &[GapWindowConfig]) -> Result<(), SondaError> {
+    for (index, window) in windows.iter().enumerate() {
+        if let Err(err) = window.resolve() {
+            let (field, value) = if parse_offset_duration(&window.at).is_err() {
+                ("at", &window.at)
+            } else {
+                ("for", &window.r#for)
+            };
+            return Err(prepend_context(
+                &format!("invalid gap_windows[{index}].{field}"),
+                value,
+                err,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validate a single [`CardinalitySpikeConfig`] for semantic correctness.
 ///
 /// Checks:
@@ -256,7 +288,11 @@ pub fn validate_dynamic_label_config(dl: &DynamicLabelConfig) -> Result<(), Sond
 /// Checks:
 /// - `rate` is strictly positive.
 /// - `duration`, if provided, is a parseable duration string.
+/// - `start_time`, if provided, parses through [`parse_start_time`], as the
+///   schedule parses it.
 /// - If gaps are configured, `gap.for` is strictly less than `gap.every`.
+/// - Every `gap_windows` entry resolves through
+///   [`GapWindowConfig::resolve`], as the schedule resolves it.
 /// - The metric name is a valid Prometheus metric name
 ///   (matches `[a-zA-Z_:][a-zA-Z0-9_:]*`).
 ///
@@ -294,6 +330,9 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
             ))));
         }
     }
+
+    // Every one-shot gap window resolves, through the schedule's own resolver.
+    validate_gap_windows(config.gap_windows.as_deref().unwrap_or_default())?;
 
     // Burst consistency: multiplier > 0, burst.for < burst.every.
     if let Some(ref burst) = config.bursts {
@@ -433,7 +472,11 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 /// Checks:
 /// - `rate` is strictly positive and not NaN.
 /// - `duration`, if provided, is a parseable duration string.
+/// - `start_time`, if provided, parses through [`parse_start_time`], as the
+///   schedule parses it (with the `runtime` feature, which the schedule needs).
 /// - If gaps are configured, `gap.for` is strictly less than `gap.every`.
+/// - Every `gap_windows` entry resolves through
+///   [`GapWindowConfig::resolve`], as the schedule resolves it.
 /// - If bursts are configured, `burst.for` is strictly less than `burst.every`
 ///   and `burst.multiplier` is strictly positive.
 ///
@@ -453,6 +496,14 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
+    // start_time must be parseable if provided, by the parser the schedule
+    // uses. Only with `runtime`: the schedule exists only there, and without
+    // it the parser is not linked into the pure engine.
+    #[cfg(feature = "runtime")]
+    if let Some(ref start_str) = config.start_time {
+        parse_start_time(start_str)?;
+    }
+
     if let Some(ref gap) = config.gaps {
         let every = parse_duration(&gap.every)
             .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
@@ -465,6 +516,9 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
             ))));
         }
     }
+
+    // Every one-shot gap window resolves, through the schedule's own resolver.
+    validate_gap_windows(config.gap_windows.as_deref().unwrap_or_default())?;
 
     if let Some(ref burst) = config.bursts {
         validate_burst_config(burst)?;
@@ -1851,7 +1905,10 @@ pub fn validate_quantiles(quantiles: &[f64]) -> Result<(), SondaError> {
 /// Checks:
 /// - `rate` is strictly positive.
 /// - `duration`, if provided, is a parseable duration string.
-/// - Gap/burst/spike consistency (delegates to shared validators).
+/// - `start_time`, if provided, parses through [`parse_start_time`], as the
+///   schedule parses it (with the `runtime` feature, which the schedule needs).
+/// - Gap/burst/spike consistency (delegates to shared validators), and every
+///   `gap_windows` entry resolving as the schedule resolves it.
 /// - Bucket boundaries are sorted, positive, non-empty.
 /// - Distribution parameters are valid.
 /// - `observations_per_tick` must be > 0 (when provided).
@@ -1871,6 +1928,14 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
+    // start_time must be parseable if provided, by the parser the schedule
+    // uses. Only with `runtime`: the schedule exists only there, and without
+    // it the parser is not linked into the pure engine.
+    #[cfg(feature = "runtime")]
+    if let Some(ref start_str) = config.start_time {
+        parse_start_time(start_str)?;
+    }
+
     if let Some(ref gap) = config.gaps {
         let every = parse_duration(&gap.every)
             .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
@@ -1883,6 +1948,9 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
             ))));
         }
     }
+
+    // Every one-shot gap window resolves, through the schedule's own resolver.
+    validate_gap_windows(config.gap_windows.as_deref().unwrap_or_default())?;
 
     if let Some(ref burst) = config.bursts {
         validate_burst_config(burst)?;
@@ -1939,7 +2007,10 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
 /// Checks:
 /// - `rate` is strictly positive.
 /// - `duration`, if provided, is a parseable duration string.
-/// - Gap/burst/spike consistency (delegates to shared validators).
+/// - `start_time`, if provided, parses through [`parse_start_time`], as the
+///   schedule parses it (with the `runtime` feature, which the schedule needs).
+/// - Gap/burst/spike consistency (delegates to shared validators), and every
+///   `gap_windows` entry resolving as the schedule resolves it.
 /// - Quantile targets are in `(0, 1)`, sorted, non-empty.
 /// - Distribution parameters are valid.
 /// - `observations_per_tick` must be > 0 (when provided).
@@ -1959,6 +2030,14 @@ pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), Son
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
+    // start_time must be parseable if provided, by the parser the schedule
+    // uses. Only with `runtime`: the schedule exists only there, and without
+    // it the parser is not linked into the pure engine.
+    #[cfg(feature = "runtime")]
+    if let Some(ref start_str) = config.start_time {
+        parse_start_time(start_str)?;
+    }
+
     if let Some(ref gap) = config.gaps {
         let every = parse_duration(&gap.every)
             .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
@@ -1971,6 +2050,9 @@ pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), Son
             ))));
         }
     }
+
+    // Every one-shot gap window resolves, through the schedule's own resolver.
+    validate_gap_windows(config.gap_windows.as_deref().unwrap_or_default())?;
 
     if let Some(ref burst) = config.bursts {
         validate_burst_config(burst)?;
@@ -6852,5 +6934,219 @@ generator:
     #[test]
     fn parse_start_time_overflowing_day_offset_is_err() {
         assert!(parse_start_time("+1e15d").is_err());
+    }
+
+    // ---- validate_gap_windows ------------------------------------------------
+
+    fn gap_window(at: &str, r#for: &str) -> GapWindowConfig {
+        GapWindowConfig {
+            at: at.to_string(),
+            r#for: r#for.to_string(),
+        }
+    }
+
+    /// The text `resolve` refuses `window` with, without the prefix every
+    /// `SondaError::Config` displays.
+    fn resolve_refusal(window: &GapWindowConfig) -> String {
+        match window.resolve() {
+            Err(SondaError::Config(e)) => e.to_string(),
+            other => panic!("resolve must refuse {window:?} with a config error, got {other:?}"),
+        }
+    }
+
+    /// A window the schedule cannot resolve is refused by validation, which
+    /// names the entry, the field and the value, then carries `resolve`'s own
+    /// message. Each row is first shown to be one the schedule refuses.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::at_without_a_unit(  &[("5", "1s")],               0, "at",  "5")]
+    #[case::for_without_a_unit( &[("0s", "1")],               0, "for", "1")]
+    #[case::negative_at(        &[("-1s", "1s")],             0, "at",  "-1s")]
+    #[case::zero_length_for(    &[("10s", "0s")],             0, "for", "0s")]
+    #[case::the_second_entry(   &[("0s", "1s"), ("5", "1s")], 1, "at",  "5")]
+    #[case::both_fields_bad(    &[("5", "1")],                0, "at",  "5")]
+    fn validate_config_refuses_a_gap_window_the_schedule_cannot_resolve(
+        #[case] windows: &[(&str, &str)],
+        #[case] index: usize,
+        #[case] field: &str,
+        #[case] value: &str,
+    ) {
+        let mut config = minimal_config_with_rate(1.0);
+        validate_config(&config).expect("the entry without windows must validate");
+
+        let windows: Vec<GapWindowConfig> =
+            windows.iter().map(|(at, r#for)| gap_window(at, r#for)).collect();
+        let refused = resolve_refusal(&windows[index]);
+        config.base.gap_windows = Some(windows);
+        #[cfg(feature = "runtime")]
+        assert!(
+            crate::schedule::ParsedSchedule::from_base_config(&config.base).is_err(),
+            "the schedule must refuse this row"
+        );
+
+        let msg = err_msg(validate_config(&config));
+        let named = format!("invalid gap_windows[{index}].{field} {value:?}: ");
+        assert!(msg.contains(&named), "the refusal must name {named:?}, got: {msg}");
+        assert!(
+            msg.ends_with(&refused),
+            "the refusal must end with resolve's message {refused:?}, got: {msg}"
+        );
+    }
+
+    /// The windows the schedule resolves pass validation, a bare `0` offset
+    /// included.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bare_zero_offset(  "0",    "1s")]
+    #[case::zero_offset(       "0s",   "30s")]
+    #[case::fractional(        "1.5s", "250ms")]
+    #[case::minutes_and_hours( "2m",   "1h")]
+    fn validate_config_accepts_a_gap_window_the_schedule_resolves(
+        #[case] at: &str,
+        #[case] r#for: &str,
+    ) {
+        let window = gap_window(at, r#for);
+        window
+            .resolve()
+            .expect("the schedule's resolver must accept this window");
+        let mut config = minimal_config_with_rate(1.0);
+        config.base.gap_windows = Some(vec![window]);
+        #[cfg(feature = "runtime")]
+        crate::schedule::ParsedSchedule::from_base_config(&config.base)
+            .expect("the schedule must accept this window");
+
+        validate_config(&config).expect("validation must accept what the schedule resolves");
+    }
+
+    fn make_log_config() -> LogScenarioConfig {
+        LogScenarioConfig {
+            base: make_histogram_config().base,
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        }
+    }
+
+    /// One signal's validator, run on its minimal valid entry after `edit`
+    /// has changed the entry's schedule fields.
+    type Validate = fn(&dyn Fn(&mut BaseScheduleConfig)) -> Result<(), SondaError>;
+
+    fn metrics_with(edit: &dyn Fn(&mut BaseScheduleConfig)) -> Result<(), SondaError> {
+        let mut config = minimal_config_with_rate(1.0);
+        edit(&mut config.base);
+        validate_config(&config)
+    }
+
+    fn logs_with(edit: &dyn Fn(&mut BaseScheduleConfig)) -> Result<(), SondaError> {
+        let mut config = make_log_config();
+        edit(&mut config.base);
+        validate_log_config(&config)
+    }
+
+    fn histogram_with(edit: &dyn Fn(&mut BaseScheduleConfig)) -> Result<(), SondaError> {
+        let mut config = make_histogram_config();
+        edit(&mut config.base);
+        validate_histogram_config(&config)
+    }
+
+    fn summary_with(edit: &dyn Fn(&mut BaseScheduleConfig)) -> Result<(), SondaError> {
+        let mut config = make_summary_config();
+        edit(&mut config.base);
+        validate_summary_config(&config)
+    }
+
+    /// Every signal's validator refuses the window, because every signal's
+    /// runner builds its schedule through the same resolver.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::metrics(   metrics_with as Validate)]
+    #[case::logs(      logs_with as Validate)]
+    #[case::histogram( histogram_with as Validate)]
+    #[case::summary(   summary_with as Validate)]
+    fn every_signal_validator_refuses_a_gap_window_the_schedule_cannot_resolve(
+        #[case] validate: Validate,
+    ) {
+        validate(&|_| {}).expect("the entry without windows must validate");
+        let msg = err_msg(validate(&|base| {
+            base.gap_windows = Some(vec![gap_window("5", "1s")]);
+        }));
+        assert!(
+            msg.contains(r#"invalid gap_windows[0].at "5": "#),
+            "got: {msg}"
+        );
+    }
+
+    /// Every signal's validator parses `start_time` with the parser the
+    /// schedule uses, so it refuses what the schedule would, in the schedule's
+    /// words, which name the field and the value. Each case first accepts the
+    /// entry without one and with a valid one. The metrics validator parses it
+    /// in every build; the other three only with `runtime`, where the schedule
+    /// is, and accept it without.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::metrics(   metrics_with as Validate,   true)]
+    #[case::logs(      logs_with as Validate,      cfg!(feature = "runtime"))]
+    #[case::histogram( histogram_with as Validate, cfg!(feature = "runtime"))]
+    #[case::summary(   summary_with as Validate,   cfg!(feature = "runtime"))]
+    fn every_signal_validator_refuses_a_start_time_the_schedule_cannot_parse(
+        #[case] validate: Validate,
+        #[case] parses: bool,
+    ) {
+        validate(&|_| {}).expect("the entry without a start_time must validate");
+        validate(&|base| base.start_time = Some("-1h".to_string()))
+            .expect("the entry with `start_time: -1h` must validate");
+
+        let refused = match parse_start_time("garbage") {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("parse_start_time must refuse \"garbage\""),
+        };
+        assert!(
+            refused.contains(r#"start_time "garbage""#),
+            "the parser's refusal must name the field and the value: {refused}"
+        );
+        #[cfg(feature = "runtime")]
+        {
+            let mut base = minimal_config_with_rate(1.0).base;
+            base.start_time = Some("garbage".to_string());
+            let schedule = crate::schedule::ParsedSchedule::from_base_config(&base)
+                .expect_err("the schedule must refuse `start_time: garbage`");
+            assert_eq!(schedule.to_string(), refused, "the schedule's refusal moved");
+        }
+
+        let garbage = validate(&|base| base.start_time = Some("garbage".to_string()));
+        if parses {
+            assert_eq!(err_msg(garbage), refused, "validation must refuse in the schedule's words");
+        } else {
+            garbage.expect("without `runtime` this validator does not parse start_time");
+        }
+    }
+
+    /// The schedule's own refusal is unchanged: `ParsedSchedule` still refuses
+    /// the window in `resolve`'s words alone, and validation's refusal is
+    /// those words after the entry, field and value.
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn the_schedule_still_refuses_a_bad_gap_window_in_its_own_words() {
+        let mut config = minimal_config_with_rate(1.0);
+        config.base.gap_windows = Some(vec![gap_window("5", "1s")]);
+
+        let schedule = crate::schedule::ParsedSchedule::from_base_config(&config.base)
+            .expect_err("the schedule must refuse `at: 5`")
+            .to_string();
+        assert_eq!(
+            schedule,
+            r#"configuration error: unrecognized duration unit in "5": expected one of ms, s, m, h"#
+        );
+
+        assert_eq!(
+            err_msg(validate_config(&config)),
+            r#"configuration error: invalid gap_windows[0].at "5": unrecognized duration unit in "5": expected one of ms, s, m, h"#
+        );
     }
 }
