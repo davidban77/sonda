@@ -196,7 +196,6 @@ jobs:
       # (`test`, `new --from-prometheus`) declare `required-features = ["http"]`
       # in sonda/Cargo.toml, so this run skips them rather than failing them.
       - name: Test the CLI without default features
-        if: ${{ !cancelled() }}
         run: cargo test -p sonda --no-default-features --no-fail-fast
 
       # `schema` implies `config` and nothing else. That is the whole claim of
@@ -211,11 +210,9 @@ jobs:
         run: cargo build -p sonda-core --no-default-features --features schema
 
       - name: Test with `config` as the only feature
-        if: ${{ !cancelled() }}
         run: cargo test -p sonda-core --no-default-features --features config --no-fail-fast
 
       - name: Test with `schema` as the only feature
-        if: ${{ !cancelled() }}
         run: cargo test -p sonda-core --no-default-features --features schema --no-fail-fast
 
   all-features:

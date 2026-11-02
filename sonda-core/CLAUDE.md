@@ -1253,7 +1253,11 @@ For test families that share a shape and differ only by input/expected output, u
 - Start every file with `mod common;` to pull in shared helpers from `tests/common/mod.rs`:
   `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`,
   `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`. `common` is compiled only
-  with `config`; `tests/common/alloc.rs` (the per-thread `CountingAlloc` an allocation-budget
+  with `config`; its runtime parity harness (`run_and_capture_stdout`) only with `runtime` as
+  well, so a test that calls it, or otherwise reaches `schedule`, `CancellationToken` or a
+  runtime sink, carries `#[cfg(feature = "runtime")]` (the file when every test needs it, the
+  test when only some do). The test targets build and pass with `config` alone and with `schema`
+  alone, and CI runs both; `tests/common/alloc.rs` (the per-thread `CountingAlloc` an allocation-budget
   test installs as its `#[global_allocator]`, with `count_allocations`) is included with
   `#[path = "common/alloc.rs"] mod counting;` so it builds without `config` too.
 - Add new helpers to `tests/common/mod.rs` — do not duplicate across test files.

@@ -5,6 +5,7 @@
 //! downstream transitions to `Finished` (not `Unresolved`).
 
 #![cfg(feature = "config")]
+#![cfg(feature = "runtime")]
 
 mod common;
 

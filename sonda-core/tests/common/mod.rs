@@ -15,15 +15,22 @@
 //! Keep the surface area here deliberately small: every helper either loads
 //! a fixture from disk or runs a deterministic compile step. Nothing in
 //! this module decides *what* a test expects — that still lives in the caller.
+//!
+//! The module needs `config`. The runtime parity harness
+//! (`run_and_capture_stdout`) drives the schedule runners and needs
+//! `runtime` as well; it and its imports are compiled only with both, so a
+//! test that calls it is gated on `runtime` too.
 
 #![cfg(feature = "config")]
 #![allow(dead_code)]
 
-use sonda_core::CancellationToken;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+#[cfg(feature = "runtime")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "runtime")]
 use std::thread;
+#[cfg(feature = "runtime")]
 use std::time::{Duration, Instant};
 
 use sonda_core::compiler::compile_after::{compile_after, CompiledFile};
@@ -31,13 +38,12 @@ use sonda_core::compiler::expand::{expand, ExpandedFile, InMemoryPackResolver};
 use sonda_core::compiler::normalize::normalize;
 use sonda_core::compiler::parse::parse;
 use sonda_core::packs::MetricPackDef;
-use sonda_core::prepare_entries;
-use sonda_core::schedule::histogram_runner;
-use sonda_core::schedule::log_runner;
-use sonda_core::schedule::runner;
-use sonda_core::schedule::summary_runner;
+#[cfg(feature = "runtime")]
+use sonda_core::schedule::{histogram_runner, log_runner, runner, summary_runner};
+#[cfg(feature = "runtime")]
 use sonda_core::sink::Sink;
-use sonda_core::{ScenarioEntry, SondaError};
+#[cfg(feature = "runtime")]
+use sonda_core::{prepare_entries, CancellationToken, ScenarioEntry, SondaError};
 
 // -----------------------------------------------------------------------------
 // Paths
@@ -159,10 +165,12 @@ pub fn compile_to_compiled(yaml: &str, resolver: &InMemoryPackResolver) -> Compi
 /// boundary and drain the captured bytes after the runner thread joins —
 /// `MemorySink` owns its buffer directly and does not expose the shared
 /// ownership the harness needs.
+#[cfg(feature = "runtime")]
 struct CapturingSink {
     buffer: Arc<Mutex<Vec<u8>>>,
 }
 
+#[cfg(feature = "runtime")]
 #[async_trait::async_trait]
 impl Sink for CapturingSink {
     async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
@@ -182,6 +190,7 @@ impl Sink for CapturingSink {
 /// Run every entry in `entries` to completion against an in-memory sink and
 /// return the concatenated stdout-equivalent bytes. Each entry must declare a
 /// `duration:` — the harness does not honor an external cancel signal.
+#[cfg(feature = "runtime")]
 pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
     let prepared =
         prepare_entries(entries).expect("run_and_capture_stdout: prepare_entries must succeed");
@@ -299,6 +308,7 @@ pub fn normalize_timestamps(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// Dispatch a single `ScenarioEntry` to the matching runner.
+#[cfg(feature = "runtime")]
 fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut Box<dyn Sink>) -> Result<(), SondaError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -1,31 +1,50 @@
 //! Behavioural coverage for the `start_time:` emission-time shift across all
 //! four signal types and the gated close-emit recovery marker.
+//!
+//! `omitted_start_time_yields_now_variant` needs `config` alone; every other
+//! item drives a runner and is compiled only with `runtime`.
 
 #![cfg(feature = "config")]
 
+#[cfg(feature = "runtime")]
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(feature = "runtime")]
 use sonda_core::CancellationToken;
+#[cfg(feature = "runtime")]
 use std::thread;
+#[cfg(feature = "runtime")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "runtime")]
 use sonda_core::compiler::WhileOp;
+#[cfg(feature = "runtime")]
 use sonda_core::config::{
     BaseScheduleConfig, DistributionConfig, HistogramScenarioConfig, LogScenarioConfig,
     ScenarioConfig, SummaryScenarioConfig,
 };
+#[cfg(feature = "runtime")]
 use sonda_core::encoder::EncoderConfig;
+#[cfg(feature = "runtime")]
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::stats::ScenarioStats;
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::{histogram_runner, log_runner, runner, summary_runner, GateContext};
+#[cfg(feature = "runtime")]
 use sonda_core::sink::{Sink, SinkConfig};
+#[cfg(feature = "runtime")]
 use sonda_core::{OnSinkError, SondaError};
 
+#[cfg(feature = "runtime")]
 type SharedBuf = Arc<Mutex<Vec<u8>>>;
 
+#[cfg(feature = "runtime")]
 struct ProbeSink(SharedBuf);
 
+#[cfg(feature = "runtime")]
 #[async_trait::async_trait]
 impl Sink for ProbeSink {
     async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
@@ -40,12 +59,14 @@ impl Sink for ProbeSink {
     }
 }
 
+#[cfg(feature = "runtime")]
 fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
     let buf: SharedBuf = Arc::new(Mutex::new(Vec::new()));
     let sink: Box<dyn Sink> = Box::new(ProbeSink(SharedBuf::clone(&buf)));
     (sink, buf)
 }
 
+#[cfg(feature = "runtime")]
 fn base(name: &str, rate: f64, duration: &str, start_time: Option<&str>) -> BaseScheduleConfig {
     BaseScheduleConfig {
         gap_windows: None,
@@ -68,6 +89,7 @@ fn base(name: &str, rate: f64, duration: &str, start_time: Option<&str>) -> Base
     }
 }
 
+#[cfg(feature = "runtime")]
 fn metric_config(
     name: &str,
     rate: f64,
@@ -85,6 +107,7 @@ fn metric_config(
 
 /// Parse the trailing integer-millisecond timestamp token from each
 /// Prometheus text line. Returns timestamps in emission order.
+#[cfg(feature = "runtime")]
 fn prometheus_timestamps_ms(buf: &[u8]) -> Vec<i128> {
     std::str::from_utf8(buf)
         .expect("prometheus output is valid UTF-8")
@@ -99,6 +122,7 @@ fn prometheus_timestamps_ms(buf: &[u8]) -> Vec<i128> {
         .collect()
 }
 
+#[cfg(feature = "runtime")]
 fn now_ms() -> i128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -106,6 +130,7 @@ fn now_ms() -> i128 {
         .as_millis() as i128
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() {
     // 2026-05-08T14:00:00Z = 1_778_248_800 s since epoch.
@@ -169,6 +194,7 @@ async fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() 
     );
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn metric_relative_future_offset_shifts_events_ahead() {
     let before = now_ms();
@@ -196,6 +222,7 @@ async fn metric_relative_future_offset_shifts_events_ahead() {
     );
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn metric_relative_past_offset_shifts_events_back() {
     let before = now_ms();
@@ -228,6 +255,7 @@ fn omitted_start_time_yields_now_variant() {
     assert_eq!(parse_start_time("now").unwrap(), StartTime::Now);
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn metric_without_start_time_emits_at_real_now() {
     let before = now_ms();
@@ -251,9 +279,12 @@ async fn metric_without_start_time_emits_at_real_now() {
 }
 
 /// 2026-05-08T14:00:00Z anchor — used by every signal-type shift test.
+#[cfg(feature = "runtime")]
 const ANCHOR_RFC3339: &str = "2026-05-08T14:00:00Z";
+#[cfg(feature = "runtime")]
 const ANCHOR_MS: i128 = 1_778_248_800_000;
 
+#[cfg(feature = "runtime")]
 fn assert_all_in_past_window(timestamps: &[i128]) {
     assert!(!timestamps.is_empty(), "expected emitted events");
     for ts in timestamps {
@@ -268,6 +299,7 @@ fn assert_all_in_past_window(timestamps: &[i128]) {
     }
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn metric_signal_honours_absolute_past_shift() {
     let config = metric_config("up", 5.0, "600ms", Some(ANCHOR_RFC3339));
@@ -279,6 +311,7 @@ async fn metric_signal_honours_absolute_past_shift() {
     assert_all_in_past_window(&prometheus_timestamps_ms(&captured));
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn log_signal_honours_absolute_past_shift() {
     let config = LogScenarioConfig {
@@ -313,6 +346,7 @@ async fn log_signal_honours_absolute_past_shift() {
     }
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn histogram_signal_honours_absolute_past_shift() {
     let config = HistogramScenarioConfig {
@@ -338,6 +372,7 @@ async fn histogram_signal_honours_absolute_past_shift() {
     assert_all_in_past_window(&prometheus_timestamps_ms(&captured));
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test]
 async fn summary_signal_honours_absolute_past_shift() {
     let config = SummaryScenarioConfig {
@@ -363,6 +398,7 @@ async fn summary_signal_honours_absolute_past_shift() {
     assert_all_in_past_window(&prometheus_timestamps_ms(&captured));
 }
 
+#[cfg(feature = "runtime")]
 #[test]
 fn gated_close_emit_marker_lands_in_shifted_window() {
     let bus = Arc::new(GateBus::new());

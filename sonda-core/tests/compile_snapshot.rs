@@ -4,7 +4,8 @@
 //! Each test parses a semantic YAML fixture under `tests/fixtures/semantic/`,
 //! runs it through the compilation pipeline (expand, desugar, validate, resolve
 //! phase offsets), and captures the JSON shape as an [`insta`] snapshot under
-//! `tests/snapshots/`.
+//! `tests/snapshots/`. The `_prepared` variants go through `prepare_entries`,
+//! which needs `runtime`; the others need `config` alone.
 //!
 //! To regenerate the snapshots after an intentional change:
 //!
@@ -20,14 +21,17 @@
 mod common;
 
 use std::path::PathBuf;
+#[cfg(feature = "runtime")]
 use std::time::Duration;
 
 use common::snapshot_settings;
+#[cfg(feature = "runtime")]
 use serde::Serialize;
 use sonda_core::config::{
     HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry,
     SummaryScenarioConfig,
 };
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::launch::{prepare_entries, PreparedEntry};
 
 /// Return the path to the `tests/fixtures/semantic/` directory.
@@ -48,6 +52,7 @@ fn read_fixture(name: &str) -> String {
 /// Kept local to this test file because the on-disk shape is only meaningful
 /// for snapshot comparison; the production runtime consumes
 /// `PreparedEntry::start_delay` as a `Duration` directly.
+#[cfg(feature = "runtime")]
 #[derive(Serialize)]
 struct PreparedView<'a> {
     #[serde(flatten)]
@@ -55,6 +60,7 @@ struct PreparedView<'a> {
     start_delay_ms: Option<u64>,
 }
 
+#[cfg(feature = "runtime")]
 impl<'a> From<&'a PreparedEntry> for PreparedView<'a> {
     fn from(p: &'a PreparedEntry) -> Self {
         Self {
@@ -65,6 +71,7 @@ impl<'a> From<&'a PreparedEntry> for PreparedView<'a> {
 }
 
 /// Build the serializable view for a slice of prepared entries.
+#[cfg(feature = "runtime")]
 fn prepared_view(prepared: &[PreparedEntry]) -> Vec<PreparedView<'_>> {
     prepared.iter().map(PreparedView::from).collect()
 }
@@ -83,6 +90,7 @@ fn snapshot_single_metric_constant() {
     snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
+#[cfg(feature = "runtime")]
 #[test]
 fn snapshot_single_metric_constant_prepared() {
     let yaml = read_fixture("single-metric-constant.yaml");
@@ -108,6 +116,7 @@ fn snapshot_single_metric_sine() {
     snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
+#[cfg(feature = "runtime")]
 #[test]
 fn snapshot_single_metric_sine_prepared() {
     let yaml = read_fixture("single-metric-sine.yaml");
@@ -133,6 +142,7 @@ fn snapshot_single_log_template() {
     snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
+#[cfg(feature = "runtime")]
 #[test]
 fn snapshot_single_log_template_prepared() {
     let yaml = read_fixture("single-log-template.yaml");
@@ -158,6 +168,7 @@ fn snapshot_histogram_basic() {
     snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
+#[cfg(feature = "runtime")]
 #[test]
 fn snapshot_histogram_basic_prepared() {
     let yaml = read_fixture("histogram-basic.yaml");
@@ -183,6 +194,7 @@ fn snapshot_summary_basic() {
     snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
+#[cfg(feature = "runtime")]
 #[test]
 fn snapshot_summary_basic_prepared() {
     let yaml = read_fixture("summary-basic.yaml");
