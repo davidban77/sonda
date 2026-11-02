@@ -192,15 +192,31 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The four CLI test binaries that exercise the http-only subcommands
+      # (`test`, `new --from-prometheus`) declare `required-features = ["http"]`
+      # in sonda/Cargo.toml, so this run skips them rather than failing them.
+      - name: Test the CLI without default features
+        if: ${{ !cancelled() }}
+        run: cargo test -p sonda --no-default-features --no-fail-fast
+
       # `schema` implies `config` and nothing else. That is the whole claim of
       # the feature line, and `--all-features` cannot check it: there, every
       # other feature is on, so a hidden dependency on `runtime` (or on `http`,
       # via the verify module) would compile anyway and only surface for a
-      # downstream consumer who enabled `schema` alone. The schema tests
-      # themselves run in the all-features job — this step is about the
-      # feature boundary, so it stops at building.
+      # downstream consumer who enabled `schema` alone. This step builds the
+      # library; the two test steps below build and run every test target with
+      # `config` alone and with `schema` alone, where a test that needs
+      # `runtime` is gated on it.
       - name: Build with `schema` as the only feature
         run: cargo build -p sonda-core --no-default-features --features schema
+
+      - name: Test with `config` as the only feature
+        if: ${{ !cancelled() }}
+        run: cargo test -p sonda-core --no-default-features --features config --no-fail-fast
+
+      - name: Test with `schema` as the only feature
+        if: ${{ !cancelled() }}
+        run: cargo test -p sonda-core --no-default-features --features schema --no-fail-fast
 
   all-features:
     name: Build, Test, Clippy (all features)
