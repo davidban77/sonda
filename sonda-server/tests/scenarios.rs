@@ -300,6 +300,99 @@ fn post_yaml_with_a_gap_window_offset_without_a_unit_returns_422() {
     );
 }
 
+// ---- Test: POST a start_time the schedule cannot parse -> 422 -----------------
+
+/// A body with one `signal` entry (logs, histogram or summary) whose
+/// `start_time` is `start_time`.
+fn start_time_yaml(signal: &str, start_time: &str) -> String {
+    let entry = match signal {
+        "logs" => {
+            "    encoder:
+      type: json_lines
+    log_generator:
+      type: template
+      templates:
+        - message: \"start time check\"
+          field_pools: {}
+      seed: 0
+"
+        }
+        "histogram" => {
+            "    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 10
+    seed: 1
+"
+        }
+        "summary" => {
+            "    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    observations_per_tick: 10
+    seed: 1
+"
+        }
+        other => panic!("no entry for signal {other:?}"),
+    };
+    format!(
+        "\
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 500ms
+  sink:
+    type: stdout
+scenarios:
+  - signal_type: {signal}
+    name: start_time_{signal}
+    start_time: \"{start_time}\"
+{entry}"
+    )
+}
+
+/// POST a logs, histogram or summary entry whose `start_time` does not parse
+/// returns 422 before anything is launched, naming the field and the value;
+/// the same entry with `start_time: -1h` is accepted.
+#[test]
+fn post_yaml_with_a_bad_start_time_on_logs_histogram_and_summary_returns_422() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+    let post = |body: String| {
+        client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(body)
+            .send()
+            .expect("POST must succeed at HTTP level")
+    };
+
+    for signal in ["logs", "histogram", "summary"] {
+        let control = post(start_time_yaml(signal, "-1h"));
+        assert_eq!(
+            control.status().as_u16(),
+            201,
+            "the {signal} entry with `start_time: -1h` must be accepted"
+        );
+
+        let resp = post(start_time_yaml(signal, "garbage"));
+        assert_eq!(
+            resp.status().as_u16(),
+            422,
+            "a {signal} entry whose start_time does not parse must return 422"
+        );
+        let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+        assert_eq!(body["error"], "unprocessable_entity");
+        let detail = body["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains(r#"start_time "garbage""#),
+            "the {signal} detail must name the field and the value, got: {detail}"
+        );
+    }
+}
+
 // ---- Test: POST with application/json content type ----------------------------
 
 /// POST a valid JSON body with application/json content type returns 201.

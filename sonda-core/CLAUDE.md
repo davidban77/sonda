@@ -1068,7 +1068,9 @@ src/
                            entry through GapWindowConfig::resolve, the schedule's own resolver, so
                            validation refuses first; the refusal names gap_windows[i], the field
                            (at when its offset parser refuses it, else for) and the value, then
-                           resolve's message,
+                           resolve's message; all four also parse start_time with
+                           parse_start_time, the schedule's parser, whose refusal names the
+                           field and the value,
                            validate_snmp_encoder (snmp feature; from validate_config): pairing,
                            an oids: entry for the metric, placeholders are static or dynamic
                            labels and every label_columns placeholder is one of every oids:
