@@ -13,7 +13,7 @@ use crate::config::validate::{
 };
 use crate::config::{expand_entry, OnSinkError, PromMeta, PromMetricType, ScenarioEntry};
 use crate::generator::GeneratorConfig;
-use crate::schedule::core_loop::{apply_shutdown_flush_policy, GateContext};
+use crate::schedule::core_loop::{apply_shutdown_flush_policy, FlushNotice, GateContext};
 use crate::schedule::gate_bus::{GateBus, GateBusResolver};
 use crate::schedule::handle::ScenarioHandle;
 use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
@@ -1251,7 +1251,8 @@ async fn grace_after_stop(cancel: &CancellationToken, grace: Duration) {
 /// Warn that the scenario `name` (entry `id`) was still running `grace`
 /// after its stop, and apply the shutdown-flush `policy` to its abandoned
 /// flush: counted in `stats` under `warn`, the scenario's error under
-/// `fail`.
+/// `fail`. The warn is the abandon's one line: the policy prints nothing
+/// more for it.
 fn abandon_shutdown_flush(
     stats: &Arc<RwLock<ScenarioStats>>,
     id: &str,
@@ -1267,7 +1268,13 @@ fn abandon_shutdown_flush(
         "scenario '{name}' ({id}): {error}"
     );
     let abandoned = SondaError::Sink(std::io::Error::new(std::io::ErrorKind::TimedOut, error));
-    apply_shutdown_flush_policy(name, policy, Some(stats), Err(abandoned))
+    apply_shutdown_flush_policy(
+        name,
+        policy,
+        Some(stats),
+        Err(abandoned),
+        FlushNotice::AlreadyWarned,
+    )
 }
 
 /// What a test hands the next launches on its thread.
@@ -3164,6 +3171,62 @@ mod tests {
                 assert_eq!(stats.total_sink_failures, 0);
             }
         }
+    }
+
+    /// Under `warn` an abandoned flush is reported once: by the abandon's
+    /// warn, never again by the flush policy's stderr print.
+    ///
+    /// libtest captures `eprintln!` in-process, so this runs the grace test's
+    /// `warn` case in a child copy of this test binary with `--nocapture` and
+    /// reads the child's own stderr. Beside it runs a flush-policy test whose
+    /// failure is not an abandon, so the policy's print is on that stderr.
+    /// The child's tracing goes to stdout through `traced_test`'s writer.
+    #[test]
+    fn an_abandoned_flush_is_printed_once_under_warn() {
+        let module = module_path!()
+            .strip_prefix("sonda_core::")
+            .expect("module path starts with the crate name");
+        let warn_case = format!(
+            "{module}::a_flush_that_never_finishes_is_abandoned_after_the_grace::\
+             case_1_warn_counts_one_sink_failure"
+        );
+        let policy_print =
+            "schedule::core_loop::tests::apply_flush_policy_warn_swallows_sink_error";
+        let output =
+            std::process::Command::new(std::env::current_exe().expect("the test binary's path"))
+                .args([
+                    warn_case.as_str(),
+                    policy_print,
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .output()
+                .expect("the child test binary runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "the child failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("test result: ok. 2 passed"),
+            "guard: both child tests ran\n{stdout}"
+        );
+        assert!(
+            stderr.contains("sonda: scenario 'test': flush failed at shutdown: flush"),
+            "guard: the child's stderr carries the flush policy's print\n{stderr}"
+        );
+        assert_eq!(
+            stderr.matches("shutdown flush abandoned").count(),
+            0,
+            "the flush policy printed the abandon\n{stderr}"
+        );
+        assert_eq!(
+            stdout.matches("shutdown flush abandoned").count(),
+            1,
+            "the abandon's warn\n{stdout}"
+        );
     }
 
     // ---- Whole-file gnmi checks ------------------------------------------------

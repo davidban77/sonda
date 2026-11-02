@@ -369,6 +369,18 @@ async fn shutdown_signal(
         let _ = sweep.await;
     }
 
+    stop_and_join_all(
+        &state,
+        sonda_core::STOP_GRACE + routes::scenarios::STOP_JOIN_MARGIN,
+    )
+    .await;
+}
+
+/// Stop every scenario in `state`, then drain the map and wait up to
+/// `join_window` for each task: a task that ended logs "scenario task
+/// joined" (or the error it ended with); one still running when its window
+/// ends logs a warn naming it instead.
+async fn stop_and_join_all(state: &AppState, join_window: Duration) {
     for handle in state.scenarios.read().values() {
         handle.stop();
     }
@@ -377,9 +389,18 @@ async fn shutdown_signal(
     let ids_handles: Vec<(String, sonda_core::ScenarioHandle)> =
         state.scenarios.write().drain().collect();
     for (id, mut handle) in ids_handles {
-        let join_window = sonda_core::STOP_GRACE + routes::scenarios::STOP_JOIN_MARGIN;
-        match handle.join_async(Some(join_window)).await {
-            Ok(_) => info!(scenario = %id, "scenario task joined"),
+        let joined = handle.join_async(Some(join_window)).await;
+        if handle.is_running() {
+            warn!(
+                scenario = %id,
+                name = %handle.name,
+                ?join_window,
+                "scenario task still running after the stop window"
+            );
+            continue;
+        }
+        match joined {
+            Ok(()) => info!(scenario = %id, "scenario task joined"),
             Err(e) => warn!(scenario = %id, error = %e, "scenario task join failed"),
         }
     }
@@ -503,6 +524,104 @@ mod tests {
         report_sweep_outcome(sweeping, Arc::clone(&status)).await;
 
         assert_eq!(status.snapshot().phase, crate::state::SweepPhase::Finished);
+    }
+
+    /// A `tracing` writer into a buffer the test reads back.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Captured {
+        /// The captured lines that name the scenario `id`.
+        fn lines_about(&self, id: &str) -> Vec<String> {
+            let field = format!("scenario={id}");
+            String::from_utf8_lossy(&self.0.lock().expect("capture lock"))
+                .lines()
+                .filter(|line| line.contains(&field))
+                .map(str::to_owned)
+                .collect()
+        }
+    }
+
+    /// A handle `id` whose task ends on its stop, or with `ignores_stop`
+    /// never ends.
+    fn scenario_handle(id: &str, ignores_stop: bool) -> sonda_core::ScenarioHandle {
+        let cancel = CancellationToken::new();
+        let stopped = cancel.clone();
+        let task = tokio::spawn(async move {
+            if ignores_stop {
+                std::future::pending::<()>().await;
+            }
+            stopped.cancelled().await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
+        sonda_core::ScenarioHandle::new(
+            id.to_string(),
+            id.to_string(),
+            None,
+            cancel,
+            Some(task),
+            std::time::Instant::now(),
+            Arc::new(std::sync::RwLock::new(sonda_core::ScenarioStats::default())),
+            1.0,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            Arc::new(std::collections::HashMap::new()),
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+    }
+
+    /// The shutdown join tells a task still running when its window ends
+    /// from one that ended: the first is warned about by id and never logged
+    /// as joined.
+    #[tokio::test]
+    async fn a_scenario_still_running_after_the_stop_window_is_not_logged_as_joined() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let state = AppState::new();
+        {
+            let mut scenarios = state.scenarios.write();
+            for (id, ignores_stop) in [("ends-on-stop", false), ("ignores-the-stop", true)] {
+                scenarios.insert(id.to_string(), scenario_handle(id, ignores_stop));
+            }
+        }
+        stop_and_join_all(&state, Duration::from_millis(200)).await;
+        assert!(state.scenarios.read().is_empty(), "the map was drained");
+
+        let ended = captured.lines_about("ends-on-stop");
+        assert!(
+            ended
+                .iter()
+                .any(|line| line.contains("INFO") && line.contains("scenario task joined")),
+            "guard: the capture sees a join: {ended:?}"
+        );
+        let stuck = captured.lines_about("ignores-the-stop");
+        assert!(
+            stuck.iter().any(|line| line.contains("WARN")
+                && line.contains("scenario task still running after the stop window")),
+            "{stuck:?}"
+        );
+        assert!(
+            !stuck.iter().any(|line| line.contains("joined")),
+            "a task still running was logged as joined: {stuck:?}"
+        );
     }
 
     #[test]

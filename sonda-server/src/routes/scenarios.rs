@@ -903,8 +903,11 @@ pub async fn get_scenario(
 
 /// How much longer than [`sonda_core::STOP_GRACE`] the server waits for a
 /// stopped scenario's task before treating it as stuck: the grace's own
-/// abandoned-flush failure then reaches the stats the server reads.
+/// abandoned-flush failure then reaches the stats the server reads. It must
+/// stay positive, which the assertion below checks at compile time: a margin
+/// of zero lets the join window end with the grace and race the abandon.
 pub(crate) const STOP_JOIN_MARGIN: Duration = Duration::from_secs(1);
+const _: () = assert!(STOP_JOIN_MARGIN.as_millis() > 0);
 
 /// `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 ///
