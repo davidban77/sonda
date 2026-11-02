@@ -65,8 +65,10 @@ fn tmp_matrix_path(name: &str) -> std::path::PathBuf {
 // Op discriminant for per-encoder rstest families
 // ---------------------------------------------------------------------------
 
-/// Selects the assertion for a per-encoder rstest row.
+/// Selects the assertion for a per-encoder rstest row. Without `runtime` only
+/// the `Memory*` rows exist.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "runtime"), allow(clippy::enum_variant_names))]
 enum Op {
     MemoryNonempty,
     MemoryContainsIdentifier,
