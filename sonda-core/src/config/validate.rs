@@ -473,7 +473,7 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 /// - `rate` is strictly positive and not NaN.
 /// - `duration`, if provided, is a parseable duration string.
 /// - `start_time`, if provided, parses through [`parse_start_time`], as the
-///   schedule parses it.
+///   schedule parses it (with the `runtime` feature, which the schedule needs).
 /// - If gaps are configured, `gap.for` is strictly less than `gap.every`.
 /// - Every `gap_windows` entry resolves through
 ///   [`GapWindowConfig::resolve`], as the schedule resolves it.
@@ -496,7 +496,10 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
-    // start_time must be parseable if provided, by the parser the schedule uses.
+    // start_time must be parseable if provided, by the parser the schedule
+    // uses. Only with `runtime`: the schedule exists only there, and without
+    // it the parser is not linked into the pure engine.
+    #[cfg(feature = "runtime")]
     if let Some(ref start_str) = config.start_time {
         parse_start_time(start_str)?;
     }
@@ -1903,7 +1906,7 @@ pub fn validate_quantiles(quantiles: &[f64]) -> Result<(), SondaError> {
 /// - `rate` is strictly positive.
 /// - `duration`, if provided, is a parseable duration string.
 /// - `start_time`, if provided, parses through [`parse_start_time`], as the
-///   schedule parses it.
+///   schedule parses it (with the `runtime` feature, which the schedule needs).
 /// - Gap/burst/spike consistency (delegates to shared validators), and every
 ///   `gap_windows` entry resolving as the schedule resolves it.
 /// - Bucket boundaries are sorted, positive, non-empty.
@@ -1925,7 +1928,10 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
-    // start_time must be parseable if provided, by the parser the schedule uses.
+    // start_time must be parseable if provided, by the parser the schedule
+    // uses. Only with `runtime`: the schedule exists only there, and without
+    // it the parser is not linked into the pure engine.
+    #[cfg(feature = "runtime")]
     if let Some(ref start_str) = config.start_time {
         parse_start_time(start_str)?;
     }
@@ -2002,7 +2008,7 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
 /// - `rate` is strictly positive.
 /// - `duration`, if provided, is a parseable duration string.
 /// - `start_time`, if provided, parses through [`parse_start_time`], as the
-///   schedule parses it.
+///   schedule parses it (with the `runtime` feature, which the schedule needs).
 /// - Gap/burst/spike consistency (delegates to shared validators), and every
 ///   `gap_windows` entry resolving as the schedule resolves it.
 /// - Quantile targets are in `(0, 1)`, sorted, non-empty.
@@ -2024,7 +2030,10 @@ pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), Son
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
-    // start_time must be parseable if provided, by the parser the schedule uses.
+    // start_time must be parseable if provided, by the parser the schedule
+    // uses. Only with `runtime`: the schedule exists only there, and without
+    // it the parser is not linked into the pure engine.
+    #[cfg(feature = "runtime")]
     if let Some(ref start_str) = config.start_time {
         parse_start_time(start_str)?;
     }
@@ -7076,15 +7085,18 @@ generator:
     /// Every signal's validator parses `start_time` with the parser the
     /// schedule uses, so it refuses what the schedule would, in the schedule's
     /// words, which name the field and the value. Each case first accepts the
-    /// entry without one and with a valid one.
+    /// entry without one and with a valid one. The metrics validator parses it
+    /// in every build; the other three only with `runtime`, where the schedule
+    /// is, and accept it without.
     #[rustfmt::skip]
     #[rstest::rstest]
-    #[case::metrics(   metrics_with as Validate)]
-    #[case::logs(      logs_with as Validate)]
-    #[case::histogram( histogram_with as Validate)]
-    #[case::summary(   summary_with as Validate)]
+    #[case::metrics(   metrics_with as Validate,   true)]
+    #[case::logs(      logs_with as Validate,      cfg!(feature = "runtime"))]
+    #[case::histogram( histogram_with as Validate, cfg!(feature = "runtime"))]
+    #[case::summary(   summary_with as Validate,   cfg!(feature = "runtime"))]
     fn every_signal_validator_refuses_a_start_time_the_schedule_cannot_parse(
         #[case] validate: Validate,
+        #[case] parses: bool,
     ) {
         validate(&|_| {}).expect("the entry without a start_time must validate");
         validate(&|base| base.start_time = Some("-1h".to_string()))
@@ -7107,8 +7119,12 @@ generator:
             assert_eq!(schedule.to_string(), refused, "the schedule's refusal moved");
         }
 
-        let msg = err_msg(validate(&|base| base.start_time = Some("garbage".to_string())));
-        assert_eq!(msg, refused, "validation must refuse in the schedule's words");
+        let garbage = validate(&|base| base.start_time = Some("garbage".to_string()));
+        if parses {
+            assert_eq!(err_msg(garbage), refused, "validation must refuse in the schedule's words");
+        } else {
+            garbage.expect("without `runtime` this validator does not parse start_time");
+        }
     }
 
     /// The schedule's own refusal is unchanged: `ParsedSchedule` still refuses
