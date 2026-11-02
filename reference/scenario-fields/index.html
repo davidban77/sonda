@@ -3077,9 +3077,9 @@ checked.</p>
 <li><strong><code>bursts:</code> and blanks cannot be combined.</strong> A <abbr title="Recurring window during which a scenario emits at an elevated rate.">burst</abbr> compresses the tick grid, so row <em>n</em> stops landing at <em>n</em> × step.</li>
 </ul>
 <p><code>phase_offset:</code>, <code>start_time:</code>, <code>cardinality_spikes:</code> and <code>dynamic_labels:</code> are unaffected — none of them moves a row relative to its window.</p>
-<div class="admonition warning">
-<p class="admonition-title"><code>--dry-run</code> does not check these</p>
-<p><code>sonda --dry-run run</code> stops before the step that expands a <code>csv_replay</code> <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>, so it reports <code>Validation: OK</code> for a file these rules would refuse. Run <code>sonda run</code> to check them. This is the one class of error <code>--dry-run</code> currently cannot see.</p>
+<div class="admonition note">
+<p class="admonition-title"><code>--dry-run</code> checks these too</p>
+<p><code>sonda --dry-run run</code> expands a <code>csv_replay</code> <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> as <code>sonda run</code> does, so it refuses a file these rules would refuse, without emitting anything.</p>
 </div>
 </div>
 <h3 id="burst-window">Burst window<a class="headerlink" href="#burst-window" title="Permanent link">&para;</a></h3>
@@ -3380,6 +3380,7 @@ checked.</p>
 </tbody>
 </table>
 <p>Fractional values are supported in all units. For example, <code>1.5s</code> means 1500 milliseconds and <code>0.5m</code> means 30 seconds.</p>
+<p>A duration takes a unit everywhere: Sonda refuses <code>duration: 10</code> and a flap's <code>phase: 0</code>; write <code>10s</code> and <code>0s</code>. <code>at</code> in <code>gap_windows:</code> and <code>open</code> in <code>delay:</code> also take a bare <code>0</code>.</p>
 <h3 id="timestamp-anchor">Timestamp anchor<a class="headerlink" href="#timestamp-anchor" title="Permanent link">&para;</a></h3>
 <p><code>start_time</code> sets the timestamp anchor written on every emitted event. It shifts only the <em>timestamp</em> on each event. The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> still runs for its real wall-clock <code>duration</code>, emits the same events, with the same values, at the same spacing. Only the anchor moves.</p>
 <p>It applies to all four signal types (metrics, logs, histograms, summaries) and every <abbr title="Prometheus text format for metrics scraped from an HTTP endpoint (`# HELP`, `# TYPE`, `name{label=&quot;v&quot;} value`).">exposition format</abbr>. Set it on <code>defaults:</code> to anchor the whole file, or on an individual entry to anchor only that <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>.</p>
@@ -3640,7 +3641,7 @@ checked.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 30, 2026 13:31:11 UTC">August 30, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 2, 2026 23:46:23 UTC">November 2, 2026</span>
   </span>
 
     
