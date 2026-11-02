@@ -711,6 +711,13 @@ def extract_scenarios(md_path: Path, markdown_text: str) -> list[ExtractedScenar
 #: ``all fine``. Raise it when you add fences.
 MIN_BUILTIN_PACK_FENCES = 7
 
+#: Floor on the bare ``encoder:``/``sink:`` fences in ``docs/`` that the block
+#: tier wraps (54 when it was set). Its failure mode is silence too: a fence
+#: the tier stops recognising moves into the declined summary and fails
+#: nothing. Asserted by ``run_validation`` and by the self-test before it
+#: compiles them. Lower it deliberately when fences are removed.
+MIN_BLOCK_FRAGMENTS = 50
+
 
 def builtin_pack_names(sonda_bin: Path | None) -> frozenset[str]:
     """Every pack the binary resolves with no ``--catalog``.
@@ -1169,6 +1176,14 @@ def run_validation(
                 f"it saw {sorted(builtins)}. A stale `target/release/sonda` does "
                 "exactly this."
             )
+    blocks = sum(1 for s in scenarios if s.block)
+    if blocks < MIN_BLOCK_FRAGMENTS:
+        raise RuntimeError(
+            f"only {blocks} encoder/sink block fragments extracted, expected at "
+            f"least {MIN_BLOCK_FRAGMENTS}. Either fences were removed (lower the "
+            "floor deliberately, never silently) or the block tier stopped "
+            "recognising them, and they are now counted as declined."
+        )
 
     return results, [r for r in results if not r.ok], declined
 
@@ -1240,7 +1255,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="Run inline unit tests plus the shared case table, and exit.",
+        help=(
+            "Run the inline unit tests and the shared case table, and exit. "
+            "The tests that compile a wrapped fence use the sonda binary (as "
+            "--sonda or the default path) and fail without one unless "
+            "--no-binary is also passed, which skips them."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -1508,11 +1528,6 @@ class _SynthesizeFragmentTests(unittest.TestCase):
         self.assertIn("\n    generator:\n", out)
         self.assertIn("\n      type: constant\n", out)
 
-
-#: Floor on the bare ``encoder:``/``sink:`` fences in ``docs/`` that the block
-#: tier wraps. Asserted by the self-test before it asserts they compile, so a
-#: tier that stops recognising them fails instead of compiling nothing.
-MIN_BLOCK_FRAGMENTS = 2
 
 # The binary the compiling self-tests use; `None` under --no-binary. Set by
 # `_run_self_tests` from the same flags a normal run reads.
