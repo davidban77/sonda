@@ -17,6 +17,7 @@
 //! branch, so a fix to one that missed the other would be invisible.
 
 #![cfg(feature = "config")]
+#![cfg(feature = "runtime")]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

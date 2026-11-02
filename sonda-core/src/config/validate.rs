@@ -2897,7 +2897,7 @@ sink:
 
     // ---- Round-trip: deserialize -> validate -> create factories -------------
 
-    #[cfg(feature = "config")]
+    #[cfg(all(feature = "config", feature = "runtime"))]
     #[tokio::test]
     async fn round_trip_creates_generator_encoder_sink_successfully() {
         use crate::encoder::create_encoder;

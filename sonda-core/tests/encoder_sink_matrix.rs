@@ -3,17 +3,21 @@
 //!
 //! Three `#[rstest]` families (one per encoder) cover memory-shape checks,
 //! file round-trips, TCP/UDP delivery, and stdout write-flush via the `Op`
-//! discriminant. Encoder-unique assertions and regression anchors are
-//! standalone tests. Feature-gated sinks (HTTP push, Kafka, OTLP) each have
-//! a dedicated rstest fn or module.
+//! discriminant; the sink rows need `runtime`. Encoder-unique assertions and
+//! regression anchors are standalone tests. Feature-gated sinks (HTTP push,
+//! Kafka, OTLP) each have a dedicated rstest fn or module.
 
 #[cfg(feature = "http")]
 use std::collections::HashMap;
+#[cfg(feature = "runtime")]
 use std::io::Read;
 #[cfg(feature = "http")]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(feature = "runtime")]
 use std::net::{TcpListener, UdpSocket};
+#[cfg(feature = "runtime")]
 use std::path::Path;
+#[cfg(feature = "runtime")]
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -50,6 +54,7 @@ fn encode_event(config: &EncoderConfig, event: &MetricEvent) -> Vec<u8> {
     buf
 }
 
+#[cfg(feature = "runtime")]
 fn tmp_matrix_path(name: &str) -> std::path::PathBuf {
     std::env::temp_dir()
         .join("sonda-matrix-tests")
@@ -60,15 +65,21 @@ fn tmp_matrix_path(name: &str) -> std::path::PathBuf {
 // Op discriminant for per-encoder rstest families
 // ---------------------------------------------------------------------------
 
-/// Selects the assertion for a per-encoder rstest row.
+/// Selects the assertion for a per-encoder rstest row. Without `runtime` only
+/// the `Memory*` rows exist.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "runtime"), allow(clippy::enum_variant_names))]
 enum Op {
     MemoryNonempty,
     MemoryContainsIdentifier,
     MemoryEndsNewline,
+    #[cfg(feature = "runtime")]
     FileSink,
+    #[cfg(feature = "runtime")]
     TcpSink,
+    #[cfg(feature = "runtime")]
     UdpSink,
+    #[cfg(feature = "runtime")]
     StdoutSink,
 }
 
@@ -79,6 +90,7 @@ async fn check_memory_nonempty(bytes: &[u8], enc: &str) {
     assert!(!sink.buffer.is_empty(), "{enc} encoder produced no output");
 }
 
+#[cfg(feature = "runtime")]
 async fn check_file_roundtrip(bytes: &[u8], tag: &str) {
     let path = tmp_matrix_path(tag);
     let _ = std::fs::remove_file(&path);
@@ -92,6 +104,7 @@ async fn check_file_roundtrip(bytes: &[u8], tag: &str) {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
+#[cfg(feature = "runtime")]
 async fn check_tcp_delivery(bytes: &[u8]) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -111,6 +124,7 @@ async fn check_tcp_delivery(bytes: &[u8]) {
     assert_eq!(rx.join().unwrap(), expected);
 }
 
+#[cfg(feature = "runtime")]
 async fn check_udp_delivery(bytes: &[u8]) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket
@@ -124,6 +138,7 @@ async fn check_udp_delivery(bytes: &[u8]) {
     assert_eq!(&buf[..len], bytes);
 }
 
+#[cfg(feature = "runtime")]
 async fn check_stdout(bytes: &[u8]) {
     let mut sink = sonda_core::sink::stdout::StdoutSink::new();
     assert!(sink.write(bytes).await.is_ok());
@@ -138,9 +153,13 @@ async fn run_op(bytes: &[u8], op: Op, tag: &str) {
     match op {
         Op::MemoryNonempty => check_memory_nonempty(bytes, tag).await,
         Op::MemoryContainsIdentifier | Op::MemoryEndsNewline => unreachable!("handled inline"),
+        #[cfg(feature = "runtime")]
         Op::FileSink => check_file_roundtrip(bytes, tag).await,
+        #[cfg(feature = "runtime")]
         Op::TcpSink => check_tcp_delivery(bytes).await,
+        #[cfg(feature = "runtime")]
         Op::UdpSink => check_udp_delivery(bytes).await,
+        #[cfg(feature = "runtime")]
         Op::StdoutSink => check_stdout(bytes).await,
     }
 }
@@ -150,10 +169,10 @@ async fn run_op(bytes: &[u8], op: Op, tag: &str) {
 #[case::memory_produces_nonempty_output(       Op::MemoryNonempty)]
 #[case::memory_output_contains_metric_name(    Op::MemoryContainsIdentifier)]
 #[case::memory_output_ends_with_newline(        Op::MemoryEndsNewline)]
-#[case::file_write_and_read_back(              Op::FileSink)]
-#[case::tcp_data_arrives_at_listener(          Op::TcpSink)]
-#[case::udp_datagram_arrives_at_receiver(      Op::UdpSink)]
-#[case::stdout_write_and_flush_succeed(        Op::StdoutSink)]
+#[cfg_attr(feature = "runtime", case::file_write_and_read_back(         Op::FileSink))]
+#[cfg_attr(feature = "runtime", case::tcp_data_arrives_at_listener(     Op::TcpSink))]
+#[cfg_attr(feature = "runtime", case::udp_datagram_arrives_at_receiver( Op::UdpSink))]
+#[cfg_attr(feature = "runtime", case::stdout_write_and_flush_succeed(   Op::StdoutSink))]
 #[tokio::test(flavor = "multi_thread")]
 async fn prometheus_encoder_cases(#[case] op: Op) {
     let config = EncoderConfig::PrometheusText { precision: None };
@@ -170,10 +189,10 @@ async fn prometheus_encoder_cases(#[case] op: Op) {
 #[case::memory_produces_nonempty_output(       Op::MemoryNonempty)]
 #[case::memory_output_contains_measurement(    Op::MemoryContainsIdentifier)]
 #[case::memory_output_has_nanosecond_timestamp(Op::MemoryEndsNewline)]
-#[case::file_write_and_read_back(              Op::FileSink)]
-#[case::tcp_data_arrives_at_listener(          Op::TcpSink)]
-#[case::udp_datagram_arrives_at_receiver(      Op::UdpSink)]
-#[case::stdout_write_and_flush_succeed(        Op::StdoutSink)]
+#[cfg_attr(feature = "runtime", case::file_write_and_read_back(         Op::FileSink))]
+#[cfg_attr(feature = "runtime", case::tcp_data_arrives_at_listener(     Op::TcpSink))]
+#[cfg_attr(feature = "runtime", case::udp_datagram_arrives_at_receiver( Op::UdpSink))]
+#[cfg_attr(feature = "runtime", case::stdout_write_and_flush_succeed(   Op::StdoutSink))]
 #[tokio::test(flavor = "multi_thread")]
 async fn influx_encoder_cases(#[case] op: Op) {
     let config = EncoderConfig::InfluxLineProtocol { field_key: None, precision: None };
@@ -194,10 +213,10 @@ async fn influx_encoder_cases(#[case] op: Op) {
 #[case::memory_produces_nonempty_output(       Op::MemoryNonempty)]
 #[case::memory_output_is_valid_json(           Op::MemoryContainsIdentifier)]
 #[case::memory_output_ends_with_newline(        Op::MemoryEndsNewline)]
-#[case::file_write_and_read_back(              Op::FileSink)]
-#[case::tcp_data_arrives_at_listener(          Op::TcpSink)]
-#[case::udp_datagram_arrives_at_receiver(      Op::UdpSink)]
-#[case::stdout_write_and_flush_succeed(        Op::StdoutSink)]
+#[cfg_attr(feature = "runtime", case::file_write_and_read_back(         Op::FileSink))]
+#[cfg_attr(feature = "runtime", case::tcp_data_arrives_at_listener(     Op::TcpSink))]
+#[cfg_attr(feature = "runtime", case::udp_datagram_arrives_at_receiver( Op::UdpSink))]
+#[cfg_attr(feature = "runtime", case::stdout_write_and_flush_succeed(   Op::StdoutSink))]
 #[tokio::test(flavor = "multi_thread")]
 async fn json_encoder_cases(#[case] op: Op) {
     let config = EncoderConfig::JsonLines { precision: None };

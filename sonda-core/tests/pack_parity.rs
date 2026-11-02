@@ -26,14 +26,16 @@ use std::collections::BTreeSet;
 use sonda_core::compiler::compile_after::{compile_after, CompiledEntry};
 use sonda_core::compiler::expand::ExpandedEntry;
 use sonda_core::compiler::{AfterClause, AfterOp};
+#[cfg(feature = "runtime")]
 use sonda_core::config::ScenarioEntry;
 
 mod common;
 
 use common::{
-    builtin_pack_resolver, compile_to_expanded, load_repo_pack, normalize_timestamps,
-    parity_fixture, resolver_with, run_and_capture_stdout,
+    builtin_pack_resolver, compile_to_expanded, load_repo_pack, parity_fixture, resolver_with,
 };
+#[cfg(feature = "runtime")]
+use common::{normalize_timestamps, run_and_capture_stdout};
 
 // =============================================================================
 // Shared helpers
@@ -47,6 +49,7 @@ fn metric_names(entries: &[ExpandedEntry]) -> BTreeSet<&str> {
 /// Override every entry's `duration` so the runtime-parity harness stays
 /// fast. `ScenarioEntry` does not expose a `base_mut` accessor, so match
 /// once per variant here.
+#[cfg(feature = "runtime")]
 fn shorten_duration(entries: &mut [ScenarioEntry], duration: &str) {
     for entry in entries {
         // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary
@@ -91,6 +94,7 @@ fn assert_ids_are_unique(label: &str, entries: &[ExpandedEntry]) {
 /// Collect the set of metric names observed in a Prometheus text byte
 /// stream. The runtime harness writes one sample per tick per metric, so
 /// the first token on each non-empty line is the metric name.
+#[cfg(feature = "runtime")]
 fn metric_names_in_prometheus_output(bytes: &[u8]) -> BTreeSet<String> {
     bytes
         .split(|&b| b == b'\n')
@@ -174,6 +178,7 @@ fn compile_telegraf_snmp_interface() {
 /// Runtime parity: shortening the scenario to `500ms` and running every
 /// entry end-to-end yields a byte stream that carries every pack metric
 /// name at least once.
+#[cfg(feature = "runtime")]
 #[test]
 fn runtime_telegraf_snmp_interface() {
     let resolver = builtin_pack_resolver();
@@ -240,6 +245,7 @@ fn compile_node_exporter_cpu() {
 
 /// Runtime parity: the eight sub-signals produce output containing the
 /// metric name `node_cpu_seconds_total`.
+#[cfg(feature = "runtime")]
 #[test]
 fn runtime_node_exporter_cpu() {
     let resolver = builtin_pack_resolver();
@@ -332,6 +338,7 @@ fn compile_node_exporter_memory() {
 
 /// Runtime parity: the five sub-signals produce output containing every
 /// pack metric name.
+#[cfg(feature = "runtime")]
 #[test]
 fn runtime_node_exporter_memory() {
     let resolver = builtin_pack_resolver();

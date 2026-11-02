@@ -25,6 +25,22 @@ snmp = ["sonda-core/snmp"]
 name = "sonda"
 path = "src/main.rs"
 
+[[test]]
+name = "cli_completions"
+required-features = ["http"]
+
+[[test]]
+name = "cli_new_capture"
+required-features = ["http"]
+
+[[test]]
+name = "cli_subcommand_parity"
+required-features = ["http"]
+
+[[test]]
+name = "cli_test_cmd"
+required-features = ["http"]
+
 [dependencies]
 sonda-core = { workspace = true }
 clap = { workspace = true }

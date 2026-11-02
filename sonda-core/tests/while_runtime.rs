@@ -3,26 +3,43 @@
 //! Covers the lifecycle state machine, `pending`→`running`/`paused`,
 //! `delay:` debounce, multi-subscriber coupling, and the
 //! perf-regression invariant against the non-gated baseline.
+//!
+//! The three compile-only `delay:` tests need `config` alone; every other
+//! item drives the runtime and is compiled only with `runtime`.
 
 #![cfg(feature = "config")]
 
 mod common;
 
+#[cfg(feature = "runtime")]
 use std::sync::Arc;
+#[cfg(feature = "runtime")]
 use std::thread;
+#[cfg(feature = "runtime")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "runtime")]
 use sonda_core::compiler::{DelayClause, WhileOp};
+#[cfg(feature = "runtime")]
 use sonda_core::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry};
+#[cfg(feature = "runtime")]
 use sonda_core::encoder::EncoderConfig;
+#[cfg(feature = "runtime")]
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::gate_bus::{AfterOpDir, AfterSpec, GateBus, SubscriptionSpec, WhileSpec};
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::launch::launch_scenario_with_gates;
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::stats::ScenarioState;
+#[cfg(feature = "runtime")]
 use sonda_core::schedule::GateContext;
+#[cfg(feature = "runtime")]
 use sonda_core::sink::SinkConfig;
+#[cfg(feature = "runtime")]
 use sonda_core::CancellationToken;
 
+#[cfg(feature = "runtime")]
 fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
         base: BaseScheduleConfig {
@@ -51,6 +68,7 @@ fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     })
 }
 
+#[cfg(feature = "runtime")]
 fn logs_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     ScenarioEntry::Logs(LogScenarioConfig {
         base: BaseScheduleConfig {
@@ -84,6 +102,7 @@ fn logs_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     })
 }
 
+#[cfg(feature = "runtime")]
 fn while_gt_zero() -> SubscriptionSpec {
     SubscriptionSpec {
         after: None,
@@ -94,6 +113,7 @@ fn while_gt_zero() -> SubscriptionSpec {
     }
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     // Upstream metric oscillates 0 → 1 → 0 across 600ms; downstream gated
@@ -148,6 +168,7 @@ async fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscription() {
     let bus = Arc::new(GateBus::new());
@@ -185,6 +206,7 @@ async fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subsc
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     let bus = Arc::new(GateBus::new());
@@ -216,6 +238,7 @@ async fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_no_catch_up_burst_on_resume() {
     // Verify A1h: after a long pause, resume must emit at the configured
@@ -273,6 +296,7 @@ async fn while_runtime_no_catch_up_burst_on_resume() {
 /// Build a metrics entry whose generator is supplied by the caller — used by
 /// the tick-preservation tests to drive sequence/saturation generators with
 /// known internal state.
+#[cfg(feature = "runtime")]
 fn metrics_entry_with_generator(
     name: &str,
     rate: f64,
@@ -306,6 +330,7 @@ fn metrics_entry_with_generator(
     })
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_sequence_generator_preserves_position_across_pause() {
     let bus = Arc::new(GateBus::new());
@@ -376,6 +401,7 @@ async fn while_runtime_sequence_generator_preserves_position_across_pause() {
     );
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     let bus = Arc::new(GateBus::new());
@@ -445,6 +471,7 @@ async fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     );
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_finished_state_after_duration_expires() {
     let bus = Arc::new(GateBus::new());
@@ -473,6 +500,7 @@ async fn while_runtime_finished_state_after_duration_expires() {
     assert!(matches!(snap.state, ScenarioState::Finished));
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_multiple_downstreams_share_one_upstream() {
     // A2: two downstreams subscribe to the same upstream bus. Both must
@@ -528,6 +556,7 @@ async fn while_runtime_multiple_downstreams_share_one_upstream() {
     handle_b.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_logs_signal_can_be_gated_downstream() {
     // BGP UPDOWN log scenario: a logs entry gated by `while:` must
@@ -577,6 +606,7 @@ async fn while_runtime_logs_signal_can_be_gated_downstream() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     // A2a: delay.open debounces close→open. Sub during gate-closed
@@ -636,6 +666,7 @@ async fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_strict_lt_threshold_gating() {
     // Inverse direction: `while: ref=src op="<" value=10` opens when
@@ -678,6 +709,7 @@ async fn while_runtime_strict_lt_threshold_gating() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn scenario_restart_does_not_leak_gate_bus() {
     // Risk #4 from phases.md: spawn 50 short-lived gated scenarios in
@@ -716,6 +748,7 @@ async fn scenario_restart_does_not_leak_gate_bus() {
     );
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     // delay.close: a brief gate-close-then-reopen within the debounce
@@ -784,6 +817,7 @@ async fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     // Subscribe with both after: and while: on the same upstream. Initial
@@ -852,6 +886,7 @@ async fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     // Use a single upstream where after.op=">" threshold=100 and
@@ -937,6 +972,7 @@ async fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     // While Pending (after not yet satisfied), repeated WhileOpen /
@@ -1018,6 +1054,7 @@ async fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
     // Subscribe with after.op=">" threshold=100 at value=5: after has not
@@ -1094,6 +1131,7 @@ async fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() 
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn while_runtime_steady_within_10pct_of_baseline() {
     // Perf-regression gate (A10): a scenario with `while:` open the entire
@@ -1357,6 +1395,7 @@ scenarios:
         .expect("legacy delay.close shorthand must still parse");
 }
 
+#[cfg(feature = "runtime")]
 #[tokio::test(flavor = "multi_thread")]
 async fn nan_upstream_value_keeps_downstream_paused() {
     let bus = Arc::new(GateBus::new());
