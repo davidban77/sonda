@@ -177,3 +177,99 @@ fn run_rejects_cross_post_while_scenario_name() {
         "error must include docs link, got: {stderr}"
     );
 }
+
+/// A file with one `gap_windows:` entry whose offset is `at`, written as the
+/// YAML scalar given, so `5` arrives as the text "5".
+fn gap_window_yaml(at: &str) -> String {
+    format!(
+        "version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 200ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - signal_type: metrics
+    name: gap_window_check
+    generator:
+      type: constant
+      value: 1
+    gap_windows:
+      - at: {at}
+        for: 1s
+"
+    )
+}
+
+fn sonda_on_yaml(args: &[&str], yaml: &str) -> std::process::Output {
+    let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+    f.write_all(yaml.as_bytes()).expect("write");
+    f.flush().expect("flush");
+    Command::new(sonda_bin())
+        .args(args)
+        .arg(f.path())
+        .output()
+        .expect("spawn sonda")
+}
+
+/// Whether `run` printed its start banner (the `▶ … signal_type:` line).
+fn started(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .any(|line| line.contains('\u{25b6}') && line.contains("signal_type:"))
+}
+
+const BAD_GAP_WINDOW_REFUSAL: &str = r#"invalid gap_windows[0].at "5": "#;
+
+#[test]
+fn dry_run_refuses_a_gap_window_offset_without_a_unit() {
+    let control = sonda_on_yaml(&["--dry-run", "run"], &gap_window_yaml("5s"));
+    let control_stderr = String::from_utf8_lossy(&control.stderr);
+    assert!(
+        control.status.success() && control_stderr.contains("Validation: OK"),
+        "the same file with `at: 5s` must pass dry-run; stderr:\n{control_stderr}"
+    );
+
+    let output = sonda_on_yaml(&["--dry-run", "run"], &gap_window_yaml("5"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "dry-run must refuse `at: 5`; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(BAD_GAP_WINDOW_REFUSAL),
+        "the refusal must name the entry, field and value; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Validation: OK"),
+        "a refused file must not print Validation: OK; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn run_refuses_a_gap_window_offset_without_a_unit_before_anything_starts() {
+    let control = sonda_on_yaml(&["run"], &gap_window_yaml("5s"));
+    let control_stderr = String::from_utf8_lossy(&control.stderr);
+    assert!(
+        control.status.success() && started(&control_stderr),
+        "the same file with `at: 5s` must start and finish; stderr:\n{control_stderr}"
+    );
+
+    let output = sonda_on_yaml(&["run"], &gap_window_yaml("5"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "run must refuse `at: 5`; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(BAD_GAP_WINDOW_REFUSAL),
+        "the refusal must name the entry, field and value; stderr:\n{stderr}"
+    );
+    assert!(
+        !started(&stderr),
+        "the scenario must be refused before it starts; stderr:\n{stderr}"
+    );
+}

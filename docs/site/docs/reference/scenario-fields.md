@@ -451,6 +451,8 @@ All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `burs
 
 Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds and `0.5m` means 30 seconds.
 
+A duration takes a unit everywhere: Sonda refuses `duration: 10` and a flap's `phase: 0`; write `10s` and `0s`. `at` in `gap_windows:` and `open` in `delay:` also take a bare `0`.
+
 ### Timestamp anchor
 
 `start_time` sets the timestamp anchor written on every emitted event. It shifts only the *timestamp* on each event. The scenario still runs for its real wall-clock `duration`, emits the same events, with the same values, at the same spacing. Only the anchor moves.
