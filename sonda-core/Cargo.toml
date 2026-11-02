@@ -110,10 +110,12 @@ required-features = ["schema"]
 [[bench]]
 name = "while_steady_state"
 harness = false
+required-features = ["runtime"]
 
 [[bench]]
 name = "scheduler_baseline"
 harness = false
+required-features = ["runtime"]
 
 [[bench]]
 name = "metric_dispatch"
