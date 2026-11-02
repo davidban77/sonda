@@ -17,7 +17,10 @@ sonda-core via `prepare_entries` and `launch_scenario`. The server crate is pure
 ```
 src/
 ├── main.rs             ← entrypoint: CLI arg parsing, axum router setup, tokio runtime,
-│                         graceful shutdown (Ctrl+C stops all scenarios + joins threads with 5s timeout)
+│                         graceful shutdown on Ctrl+C or SIGTERM (stop_and_join_all: every scenario
+│                         is stopped, then each task is joined for STOP_GRACE plus STOP_JOIN_MARGIN;
+│                         a task that ended logs "scenario task joined" (or its error), one still
+│                         running logs a warn, "scenario task still running after the stop window")
 ├── auth.rs             ← require_api_key middleware (Bearer token), unauthorized() helper,
 │                         extract_bearer_token(), constant-time key comparison via subtle
 ├── autostart.rs        ← --autostart sweep: runnable_entries() enumerates pre-bind (a catalog
