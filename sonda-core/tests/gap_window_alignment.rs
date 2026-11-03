@@ -131,12 +131,22 @@ fn timing_sink() -> (Box<dyn Sink>, Arc<Mutex<Vec<Emission>>>) {
 /// The grid this whole file runs on: 5 events per second, one every 200ms.
 const STEP: Duration = Duration::from_millis(200);
 
-/// How far an emission may sit from its grid instant before the test fails.
+/// How far an emission may sit from its grid instant before the test fails:
+/// half a [`STEP`] less 1 ms, derived from `STEP` (99 ms on the 200 ms grid).
 ///
-/// A tick that landed on the *wrong* slot is off by a full 200ms step, so this
-/// only has to be comfortably below one step to stay discriminating while
-/// absorbing scheduler wakeup latency.
-const SLACK_MS: f64 = 70.0;
+/// Slots are one `STEP` apart, so an emission whose drift from tick *n*'s slot
+/// is below `STEP / 2` is nearer that slot than either neighbour's: a drift in
+/// that range can only mean tick *n* played on its own slot, late or early by
+/// scheduling latency. At `STEP / 2` or above, the same drift could belong to
+/// the neighbouring slot and the instant check would stop telling them apart.
+/// So half a step is the ceiling, and everything below it is latency a loaded
+/// runner is allowed. The 1 ms keeps the tolerance strictly below the ceiling
+/// with room for the offset between the sink's clock and the loop's (the setup
+/// cost [`TimingSink`] describes, tens of microseconds).
+///
+/// `the_slack_stays_below_half_a_step` fails if an edit lifts it to the
+/// ceiling or above.
+const SLACK_MS: f64 = STEP.as_millis() as f64 / 2.0 - 1.0;
 
 /// A scenario whose generator makes every tick identifiable: tick *n* emits
 /// the value *n*, up to the length of the sequence.
@@ -215,6 +225,18 @@ fn assert_ladder(seen: &[Emission], expected_ticks: &[u64]) {
             slot,
         );
     }
+}
+
+/// The tolerance [`assert_ladder`] applies stays below half a step, the point
+/// at which a drift no longer says which slot an emission belongs to.
+#[test]
+fn the_slack_stays_below_half_a_step() {
+    let half_step_ms = STEP.as_secs_f64() * 1000.0 / 2.0;
+    assert!(
+        SLACK_MS < half_step_ms,
+        "SLACK_MS is {SLACK_MS}ms, not below half the {STEP:?} step ({half_step_ms}ms): \
+         a drift that large could belong to the neighbouring slot"
+    );
 }
 
 /// A one-shot window covering ticks 1 and 2 must suppress *both*, and tick 3

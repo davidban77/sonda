@@ -792,13 +792,71 @@ fn firing_verdict_uses_sample_time_not_poll_time() {
     );
 }
 
+/// The firing time `sonda test` reports on `alert`'s PASS line; `None` when
+/// there is no such line or its time does not parse. The report prints `0s`
+/// or a whole number of `ns`, `µs`, `ms` or `s`.
+fn reported_firing_time(stderr: &str, alert: &str) -> Option<std::time::Duration> {
+    let marker = format!("{alert} firing after ");
+    let line = stderr
+        .lines()
+        .find(|line| line.contains("PASS") && line.contains(&marker))?;
+    let after = &line[line.find(&marker)? + marker.len()..];
+    let text = after.split_whitespace().next()?;
+    let unit_at = text.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+    let (number, unit) = text.split_at(unit_at);
+    let number: f64 = number.parse().ok()?;
+    let scale = match unit {
+        "ns" => 1e-9,
+        "µs" => 1e-6,
+        "ms" => 1e-3,
+        "s" => 1.0,
+        _ => return None,
+    };
+    Some(std::time::Duration::from_secs_f64(number * scale))
+}
+
 #[test]
 fn verdicts_survive_a_server_clock_running_ahead() {
-    // #528 review blocker, direction 1: the server's clock is 1s ahead of
-    // the local one. The alert fires 400ms in (real time) against a 1s
+    // #528 review blocker, direction 1: the server's clock is SKEW ahead of
+    // the local one. The alert fires FIRE_AT in (real time) against a 1s
     // deadline — a clear pass. A local-anchored conversion would read the
-    // firing sample as landing at 1.4s and flip the verdict to Late.
-    let (url, _hits) = mock_prometheus(skewed_alert_world(Some(0.3), None, "sonda-test", 1.0));
+    // firing sample a whole SKEW later and flip the verdict to Late.
+    const FIRE_AT: std::time::Duration = std::time::Duration::from_millis(300);
+    const SKEW: std::time::Duration = std::time::Duration::from_secs(1);
+    const QUERY_STEP: std::time::Duration = std::time::Duration::from_millis(200);
+    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+    // The bound on the reported firing time, from this test's own timing.
+    //
+    // The mock's world fires FIRE_AT after its first request, the preflight,
+    // which comes before the scenario starts: in scenario time the alert
+    // fires at FIRE_AT or earlier. (The clock offset `sonda test` measures is
+    // off by at most half its `time()` round trip, which the preflight-to-
+    // start gap always covers, so the error never moves that firing later.)
+    // The verdict reads the first stored sample at or after it on the range
+    // grid, which starts at scenario start and steps by QUERY_STEP: earlier
+    // than FIRE_AT + QUERY_STEP (400ms here, one grid point less when the
+    // preflight was slow). If the range data is unusable the verdict falls
+    // back to the live poll, whose first firing poll comes within INTERVAL of
+    // the firing plus the poll's own latency; INTERVAL < QUERY_STEP leaves
+    // that latency the difference.
+    //
+    // The conversion this test guards adds the whole SKEW to the reading, and
+    // the bound is no later than SKEW, so a reading below the bound is one the
+    // skew did not move.
+    let bound = FIRE_AT + QUERY_STEP;
+    assert!(
+        bound <= SKEW && INTERVAL < QUERY_STEP,
+        "premise: the bound {bound:?} must not reach the skew {SKEW:?}, and the poll \
+         interval {INTERVAL:?} must be shorter than the query step {QUERY_STEP:?}"
+    );
+
+    let (url, _hits) = mock_prometheus(skewed_alert_world(
+        Some(FIRE_AT.as_secs_f64()),
+        None,
+        "sonda-test",
+        SKEW.as_secs_f64(),
+    ));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -811,10 +869,12 @@ fn verdicts_survive_a_server_clock_running_ahead() {
         ),
     );
 
+    let interval = format!("{}ms", INTERVAL.as_millis());
+    let query_step = format!("{}ms", QUERY_STEP.as_millis());
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
-        .args(["--prometheus-url", &url, "--interval", "100ms"])
-        .args(["--query-step", "200ms"])
+        .args(["--prometheus-url", &url, "--interval", &interval])
+        .args(["--query-step", &query_step])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -822,9 +882,12 @@ fn verdicts_survive_a_server_clock_running_ahead() {
         output.status.success(),
         "server-clock skew must not move the verdict\nstderr: {stderr}"
     );
+    let reported = reported_firing_time(&stderr, "HighCpuUsage")
+        .unwrap_or_else(|| panic!("no PASS line with a firing time\nstderr: {stderr}"));
     assert!(
-        stderr.contains("firing after 400ms (within 1s)"),
-        "stderr: {stderr}"
+        reported < bound,
+        "reported firing {reported:?} is not below {bound:?} (FIRE_AT + QUERY_STEP)\n\
+         stderr: {stderr}"
     );
 }
 
