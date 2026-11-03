@@ -165,9 +165,9 @@ impl TsdbClient {
             .agent
             .get(&self.range_url)
             .query("query", query)
-            .query("start", &format!("{start:.3}"))
-            .query("end", &format!("{end:.3}"))
-            .query("step", &format!("{:.3}", step.as_secs_f64()));
+            .query("start", format!("{start:.3}"))
+            .query("end", format!("{end:.3}"))
+            .query("step", format!("{:.3}", step.as_secs_f64()));
 
         request = match &self.auth {
             Auth::None => request,
