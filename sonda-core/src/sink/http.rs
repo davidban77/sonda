@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
+use crate::sink::push_agent::push_agent;
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::{RuntimeError, SondaError};
@@ -251,21 +252,6 @@ impl HttpPushSink {
             ))),
         }
     }
-}
-
-/// The agent the `http_push` and `loki` sinks POST through.
-///
-/// A 4xx or 5xx comes back as a response, whose status the sink classifies
-/// itself. No proxy is read from the environment, connecting is bounded by
-/// 30 s (the request as a whole is not), and at most 5 redirects are followed.
-pub(crate) fn push_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .proxy(None)
-        .timeout_connect(Some(Duration::from_secs(30)))
-        .max_redirects(5)
-        .build()
-        .into()
 }
 
 fn do_send(
@@ -814,6 +800,33 @@ mod tests {
         }
     }
 
+    /// A 3xx without a `Location` header cannot be followed: the POST ends as
+    /// a `ConnectionRefused` `Sink` error naming the missing header, as a
+    /// transport failure does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_redirect_without_a_location_is_a_connection_refused_sink_error() {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, 302));
+
+        let mut sink =
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
+        let result = sink.write(b"x").await;
+        let body = server.join().expect("mock server thread panicked");
+        assert_eq!(body, b"x", "the POST reached the server");
+
+        match result {
+            Err(SondaError::Sink(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused, "{e}");
+                assert_eq!(
+                    e.to_string(),
+                    format!("HTTP push to '{url}' failed: protocol: missing a location header")
+                );
+            }
+            other => panic!("expected a ConnectionRefused Sink error, got {other:?}"),
+        }
+    }
+
     /// An `https://` URL speaks TLS: the first record the server reads is a
     /// handshake (0x16) carrying a ClientHello (0x01). The server then hangs
     /// up, and the cut handshake is a `Sink` error, not a panic.
@@ -911,17 +924,6 @@ mod tests {
             vec!["Content-Type: application/x-protobuf"]
         );
         assert_eq!(named("content-encoding"), vec!["Content-Encoding: snappy"]);
-    }
-
-    #[test]
-    fn the_push_agent_reads_statuses_itself_and_bounds_only_the_connect() {
-        let agent = push_agent();
-        let config = agent.config();
-        assert!(!config.http_status_as_error());
-        assert!(config.proxy().is_none());
-        assert_eq!(config.timeouts().connect, Some(Duration::from_secs(30)));
-        assert_eq!(config.timeouts().global, None);
-        assert_eq!(config.max_redirects(), 5);
     }
 
     #[tokio::test(flavor = "multi_thread")]

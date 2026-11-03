@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use prost::Message;
 
 use crate::encoder::remote_write::{parse_length_prefixed_timeseries, TimeSeries, WriteRequest};
+use crate::sink::push_agent::push_agent;
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::{EncoderError, RuntimeError, SondaError};
@@ -219,21 +220,6 @@ impl RemoteWriteSink {
             ))),
         }
     }
-}
-
-/// The agent the `remote_write` sink POSTs through.
-///
-/// A 4xx or 5xx comes back as a response, whose status the sink classifies
-/// itself. No proxy is read from the environment, connecting is bounded by
-/// 30 s (the request as a whole is not), and at most 5 redirects are followed.
-fn push_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .proxy(None)
-        .timeout_connect(Some(Duration::from_secs(30)))
-        .max_redirects(5)
-        .build()
-        .into()
 }
 
 fn do_send(
@@ -580,17 +566,6 @@ mod tests {
             }
             other => panic!("expected a ConnectionRefused Sink error, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn the_push_agent_reads_statuses_itself_and_bounds_only_the_connect() {
-        let agent = push_agent();
-        let config = agent.config();
-        assert!(!config.http_status_as_error());
-        assert!(config.proxy().is_none());
-        assert_eq!(config.timeouts().connect, Some(Duration::from_secs(30)));
-        assert_eq!(config.timeouts().global, None);
-        assert_eq!(config.max_redirects(), 5);
     }
 
     #[tokio::test]

@@ -360,6 +360,11 @@ src/
 │   ├── udp.rs          ← UDP socket (UdpSocket)
 │   ├── http.rs         ← HTTP push sink (ureq, feature = "http")
 │   ├── loki.rs         ← Loki log push sink (HTTP, ureq, feature = "http")
+│   ├── push_agent.rs   ← push_agent() (pub(crate); feature = "http" or "remote-write"): the
+│   │                      one ureq agent the http_push, loki and remote_write sinks POST
+│   │                      through. A 4xx or 5xx is a response the sink classifies; no proxy
+│   │                      from the environment; connect bounded by 30 s, the request not;
+│   │                      at most 5 redirects.
 │   ├── remote_write.rs ← Prometheus remote write sink (batches TimeSeries, snappy, feature = "remote-write")
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)

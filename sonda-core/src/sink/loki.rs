@@ -57,7 +57,7 @@ impl LokiSink {
         }
 
         Ok(Self {
-            client: super::http::push_agent(),
+            client: super::push_agent::push_agent(),
             url,
             labels,
             batch_size,
