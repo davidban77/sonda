@@ -91,10 +91,8 @@ impl HttpPushSink {
             )));
         }
 
-        let client = ureq::AgentBuilder::new().build();
-
         Ok(Self {
-            client,
+            client: push_agent(),
             url: url.to_owned(),
             content_type: content_type.to_owned(),
             headers,
@@ -173,17 +171,23 @@ impl HttpPushSink {
         headers: &HashMap<String, String>,
         body: &[u8],
     ) -> Result<u16, SondaError> {
-        let mut request = client.post(url).set("Content-Type", content_type);
+        // A `Content-Type` key in `headers` replaces `content_type`; every
+        // other key is sent as written, beside it.
+        let content_type = headers
+            .get("Content-Type")
+            .map_or(content_type, String::as_str);
+        let mut request = client
+            .post(url)
+            .header_raw("Content-Type", content_type.as_bytes());
 
         for (key, value) in headers {
-            request = request.set(key, value);
+            if key != "Content-Type" {
+                request = request.header_raw(key, value.as_bytes());
+            }
         }
 
-        let response = request.send_bytes(body);
-
-        match response {
-            Ok(resp) => Ok(resp.status()),
-            Err(ureq::Error::Status(code, _)) => Ok(code),
+        match request.send(body) {
+            Ok(resp) => Ok(resp.status().as_u16()),
             Err(e) => Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("HTTP push to '{}' failed: {}", url, e),
@@ -247,6 +251,21 @@ impl HttpPushSink {
             ))),
         }
     }
+}
+
+/// The agent the `http_push` and `loki` sinks POST through.
+///
+/// A 4xx or 5xx comes back as a response, whose status the sink classifies
+/// itself. No proxy is read from the environment, connecting is bounded by
+/// 30 s (the request as a whole is not), and at most 5 redirects are followed.
+pub(crate) fn push_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .proxy(None)
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .max_redirects(5)
+        .build()
+        .into()
 }
 
 fn do_send(
@@ -735,6 +754,174 @@ mod tests {
             matches!(result.err().unwrap(), SondaError::Sink(_)),
             "expected SondaError::Sink"
         );
+    }
+
+    /// Each refused status ends one POST as `Ok` (a 4xx other than 429 is
+    /// discarded) or as a `Sink` error of this kind, worded
+    /// `HTTP <status> from '<url>'`.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bad_request_is_discarded(400, None)]
+    #[case::not_found_is_discarded(404, None)]
+    #[case::too_many_requests_is_an_error(429, Some(std::io::ErrorKind::Other))]
+    #[case::server_error_is_an_error(500, Some(std::io::ErrorKind::Other))]
+    #[case::unavailable_is_an_error(503, Some(std::io::ErrorKind::Other))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_status_ends_the_post_as_before(
+        #[case] status: u16,
+        #[case] kind: Option<std::io::ErrorKind>,
+    ) {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, status));
+
+        let mut sink =
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
+        let result = sink.write(b"x").await;
+        let body = server.join().expect("mock server thread panicked");
+        assert_eq!(body, b"x", "the POST reached the server");
+
+        match (kind, result) {
+            (None, Ok(())) => {}
+            (Some(kind), Err(SondaError::Sink(e))) => {
+                assert_eq!(e.kind(), kind, "{e}");
+                assert_eq!(e.to_string(), format!("HTTP {status} from '{url}'"));
+            }
+            (kind, other) => panic!("HTTP {status}: expected {kind:?}, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_connection_is_a_connection_refused_sink_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}/push", listener.local_addr().expect("addr"));
+        drop(listener);
+
+        let mut sink =
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
+        match sink.write(b"x").await {
+            Err(SondaError::Sink(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused, "{e}");
+                let prefix = format!("HTTP push to '{url}' failed: ");
+                let text = e.to_string();
+                assert!(
+                    text.starts_with(&prefix) && text.len() > prefix.len(),
+                    "{text}"
+                );
+            }
+            other => panic!("expected a ConnectionRefused Sink error, got {other:?}"),
+        }
+    }
+
+    /// An `https://` URL speaks TLS: the first record the server reads is a
+    /// handshake (0x16) carrying a ClientHello (0x01). The server then hangs
+    /// up, and the cut handshake is a `Sink` error, not a panic.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_https_url_opens_with_a_tls_client_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("https://{}/push", listener.local_addr().expect("addr"));
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut head = [0u8; 6];
+            stream.read_exact(&mut head).expect("read the first record");
+            head
+        });
+
+        let mut sink =
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
+        let result = sink.write(b"x").await;
+        let head = server.join().expect("the client sent no first record");
+
+        assert_eq!(head[0], 0x16, "a TLS handshake record: {head:02x?}");
+        assert_eq!(head[1], 0x03, "of a TLS version: {head:02x?}");
+        assert_eq!(head[5], 0x01, "whose message is a ClientHello: {head:02x?}");
+        match result {
+            Err(SondaError::Sink(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused, "{e}");
+                assert!(
+                    e.to_string()
+                        .starts_with(&format!("HTTP push to '{url}' failed: ")),
+                    "{e}"
+                );
+            }
+            other => panic!("expected a ConnectionRefused Sink error, got {other:?}"),
+        }
+    }
+
+    /// A `Content-Type` key in `headers` replaces the sink's content type:
+    /// one `Content-Type` line goes out, and every header keeps the casing it
+    /// was written with.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_content_type_header_replaces_the_content_type() {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut lines = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read header line");
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                lines.push(line.trim_end().to_string());
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .ok();
+            lines
+        });
+
+        let mut custom = HashMap::new();
+        custom.insert(
+            "Content-Type".to_string(),
+            "application/x-protobuf".to_string(),
+        );
+        custom.insert("Content-Encoding".to_string(), "snappy".to_string());
+        let mut sink = HttpPushSink::new(
+            &url,
+            "application/octet-stream",
+            1,
+            custom,
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
+        sink.write(b"x").await.expect("write");
+        let lines = server.join().expect("mock server thread panicked");
+
+        assert!(
+            lines.first().is_some_and(|l| l.starts_with("POST /push ")),
+            "the request reached the server: {lines:?}"
+        );
+        let named = |name: &str| -> Vec<&str> {
+            lines
+                .iter()
+                .map(String::as_str)
+                .filter(|l| {
+                    l.split_once(':')
+                        .is_some_and(|(n, _)| n.eq_ignore_ascii_case(name))
+                })
+                .collect()
+        };
+        assert_eq!(
+            named("content-type"),
+            vec!["Content-Type: application/x-protobuf"]
+        );
+        assert_eq!(named("content-encoding"), vec!["Content-Encoding: snappy"]);
+    }
+
+    #[test]
+    fn the_push_agent_reads_statuses_itself_and_bounds_only_the_connect() {
+        let agent = push_agent();
+        let config = agent.config();
+        assert!(!config.http_status_as_error());
+        assert!(config.proxy().is_none());
+        assert_eq!(config.timeouts().connect, Some(Duration::from_secs(30)));
+        assert_eq!(config.timeouts().global, None);
+        assert_eq!(config.max_redirects(), 5);
     }
 
     #[tokio::test(flavor = "multi_thread")]
