@@ -754,15 +754,102 @@ fn mid_run_stall_surfaces_query_errors_on_missed_deadline() {
     );
 }
 
+/// The firing time `sonda test` reports on `alert`'s PASS line; `None` when
+/// there is no such line or its time does not parse. The report prints `0s`
+/// or a whole number of `ns`, `µs`, `ms` or `s`.
+fn reported_firing_time(stderr: &str, alert: &str) -> Option<std::time::Duration> {
+    let marker = format!("{alert} firing after ");
+    let line = stderr
+        .lines()
+        .find(|line| line.contains("PASS") && line.contains(&marker))?;
+    let after = &line[line.find(&marker)? + marker.len()..];
+    let text = after.split_whitespace().next()?;
+    let unit_at = text.find(|c: char| !c.is_ascii_digit())?;
+    let (number, unit) = text.split_at(unit_at);
+    let number: u64 = number.parse().ok()?;
+    let unit_nanos: u64 = match unit {
+        "ns" => 1,
+        "µs" => 1_000,
+        "ms" => 1_000_000,
+        "s" => 1_000_000_000,
+        _ => return None,
+    };
+    Some(std::time::Duration::from_nanos(
+        number.checked_mul(unit_nanos)?,
+    ))
+}
+
+/// Assert that `alert`'s firing verdict was read from the range grid: a PASS
+/// line, no verdict on the live poll timeline, and a reported firing time
+/// that is a whole multiple of `query_step` strictly below
+/// `fire_at + query_step`.
+///
+/// The bound comes from the fixture's own timing. The mock's world fires
+/// `fire_at` after its first request, the preflight, which comes before the
+/// scenario starts, so in scenario time the alert fires at `fire_at` or
+/// earlier. The clock offset `sonda test` measures is off by at most half its
+/// `time()` round trip, which the preflight-to-start gap covers, plus up to a
+/// millisecond of rounding (the mock prints server time, and `sonda test` the
+/// range start, to the millisecond): the firing moves later by a millisecond
+/// at most, never past a grid point when `fire_at` sits more than that before
+/// one (asserted). The range grid starts at scenario start and steps by
+/// `query_step`; the verdict reads its first firing point, a whole multiple of
+/// `query_step` (the report prints whole milliseconds), before
+/// `fire_at + query_step`, and a grid point earlier when the preflight was
+/// slow.
+///
+/// A verdict on the live poll timeline is refused outright, not bounded: it is
+/// what `sonda test` falls back to when the range grid does not show the
+/// firing, a broken conversion included, and it says so on stderr. The warning
+/// is matched as text; were the CLI to reword it, the grid-point check is what
+/// would still catch a live reading.
+fn assert_range_verdict(
+    stderr: &str,
+    alert: &str,
+    fire_at: std::time::Duration,
+    query_step: std::time::Duration,
+) {
+    let off_grid = fire_at.as_nanos() % query_step.as_nanos();
+    assert!(
+        off_grid != 0
+            && query_step.as_nanos() - off_grid > std::time::Duration::from_millis(1).as_nanos(),
+        "premise: fire_at {fire_at:?} must sit more than 1ms before a {query_step:?} grid point"
+    );
+    let reported = reported_firing_time(stderr, alert)
+        .unwrap_or_else(|| panic!("no PASS line with a firing time for {alert}\nstderr: {stderr}"));
+    assert!(
+        !stderr.contains("uses the live poll timeline"),
+        "the verdict fell back to the live poll timeline instead of the range grid\n\
+         stderr: {stderr}"
+    );
+    let bound = fire_at + query_step;
+    assert!(
+        reported.as_nanos().is_multiple_of(query_step.as_nanos()) && reported < bound,
+        "reported firing {reported:?} is not a {query_step:?} grid point below {bound:?}\n\
+         stderr: {stderr}"
+    );
+}
+
 #[test]
 fn firing_verdict_uses_sample_time_not_poll_time() {
     // The range-acquisition contract: transition times come from the stored
     // samples, not from when polling happened to look. The alert fires at
-    // 300ms against a 1s deadline, but the live poll interval is a huge 2s
-    // — poll-based verdicts would see the firing at ~2s and call it Late.
-    // The range grid shows the 400ms sample, so this must PASS. Goes red if
+    // FIRE_AT against a 1s deadline, but the live poll interval is a huge
+    // INTERVAL — poll-based verdicts would see the firing at the second poll
+    // and call it Late. The range grid shows the firing on its first point at
+    // or after it, so this must PASS with a grid reading. Goes red if
     // verdicts revert to the poll timeline.
-    let (url, _hits) = mock_prometheus(alert_world(Some(0.3), None, "sonda-test"));
+    const FIRE_AT: std::time::Duration = std::time::Duration::from_millis(300);
+    const QUERY_STEP: std::time::Duration = std::time::Duration::from_millis(200);
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    assert!(
+        FIRE_AT + QUERY_STEP <= INTERVAL,
+        "premise: the grid bound {:?} must not reach the second poll at {INTERVAL:?}",
+        FIRE_AT + QUERY_STEP
+    );
+
+    let (url, _hits) =
+        mock_prometheus(alert_world(Some(FIRE_AT.as_secs_f64()), None, "sonda-test"));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -775,10 +862,12 @@ fn firing_verdict_uses_sample_time_not_poll_time() {
         ),
     );
 
+    let interval = format!("{}ms", INTERVAL.as_millis());
+    let query_step = format!("{}ms", QUERY_STEP.as_millis());
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
-        .args(["--prometheus-url", &url, "--interval", "2s"])
-        .args(["--query-step", "200ms"])
+        .args(["--prometheus-url", &url, "--interval", &interval])
+        .args(["--query-step", &query_step])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -786,19 +875,33 @@ fn firing_verdict_uses_sample_time_not_poll_time() {
         output.status.success(),
         "sample-time verdict must pass despite the coarse poll interval\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains("firing after 400ms (within 1s)"),
-        "stderr: {stderr}"
-    );
+    assert_range_verdict(&stderr, "HighCpuUsage", FIRE_AT, QUERY_STEP);
 }
 
 #[test]
 fn verdicts_survive_a_server_clock_running_ahead() {
-    // #528 review blocker, direction 1: the server's clock is 1s ahead of
-    // the local one. The alert fires 400ms in (real time) against a 1s
+    // #528 review blocker, direction 1: the server's clock is SKEW ahead of
+    // the local one. The alert fires FIRE_AT in (real time) against a 1s
     // deadline — a clear pass. A local-anchored conversion would read the
-    // firing sample as landing at 1.4s and flip the verdict to Late.
-    let (url, _hits) = mock_prometheus(skewed_alert_world(Some(0.3), None, "sonda-test", 1.0));
+    // firing sample a whole SKEW later and flip the verdict to Late; today it
+    // finds no firing on its grid and falls back to the live poll timeline,
+    // which `assert_range_verdict` refuses. Its bound is no later than SKEW,
+    // so a grid reading inside it is one the skew did not move.
+    const FIRE_AT: std::time::Duration = std::time::Duration::from_millis(300);
+    const SKEW: std::time::Duration = std::time::Duration::from_secs(1);
+    const QUERY_STEP: std::time::Duration = std::time::Duration::from_millis(200);
+    assert!(
+        FIRE_AT + QUERY_STEP <= SKEW,
+        "premise: the grid bound {:?} must not reach the skew {SKEW:?}",
+        FIRE_AT + QUERY_STEP
+    );
+
+    let (url, _hits) = mock_prometheus(skewed_alert_world(
+        Some(FIRE_AT.as_secs_f64()),
+        None,
+        "sonda-test",
+        SKEW.as_secs_f64(),
+    ));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -811,10 +914,11 @@ fn verdicts_survive_a_server_clock_running_ahead() {
         ),
     );
 
+    let query_step = format!("{}ms", QUERY_STEP.as_millis());
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url, "--interval", "100ms"])
-        .args(["--query-step", "200ms"])
+        .args(["--query-step", &query_step])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -822,10 +926,7 @@ fn verdicts_survive_a_server_clock_running_ahead() {
         output.status.success(),
         "server-clock skew must not move the verdict\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains("firing after 400ms (within 1s)"),
-        "stderr: {stderr}"
-    );
+    assert_range_verdict(&stderr, "HighCpuUsage", FIRE_AT, QUERY_STEP);
 }
 
 #[test]

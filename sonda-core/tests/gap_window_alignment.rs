@@ -131,12 +131,27 @@ fn timing_sink() -> (Box<dyn Sink>, Arc<Mutex<Vec<Emission>>>) {
 /// The grid this whole file runs on: 5 events per second, one every 200ms.
 const STEP: Duration = Duration::from_millis(200);
 
-/// How far an emission may sit from its grid instant before the test fails.
+/// How far before its grid slot an emission may be measured: 2 ms, clock
+/// granularity.
 ///
-/// A tick that landed on the *wrong* slot is off by a full 200ms step, so this
-/// only has to be comfortably below one step to stay discriminating while
-/// absorbing scheduler wakeup latency.
-const SLACK_MS: f64 = 70.0;
+/// Early is impossible by construction. The loop emits a tick only after
+/// sleeping to that tick's deadline, and [`TimingSink`]'s clock starts before
+/// the loop's, so a correct emission is never measured ahead of its slot; this
+/// is room for timer and clock granularity and nothing more. Granularity does
+/// not scale with the grid, so this is not derived from [`STEP`]. A tick
+/// played ahead of its own slot, such as at the end of a window that closes
+/// between slots, reads early by up to a step and fails.
+const EARLY_MS: f64 = 2.0;
+
+/// How far after its grid slot an emission may be measured: one [`STEP`] less
+/// 1 ms, derived from `STEP` (199 ms on the 200 ms grid).
+///
+/// Late is load: a busy runner wakes the loop after its deadline, never
+/// before it. The bound does not have to tell slots apart, because the
+/// ladder's values already identify each tick ([`assert_ladder`] compares
+/// them first). What it holds is that every tick plays inside its own step,
+/// before the next tick's slot; the 1 ms keeps it strictly below that slot.
+const LATE_MS: f64 = STEP.as_millis() as f64 - 1.0;
 
 /// A scenario whose generator makes every tick identifiable: tick *n* emits
 /// the value *n*, up to the length of the sequence.
@@ -178,8 +193,9 @@ fn ladder_scenario(
     }
 }
 
-/// Assert the exact set of ticks that played, and that each played on its own
-/// grid slot.
+/// Assert the exact set of ticks that played, and that each played inside its
+/// own step: no earlier than its grid slot ([`EARLY_MS`]), and before the next
+/// tick's ([`LATE_MS`]).
 ///
 /// Both halves matter: the value set alone would accept a run where every
 /// event fired at once, and the instants alone would accept a run that skipped
@@ -208,13 +224,36 @@ fn assert_ladder(seen: &[Emission], expected_ticks: &[u64]) {
         let slot = STEP.mul_f64(e.value);
         let drift_ms = e.at.as_secs_f64() * 1000.0 - slot.as_secs_f64() * 1000.0;
         assert!(
-            drift_ms.abs() < SLACK_MS,
-            "tick {} played {:.1}ms from its grid slot {:?} (allowed ±{SLACK_MS}ms)",
+            (-EARLY_MS..LATE_MS).contains(&drift_ms),
+            "tick {} played {:.1}ms from its grid slot {:?} (allowed {EARLY_MS}ms early, \
+             under {LATE_MS}ms late)",
             e.value,
             drift_ms,
             slot,
         );
     }
+}
+
+/// The drift bounds [`assert_ladder`] applies: early is clock granularity, a
+/// few milliseconds, and late stays below one step.
+///
+/// An early bound wider than granularity starts to admit a tick played before
+/// its slot (tick 3 played at the end of the off-grid window reads ~98 ms
+/// early); a late bound of a step or more admits a tick played on the next
+/// one's.
+#[test]
+fn the_drift_bounds_are_granularity_early_and_under_a_step_late() {
+    const A_FEW_MS: f64 = 5.0;
+    let step_ms = STEP.as_secs_f64() * 1000.0;
+    assert!(
+        (0.0..=A_FEW_MS).contains(&EARLY_MS),
+        "EARLY_MS is {EARLY_MS}ms, not clock granularity (0 to {A_FEW_MS}ms)"
+    );
+    assert!(
+        LATE_MS < step_ms,
+        "LATE_MS is {LATE_MS}ms, not below the {STEP:?} step: a tick that late could \
+         be playing on the next tick's slot"
+    );
 }
 
 /// A one-shot window covering ticks 1 and 2 must suppress *both*, and tick 3
