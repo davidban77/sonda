@@ -97,7 +97,7 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tracing-test = "0.2"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
-jsonschema = { version = "0.52.0", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 
 [[example]]
 name = "waveform_gallery"
