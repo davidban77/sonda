@@ -84,6 +84,24 @@ pub struct RangeTimeline {
     pub firing_series: Vec<BTreeMap<String, String>>,
 }
 
+/// The agent the Prometheus, Alertmanager and TSDB range-query clients send
+/// through.
+///
+/// `timeout` bounds each request as a whole: connecting, sending, and
+/// reading the response and its body. A 4xx or 5xx is an error. No proxy is
+/// read from the environment, connecting alone is bounded by 30 s, and at
+/// most 5 redirects are followed.
+pub(crate) fn query_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(true)
+        .proxy(None)
+        .timeout_global(Some(timeout))
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .max_redirects(5)
+        .build()
+        .into()
+}
+
 impl PrometheusClient {
     /// Create a client for a Prometheus-compatible base URL
     /// (e.g. `http://localhost:9090`), with an overall per-request timeout
@@ -93,7 +111,7 @@ impl PrometheusClient {
         Self {
             query_url: format!("{base}/api/v1/query"),
             range_url: format!("{base}/api/v1/query_range"),
-            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
+            agent: query_agent(timeout),
         }
     }
 
@@ -117,7 +135,8 @@ impl PrometheusClient {
                     reason: e.to_string(),
                 })
             })?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
                     url: self.query_url.clone(),
@@ -152,7 +171,8 @@ impl PrometheusClient {
                     reason: e.to_string(),
                 })
             })?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
                     url: self.query_url.clone(),
@@ -190,7 +210,8 @@ impl PrometheusClient {
                     reason: e.to_string(),
                 })
             })?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
                     url: self.query_url.clone(),
@@ -232,9 +253,9 @@ impl PrometheusClient {
             .agent
             .get(&self.range_url)
             .query("query", &query)
-            .query("start", &format!("{start:.3}"))
-            .query("end", &format!("{end:.3}"))
-            .query("step", &format!("{:.3}", step.as_secs_f64()))
+            .query("start", format!("{start:.3}"))
+            .query("end", format!("{end:.3}"))
+            .query("step", format!("{:.3}", step.as_secs_f64()))
             .call()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::Query {
@@ -242,7 +263,8 @@ impl PrometheusClient {
                     reason: e.to_string(),
                 })
             })?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
                     url: self.range_url.clone(),
@@ -463,8 +485,180 @@ pub fn parse_alert_probe(
     Ok((state, firing_series))
 }
 
+/// A one-request HTTP server, and what a query client must return for each
+/// way a request can fail; shared by the Prometheus, Alertmanager and TSDB
+/// client tests.
+#[cfg(test)]
+pub(crate) mod test_server {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use crate::{SondaError, VerifyError};
+
+    /// How long the server holds a connection it does not finish answering.
+    /// The tests' clients time out long before.
+    const HOLD: Duration = Duration::from_secs(10);
+
+    /// A client timeout well inside [`HOLD`].
+    pub(crate) const CLIENT_TIMEOUT: Duration = Duration::from_millis(300);
+
+    /// The `Date` header of every [`Failure::Status`] response.
+    pub(crate) const DATE: &str = "Tue, 03 Nov 2026 10:00:00 GMT";
+
+    /// How one request fails.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Failure {
+        /// Answered with this status, a [`DATE`] header and a JSON error body.
+        Status(u16),
+        /// Nothing listens on the port.
+        Refused,
+        /// Accepted and read, never answered.
+        Silence,
+        /// A 200 whose body ends after 9 of the 100 bytes it promised.
+        CutBody,
+        /// A 200 that sends 9 of the 100 body bytes it promised, then waits.
+        StalledBody,
+    }
+
+    /// A base URL for `failure`, and, when a server is behind it, the head
+    /// (request line and headers) of the one request it reads.
+    pub(crate) fn serve(failure: Failure) -> (String, Option<mpsc::Receiver<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        if let Failure::Refused = failure {
+            drop(listener);
+            return (base, None);
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            let _ = tx.send(head);
+            let cut =
+                "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{\"status\"";
+            match failure {
+                Failure::Status(code) => {
+                    let body = r#"{"status":"error","error":"boom"}"#;
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {code} X\r\nDate: {DATE}\r\n\
+                         Content-Type: application/json\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+                Failure::CutBody => {
+                    let _ = stream.write_all(cut.as_bytes());
+                }
+                Failure::StalledBody => {
+                    let _ = stream.write_all(cut.as_bytes());
+                    let _ = stream.flush();
+                    std::thread::sleep(HOLD);
+                }
+                Failure::Silence => std::thread::sleep(HOLD),
+                Failure::Refused => {}
+            }
+        });
+        (base, Some(rx))
+    }
+
+    /// Assert that `result` is the error a query client returns for
+    /// `failure`, naming `url`: a status, a refused connection or silence is
+    /// `Query`, a body that cannot be read `BadResponse`. A server behind the
+    /// URL must have read the request first, and an unanswered request must
+    /// have ended in under half of [`HOLD`], so before the server let go.
+    /// `what` names the call in a failure.
+    pub(crate) fn assert_fails_as_before<T: std::fmt::Debug>(
+        what: &str,
+        failure: Failure,
+        url: &str,
+        head: Option<mpsc::Receiver<String>>,
+        elapsed: Duration,
+        result: Result<T, SondaError>,
+    ) {
+        if let Some(head) = head {
+            let head = head
+                .recv_timeout(HOLD)
+                .unwrap_or_else(|e| panic!("{what}: the request never reached the server: {e}"));
+            assert!(head.starts_with("GET "), "{what}: {head}");
+        }
+        if matches!(failure, Failure::Silence | Failure::StalledBody) {
+            assert!(elapsed < HOLD / 2, "{what}: {failure:?} took {elapsed:?}");
+        }
+        match (failure, result) {
+            (
+                Failure::Status(code),
+                Err(SondaError::Verify(VerifyError::Query { url: named, reason })),
+            ) => {
+                assert_eq!(named, url, "{what}");
+                assert!(reason.ends_with(&code.to_string()), "{what}: {reason}");
+            }
+            (
+                Failure::Refused | Failure::Silence,
+                Err(SondaError::Verify(VerifyError::Query { url: named, reason })),
+            ) => {
+                assert_eq!(named, url, "{what}");
+                assert!(!reason.is_empty(), "{what}");
+            }
+            (
+                Failure::CutBody | Failure::StalledBody,
+                Err(SondaError::Verify(VerifyError::BadResponse { url: named, reason })),
+            ) => {
+                assert_eq!(named, url, "{what}");
+                let prefix = "response could not be read: ";
+                assert!(
+                    reason.starts_with(prefix) && reason.len() > prefix.len(),
+                    "{what}: {reason}"
+                );
+            }
+            (failure, other) => panic!("{what}: {failure:?}: got {other:?}"),
+        }
+    }
+
+    /// The values of the query parameter `name` in `head`'s request line,
+    /// decoded (`+` is a space, `%XX` a byte).
+    pub(crate) fn query_values(head: &str, name: &str) -> Vec<String> {
+        let target = head.split(' ').nth(1).expect("a request target");
+        let query = target.split_once('?').map_or("", |(_, q)| q);
+        query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .filter(|(key, _)| *key == name)
+            .map(|(_, value)| {
+                let raw = value.as_bytes();
+                let mut bytes = Vec::with_capacity(raw.len());
+                let mut i = 0;
+                while i < raw.len() {
+                    match raw[i] {
+                        b'+' => bytes.push(b' '),
+                        b'%' => {
+                            let hex = std::str::from_utf8(&raw[i + 1..i + 3]).expect("hex");
+                            bytes.push(u8::from_str_radix(hex, 16).expect("a %XX escape"));
+                            i += 2;
+                        }
+                        b => bytes.push(b),
+                    }
+                    i += 1;
+                }
+                String::from_utf8(bytes).expect("UTF-8")
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_server::{self, Failure, CLIENT_TIMEOUT};
     use super::*;
     use std::collections::BTreeMap;
 
@@ -677,5 +871,73 @@ mod tests {
             Err(SondaError::Verify(VerifyError::Query { .. })) => {}
             other => panic!("expected Verify::Query error, got {other:?}"),
         }
+    }
+
+    /// Every request the client makes fails the same way for each failure:
+    /// `Query` for a status, a refused connection or silence, `BadResponse`
+    /// for a body that cannot be read, naming the endpoint it queried.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bad_request(Failure::Status(400))]
+    #[case::not_found(Failure::Status(404))]
+    #[case::too_many_requests(Failure::Status(429))]
+    #[case::server_error(Failure::Status(500))]
+    #[case::unavailable(Failure::Status(503))]
+    #[case::refused_connection(Failure::Refused)]
+    #[case::no_answer_times_out(Failure::Silence)]
+    #[case::cut_body(Failure::CutBody)]
+    #[case::stalled_body_times_out(Failure::StalledBody)]
+    fn each_request_fails_as_before(#[case] failure: Failure) {
+        type Call = fn(&PrometheusClient) -> Result<String, SondaError>;
+        let calls: [(&str, bool, Call); 4] = [
+            ("alert_state", false, |c| c.alert_state(&expectation(None)).map(|s| format!("{s:?}"))),
+            ("alert_probe", false, |c| c.alert_probe(&expectation(None)).map(|s| format!("{s:?}"))),
+            ("server_clock", false, |c| c.server_clock().map(|s| format!("{s:?}"))),
+            ("range_timeline", true, |c| {
+                c.range_timeline(&expectation(None), 0.0, 10.0, Duration::from_secs(1), 0.0)
+                    .map(|t| format!("{:?}", t.observations))
+            }),
+        ];
+        for (name, range, call) in calls {
+            let (base, head) = test_server::serve(failure);
+            let client = PrometheusClient::new(&base, CLIENT_TIMEOUT);
+            let url = if range { client.range_url.clone() } else { client.query_url.clone() };
+            let started = std::time::Instant::now();
+            let result = call(&client);
+            test_server::assert_fails_as_before(name, failure, &url, head, started.elapsed(), result);
+        }
+    }
+
+    /// The PromQL reaches the server as written, through characters a query
+    /// string reserves (`+`, `&`, `=`, `#`, `%`), a space and non-ASCII.
+    #[test]
+    fn a_query_reaches_the_server_as_written() {
+        let labels = BTreeMap::from([(
+            "path".to_string(),
+            "/a b+c&d=e#f%20 ü \"q\" {x}".to_string(),
+        )]);
+        let expectation = expectation(Some(labels));
+        let (base, head) = test_server::serve(Failure::Status(500));
+        let client = PrometheusClient::new(&base, CLIENT_TIMEOUT);
+        let _ = client.alert_state(&expectation);
+        let head = head
+            .expect("a server")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the request reached the server");
+        assert_eq!(
+            test_server::query_values(&head, "query"),
+            vec![alerts_query(&expectation)]
+        );
+    }
+
+    #[test]
+    fn the_query_agent_bounds_the_whole_request_and_errs_on_a_status() {
+        let agent = query_agent(Duration::from_millis(1234));
+        let config = agent.config();
+        assert!(config.http_status_as_error());
+        assert!(config.proxy().is_none());
+        assert_eq!(config.timeouts().global, Some(Duration::from_millis(1234)));
+        assert_eq!(config.timeouts().connect, Some(Duration::from_secs(30)));
+        assert_eq!(config.max_redirects(), 5);
     }
 }

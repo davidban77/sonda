@@ -23,6 +23,8 @@ pub mod loki;
 pub mod memory;
 #[cfg(feature = "otlp")]
 pub mod otlp_grpc;
+#[cfg(any(feature = "http", feature = "remote-write"))]
+pub(crate) mod push_agent;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
 pub mod retry;

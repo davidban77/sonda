@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use prost::Message;
 
 use crate::encoder::remote_write::{parse_length_prefixed_timeseries, TimeSeries, WriteRequest};
+use crate::sink::push_agent::push_agent;
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::{EncoderError, RuntimeError, SondaError};
@@ -95,10 +96,8 @@ impl RemoteWriteSink {
             )));
         }
 
-        let client = ureq::AgentBuilder::new().build();
-
         Ok(Self {
-            client,
+            client: push_agent(),
             url: url.to_owned(),
             batch: Vec::with_capacity(batch_size),
             batch_size,
@@ -144,14 +143,13 @@ impl RemoteWriteSink {
     fn do_post_at(client: &ureq::Agent, url: &str, body: &[u8]) -> Result<u16, SondaError> {
         let response = client
             .post(url)
-            .set("Content-Type", "application/x-protobuf")
-            .set("Content-Encoding", "snappy")
-            .set("X-Prometheus-Remote-Write-Version", "0.1.0")
-            .send_bytes(body);
+            .header_raw("Content-Type", b"application/x-protobuf")
+            .header_raw("Content-Encoding", b"snappy")
+            .header_raw("X-Prometheus-Remote-Write-Version", b"0.1.0")
+            .send(body);
 
         match response {
-            Ok(resp) => Ok(resp.status()),
-            Err(ureq::Error::Status(code, _)) => Ok(code),
+            Ok(resp) => Ok(resp.status().as_u16()),
             Err(e) => Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("remote write to '{}' failed: {}", url, e),
@@ -512,6 +510,61 @@ mod tests {
                 assert!(io_err.to_string().contains("HTTP 503"));
             }
             other => panic!("HTTP 5xx must surface as SondaError::Sink, got {other:?}"),
+        }
+    }
+
+    /// Each refused status is a `Sink` error of this kind, worded
+    /// `HTTP <status> from '<url>'`; a 4xx other than 429 is `InvalidInput`.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bad_request(400, std::io::ErrorKind::InvalidInput)]
+    #[case::not_found(404, std::io::ErrorKind::InvalidInput)]
+    #[case::too_many_requests(429, std::io::ErrorKind::Other)]
+    #[case::server_error(500, std::io::ErrorKind::Other)]
+    #[case::unavailable(503, std::io::ErrorKind::Other)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_status_ends_the_write_as_before(
+        #[case] status: u16,
+        #[case] kind: std::io::ErrorKind,
+    ) {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, status));
+
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        let result = sink.write(&encode_one("cpu", 1.0)).await;
+        let body = server.join().expect("mock server thread panicked");
+        assert!(!body.is_empty(), "the write reached the server");
+
+        match result {
+            Err(SondaError::Sink(e)) => {
+                assert_eq!(e.kind(), kind, "{e}");
+                assert_eq!(e.to_string(), format!("HTTP {status} from '{url}'"));
+            }
+            other => panic!("HTTP {status}: expected a Sink error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_connection_is_a_connection_refused_sink_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!(
+            "http://{}/api/v1/write",
+            listener.local_addr().expect("addr")
+        );
+        drop(listener);
+
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        match sink.write(&encode_one("cpu", 1.0)).await {
+            Err(SondaError::Sink(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused, "{e}");
+                let prefix = format!("remote write to '{url}' failed: ");
+                let text = e.to_string();
+                assert!(
+                    text.starts_with(&prefix) && text.len() > prefix.len(),
+                    "{text}"
+                );
+            }
+            other => panic!("expected a ConnectionRefused Sink error, got {other:?}"),
         }
     }
 

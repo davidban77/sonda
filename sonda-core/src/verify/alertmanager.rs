@@ -98,7 +98,7 @@ impl AlertmanagerClient {
         let base = base_url.trim_end_matches('/');
         Self {
             alerts_url: format!("{base}/api/v2/alerts"),
-            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
+            agent: super::prometheus::query_agent(timeout),
             clock_offset_secs: 0.0,
         }
     }
@@ -142,12 +142,16 @@ impl AlertmanagerClient {
                 })
             })?;
         let local_after = local_unix_now();
-        let header = response.header("date").ok_or_else(|| {
-            SondaError::Verify(VerifyError::BadResponse {
-                url: self.alerts_url.clone(),
-                reason: "response carries no Date header to measure the clock from".to_string(),
-            })
-        })?;
+        let header = response
+            .headers()
+            .get("date")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                SondaError::Verify(VerifyError::BadResponse {
+                    url: self.alerts_url.clone(),
+                    reason: "response carries no Date header to measure the clock from".to_string(),
+                })
+            })?;
         let server = parse_http_date(header).ok_or_else(|| {
             SondaError::Verify(VerifyError::BadResponse {
                 url: self.alerts_url.clone(),
@@ -179,7 +183,8 @@ impl AlertmanagerClient {
                     reason: e.to_string(),
                 })
             })?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
                     url: self.alerts_url.clone(),
@@ -452,6 +457,7 @@ pub fn parse_http_date(value: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verify::prometheus::test_server::{self, Failure, CLIENT_TIMEOUT};
     use std::collections::BTreeMap;
 
     fn expectation(labels: Option<BTreeMap<String, String>>) -> AlertExpectation {
@@ -850,5 +856,88 @@ mod tests {
             Err(SondaError::Verify(VerifyError::Query { .. })) => {}
             other => panic!("expected Verify::Query error, got {other:?}"),
         }
+    }
+
+    /// Polling fails the same way for each failure: `Query` for a status, a
+    /// refused connection or silence, `BadResponse` for a body that cannot
+    /// be read, naming the alerts endpoint.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bad_request(Failure::Status(400))]
+    #[case::not_found(Failure::Status(404))]
+    #[case::too_many_requests(Failure::Status(429))]
+    #[case::server_error(Failure::Status(500))]
+    #[case::unavailable(Failure::Status(503))]
+    #[case::refused_connection(Failure::Refused)]
+    #[case::no_answer_times_out(Failure::Silence)]
+    #[case::cut_body(Failure::CutBody)]
+    #[case::stalled_body_times_out(Failure::StalledBody)]
+    fn polling_fails_as_before(#[case] failure: Failure) {
+        let (base, head) = test_server::serve(failure);
+        let client = AlertmanagerClient::new(&base, CLIENT_TIMEOUT);
+        let started = std::time::Instant::now();
+        let result = client.alerts(&expectation(None)).map(|s| s.state);
+        let url = client.alerts_url.clone();
+        test_server::assert_fails_as_before("alerts", failure, &url, head, started.elapsed(), result);
+    }
+
+    /// The clock probe reads no body, so only a status, a refused connection
+    /// or silence can fail it; each is a `Query` naming the alerts endpoint.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::not_found(Failure::Status(404))]
+    #[case::server_error(Failure::Status(500))]
+    #[case::refused_connection(Failure::Refused)]
+    #[case::no_answer_times_out(Failure::Silence)]
+    fn the_clock_probe_fails_as_before(#[case] failure: Failure) {
+        let (base, head) = test_server::serve(failure);
+        let client = AlertmanagerClient::new(&base, CLIENT_TIMEOUT);
+        let started = std::time::Instant::now();
+        let result = client.measure_clock_offset();
+        let url = client.alerts_url.clone();
+        test_server::assert_fails_as_before("clock", failure, &url, head, started.elapsed(), result);
+    }
+
+    /// The offset is taken from the response's `Date` header against the
+    /// midpoint of the request, so it lies between the header minus the
+    /// local clock after the request and the header minus it before.
+    #[test]
+    fn the_clock_offset_is_read_from_the_date_header() {
+        let (base, head) = test_server::serve(Failure::Status(200));
+        let client = AlertmanagerClient::new(&base, CLIENT_TIMEOUT);
+        let before = local_unix_now();
+        let offset = client
+            .measure_clock_offset()
+            .expect("a Date header was sent");
+        let after = local_unix_now();
+        head.expect("a server")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the request reached the server");
+
+        let server = parse_http_date(test_server::DATE).expect("the fixture is an HTTP date");
+        assert!(
+            server - after <= offset && offset <= server - before,
+            "offset {offset} outside [{}, {}]",
+            server - after,
+            server - before
+        );
+    }
+
+    /// Each filter reaches the server as written, through characters a query
+    /// string reserves (`+`, `&`, `=`, `#`, `%`), a space and non-ASCII.
+    #[test]
+    fn the_filters_reach_the_server_as_written() {
+        let expectation = expectation(Some(labels(&[("path", "/a b+c&d=e#f%20 ü \"q\"")])));
+        let (base, head) = test_server::serve(Failure::Status(500));
+        let client = AlertmanagerClient::new(&base, CLIENT_TIMEOUT);
+        let _ = client.alerts(&expectation);
+        let head = head
+            .expect("a server")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the request reached the server");
+        assert_eq!(
+            test_server::query_values(&head, "filter"),
+            alert_filters(&expectation)
+        );
     }
 }

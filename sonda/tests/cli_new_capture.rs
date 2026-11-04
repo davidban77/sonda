@@ -416,8 +416,8 @@ fn an_error_is_not_printed_twice() {
         .expect("spawn sonda");
     assert!(!out.status.success(), "a refused connection must fail");
 
-    // Count the sentence, not the URL: `ureq` quotes the endpoint again inside
-    // its own reason, so the URL legitimately appears twice in one message.
+    // Count the sentence, not the URL: a `ureq` reason can quote the endpoint
+    // again, so the URL can legitimately appear twice in one message.
     // What doubled was the whole "query against ... failed" clause, once per
     // link in the error chain.
     let stderr = String::from_utf8_lossy(&out.stderr);

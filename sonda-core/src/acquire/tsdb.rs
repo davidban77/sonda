@@ -97,8 +97,8 @@ fn userinfo_of(url: &str) -> Option<String> {
 
 /// Replace a URL credential wherever it appears in `text`.
 ///
-/// Every occurrence, because `ureq` builds its error messages from the URL it
-/// was handed and quotes it more than once.
+/// Every occurrence: a `ureq` error can quote the URL it was handed, and a
+/// response body can quote it again.
 fn scrub_userinfo(text: &str, userinfo: Option<&str>) -> String {
     match userinfo {
         Some(u) => text.replace(u, "<redacted>@"),
@@ -139,7 +139,7 @@ impl TsdbClient {
             display_url: scrub_userinfo(&range_url, userinfo.as_deref()),
             userinfo,
             range_url,
-            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
+            agent: crate::verify::prometheus::query_agent(timeout),
             auth,
         }
     }
@@ -165,20 +165,29 @@ impl TsdbClient {
             .agent
             .get(&self.range_url)
             .query("query", query)
-            .query("start", &format!("{start:.3}"))
-            .query("end", &format!("{end:.3}"))
-            .query("step", &format!("{:.3}", step.as_secs_f64()));
+            .query("start", format!("{start:.3}"))
+            .query("end", format!("{end:.3}"))
+            .query("step", format!("{:.3}", step.as_secs_f64()));
 
         request = match &self.auth {
             Auth::None => request,
-            Auth::Bearer(token) => request.set("Authorization", &format!("Bearer {token}")),
+            Auth::Bearer(token) => {
+                request.header_raw("Authorization", format!("Bearer {token}").as_bytes())
+            }
             Auth::Basic { user, password } => {
                 let encoded = base64_encode(format!("{user}:{password}").as_bytes());
-                request.set("Authorization", &format!("Basic {encoded}"))
+                request.header_raw("Authorization", format!("Basic {encoded}").as_bytes())
             }
             Auth::Headers(headers) => {
-                for (name, value) in headers {
-                    request = request.set(name, value);
+                // A later header written the same way replaces an earlier one,
+                // except an `X-` header, which is sent each time.
+                for (index, (name, value)) in headers.iter().enumerate() {
+                    let replaced = !name.starts_with("x-")
+                        && !name.starts_with("X-")
+                        && headers[index + 1..].iter().any(|(later, _)| later == name);
+                    if !replaced {
+                        request = request.header_raw(name, value.as_bytes());
+                    }
                 }
                 request
             }
@@ -192,7 +201,8 @@ impl TsdbClient {
                     reason: self.scrub(&e.to_string()),
                 })
             })?
-            .into_string()
+            .into_body()
+            .read_to_string()
             .map_err(|e| {
                 SondaError::Verify(VerifyError::BadResponse {
                     url: self.display_url.clone(),
@@ -212,6 +222,7 @@ impl TsdbClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verify::prometheus::test_server::{self, Failure, CLIENT_TIMEOUT};
 
     #[test]
     fn base64_matches_the_rfc_vectors() {
@@ -303,7 +314,7 @@ mod tests {
         let shown = format!("{c:?}");
         assert!(!shown.contains("urlsecret"), "client Debug leaked: {shown}");
 
-        // ureq quotes the URL more than once in one message.
+        // A message can quote the URL more than once.
         let doubled = format!("{0} failed: {0}", c.range_url);
         assert!(!c.scrub(&doubled).contains("urlsecret"), "{doubled}");
     }
@@ -313,5 +324,98 @@ mod tests {
         let c = TsdbClient::new("http://127.0.0.1:9090", Auth::None, Duration::from_secs(1));
         assert_eq!(c.display_url, c.range_url);
         assert_eq!(c.scrub("nothing to strip"), "nothing to strip");
+    }
+
+    /// A range query fails the same way for each failure: `Query` for a
+    /// status, a refused connection or silence, `BadResponse` for a body
+    /// that cannot be read, naming the endpoint with its credential cut.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bad_request(Failure::Status(400))]
+    #[case::not_found(Failure::Status(404))]
+    #[case::too_many_requests(Failure::Status(429))]
+    #[case::server_error(Failure::Status(500))]
+    #[case::unavailable(Failure::Status(503))]
+    #[case::refused_connection(Failure::Refused)]
+    #[case::no_answer_times_out(Failure::Silence)]
+    #[case::cut_body(Failure::CutBody)]
+    #[case::stalled_body_times_out(Failure::StalledBody)]
+    fn a_range_query_fails_as_before(#[case] failure: Failure) {
+        let (base, head) = test_server::serve(failure);
+        let base = base.replace("http://", "http://admin:urlsecret@");
+        let client = TsdbClient::new(&base, Auth::None, CLIENT_TIMEOUT);
+        assert!(client.display_url.contains("<redacted>@"), "{}", client.display_url);
+        let started = std::time::Instant::now();
+        let result = client.fetch_range("up", 0.0, 30.0, Duration::from_secs(10));
+        if let Err(e) = &result {
+            assert!(!e.to_string().contains("urlsecret"), "{e}");
+        }
+        test_server::assert_fails_as_before(
+            "fetch_range", failure, &client.display_url, head, started.elapsed(), result,
+        );
+    }
+
+    /// `--header` values go out as written: a later header written the same
+    /// way replaces an earlier one, an `X-` header is sent each time, and a
+    /// name differing only in case is a header of its own.
+    #[test]
+    fn repeated_headers_go_out_as_they_always_have() {
+        let (base, head) = test_server::serve(Failure::Status(500));
+        let headers = [
+            ("Authorization", "Bearer first"),
+            ("X-Scope-OrgID", "tenant-a"),
+            ("Authorization", "Bearer second"),
+            ("X-Scope-OrgID", "tenant-b"),
+            ("Accept-Language", "en"),
+            ("accept-language", "fr"),
+        ];
+        let auth = Auth::Headers(
+            headers
+                .iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect(),
+        );
+        let client = TsdbClient::new(&base, auth, CLIENT_TIMEOUT);
+        let _ = client.fetch_range("up", 0.0, 30.0, Duration::from_secs(10));
+        let head = head
+            .expect("a server")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the request reached the server");
+
+        let mut sent: Vec<&str> = head
+            .lines()
+            .filter(|l| {
+                ["authorization:", "x-scope-orgid:", "accept-language:"]
+                    .iter()
+                    .any(|p| l.to_ascii_lowercase().starts_with(p))
+            })
+            .collect();
+        sent.sort_unstable();
+        assert_eq!(
+            sent,
+            vec![
+                "Accept-Language: en",
+                "Authorization: Bearer second",
+                "X-Scope-OrgID: tenant-a",
+                "X-Scope-OrgID: tenant-b",
+                "accept-language: fr",
+            ]
+        );
+    }
+
+    /// The PromQL reaches the server as written, through characters a query
+    /// string reserves (`+`, `&`, `=`, `#`, `%`), a space and non-ASCII.
+    #[test]
+    fn a_range_query_reaches_the_server_as_written() {
+        let query = r#"sum by (le) (rate(x{path="/a b+c&d=e#f%20 ü"}[5m])) + 1"#;
+        let (base, head) = test_server::serve(Failure::Status(500));
+        let client = TsdbClient::new(&base, Auth::None, CLIENT_TIMEOUT);
+        let _ = client.fetch_range(query, 0.0, 30.0, Duration::from_secs(10));
+        let head = head
+            .expect("a server")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the request reached the server");
+        assert_eq!(test_server::query_values(&head, "query"), vec![query]);
+        assert_eq!(test_server::query_values(&head, "step"), vec!["10.000"]);
     }
 }

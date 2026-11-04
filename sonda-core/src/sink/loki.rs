@@ -56,10 +56,8 @@ impl LokiSink {
             )));
         }
 
-        let client = ureq::AgentBuilder::new().build();
-
         Ok(Self {
-            client,
+            client: super::push_agent::push_agent(),
             url,
             labels,
             batch_size,
@@ -205,12 +203,11 @@ impl LokiSink {
     fn do_post(client: &ureq::Agent, push_url: &str, body: &str) -> Result<u16, SondaError> {
         let response = client
             .post(push_url)
-            .set("Content-Type", "application/json")
-            .send_string(body);
+            .header_raw("Content-Type", b"application/json")
+            .send(body);
 
         match response {
-            Ok(resp) => Ok(resp.status()),
-            Err(ureq::Error::Status(code, _)) => Ok(code),
+            Ok(resp) => Ok(resp.status().as_u16()),
             Err(e) => Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("Loki push to '{}' failed: {}", push_url, e),
@@ -849,6 +846,64 @@ mod tests {
             matches!(result.err().unwrap(), SondaError::Sink(_)),
             "expected SondaError::Sink"
         );
+    }
+
+    /// Each refused status ends one push as `Ok` (a 4xx other than 429 is
+    /// discarded) or as a `Sink` error of this kind, worded
+    /// `HTTP <status> from '<push url>'`.
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::bad_request_is_discarded(400, None)]
+    #[case::not_found_is_discarded(404, None)]
+    #[case::too_many_requests_is_an_error(429, Some(std::io::ErrorKind::Other))]
+    #[case::server_error_is_an_error(500, Some(std::io::ErrorKind::Other))]
+    #[case::unavailable_is_an_error(503, Some(std::io::ErrorKind::Other))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_status_ends_the_push_as_before(
+        #[case] status: u16,
+        #[case] kind: Option<std::io::ErrorKind>,
+    ) {
+        let (listener, url) = mock_loki_listener();
+        let push_url = format!("{url}/loki/api/v1/push");
+        let server = thread::spawn(move || accept_one_and_respond(&listener, status));
+
+        let mut sink = LokiSink::new(url, HashMap::new(), 1, u32::MAX, None, Duration::ZERO)
+            .expect("construct sink");
+        let result = sink.write(b"line\n").await;
+        let body = server.join().expect("mock server thread panicked");
+        assert!(!body.is_empty(), "the push reached the server");
+
+        match (kind, result) {
+            (None, Ok(())) => {}
+            (Some(kind), Err(SondaError::Sink(e))) => {
+                assert_eq!(e.kind(), kind, "{e}");
+                assert_eq!(e.to_string(), format!("HTTP {status} from '{push_url}'"));
+            }
+            (kind, other) => panic!("HTTP {status}: expected {kind:?}, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_connection_is_a_connection_refused_sink_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(listener);
+
+        let push_url = format!("{url}/loki/api/v1/push");
+        let mut sink = LokiSink::new(url, HashMap::new(), 1, u32::MAX, None, Duration::ZERO)
+            .expect("construct sink");
+        match sink.write(b"line\n").await {
+            Err(SondaError::Sink(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused, "{e}");
+                let prefix = format!("Loki push to '{push_url}' failed: ");
+                let text = e.to_string();
+                assert!(
+                    text.starts_with(&prefix) && text.len() > prefix.len(),
+                    "{text}"
+                );
+            }
+            other => panic!("expected a ConnectionRefused Sink error, got {other:?}"),
+        }
     }
 
     // -------------------------------------------------------------------------
