@@ -51,7 +51,7 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 insta = { version = "1.40", features = ["json", "yaml"] }
-rstest = "0.26"
+rstest = "0.28"
 
 [workspace.lints.clippy]
 # Holding a std::sync lock across an .await deadlocks the runtime.
