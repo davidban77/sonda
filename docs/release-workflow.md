@@ -198,12 +198,13 @@ automatically opening PRs.
 
 ### Configuration (`.github/dependabot.yml`)
 
-Two ecosystems are monitored:
+Three ecosystems are monitored:
 
 | Ecosystem | Schedule | PR prefix | Max open PRs |
 |-----------|----------|-----------|-------------|
-| Cargo (Rust dependencies) | Weekly | `deps` | 5 |
-| GitHub Actions | Weekly | `ci` | Unlimited |
+| Cargo (Rust dependencies) | Weekly | `deps` | 10 |
+| GitHub Actions | Weekly | `ci` | 5 (Dependabot's default) |
+| Docker Compose images in `examples/` | Weekly | `ci` | 10 |
 
 ### Handling dependabot PRs
 
