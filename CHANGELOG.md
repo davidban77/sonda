@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.30.0](https://github.com/davidban77/sonda/compare/v1.29.0...v1.30.0) (2026-11-05)
+
+
+### Features
+
+* **generator:** flap takes a phase ([#716](https://github.com/davidban77/sonda/issues/716)) ([dde81dc](https://github.com/davidban77/sonda/commit/dde81dc29725d8a347f3c3642f6a7f62d3206dbe))
+
+
+### Bug Fixes
+
+* **compiler:** after: resolves on a flap whose down value is above its up value ([#719](https://github.com/davidban77/sonda/issues/719)) ([4c2edd3](https://github.com/davidban77/sonda/commit/4c2edd391caa914d602e848715cd0937463dea0a))
+* **config:** a gap window or start time with a bad duration is refused by validation and dry-run ([#725](https://github.com/davidban77/sonda/issues/725)) ([b9bf142](https://github.com/davidban77/sonda/commit/b9bf142514c0f114d5e90b692dc6565fc75c4b4a))
+* **schedule:** a stop flushes the sink before the task ends ([#718](https://github.com/davidban77/sonda/issues/718)) ([58fe9e9](https://github.com/davidban77/sonda/commit/58fe9e9a4a2a62434e4383f8f6a9886cb8d75506))
+* **schema:** duration fields take a string with a unit, in the schema as in the parser ([#720](https://github.com/davidban77/sonda/issues/720)) ([660525a](https://github.com/davidban77/sonda/commit/660525a6ec3dfc678788701d8cc80b62d630b51e))
+* **schema:** enum map keys the schema accepts parse ([#714](https://github.com/davidban77/sonda/issues/714)) ([1365e71](https://github.com/davidban77/sonda/commit/1365e716a4328d229df2e282c56e4878c3ef5012))
+* **server:** the stop join window is held by a constant assertion and a timed-out join is not logged as joined ([#724](https://github.com/davidban77/sonda/issues/724)) ([03c810f](https://github.com/davidban77/sonda/commit/03c810fad6f7c8578cee68bb65796b313b5c27af))
+
+
+### Documentation
+
+* **snmp:** a stop ends an INFORM wait at once, with the guard tests ([#717](https://github.com/davidban77/sonda/issues/717)) ([3d8895a](https://github.com/davidban77/sonda/commit/3d8895a37b787a65fb620fa231f52f64ba285432))
+
+
+### CI/CD
+
+* bump grafana/grafana from 13.2.0 to 13.3.0 in /examples ([#636](https://github.com/davidban77/sonda/issues/636)) ([dc32b36](https://github.com/davidban77/sonda/commit/dc32b36aa7475012415c8f2c60f8c3a6f2c6215d))
+* bump otel/opentelemetry-collector-contrib from 0.159.0 to 0.164.0 in /examples ([#633](https://github.com/davidban77/sonda/issues/633)) ([cad75ab](https://github.com/davidban77/sonda/commit/cad75ab801c71e13985265f71493239cb86141ce))
+* bump taiki-e/install-action from 2.87.0 to 2.89.0 ([#721](https://github.com/davidban77/sonda/issues/721)) ([fe191ad](https://github.com/davidban77/sonda/commit/fe191ad0f04b75a634950d52c1de5f4ec4df4b31))
+* bump victoriametrics/victoria-metrics from v1.150.0 to v1.155.0 in /examples ([#635](https://github.com/davidban77/sonda/issues/635)) ([bfbd7b2](https://github.com/davidban77/sonda/commit/bfbd7b20cda15eae655f75c2ade858adcae7956e))
+* bump victoriametrics/vmagent from v1.150.0 to v1.155.0 in /examples ([#637](https://github.com/davidban77/sonda/issues/637)) ([60d233b](https://github.com/davidban77/sonda/commit/60d233bc3d491a05d9aab961fc9166b7df8c6365))
+* bump victoriametrics/vmalert from v1.150.0 to v1.155.0 in /examples ([#634](https://github.com/davidban77/sonda/issues/634)) ([5df7ae4](https://github.com/davidban77/sonda/commit/5df7ae4275807d8e4ad427f6a6c9e4a7d9ed34ac))
+* **docs:** compile bare encoder and sink fences ([#722](https://github.com/davidban77/sonda/issues/722)) ([609e612](https://github.com/davidban77/sonda/commit/609e6122370018d3a6caf91d1c284b6267e14311))
+* raise dependabot's open pull request limits ([#728](https://github.com/davidban77/sonda/issues/728)) ([dc1ebf3](https://github.com/davidban77/sonda/commit/dc1ebf3450acd1ee6d7a8e26ab87a1cdd97e5728))
+
 ## [1.29.0](https://github.com/davidban77/sonda/compare/v1.28.0...v1.29.0) (2026-10-30)
 
 
