@@ -347,7 +347,7 @@ services:
   # This service is only started with --profile alerting.
   # ---------------------------------------------------------------------------
   webhook-receiver:
-    image: mendhak/http-https-echo:41
+    image: mendhak/http-https-echo:43
     profiles: [alerting]
     ports:
       - "8090:8080"
