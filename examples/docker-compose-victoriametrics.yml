@@ -202,7 +202,7 @@ services:
   # This service is only started with --profile loki.
   # ---------------------------------------------------------------------------
   loki:
-    image: grafana/loki:3.7.7
+    image: grafana/loki:3.7.9
     profiles: [loki]
     ports:
       - "3100:3100"
