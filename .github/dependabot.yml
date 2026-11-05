@@ -6,7 +6,7 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "deps"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     target-branch: "main"
     ignore:
       # Major version bumps require code changes — handle manually
@@ -39,4 +39,5 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "ci"
+    open-pull-requests-limit: 10
     target-branch: "main"
