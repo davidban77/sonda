@@ -3063,7 +3063,7 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>kubectl<span class="w"> </span>get<span class="w"> </span>pods<span class="w"> </span>-l<span class="w"> </span>app.kubernetes.io/name<span class="o">=</span>sonda<span class="w"> </span>-w
 </span></code></pre></div>
 <p>You should see <code>1/1 Running</code> within 15--20 seconds. The chart defaults to
-<code>ghcr.io/davidban77/sonda:&lt;!--x-release-please-version--&gt;1.14.0&lt;!--x-release-please-end--&gt;</code> (the chart's <code>appVersion</code>). Pin a different version with
+<code>ghcr.io/davidban77/sonda:&lt;!--x-release-please-version--&gt;1.30.1&lt;!--x-release-please-end--&gt;</code> (the chart's <code>appVersion</code>). Pin a different version with
 <code>--set image.tag=&lt;version&gt;</code>.</p>
 <div class="admonition tip">
 <p class="admonition-title">Deploy to a dedicated namespace</p>
@@ -3094,7 +3094,7 @@ installed into a different one.</p>
 </tr>
 <tr>
 <td><code>image.tag</code></td>
-<td><code>""</code> (uses <code>appVersion</code>: <!--x-release-please-version--><code>1.14.0</code><!--x-release-please-end-->)</td>
+<td><code>""</code> (uses <code>appVersion</code>: <!--x-release-please-version--><code>1.30.1</code><!--x-release-please-end-->)</td>
 <td>Image tag to pull</td>
 </tr>
 <tr>
@@ -3863,7 +3863,7 @@ will see:</p>
 </span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>helm<span class="w"> </span>upgrade<span class="w"> </span>sonda<span class="w"> </span>./helm/sonda<span class="w"> </span>-f<span class="w"> </span>my-values.yaml
 </span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>
 </span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="c1"># Upgrade to a new image version</span>
-</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>helm<span class="w"> </span>upgrade<span class="w"> </span>sonda<span class="w"> </span>./helm/sonda<span class="w"> </span>--set<span class="w"> </span>image.tag<span class="o">=</span>&lt;!--x-release-please-version--&gt;1.14.0&lt;!--x-release-please-end--&gt;
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>helm<span class="w"> </span>upgrade<span class="w"> </span>sonda<span class="w"> </span>./helm/sonda<span class="w"> </span>--set<span class="w"> </span>image.tag<span class="o">=</span>&lt;!--x-release-please-version--&gt;1.30.1&lt;!--x-release-please-end--&gt;
 </span></code></pre></div>
 <p>If your values file includes <code>scenarios</code>, the ConfigMap checksum annotation triggers an
 automatic pod rollout. No manual restart is needed.</p>
@@ -3906,7 +3906,7 @@ Add <code>-n &lt;namespace&gt;</code> if you installed into a non-default namesp
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 27, 2026 23:11:04 UTC">August 27, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 8, 2026 20:24:50 UTC">November 8, 2026</span>
   </span>
 
     
