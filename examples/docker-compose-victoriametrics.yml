@@ -436,7 +436,7 @@ services:
   # This service is only started with --profile gnmi.
   # ---------------------------------------------------------------------------
   telegraf:
-    image: telegraf:1.40.2
+    image: telegraf:1.40.3
     profiles: [gnmi]
     ports:
       - "8095:8095"
@@ -466,7 +466,7 @@ services:
   # This service is only started with --profile gnmi-tls.
   # ---------------------------------------------------------------------------
   telegraf-tls:
-    image: telegraf:1.40.2
+    image: telegraf:1.40.3
     profiles: [gnmi-tls]
     ports:
       - "8096:8096"
@@ -505,7 +505,7 @@ services:
   # This service is only started with --profile snmp.
   # ---------------------------------------------------------------------------
   telegraf-snmp:
-    image: telegraf:1.40.2
+    image: telegraf:1.40.3
     profiles: [snmp]
     ports:
       - "8097:8097"
@@ -537,7 +537,7 @@ services:
   # This service is only started with --profile snmp.
   # ---------------------------------------------------------------------------
   telegraf-if-mib:
-    image: telegraf:1.40.2
+    image: telegraf:1.40.3
     profiles: [snmp]
     ports:
       - "8098:8098"
