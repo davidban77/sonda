@@ -1,0 +1,53 @@
+name: No session links
+
+# Fails a pull request whose title, body or commit messages carry a Claude Code
+# session link, and a push to main whose commits do. The push case covers the
+# squash commit, whose message is written at merge time and is never part of
+# the pull request. The rule itself lives in scripts/check_session_links.py.
+#
+# Pull-request text reaches the script only through env:, never through a
+# run: body, so nothing in a title or body is ever interpreted by a shell.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  no-session-links:
+    name: No Claude Code session links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Pull request title, body and commits
+        if: github.event_name == 'pull_request'
+        env:
+          PR_MODE: "1"
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check_session_links.py
+
+      # A push that creates the branch has an all-zero "before"; scan the
+      # pushed commit alone then, rather than an unreadable range.
+      - name: Commits pushed to main
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            export COMMIT_RANGE="$AFTER"
+          else
+            export COMMIT_RANGE="$BEFORE..$AFTER"
+          fi
+          python3 scripts/check_session_links.py
