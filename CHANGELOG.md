@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.30.2](https://github.com/davidban77/sonda/compare/v1.30.1...v1.30.2) (2026-11-08)
+
+
+### CI/CD
+
+* bump telegraf from 1.40.2 to 1.40.3 in /examples ([#750](https://github.com/davidban77/sonda/issues/750)) ([c17472f](https://github.com/davidban77/sonda/commit/c17472f337214bceff5dbbd63e0ce86480a7faf6))
+
 ## [1.30.1](https://github.com/davidban77/sonda/compare/v1.30.0...v1.30.1) (2026-11-08)
 
 
