@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.30.1](https://github.com/davidban77/sonda/compare/v1.30.0...v1.30.1) (2026-11-08)
+
+
+### Miscellaneous
+
+* point release-please at the moved kubernetes doc ([#749](https://github.com/davidban77/sonda/issues/749)) ([5039d8c](https://github.com/davidban77/sonda/commit/5039d8c16f9f60213b4c307c4fe1e92e83276b69))
+
+
+### CI/CD
+
+* bump grafana/loki to 3.7.9, prom/prometheus to v3.16.0 and taiki-e/install-action to 2.90.2 ([#745](https://github.com/davidban77/sonda/issues/745)) ([f663f30](https://github.com/davidban77/sonda/commit/f663f3060a9c78c330a524d0efba4174438760a3))
+* bump mendhak/http-https-echo from 41 to 43 in /examples ([#729](https://github.com/davidban77/sonda/issues/729)) ([f0bc1ea](https://github.com/davidban77/sonda/commit/f0bc1ea59b571f6e77ecb693c5ac534e1a4f30a1))
+* bump prom/alertmanager from v0.34.0 to v0.34.2 in /examples ([#730](https://github.com/davidban77/sonda/issues/730)) ([f266b65](https://github.com/davidban77/sonda/commit/f266b65b0dee3c49b37e39555779848481799e3b))
+* bump taiki-e/install-action from 2.89.0 to 2.90.1 ([#738](https://github.com/davidban77/sonda/issues/738)) ([64c5b65](https://github.com/davidban77/sonda/commit/64c5b65f32c53197c123f9ba6775fe8b50e25bbf))
+* fail a pull request or a push to main that carries a Claude Code session link ([#748](https://github.com/davidban77/sonda/issues/748)) ([ebab145](https://github.com/davidban77/sonda/commit/ebab1456b84c293fb4b33e928b221ebc73e956bf))
+
 ## [1.30.0](https://github.com/davidban77/sonda/compare/v1.29.0...v1.30.0) (2026-11-05)
 
 
