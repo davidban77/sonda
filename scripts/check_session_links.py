@@ -11,19 +11,25 @@ the pull request.
 The match is exact: the string ``claude.ai/code/session``, case-insensitive
 (``PATTERN``). There is no opt-out.
 
-Inputs, all from the environment so that nothing from a pull request is ever
-interpolated into a shell:
+Inputs, from the environment:
 
-    COMMIT_RANGE  required: ``<from>..<to>`` or a single commit, given to
-                  ``git rev-list``
-    PR_TITLE      pull requests only; must be non-empty when PR mode is on
-    PR_BODY       pull requests only; may be empty (a PR may have no body)
-    PR_MODE       "1" for a pull request, anything else for a push
+    COMMIT_RANGE    required: ``<from>..<to>`` or a single commit, given to
+                    ``git rev-list``
+    PR_EVENT_PATH   pull requests only: the path of the event payload
+                    (``github.event_path``); the title and body are read from
+                    its ``pull_request`` object. Unset means a push.
 
-Vacuity: the range must contain at least one commit, and in PR mode the title
-must be non-empty — a pull request always has both, so an empty value means
-the wiring broke, not that the input was clean. An empty body cannot be told
-apart from a missing one; that is the one input this check cannot vouch for.
+The title and body are read from the payload file, never passed as
+environment values: Actions prints a step's ``env:`` at the top of its log,
+so a body passed that way would put the very link being caught into a public
+log before this script runs. Reading the file also keeps pull-request text out
+of any shell.
+
+Vacuity: the range must contain at least one commit, and for a pull request
+the payload must parse and carry a non-empty title — a pull request always has
+both, so their absence means the wiring broke, not that the input was clean.
+A null body is a pull request with no body; that is the one input this check
+cannot vouch for.
 
 Findings name where the link is and redact the session id, so the check's own
 log does not repeat what it found.
@@ -33,6 +39,7 @@ Exit 1 with every finding, 2 on a vacuous or broken input, 0 when clean.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -72,9 +79,29 @@ def commits_in(commit_range: str) -> list[tuple[str, str]]:
     return out
 
 
+def pull_request_text(event_path: str) -> tuple[str, str]:
+    """``(title, body)`` from the ``pull_request`` object of the event payload at ``event_path``.
+
+    Raises ``ValueError`` when the file is unreadable, is not a pull-request
+    payload, or has an empty title. A null body is returned as ``""``.
+    """
+    try:
+        with open(event_path, encoding="utf-8") as f:
+            pr = json.load(f).get("pull_request")
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(f"cannot read the event payload {event_path!r}: {e}") from e
+    if not isinstance(pr, dict):
+        raise ValueError(f"{event_path!r} has no pull_request object")
+    title = pr.get("title") or ""
+    if not title.strip():
+        raise ValueError("the pull request title is empty; a pull request always has a title")
+    return title, pr.get("body") or ""
+
+
 def main() -> int:
     commit_range = os.environ.get("COMMIT_RANGE", "").strip()
-    pr_mode = os.environ.get("PR_MODE") == "1"
+    event_path = os.environ.get("PR_EVENT_PATH", "").strip()
+    pr_mode = bool(event_path)
     if not commit_range:
         print("error: COMMIT_RANGE is empty; nothing to check", file=sys.stderr)
         return 2
@@ -89,12 +116,13 @@ def main() -> int:
 
     found: list[str] = []
     if pr_mode:
-        title = os.environ.get("PR_TITLE", "")
-        if not title.strip():
-            print("error: PR_TITLE is empty; a pull request always has a title", file=sys.stderr)
+        try:
+            title, body = pull_request_text(event_path)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
             return 2
         found += findings_in("pull request title", title)
-        found += findings_in("pull request body", os.environ.get("PR_BODY", ""))
+        found += findings_in("pull request body", body)
     for sha, message in commits:
         found += findings_in(f"commit {sha[:12]}", message)
 

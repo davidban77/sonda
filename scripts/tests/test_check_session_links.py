@@ -6,6 +6,7 @@ script as a subprocess with the environment the workflow gives it.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -48,9 +49,16 @@ class SessionLinkCheck(unittest.TestCase):
             [sys.executable, str(SCRIPT)], cwd=self.repo, env=full, capture_output=True, text=True
         )
 
-    def pr(self, head: str, title: str = "deps: bump x", body: str = "") -> subprocess.CompletedProcess[str]:
+    def event(self, pull_request: object) -> str:
+        """Write an event payload the way Actions does and return its path."""
+        path = self.repo / "event.json"
+        path.write_text(json.dumps({"action": "opened", "pull_request": pull_request}))
+        return str(path)
+
+    def pr(self, head: str, title: str = "deps: bump x", body: str | None = "") -> subprocess.CompletedProcess[str]:
         return self.run_check(
-            PR_MODE="1", COMMIT_RANGE=f"{self.base}..{head}", PR_TITLE=title, PR_BODY=body
+            COMMIT_RANGE=f"{self.base}..{head}",
+            PR_EVENT_PATH=self.event({"title": title, "body": body}),
         )
 
     # --- clean inputs pass, and say how much they scanned -----------------
@@ -116,12 +124,15 @@ class SessionLinkCheck(unittest.TestCase):
     # --- vacuous or broken inputs are refused, not reported clean ---------
 
     def test_empty_range_is_refused(self) -> None:
-        r = self.run_check(PR_MODE="1", COMMIT_RANGE=f"{self.base}..{self.base}", PR_TITLE="t")
+        r = self.run_check(
+            COMMIT_RANGE=f"{self.base}..{self.base}", PR_EVENT_PATH=self.event({"title": "t", "body": ""})
+        )
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("contains no commits", r.stderr)
 
     def test_missing_range_is_refused(self) -> None:
-        self.assertEqual(self.run_check(PR_MODE="1", PR_TITLE="t").returncode, 2)
+        r = self.run_check(PR_EVENT_PATH=self.event({"title": "t", "body": ""}))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
     def test_unreadable_range_is_refused(self) -> None:
         r = self.run_check(COMMIT_RANGE="deadbeef..cafebabe")
@@ -131,7 +142,39 @@ class SessionLinkCheck(unittest.TestCase):
         head = self.commit("deps: bump a")
         r = self.pr(head, title="  ")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("PR_TITLE is empty", r.stderr)
+        self.assertIn("title is empty", r.stderr)
+
+    def test_missing_event_payload_is_refused(self) -> None:
+        head = self.commit("deps: bump a")
+        r = self.run_check(COMMIT_RANGE=f"{self.base}..{head}", PR_EVENT_PATH=str(self.repo / "nope.json"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("cannot read the event payload", r.stderr)
+
+    def test_payload_without_a_pull_request_is_refused(self) -> None:
+        head = self.commit("deps: bump a")
+        path = self.repo / "push-event.json"
+        path.write_text(json.dumps({"ref": "refs/heads/main"}))
+        r = self.run_check(COMMIT_RANGE=f"{self.base}..{head}", PR_EVENT_PATH=str(path))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no pull_request object", r.stderr)
+
+    def test_null_body_is_a_pull_request_with_no_body(self) -> None:
+        head = self.commit("deps: bump a")
+        r = self.pr(head, body=None)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    # --- the text never travels through the environment -------------------
+
+    def test_title_and_body_are_not_read_from_the_environment(self) -> None:
+        # The old interface: a link here must be ignored, because the workflow
+        # no longer sets these and a stray value must not be mistaken for input.
+        head = self.commit("deps: bump a")
+        r = self.run_check(
+            COMMIT_RANGE=f"{self.base}..{head}",
+            PR_EVENT_PATH=self.event({"title": "deps: bump a", "body": "clean"}),
+            PR_TITLE=LINK, PR_BODY=LINK,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

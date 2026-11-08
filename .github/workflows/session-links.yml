@@ -5,8 +5,10 @@ name: No session links
 # squash commit, whose message is written at merge time and is never part of
 # the pull request. The rule itself lives in scripts/check_session_links.py.
 #
-# Pull-request text reaches the script only through env:, never through a
-# run: body, so nothing in a title or body is ever interpreted by a shell.
+# The title and body are NOT passed through env:. Actions prints a step's env
+# at the top of its log, so a body passed that way would publish the very link
+# this job catches before the script runs. The script reads them from the
+# event payload file instead, which is never printed and never reaches a shell.
 
 on:
   pull_request:
@@ -31,9 +33,7 @@ jobs:
       - name: Pull request title, body and commits
         if: github.event_name == 'pull_request'
         env:
-          PR_MODE: "1"
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_EVENT_PATH: ${{ github.event_path }}
           COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
         run: python3 scripts/check_session_links.py
 
