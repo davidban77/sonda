@@ -202,7 +202,7 @@ services:
   # This service is only started with --profile loki.
   # ---------------------------------------------------------------------------
   loki:
-    image: grafana/loki:3.7.7
+    image: grafana/loki:3.7.9
     profiles: [loki]
     ports:
       - "3100:3100"
@@ -368,7 +368,7 @@ services:
   # This service is only started with --profile prometheus.
   # ---------------------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v3.14.0
+    image: prom/prometheus:v3.16.0
     profiles: [prometheus]
     ports:
       - "9090:9090"
