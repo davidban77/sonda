@@ -79,7 +79,7 @@ sha2 = { version = "0.10", default-features = false, optional = true }
 # SNMPv3 USM: privacy, DES-CBC and AES-CFB-128 (snmp).
 aes = { version = "0.8", default-features = false, optional = true }
 cfb-mode = { version = "0.8", default-features = false, optional = true }
-des = { version = "0.8", default-features = false, optional = true }
+des = { version = "0.9", default-features = false, optional = true }
 cbc = { version = "0.1", default-features = false, optional = true }
 
 # The snmp_agent responder's recvmsg/sendmsg with packet info, on the targets
