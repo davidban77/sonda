@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.30.3](https://github.com/davidban77/sonda/compare/v1.30.2...v1.30.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** quinn-udp 0.5.16 for RUSTSEC-2026-0538 ([#765](https://github.com/davidban77/sonda/issues/765)) ([bc69519](https://github.com/davidban77/sonda/commit/bc695196de7004cd2053213cb7130352c977b61f))
+
+
+### CI/CD
+
+* bump victoriametrics to v1.156.0, grafana to 13.3.1, alertmanager to v0.35.0, otel-collector-contrib to 0.165.0 and taiki-e/install-action to 2.90.5 ([#767](https://github.com/davidban77/sonda/issues/767)) ([d065568](https://github.com/davidban77/sonda/commit/d065568fad42bdfcefb4ce073834833d8e2f705b))
+
 ## [1.30.2](https://github.com/davidban77/sonda/compare/v1.30.1...v1.30.2) (2026-11-08)
 
 
